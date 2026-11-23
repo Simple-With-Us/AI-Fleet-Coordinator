@@ -344,9 +344,8 @@ def verify_service_token(
         ):
             raise LoadError(stage + ": folder scope is invalid")
         actual_paths.append(_safe_folder(scope["secretPath"]))
-    if (
-        len(actual_paths) != len(set(actual_paths))
-        or frozenset(actual_paths) != frozenset(normalized_paths)
+    if len(actual_paths) != len(set(actual_paths)) or frozenset(actual_paths) != frozenset(
+        normalized_paths
     ):
         raise LoadError(stage + ": folder scope did not match")
     permissions = metadata.get("permissions")
@@ -525,7 +524,8 @@ def operator_shared_data(
         return (
             {},
             {},
-            "; operator voice keys not loaded (no dedicated token: %s is unbound)" % OPERATOR_VOICE_TOKEN,
+            "; operator voice keys not loaded (no dedicated token: %s is unbound)"
+            % OPERATOR_VOICE_TOKEN,
             "; optional Operator data not loaded (%s is unbound)" % OPERATOR_VOICE_TOKEN,
         )
     project = (env.get(OPERATOR_VOICE_PROJECT) or "").strip()
@@ -549,7 +549,9 @@ def operator_shared_data(
     keys = {
         name: value.strip()
         for name, value in found.items()
-        if name in OPERATOR_VOICE_NAMES and value.strip() and not UNRESOLVED_REFERENCE_RE.search(value)
+        if name in OPERATOR_VOICE_NAMES
+        and value.strip()
+        and not UNRESOLVED_REFERENCE_RE.search(value)
     }
     if set(keys) != OPERATOR_VOICE_NAMES:
         raise LoadError(
@@ -760,7 +762,14 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     # (any seat, server or not), the Operator's names and the INFISICAL_ONLY names.  What follows is only what
     # Infisical returned.
     only = infisical_only_names()
-    owned = only | OPERATOR_NAMES | OPERATOR_VOICE_NAMES | {OPERATOR_CURSOR_NAME} | allowed | OPTIONAL_PROJECTION_NAMES
+    owned = (
+        only
+        | OPERATOR_NAMES
+        | OPERATOR_VOICE_NAMES
+        | {OPERATOR_CURSOR_NAME}
+        | allowed
+        | OPTIONAL_PROJECTION_NAMES
+    )
 
     def from_container(name: str) -> bool:
         # WAKE_ROUTER_* are the router's own knobs, read by the router alone from /wake-router (including
