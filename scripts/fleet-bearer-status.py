@@ -19,6 +19,7 @@ every 6 hours while it stays, and a recovery notice goes out once when it clears
 
   fleet-bearer-status.py [--write PATH] [--state PATH] [--url URL] [--no-notify] [--dry-run]
 """
+
 import argparse
 import json
 import os
@@ -41,7 +42,12 @@ def access_token():
     for exe in CLOUDFLARED:
         if os.path.exists(exe):
             try:
-                r = subprocess.run([exe, "access", "token", "-app=" + APP], capture_output=True, text=True, timeout=20)
+                r = subprocess.run(
+                    [exe, "access", "token", "-app=" + APP],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
             except (OSError, subprocess.TimeoutExpired):
                 return None
             tok = r.stdout.strip()
@@ -50,7 +56,9 @@ def access_token():
 
 
 def fetch(url, token):
-    req = urllib.request.Request(url, headers={"cf-access-token": token, "Accept": "application/json"})
+    req = urllib.request.Request(
+        url, headers={"cf-access-token": token, "Accept": "application/json"}
+    )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read(2_000_000))
 
@@ -60,10 +68,16 @@ def row_summary(r):
     mm = r.get("mismatches") or {}
     mr = r.get("missingRecords") or {}
     return {
-        "identity": r.get("identity"), "kind": r.get("kind"), "problem": r.get("problem"),
-        "active": bool(st.get("active")), "expired": bool(st.get("expired")), "expiresAt": st.get("expires_at"),
-        "mcpAccept": st.get("mcp_accept"), "paused": r.get("paused"),
-        "missingRecords": mr.get("names") if isinstance(mr, dict) else None, "mismatchCount": mm.get("count") if isinstance(mm, dict) else None,
+        "identity": r.get("identity"),
+        "kind": r.get("kind"),
+        "problem": r.get("problem"),
+        "active": bool(st.get("active")),
+        "expired": bool(st.get("expired")),
+        "expiresAt": st.get("expires_at"),
+        "mcpAccept": st.get("mcp_accept"),
+        "paused": r.get("paused"),
+        "missingRecords": mr.get("names") if isinstance(mr, dict) else None,
+        "mismatchCount": mm.get("count") if isinstance(mm, dict) else None,
     }
 
 
@@ -73,7 +87,11 @@ def desired_alarms(doc, last_ts):
     for r in doc.get("rows", []):
         p = r.get("problem")
         if p and p != "ok":
-            miss = (r.get("missingRecords") or {}).get("names") if isinstance(r.get("missingRecords"), dict) else None
+            miss = (
+                (r.get("missingRecords") or {}).get("names")
+                if isinstance(r.get("missingRecords"), dict)
+                else None
+            )
             extra = f" (missing {', '.join(miss)})" if miss else ""
             alarms[f"problem:{r.get('identity')}:{p}"] = f"{r.get('identity')}: {p}{extra}"
     newest = last_ts
@@ -120,7 +138,14 @@ def reconcile(state, alarms, now):
 def notify_mac(title, text):
     safe = lambda s: str(s).replace("\\", " ").replace('"', "'")[:200]
     try:
-        subprocess.run(["/usr/bin/osascript", "-e", f'display notification "{safe(text)}" with title "{safe(title)}"'], timeout=10)
+        subprocess.run(
+            [
+                "/usr/bin/osascript",
+                "-e",
+                f'display notification "{safe(text)}" with title "{safe(title)}"',
+            ],
+            timeout=10,
+        )
     except (OSError, subprocess.TimeoutExpired):
         pass
 
@@ -146,16 +171,22 @@ def run(args, now=None, token_fn=access_token, fetch_fn=fetch, notify_fn=notify_
     token = token_fn()
     if not token:
         error = "access_login_needed"
-        alarms["access:login_needed"] = "Muster cannot read bearer status: run  cloudflared access login https://agents.simplewithus.com/admin  on the Mac"
+        alarms["access:login_needed"] = (
+            "Muster cannot read bearer status: run  cloudflared access login https://agents.simplewithus.com/admin  on the Mac"
+        )
     else:
         try:
             doc = fetch_fn(args.url, token)
         except urllib.error.HTTPError as e:
             error = f"http_{e.code}"
             if e.code in (401, 403):
-                alarms["access:login_needed"] = "The owner Access login was refused or expired: run  cloudflared access login https://agents.simplewithus.com/admin"
+                alarms["access:login_needed"] = (
+                    "The owner Access login was refused or expired: run  cloudflared access login https://agents.simplewithus.com/admin"
+                )
             else:
-                alarms["access:status_unreachable"] = f"The bearer status API answered HTTP {e.code}"
+                alarms["access:status_unreachable"] = (
+                    f"The bearer status API answered HTTP {e.code}"
+                )
         except (OSError, ValueError):
             error = "unreachable"
             alarms["access:status_unreachable"] = "The bearer status API could not be read"
@@ -171,9 +202,20 @@ def run(args, now=None, token_fn=access_token, fetch_fn=fetch, notify_fn=notify_
     to_notify, recovered = reconcile(state, alarms, now)
     iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
     out = {
-        "schemaVersion": 1, "tool": "fleet-bearer-status", "generatedAt": iso(now), "ok": doc is not None,
+        "schemaVersion": 1,
+        "tool": "fleet-bearer-status",
+        "generatedAt": iso(now),
+        "ok": doc is not None,
         "rows": [row_summary(r) for r in (doc or {}).get("rows", [])],
-        "alarms": [{"key": k, "summary": v.get("summary"), "since": iso(v["since"]), "lastAlarm": iso(v["lastAlarm"])} for k, v in sorted(state.get("active", {}).items())],
+        "alarms": [
+            {
+                "key": k,
+                "summary": v.get("summary"),
+                "since": iso(v["since"]),
+                "lastAlarm": iso(v["lastAlarm"]),
+            }
+            for k, v in sorted(state.get("active", {}).items())
+        ],
         "recovered": [{"key": k, "at": iso(now)} for k in recovered],
     }
     if error:
@@ -197,7 +239,11 @@ def main(argv):
     ap.add_argument("--no-notify", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     out = run(ap.parse_args(argv))
-    print(json.dumps({"ok": out["ok"], "alarms": len(out["alarms"]), "recovered": len(out["recovered"])}))
+    print(
+        json.dumps(
+            {"ok": out["ok"], "alarms": len(out["alarms"]), "recovered": len(out["recovered"])}
+        )
+    )
     return 0
 
 
