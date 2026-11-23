@@ -1329,6 +1329,12 @@ class ShippedDataFilesTests(unittest.TestCase):
         self.assertFalse(release.allowed_path("scripts/simple_tools/mcp/fixtures.jsonl"))
         self.assertFalse(release.shipped_path("scripts/simple_tools/mcp/fixtures.jsonl"))
 
+    def test_minimax_supervised_launcher_stays_explicit_host_only(self):
+        path = "scripts/simple_tools/minimax_supervised_exec.mjs"
+        self.assertIn(path, release.REPO_ONLY)
+        self.assertFalse(release.allowed_path(path))
+        self.assertFalse(release.shipped_path(path))
+
     def test_listener_tools_is_required_of_new_bundles_only(self):
         # A new bundle must carry it (simple-chat mcp reads it at startup), but retained releases
         # are judged by BASE_REQUIRED, so the ones built before it stay valid rollback targets.

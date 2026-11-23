@@ -68,6 +68,7 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } from "./bearer-identities.js";
+import { bearerStatusRows } from "./admin-api.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
@@ -1347,6 +1348,19 @@ const DONE_NOTICES = {
 
 async function serveAdmin(request, env, config, oauth, email) {
   const path = new URL(request.url).pathname;
+  if (path === "/admin/api/bearers" && request.method === "GET") {
+    // Read-only owner status for Muster (same Access owner check as /admin; no secret in the body).
+    await Promise.all(["/zulip", "/linear", "/tools"].map((p) => prefetchFolder(env, p))).catch(() => {});
+    const rows = await bearerStatusRows({
+      gateFor: (identity) => gate(env, identity),
+      resolveCredentials: (identity) => resolveBearerSeatCredentials(env, config, identity),
+      config,
+    });
+    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows }), {
+      status: 200,
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
   if (path === "/admin" && request.method === "GET") {
     const csrf = newCsrf();
     // One idempotency key per rendered page for the bearer mint forms:  an

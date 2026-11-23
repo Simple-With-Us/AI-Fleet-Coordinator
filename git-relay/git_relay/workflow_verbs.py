@@ -365,6 +365,9 @@ SPECS = {
     "wf_file_patch": ({"contents": "write"}, True),
     "wf_merge_guarded": ({"contents": "write", "pull_requests": "write"}, True),
 }
+from .secret_verbs import SECRET_SPECS, SecretVerbsMixin
+
+SPECS.update(SECRET_SPECS)
 ACTIONS = tuple(SPECS)
 
 
@@ -1083,7 +1086,7 @@ def _hook_url_carries_secret(url):
     return any(_HOOK_TOKEN_SEGMENT.fullmatch(seg) for seg in parts.path.split("/") if seg)
 
 
-class WorkflowVerbs:
+class WorkflowVerbs(SecretVerbsMixin):
     def __init__(self, client, policy, seat, bearer, app_slug, action, repo):
         expected, _ = policy.app_identity(seat)
         if not bearer or app_slug != expected or app_slug != seat:

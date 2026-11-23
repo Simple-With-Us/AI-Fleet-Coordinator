@@ -326,11 +326,31 @@ class KeySourceTests(unittest.TestCase):
                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4, **env}
         return NC.KeySource(W.SERVER, env, runner=mock.Mock(side_effect=AssertionError("no subprocess")), clock=lambda: self.now[0])
 
-    def test_the_environment_comes_first_and_quotes_are_dropped(self):
+    def test_the_environment_is_not_a_source_and_quotes_are_dropped(self):
+        # The store is the authority:  the key resolves from Infisical through this client's own
+        # grant,  and a value in the environment is never read.
         source = self.source({"OPERATOR_NOTES_SERVER_KEY": " '%s' " % TEST_KEY, "PATH": str(self.bin)})
         self.assertEqual(source.get(), TEST_KEY)
-        self.assertEqual(self.runs, [])
-        self.assertIsNone(self.source({"OPERATOR_NOTES_SERVER_KEY": "short", "PATH": str(self.bin)}).get(), "under 32 characters is no key")
+        self.assertEqual(
+            self.runs,
+            [
+                [
+                    "11111111-2222-3333-4444-555555555555",
+                    "/operator",
+                    ("OPERATOR_NOTES_SERVER_KEY",),
+                ]
+            ],
+        )
+        self.runs.clear()
+        # The environment never supplies the key:  a short value there is no key at all.
+        self.answer = {"OPERATOR_NOTES_SERVER_KEY": "short"}
+        self.assertIsNone(
+            self.source({"OPERATOR_NOTES_SERVER_KEY": "short", "PATH": str(self.bin)}).get(),
+            "under 32 characters is no key",
+        )
+        # The reader's own answer is trimmed of its quotes.
+        self.answer = {"OPERATOR_NOTES_SERVER_KEY": " '%s' " % TEST_KEY}
+        self.assertEqual(self.source({"PATH": str(self.bin)}).get(), TEST_KEY)
 
     def test_else_the_direct_reader_is_asked_once_and_the_answer_is_cached(self):
         env = {"PATH": str(self.bin), "HOME": self.tmp.name}
@@ -464,15 +484,38 @@ class ClientTests(unittest.TestCase):
         self.assertIn("this host's notes key", NC.answer_error(401, None).message)
 
     def test_a_401_drops_a_cached_key_so_a_rotation_is_picked_up(self):
-        source = NC.KeySource(W.SERVER, {"OPERATOR_NOTES_SERVER_KEY": TEST_KEY})
-        client = NC.OperatorClient("https://ops.example.test", W.SERVER, source, clock=lambda: NOW, opener=self.op)
-        self.op.answers[("GET", "/notes/v1/requests/CLAUDE/requestid-0001")] = (401, {"error": "unauthorized"})
-        source.get()
-        self.assertIsNotNone(source._value)
-        with self.assertRaises(N.NotesError) as caught:
-            client.record("CLAUDE", "requestid-0001")
-        self.assertEqual(caught.exception.code, "not_configured")
-        self.assertIsNone(source._value)
+        # The key resolves from the store, never from the environment:  the reader is faked and
+        # the store answers for the consumer's own account.
+        with (
+            mock.patch.object(
+                NC.FI, "token_from_store", return_value=("st." + "synthetic-store-" * 2, "ok")
+            ),
+            mock.patch.object(
+                NC.FI, "fetch_project", return_value={"OPERATOR_NOTES_SERVER_KEY": TEST_KEY}
+            ),
+        ):
+            source = NC.KeySource(
+                W.SERVER,
+                {
+                    "HOME": "/nonexistent",
+                    "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": (
+                        "11111111-2222-3333-4444-555555555555"
+                    ),
+                },
+            )
+            client = NC.OperatorClient(
+                "https://ops.example.test", W.SERVER, source, clock=lambda: NOW, opener=self.op
+            )
+            self.op.answers[("GET", "/notes/v1/requests/CLAUDE/requestid-0001")] = (
+                401,
+                {"error": "unauthorized"},
+            )
+            source.get()
+            self.assertIsNotNone(source._value)
+            with self.assertRaises(N.NotesError) as caught:
+                client.record("CLAUDE", "requestid-0001")
+            self.assertEqual(caught.exception.code, "not_configured")
+            self.assertIsNone(source._value)
 
     def test_no_key_network_failures_and_bodies_that_are_not_json(self):
         client = NC.OperatorClient("https://ops.example.test", W.SERVER, lambda: None, opener=self.op)

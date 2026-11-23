@@ -1144,11 +1144,14 @@ class Daemon:
         return keys
 
     def notes_queue_principals(self) -> dict[str, tuple[str, frozenset[str]]]:
-        """The notes queue's three principals (AFC-486, notes_wire.KEY_NAMES):  each one's key from the environment
-        (Infisical /operator, loaded at start by server/infisical_env.py) and the seats it may act for
+        """The notes queue's three principals (AFC-486, notes_wire.KEY_NAMES):  each one's key from
+        Infisical, through this consumer's own scoped grant, and the seats it may act for
         ([notes_queue] worker_seats and server_seats;  the RUNNER acts for none).  Every key value is hidden from
         the log here, before anything can print it.  A missing or short key stays in the map as given:  NotesQueue
-        accepts only a key of NW.MIN_KEY_LEN characters or more."""
+        accepts only a key of NW.MIN_KEY_LEN characters or more.
+
+        The environment is not a source for a value:  a refusal names the account the Operator has to
+        provision, and the queue stays off until it is."""
         seats = {
             NW.WORKER: frozenset(self.config.notes_queue_worker_seats),
             NW.SERVER: frozenset(self.config.notes_queue_server_seats),
@@ -1156,11 +1159,37 @@ class Daemon:
         }
         principals: dict[str, tuple[str, frozenset[str]]] = {}
         for name in NW.PRINCIPALS:
-            value = Z._strip_quotes(self.env.get(NW.KEY_NAMES[name]) or "")
+            value = self._notes_principal_key(name)
             if value:
                 self.hide_values([value])
             principals[name] = (value, seats[name])
         return principals
+
+    def _notes_principal_key(self, principal: str) -> str:
+        """One principal's key, from Infisical through this consumer's own scoped grant.
+
+        The store is the authority:  the consumer's own account token comes from the host's approved
+        store, and the key resolves from there.  A refusal names the account and is logged as a
+        reason code, never a value."""
+        from . import notes_client as NC
+
+        project = (self.env.get("INFISICAL_PROJECT_ID") or "").strip()
+        try:
+            return NC.scoped_read(
+                NW.KEY_NAMES[principal],
+                NW.KEY_PATH,
+                self.env,
+                strict=True,
+                project=project or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the reason is a code and a closed message, never a value
+            self.log.write(
+                "notes-queue-key-refused",
+                principal=principal,
+                reason=getattr(exc, "code", type(exc).__name__),
+                detail=getattr(exc, "message", "")[:200],
+            )
+            return ""
 
     def _note_link_hook(self, seat: str, session_id: str, note_id: str) -> None:
         """Record a finished note's Apple Notes link on its session's registry row (OPS-1048).

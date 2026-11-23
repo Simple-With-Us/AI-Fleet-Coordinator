@@ -1076,7 +1076,10 @@ def load_config(
     path: Path, defaults: Mapping[str, Any], *, required: bool = False
 ) -> dict[str, Any]:
     """The defaults overlaid with a JSON file.  It widens as freely as it narrows, so nothing that
-    runs a router reads its settings this way:  wake_settings lets a local file only narrow."""
+    runs a router reads its settings this way:  wake_settings lets a local file only narrow.
+    Shared service-file extensions such as delivery_seats and seat_host_facts are intentionally
+    not accepted here. Use wake_settings.read_local/read_once or WakeSettings for that file;
+    adding its map here without a seat and governed narrowing would not apply it safely."""
     return {**defaults, **read_local_config(path, defaults, required=required)}
 
 
@@ -1086,11 +1089,14 @@ def read_local_config(
     *,
     required: bool = False,
     seat_lists: Sequence[str] = (),
+    seat_fact_maps: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Only what a JSON file sets.  A file named explicitly must exist.  A file that is there must
     parse, name only known keys and match each default's type:  an unreadable or mistyped config is
     a refusal that names the path, never a quiet run on defaults.  A key in `seat_lists` is known
-    too, and its value must be a list of seat tags."""
+    too, and its value must be a list of seat tags.  `seat_fact_maps` names maps of seat tags
+    to explicitly allowed host facts, each a nonblank string.  Neither nested knobs nor
+    arbitrary objects are accepted through that exception."""
     config: dict[str, Any] = {}
     try:
         text = path.read_text(encoding="utf-8")
@@ -1109,6 +1115,21 @@ def read_local_config(
     if not isinstance(loaded, dict):
         raise SystemExit("wake-router: the config file %s is not a JSON object" % path)
     for key, value in loaded.items():
+        if key in (seat_fact_maps or {}):
+            allowed = seat_fact_maps[key]
+            if not isinstance(value, dict) or not all(
+                isinstance(seat, str)
+                and SEAT_RE.fullmatch(seat)
+                and isinstance(facts, dict)
+                and all(
+                    name in allowed and isinstance(fact, str) and bool(fact.strip())
+                    for name, fact in facts.items()
+                )
+                for seat, facts in value.items()
+            ):
+                raise SystemExit("wake-router: %s: %s has the wrong type" % (path, key))
+            config[key] = value
+            continue
         if key in seat_lists:
             if not isinstance(value, list) or not all(
                 isinstance(seat, str) and SEAT_RE.fullmatch(seat) for seat in value

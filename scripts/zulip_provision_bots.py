@@ -78,6 +78,18 @@ _READER_CACHE = None
 _READER_NAME = "_zulip_provision_bots_fleet_infisical"
 _MAX_READER_BYTES = 2 * 1024 * 1024
 
+# This consumer's own scoped read-only service token:  Fleet-OPS prod /zulip_operator, the one folder
+# it reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac, a
+# private file on a server);  the store is the authority and is read first,  and an environment
+# binding is used only when the token's own grant metadata proves the narrow grant.
+TOKEN_ACCOUNTS = {
+    ADMIN_FOLDER: "zulip-provision-ro",
+}
+
+
+class BindingRefused(Exception):
+    """The consumer's own scoped token is not usable:  the message names the account and the refusal."""
+
 
 def _infisical_reader():
     """Execute only the fixed canonical sibling source, never an import-path candidate."""
@@ -148,7 +160,7 @@ def _read_infisical_names(names, folder):
         project = client.infisical_project_id(
             {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        token = _own_token(client, folder, project)
         if not token:
             return {}
         return client.bounded_fetch_project(
@@ -161,15 +173,52 @@ def _read_infisical_names(names, folder):
             max_output_bytes=65536,
             strict_records=True,
         )
+    except BindingRefused:
+        raise
     except Exception:
         return {}
 
 
+def _own_token(client, folder, project):
+    """This consumer's own scoped token:  its own store first,  a bound copy only when it proves itself.
+
+    The store is the authority:  the consumer's own account token is read from the host's approved
+    store first,  and it is the credential the read runs under.  An environment binding is a second
+    source only when the token's own grant metadata proves it is this consumer's narrow grant:  the
+    workspace is the project,  the permissions are exactly read,  the granted folder is exactly this
+    one,  and the token's own name is this account.  A general binding scoped to "/" or to several
+    folders fails that check,  so it can no longer serve a consumer,  and a hand-set value never
+    replaces the reviewed grant.  The refusal names the account the consumer needs and which
+    refusal it was."""
+    account = TOKEN_ACCOUNTS.get(folder)
+    if not account:
+        raise BindingRefused("no scoped token covers %s" % folder)
+    home = os.environ.get("HOME", "").strip()
+    try:
+        token, _source = client.consumer_binding(
+            account,
+            folder,
+            dict(os.environ),
+            project,
+            home=Path(home) if home else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+        detail = getattr(exc, "message", "") or type(exc).__name__
+        raise BindingRefused(
+            "the %s scoped token for %s could not be resolved (%s)" % (account, folder, detail)
+        ) from None
+    return token
+
+
 def admin_secret(name, required=True):
-    """Use the existing synced value or this caller's exact admin-folder read."""
-    value = os.environ.get(name, "").strip()
-    if not value:
+    """This caller's exact admin-folder read, through its own scoped grant.
+
+    The environment is not a source for a value:  the name resolves from Infisical,  and a refusal
+    names the account to provision."""
+    try:
         value = _read_infisical_names((name,), ADMIN_FOLDER).get(name, "").strip()
+    except BindingRefused as exc:
+        raise SystemExit(str(exc)) from None
     if value or not required:
         return value
     raise SystemExit(
@@ -253,13 +302,13 @@ def call(email, key, method, path, data=None):
 
 
 def credentials():
-    """(email, key, source):  the realm-admin bot, from env else Infisical /zulip_operator."""
+    """(email, key, source):  the realm-admin bot, from Infisical /zulip_operator."""
     email = admin_secret("ZULIP_OPERATOR_EMAIL")
     key = admin_secret("ZULIP_OPERATOR_API_KEY")
     site = admin_secret("ZULIP_OPERATOR_SITE", required=False) or REALM
     if urllib.parse.urlparse(site).hostname != urllib.parse.urlparse(REALM).hostname:
         raise SystemExit(f"credential is for {site}, expected {REALM}")
-    return email, key, f"realm-admin bot (env, else Infisical {ADMIN_FOLDER})"
+    return email, key, f"realm-admin bot (Infisical {ADMIN_FOLDER})"
 
 
 def infisical_prefix(stem):
