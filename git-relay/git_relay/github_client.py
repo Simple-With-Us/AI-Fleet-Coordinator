@@ -329,6 +329,48 @@ class DispatchPreReadUnavailable(Exception):
     """Dispatch source read failed before any write was attempted."""
 
 
+MAX_RESPONSE_DEPTH = 128
+MAX_RESPONSE_NODES = 100_000
+
+
+def _reject_surrogates(node):
+    """Validate decoded bodies with runtime-independent work/depth limits.
+
+    Parser recursion behavior differs across Python versions. Keep outcome status
+    unknown after an upstream write if any decoded body exceeds these bounds.
+    Iterator frames keep auxiliary memory proportional to depth, not array width.
+    """
+    stack = [(iter((node,)), 0)]
+    nodes = 0
+    while stack:
+        items, depth = stack[-1]
+        try:
+            item = next(items)
+        except StopIteration:
+            stack.pop()
+            continue
+        nodes += 1
+        if nodes > MAX_RESPONSE_NODES or depth > MAX_RESPONSE_DEPTH:
+            raise RelayGitHubError(
+                0, "github response exceeded structure bound", code="response_too_large"
+            )
+        if isinstance(item, str):
+            if not item.isascii():
+                try:
+                    item.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise RelayGitHubError(
+                        0,
+                        "github response carried invalid unicode",
+                        code="response_invalid_unicode",
+                    ) from exc
+        elif isinstance(item, list):
+            stack.append((iter(item), depth + 1))
+        elif isinstance(item, dict):
+            stack.append((iter(item.keys()), depth + 1))
+            stack.append((iter(item.values()), depth + 1))
+
+
 def _redirected(exc: RelayGitHubError) -> bool:
     """A 3xx or a recognized repository move.  The redirect was not followed."""
     return exc.code == "repository_moved" or 300 <= exc.status < 400
@@ -426,7 +468,7 @@ class GitHubClient:
                 if allow_empty_object and expected_status in (201, 202):
                     try:
                         completion_body_ok = not raw or json.loads(raw) == {}
-                    except (ValueError, UnicodeError):
+                    except (ValueError, RecursionError):
                         completion_body_ok = False
                 if expected_status is not None and (
                     resp.status != expected_status or not completion_body_ok
@@ -486,9 +528,19 @@ class GitHubClient:
         if not raw:
             return {}
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
+            data = json.loads(raw)
+        except (ValueError, RecursionError) as exc:
+            # Every failure of the decode itself must be RelayGitHubError, not
+            # a raw ValueError:  Relay.handle reads ValueError as a local
+            # refusal and releases the outcome key, allowing a duplicate write
+            # after the upstream call landed.  That covers JSONDecodeError,
+            # UnicodeDecodeError, the int-conversion digit limit (a valid
+            # long numeric token), and deep-nesting RecursionError - without
+            # loosening Python's safety limits.  A 200 with a body the relay
+            # cannot read means the write may have landed:  outcome UNKNOWN.
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
+        _reject_surrogates(data)
+        return data
 
     def _read_until(self, resp, size: int, deadline) -> bytes:
         """Read up to size bytes in pieces, giving up once the clock passes the deadline.
