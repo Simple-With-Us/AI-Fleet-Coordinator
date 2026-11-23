@@ -286,7 +286,9 @@ def narrowed(
     values = dict(base)
     values.update({name: local[name] for name in HOST_FACTS if name in local and name in base})
     seat_facts = local.get(SEAT_HOST_FACTS, {}).get(seat, {})
-    values.update({name: seat_facts[name] for name in HOST_FACTS if name in seat_facts and name in base})
+    values.update(
+        {name: seat_facts[name] for name in HOST_FACTS if name in seat_facts and name in base}
+    )
     ignored = []
     for name, knob in NARROWABLE.items():
         if name not in base or name not in local:
