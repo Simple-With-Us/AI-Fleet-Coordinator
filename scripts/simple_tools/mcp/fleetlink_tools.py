@@ -9,14 +9,17 @@ SIMPLE_TOOLS_FLEETLINK_CLI, else `fleetlink` on PATH.
 The child signs in as the seat's own FleetLink bot, never with a server credential.  Where the token comes from,
 in order:
 
-  1. FLEETLINK_TOKEN_<SEAT> (hyphens as underscores) in this process's environment;
-  2. FLEETLINK_TOKEN, only when no launcher is set (AGENT_LAUNCHER, AGENT_LAUNCH_SEAT) and AGENT_SEAT is unset or
+  1. FLEETLINK_TOKEN_<SEAT> (hyphens as underscores) in Infisical AI Fleet Coordinator /fleetlink, read directly
+     through the shared library (the old per-seat FleetLink env file is retired and never read), held in memory and
+     handed to the child as FLEETLINK_TOKEN.  The store is the authority and is read first:  this reader's own
+     account token comes from the host's approved store, and a bound copy of it is used only when the token's own
+     grant metadata proves the narrow grant.
+  2. FLEETLINK_TOKEN_<SEAT> in this process's environment, and only when this reader's own grant is in place, so a
+     hand-set copy never stands in for the reviewed grant;
+  3. FLEETLINK_TOKEN, only when no launcher is set (AGENT_LAUNCHER, AGENT_LAUNCH_SEAT) and AGENT_SEAT is unset or
      names this same seat, so one connection acting as several bots never lends one bot's token to another;  the
      server sets AGENT_SEAT to the seat it resolved from --as or --default-seat when the environment named none, so
-     a seat that came from a flag is as binding as one from the environment;
-  3. FLEETLINK_TOKEN_<SEAT> in Infisical AI Fleet Coordinator /fleetlink, read directly through the shared library (the old
-     per-seat FleetLink env file is retired and never read), held in memory and handed to the child as
-     FLEETLINK_TOKEN.
+     a seat that came from a flag is as binding as one from the environment.
 
 The child always gets FLEETLINK_SEAT, a minimal environment (no FLEET_ADMIN_SECRET or any other variable of this
 process), and FLEETLINK_CREDENTIALS pointing at a file that does not exist, so a saved `fleetlink login` of
@@ -60,6 +63,11 @@ ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
 INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
 INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
+# This reader's own scoped read-only service token:  AI Fleet Coordinator prod /fleetlink, the one
+# folder it reads.  The token lives in the consumer's own store (the owner's login keychain on the
+# Mac, a private file on a server);  the store is the authority and is read first, and a bound copy
+# of the same grant is used only when the token's own metadata proves the narrow grant.
+READER_ACCOUNT = "fleetlink-ro"
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
 FETCH_TIMEOUT_S = 60.0  # one scoped direct read: token metadata and the named secret
@@ -191,8 +199,10 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
     scoped[FI.ENV_READ_PATHS] = INFISICAL_PATH
     try:
         project = FI.infisical_project_id(scoped, home, INFISICAL_PROJECT)
-        binding = FI.resolve_token(scoped, project_name=INFISICAL_PROJECT)
-    except FI.SecretsError:
+        binding = _reader_binding(scoped, home, project)
+    except (FI.SecretsError, OSError):
+        return None
+    if not binding:
         return None
     route = hashlib.sha256(
         (scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()
@@ -222,25 +232,63 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
 _default_token_fetch = _fleet_secrets_token
 
 
+def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str | None:
+    """This reader's own scoped grant:  its own store first,  a bound copy only when it proves itself.
+
+    The store is the authority:  the reader's own account token is read from the host's approved store
+    first,  and it is the credential the read runs under.  A bound copy is used only when the token's own
+    grant metadata proves it is this reader's narrow grant:  the workspace is the project,  the permissions are
+    exactly read,  the granted folder is exactly this one,  and the token's own name is this account.  A general
+    binding scoped to "/" or to several folders fails that check,  so it can no longer serve the reader.
+    """
+    try:
+        token, _source = FI.consumer_binding(
+            READER_ACCOUNT,
+            INFISICAL_PATH,
+            scoped,
+            project,
+            env_name=FI.COORDINATOR_READ_TOKEN_ENV_NAME,
+            home=home,
+        )
+    except (FI.SecretsError, OSError):
+        return None
+    return token
+
+
 def resolve_credential(seat: str, env: Mapping[str, str], home: Path) -> tuple[str, str, str]:
-    """(kind, name, value) for the seat's own FleetLink bot:  ("env", variable name, token), or ("infisical",
-    the Infisical key name, token).  Raises FleetLinkFailure(not_configured) naming what to set."""
+    """(kind, name, value) for the seat's own FleetLink bot:  ("infisical", the Infisical key name, token),
+    or ("env", variable name, token).  Raises FleetLinkFailure(not_configured) naming what to set.
+
+    The store is the authority and is read first.  An environment value is a second source only when this
+    reader's own grant is in place,  so a hand-set copy never stands in for the reviewed grant.
+    """
     code = env_code(seat)
     own = TOKEN_PREFIX + code
-    token = _clean_env(env, own)
-    if token:
-        return "env", own, token
-    token = _clean_env(env, ENV_TOKEN)
-    if token and generic_token_allowed(seat, env):
-        return "env", ENV_TOKEN, token
     credential = _default_token_fetch(own, env, home)
     if credential and not any(ch in credential for ch in "\r\n\x00"):
         return "infisical", "%s %s %s" % (INFISICAL_LABEL, INFISICAL_PATH, own), credential
+    if _reader_binding(dict(env, HOME=str(home)), home, _project_for(env, home)):
+        token = _clean_env(env, own)
+        if token:
+            return "env", own, token
+        token = _clean_env(env, ENV_TOKEN)
+        if token and generic_token_allowed(seat, env):
+            return "env", ENV_TOKEN, token
     raise FleetLinkFailure(
         "not_configured",
-        "FleetLink has no credential for %s here:  set %s, or store %s in %s %s.  "
-        "Every other tool still works." % (seat, own, own, INFISICAL_LABEL, INFISICAL_PATH),
+        "FleetLink has no credential for %s here:  the %s service token is not usable, so %s is "
+        "not read from %s %s and the environment is not a source either.  "
+        "Every other tool still works."
+        % (seat, READER_ACCOUNT, own, INFISICAL_LABEL, INFISICAL_PATH),
     )
+
+
+def _project_for(env: Mapping[str, str], home: Path) -> str:
+    """The project id this reader names,  or an empty string when it names none."""
+    try:
+        return FI.infisical_project_id(dict(env, HOME=str(home)), home, INFISICAL_PROJECT)
+    except (FI.SecretsError, OSError):
+        return ""
 
 
 def child_env(

@@ -9,8 +9,11 @@ import contextlib
 import io
 import json
 import os
+import pathlib
 import re
+import shutil
 import sys
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
@@ -18,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zulip_linkifiers as L
+from fleet_knobs.tests._fake import store_token
 
 
 def expand(template: str, groups: dict) -> str:
@@ -261,14 +265,22 @@ class CredentialTests(unittest.TestCase):
     """Writes use only the realm-admin bot (AFC-359);  no owner-key option exists."""
 
     @contextlib.contextmanager
-    def real_reader(self, api):
+    def real_reader(self, api, tokens=None):
+        """The consumer's own store holds its scoped tokens;  the environment holds no copy.
+
+        The store is the authority:  the account token comes from the host's approved store,  and
+        a bound copy is used only when the token's own metadata proves the narrow grant.
+        """
         client = L._infisical_reader()
         original = client.bounded_fetch_project
         folders = []
+        home = pathlib.Path(tempfile.mkdtemp(prefix="linkifiers-store-"))
+        self.addCleanup(shutil.rmtree, home, True)
+        for account, token in (tokens or {}).items():
+            store_token(home, account, token)
 
         def read(project, folder, env, **options):
             folders.append(folder)
-            self.assertEqual(options["token"], api.token)
             self.assertTrue(options["strict_records"])
             return original(
                 project,
@@ -282,8 +294,8 @@ class CredentialTests(unittest.TestCase):
                 os.environ,
                 {
                     "AGENT_SEAT": "CODEX",
+                    "HOME": str(home),
                     "INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
-                    "INFISICAL_TOKEN": api.token,
                 },
                 clear=True,
             ),
@@ -300,7 +312,7 @@ class CredentialTests(unittest.TestCase):
             "CODEX_ZULIP_SITE": "https://realm.example.test/",
         }
         with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/zulip") as api:
-            with self.real_reader(api) as folders:
+            with self.real_reader(api, {L.TOKEN_ACCOUNTS["/zulip"]: api.token}) as folders:
                 self.assertEqual(
                     L.credentials(None),
                     (
@@ -325,7 +337,13 @@ class CredentialTests(unittest.TestCase):
             "CODEX_ZULIP_SITE": "https://realm.example.test/",
         }
         with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
-            with self.real_reader(api) as folders:
+            with self.real_reader(
+                api,
+                {
+                    L.TOKEN_ACCOUNTS["/zulip"]: api.token,
+                    L.TOKEN_ACCOUNTS["/"]: api.token,
+                },
+            ) as folders:
                 self.assertEqual(
                     L.credentials(None),
                     (
@@ -363,7 +381,13 @@ class CredentialTests(unittest.TestCase):
                 ) as api,
             ):
                 api.metadata_override = metadata
-                with self.real_reader(api) as folders:
+                with self.real_reader(
+                    api,
+                    {
+                        L.TOKEN_ACCOUNTS["/zulip"]: api.token,
+                        L.TOKEN_ACCOUNTS["/"]: api.token,
+                    },
+                ) as folders:
                     self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
                 self.assertEqual(folders, ["/zulip", "/"])
                 self.assertEqual(api.requests, ["/api/v2/service-token"] * 2)
@@ -385,7 +409,13 @@ class CredentialTests(unittest.TestCase):
             ):
                 api.record_override = overrides
                 api.record_omissions = omissions
-                with self.real_reader(api) as folders:
+                with self.real_reader(
+                    api,
+                    {
+                        L.TOKEN_ACCOUNTS["/zulip"]: api.token,
+                        L.TOKEN_ACCOUNTS["/"]: api.token,
+                    },
+                ) as folders:
                     self.assertEqual(L._fleet_secret("CODEX_ZULIP_KEY"), "")
                 self.assertEqual(folders, ["/zulip", "/"])
                 self.assertEqual(api.requests.count("/api/v2/service-token"), 2)
@@ -406,7 +436,9 @@ class CredentialTests(unittest.TestCase):
     def test_admin_and_rc_are_mutually_exclusive(self):
         self.assertEqual(self.run_main("--admin", "--rc", "x"), 2)
 
-    def test_admin_reads_env_first_and_ignores_member_env(self):
+    def test_the_environment_is_not_a_source_for_the_admin_credential(self):
+        # The environment is never a source for a value:  the admin credential resolves from the
+        # consumer's own scoped grant,  and a hand-set copy does not replace it.
         env = {
             "ZULIP_OPERATOR_EMAIL": "admin-bot@example.test",
             "ZULIP_OPERATOR_API_KEY": "k",
@@ -417,10 +449,14 @@ class CredentialTests(unittest.TestCase):
             mock.patch.dict("os.environ", env),
             mock.patch.object(L, "_fleet_secret", return_value="") as fs,
         ):
-            email, key, site = L.credentials(None, admin=True)
-        self.assertEqual((email, key), ("admin-bot@example.test", "k"))
-        self.assertEqual(site, L.REALM)
-        fs.assert_called_once_with("ZULIP_OPERATOR_SITE")
+            with self.assertRaises(SystemExit) as cm:
+                L.credentials(None, admin=True)
+        self.assertIn("/zulip_operator", str(cm.exception.code))
+        # Every name resolves from the reader:  the environment supplied none of them.
+        self.assertEqual(
+            [call.args[0] for call in fs.call_args_list],
+            ["ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE"],
+        )
 
     def test_admin_reads_only_its_exact_folder_with_the_real_bounded_worker(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
@@ -441,10 +477,16 @@ class CredentialTests(unittest.TestCase):
                     **options,
                 )
 
+            home = pathlib.Path(tempfile.mkdtemp(prefix="linkifiers-admin-"))
+            self.addCleanup(shutil.rmtree, home, True)
+            store_token(home, L.TOKEN_ACCOUNTS["/zulip_operator"], api.token)
             with (
                 mock.patch.dict(
                     os.environ,
-                    {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project, "INFISICAL_TOKEN": api.token},
+                    {
+                        "HOME": str(home),
+                        "INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    },
                     clear=True,
                 ),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),

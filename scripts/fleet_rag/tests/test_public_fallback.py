@@ -547,17 +547,35 @@ class PublicCredentialsInfisicalFallbackTests(unittest.TestCase):
         self.fs.stop()
         self.env.stop()
 
-    def test_env_value_wins_over_infisical(self):
-        with mock.patch.dict(
-            os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
+    def test_the_store_is_read_first_and_the_environment_is_a_second_source(self):
+        # The store is the authority:  every name is looked up there first,  in one batch.
+        with (
+            mock.patch.dict(
+                os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
+            ),
+            mock.patch.object(core, "fleet_ops_bound", return_value=False),
+        ):
+            resolved = public_fallback._resolve_public_env()
+        self.fleet_ops_many.assert_called_once_with(
+            [
+                public_fallback.PUBLIC_INFISICAL_NAMES["RECALL_API_TOKEN"],
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"],
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"],
+            ]
+        )
+        # Without this reader's own grant in place,  the environment is not a source at all.
+        self.assertEqual(resolved["RECALL_API_TOKEN"], "")
+        self.assertEqual(resolved["CF_ACCESS_CLIENT_ID"], "")
+        # With the grant in place,  a copy of the consumer's own value may be used.
+        with (
+            mock.patch.dict(
+                os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
+            ),
+            mock.patch.object(core, "fleet_ops_bound", return_value=True),
         ):
             resolved = public_fallback._resolve_public_env()
         self.assertEqual(resolved["RECALL_API_TOKEN"], "from-env")
         self.assertEqual(resolved["CF_ACCESS_CLIENT_ID"], "id-env")
-        # Only the name missing from the environment was looked up, in one batch.
-        self.fleet_ops_many.assert_called_once_with(
-            [public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]]
-        )
 
     def test_falls_back_to_infisical_when_env_is_blank(self):
         values = {
@@ -609,8 +627,13 @@ class CallPublicTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(FleetRagError, "CF_ACCESS_CLIENT_SECRET"):
                 public_fallback.call_public("recall_stats", {})
+        # The store is read first,  with every name in one batch.
         lookup.assert_called_once_with(
-            [public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]]
+            [
+                public_fallback.PUBLIC_INFISICAL_NAMES["RECALL_API_TOKEN"],
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"],
+                public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"],
+            ]
         )
 
     def test_owner_mutation_includes_owner_token_in_the_same_batch(self):

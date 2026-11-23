@@ -260,6 +260,13 @@ class InfisicalFallbackTests(Harness):
         for cache in (Z._value_cache, Z._names_cache, Z._failures):
             cache.clear()
             self.addCleanup(cache.clear)
+        # The store is the authority:  the consumer's own account token comes from the host's
+        # approved store,  so the fake store answers for it and the environment is never a source.
+        store = mock.patch.object(
+            FI, "token_from_store", return_value=("st." + "synthetic-store-" * 3, "ok")
+        )
+        store.start()
+        self.addCleanup(store.stop)
         return {
             "HOME": str(self.home),
             "PATH": os.environ.get("PATH", ""),

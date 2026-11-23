@@ -57,6 +57,18 @@ INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
 AFC_TOKEN_ENV = "SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN"
 FLEET_OPS_TOKEN_ENV = "SIMPLE_TOOLS_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN"
+# This consumer's own scoped read-only service token for the one folder it reads:  Fleet-OPS prod
+# "/"  the root that holds the handoff names.  The token lives in the consumer's own store (the
+# owner's login keychain on the Mac, a private file on a server);  the store is the authority and is
+# read first,  and an environment binding is used only when the token's own grant metadata proves
+# the narrow grant.
+TOKEN_ACCOUNTS = {
+    "/": "install-seat-key-ro",
+}
+
+
+class BindingRefused(Exception):
+    """The consumer's own scoped token is not usable:  the message names the account and the refusal."""
 REALM = "https://simplewithus.zulipchat.com"
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
 MEMBER_ROLE = 400
@@ -246,7 +258,7 @@ def _read_infisical_names(names, folder):
         project = client.infisical_project_id(
             {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        token = _own_token(client, folder, project)
         if not token:
             return {}
         return client.bounded_fetch_project(
@@ -259,25 +271,61 @@ def _read_infisical_names(names, folder):
             max_output_bytes=65536,
             strict_records=True,
         )
+    except BindingRefused:
+        raise
     except Exception:
         return {}
 
 
+def _own_token(client, folder, project):
+    """This consumer's own scoped token:  its own store first,  a bound copy only when it proves itself.
+
+    The store is the authority:  the consumer's own account token is read from the host's approved
+    store first,  and it is the credential the read runs under.  An environment binding is a second
+    source only when the token's own grant metadata proves it is this consumer's narrow grant:  the
+    workspace is the project,  the permissions are exactly read,  the granted folder is exactly this
+    one,  and the token's own name is this account.  A general binding scoped to "/" or to several
+    folders fails that check,  so it can no longer serve a consumer,  and a hand-set value never
+    replaces the reviewed grant.  The refusal names the account the consumer needs and which
+    refusal it was."""
+    account = TOKEN_ACCOUNTS.get(folder)
+    if not account:
+        raise BindingRefused("no scoped token covers %s" % folder)
+    home = os.environ.get("HOME", "").strip()
+    try:
+        token, _source = client.consumer_binding(
+            account,
+            folder,
+            dict(os.environ),
+            project,
+            home=Path(home) if home else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+        detail = getattr(exc, "message", "") or type(exc).__name__
+        raise BindingRefused(
+            "the %s scoped token for %s could not be resolved (%s)" % (account, folder, detail)
+        ) from None
+    return token
+
+
 def handoff(name: str) -> str:
-    """The existing synced value, then this caller's bounded named root read."""
-    value = os.environ.get(name, "").strip()
-    if value:
-        return value
+    """This caller's bounded named root read, through its own scoped grant.
+
+    The environment is not a source for a value:  the name resolves from Infisical,  and a refusal
+    names the account to provision."""
     if name not in (
         "CLOUDFLARE_JAY_ACCOUNT_EMAIL",
         "CLOUDFLARE_JAY_API_KEY",
         "ZULIP_OWNER_USER_ID",
     ):
         fail("unsupported generic handoff name")
-    value = _read_infisical_names((name,), "/").get(name, "").strip()
+    try:
+        value = _read_infisical_names((name,), "/").get(name, "").strip()
+    except BindingRefused as exc:
+        fail(str(exc))
     if value:
         return value
-    fail(f"{name} is not in the environment or scoped Infisical read (name only; no value printed)")
+    fail(f"{name} is not in the scoped Infisical read (name only; no value printed)")
 
 
 def wrangler_vars() -> dict:

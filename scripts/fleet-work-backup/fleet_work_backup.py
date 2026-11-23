@@ -2791,6 +2791,11 @@ MASTER_NAMES = {"key_id": "BACKBLAZE_MASTER_KEY_ID", "app_key": "BACKBLAZE_MASTE
 # token bound in the environment is only a copy of that same grant,  and it is used when the
 # store has none.
 CREDENTIAL_TOKEN_ACCOUNT = "fleet-work-backup-ro"
+
+
+class BindingRefused(RuntimeError):
+    """This job's own scoped token is not usable:  the message names the account and the refusal."""
+
 # The folder the job's own names live in.
 CREDENTIAL_FOLDER = "/"
 
@@ -2859,27 +2864,33 @@ def _infisical_reader():
             raise
 
 
-def _own_token(client):
-    """The job's own scoped token:  its own store first,  the host's bound copy second.
+def _own_token(client, folder, project):
+    """The job's own scoped token:  its own store first,  a bound copy only when it proves itself.
 
-    The store is the authority:  it is the home the process was given,  so a process
-    with no home has no store and falls back to the copy the host bound.  The client
-    still checks the token's own grant,  so a copy is only ever used for the folder
-    that grant names."""
+    The store is the authority:  the job's own account token is read from the host's approved
+    store first,  and it is the credential the read runs under.  An environment binding is a
+    second source only when the token's own grant metadata proves it is this consumer's narrow
+    grant:  the workspace is the project,  the permissions are exactly read,  the granted folder
+    is exactly this one,  and the token's own name is this account.  A general binding scoped to
+    "/" or to several folders fails that check,  so it can no longer serve the job,  and a
+    hand-set value never replaces the reviewed grant.  The refusal names the account the job
+    needs and which refusal it was."""
     home = os.environ.get("HOME", "").strip()
-    if home:
-        try:
-            token, _status = client.token_from_store(
-                CREDENTIAL_TOKEN_ACCOUNT, dict(os.environ), Path(home)
-            )
-        except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
-            raise RuntimeError(
-                "the %s scoped token store could not be read (%s)"
-                % (CREDENTIAL_TOKEN_ACCOUNT, type(exc).__name__)
-            ) from None
-        if token:
-            return token
-    return (os.environ.get("INFISICAL_TOKEN") or "").strip()
+    try:
+        token, _source = client.consumer_binding(
+            CREDENTIAL_TOKEN_ACCOUNT,
+            folder,
+            dict(os.environ),
+            project,
+            home=Path(home) if home else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+        detail = getattr(exc, "message", "") or type(exc).__name__
+        raise BindingRefused(
+            "the %s scoped token for %s could not be resolved (%s)"
+            % (CREDENTIAL_TOKEN_ACCOUNT, folder, detail)
+        ) from None
+    return token
 
 
 def _read_infisical_names(names, folder):
@@ -2892,7 +2903,7 @@ def _read_infisical_names(names, folder):
         project = client.infisical_project_id(
             {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        token = _own_token(client)
+        token = _own_token(client, folder, project)
         if not token:
             return {}
         return client.bounded_fetch_project(
@@ -2905,6 +2916,10 @@ def _read_infisical_names(names, folder):
             max_output_bytes=65536,
             strict_records=True,
         )
+    except BindingRefused:
+        # The refusal names the account the operator has to provision, so it is never
+        # swallowed into an empty answer.
+        raise
     except Exception:
         return {}
 

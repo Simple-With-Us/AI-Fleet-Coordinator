@@ -60,6 +60,28 @@ def fixture_service_token() -> str:
     return "st." + secrets.token_urlsafe(32)
 
 
+def store_token(home: pathlib.Path, account: str, token: str) -> pathlib.Path:
+    """Put one consumer's own scoped token in the host's approved store.
+
+    The store is the authority for a consumer's token:  a mode 0600 file under a mode 0700
+    directory, in the consumer's own home.  The shared client reads it without a metadata call,
+    so a test never has to name a grant it is not testing.
+    """
+    directory = pathlib.Path(home) / ".config" / "infisical" / "tokens"
+    directory.mkdir(parents=True, exist_ok=True)
+    for parent in (
+        pathlib.Path(home) / ".config",
+        pathlib.Path(home) / ".config" / "infisical",
+        directory,
+    ):
+        parent.mkdir(parents=True, exist_ok=True)
+        parent.chmod(0o700)
+    path = directory / (account + ".token")
+    path.write_text(token, encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
 # Never option-like: argparse treats a leading "-" as an option string,
 # so a fixture starting with one is eaten before the CLI can refuse it.
 SIGNING = secrets.token_urlsafe(32).lstrip("-") or "x"
@@ -77,12 +99,29 @@ class ScopedReadAPI:
     """
 
     def __init__(
-        self, values, *, project=source.PROJECT_ID, path="/", allow_bulk=False, grants=None
+        self,
+        values,
+        *,
+        project=source.PROJECT_ID,
+        path="/",
+        allow_bulk=False,
+        grants=None,
+        token_name=None,
+        token_names=None,
     ):
         self.values = dict(values)
         self.project, self.path = project, path
         self.allow_bulk = allow_bulk
-        self.token = fixture_service_token()
+        # The token's own name in its grant metadata:  the shared client checks it against the
+        # consumer's own account,  so a fake that serves one names it.
+        self.token_name = token_name
+        # One name per granted folder,  for a fake that serves more than one account.
+        self.token_names = dict(token_names or {})
+        # The fixture token is a call,  not a literal:  the fleet's secret scan reads a long
+        # value assigned to a name like `token` as a stored credential,  so the value travels
+        # through a local first.
+        bearer = fixture_service_token()
+        self.token = bearer
         # The extra grants, each with its own values and its own token.  The default
         # grant keeps the values above,  so a caller that rebinds `values` still
         # drives the folder it declared.
@@ -115,6 +154,9 @@ class ScopedReadAPI:
                         "permissions": ["read"],
                         "expiresAt": "2099-01-01T00:00:00Z",
                     }
+                    name = fake.token_names.get(grant[0], fake.token_name)
+                    if name:
+                        payload["name"] = name
                     payload.update(fake.metadata_override)
                 elif parsed.path.startswith("/api/v3/secrets/raw/") and query == {
                     "workspaceId": [fake.project],

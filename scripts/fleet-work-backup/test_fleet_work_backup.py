@@ -748,6 +748,11 @@ class FakeScopedClient:
         self.calls.append(("token", account))
         return (self.token, "ok") if self.token else ("", "no-token")
 
+    def consumer_binding(self, account, path, env, project, **kwargs):
+        """The store is the authority:  the consumer's own account token is the credential."""
+        self.calls.append(("binding", account, path))
+        return (self.token, "store") if self.token else ("", "no-token")
+
     def infisical_project_id(self, env, home):
         # The project id is built at run time:  no project id,  UUID or hostname is
         # committed to source,  not even a synthetic one.
@@ -3460,7 +3465,9 @@ class MiscCase(unittest.TestCase):
         client = fwb._infisical_reader()
         original = client.bounded_fetch_project
         values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "RESTIC_FLEET_WORK_PASSWORD": "fixture password"}
-        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+        with ScopedReadAPI(
+            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+        ) as api:
             calls = []
             def read(project, folder, env, **options):
                 calls.append(options["names"])
@@ -3468,7 +3475,12 @@ class MiscCase(unittest.TestCase):
                     {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
             with (
                 mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
-                    "INFISICAL_TOKEN": api.token, "B2_FLEET_WORK_BUCKET_NAME": "synced"}, clear=True),
+                    "INFISICAL_TOKEN": api.token,
+                    "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                    # The store is the authority:  an empty home has no account token,  so the
+                    # bound copy is used and it has to prove itself.
+                    "HOME": str(Path(tempfile.mkdtemp(prefix="fwb-store-"))),
+                    "B2_FLEET_WORK_BUCKET_NAME": "synced"}, clear=True),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
             ):
                 self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
@@ -3485,9 +3497,9 @@ class MiscCase(unittest.TestCase):
     def test_a_store_that_cannot_answer_fails_closed_and_names_its_store(self):
         """A store that raises is a failure,  not an empty token:  it never falls back."""
         client = mock.Mock()
-        client.token_from_store.side_effect = OSError("the store could not answer")
+        client.consumer_binding.side_effect = OSError("the store could not answer")
         with self.assertRaises(RuntimeError) as caught:
-            fwb._own_token(client)
+            fwb._own_token(client, fwb.CREDENTIAL_FOLDER, str(uuid.uuid4()))
         self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
         self.assertNotIn("synthetic", str(caught.exception))
 
@@ -3497,7 +3509,9 @@ class MiscCase(unittest.TestCase):
         client = fwb._infisical_reader()
         original = client.bounded_fetch_project
         values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "BACKBLAZE_MASTER_KEY_ID": "fixture master"}
-        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+        with ScopedReadAPI(
+            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+        ) as api:
             calls = []
             def read(project, folder, env, **options):
                 calls.append(options["names"])
@@ -3505,7 +3519,9 @@ class MiscCase(unittest.TestCase):
                     {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
             with (
                 mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
-                    "INFISICAL_TOKEN": api.token}, clear=True),
+                    "INFISICAL_TOKEN": api.token,
+                    "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                    "HOME": str(Path(tempfile.mkdtemp(prefix="fwb-store-")))}, clear=True),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
             ):
                 self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {"B2_FLEET_WORK_KEY_ID": "public fixture"})

@@ -1,8 +1,10 @@
 import importlib.util
 import os
 import pathlib
+import tempfile
 import unittest
 import uuid
+from pathlib import Path
 from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
@@ -83,7 +85,12 @@ class GenericHandoffReaderTests(unittest.TestCase):
         values = dict(zip(names, ("owner@example.test", "public fixture", "123")))
         client = seat_key._infisical_reader()
         original = client.bounded_fetch_project
-        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+        with ScopedReadAPI(
+            values,
+            project=str(uuid.uuid4()),
+            path="/",
+            token_name=seat_key.TOKEN_ACCOUNTS["/"],
+        ) as api:
 
             def read(project, folder, env, **options):
                 return original(
@@ -96,7 +103,13 @@ class GenericHandoffReaderTests(unittest.TestCase):
             with (
                 mock.patch.dict(
                     os.environ,
-                    {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project, "INFISICAL_TOKEN": api.token},
+                    {
+                        "INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                        "INFISICAL_TOKEN": api.token,
+                        "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                        # The store is the authority:  an empty home has no account token.
+                        "HOME": str(Path(tempfile.mkdtemp(prefix="seat-key-store-"))),
+                    },
                     clear=True,
                 ),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
@@ -118,12 +131,15 @@ class GenericHandoffReaderTests(unittest.TestCase):
                     seat_key.handoff(names[1])
                 self.assertEqual(api.requests, [])
 
-    def test_existing_value_needs_no_new_reader_and_unknown_names_cannot_expand_scope(self):
+    def test_the_environment_is_not_a_source_and_unknown_names_cannot_expand_scope(self):
+        # The environment is never a source for a value:  the name resolves from the consumer's
+        # own scoped grant,  and an unknown name never reaches a read.
         with (
             mock.patch.dict(os.environ, {"CLOUDFLARE_JAY_API_KEY": "synced"}, clear=True),
             mock.patch.object(seat_key, "_infisical_reader", side_effect=AssertionError("reader")),
         ):
-            self.assertEqual(seat_key.handoff("CLOUDFLARE_JAY_API_KEY"), "synced")
+            with self.assertRaises(SystemExit):
+                seat_key.handoff("CLOUDFLARE_JAY_API_KEY")
             with self.assertRaises(SystemExit):
                 seat_key.handoff("OTHER")
 

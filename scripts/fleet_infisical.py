@@ -2876,5 +2876,81 @@ def _token_from_file(home: Path, account: str) -> tuple[str, str]:
         return "", "token-unreadable"
 
 
+# --------------------------------------------------------------------------- consumer bindings
+
+def consumer_binding(
+    account: str,
+    path: str,
+    env: Mapping[str, str],
+    project: str,
+    *,
+    env_name: str = ENV_TOKEN,
+    home: Path | None = None,
+    deadline: float | None = None,
+) -> tuple[str, str]:
+    """The one credential a consumer's own scoped grant resolves to:  (token, source).
+
+    The store is the authority.  The consumer's own account token is read from the host's
+    approved store first, and it is the credential the read runs under.
+
+    An environment binding is a second source only when it proves itself:  the token's own
+    grant metadata must show that the workspace is the project, that the permissions are
+    exactly read, that the granted folder is exactly this one, and that the token's own
+    name is this account.  A general binding scoped to "/" or to several folders fails that
+    check, so it can no longer serve a consumer, and a hand-set value never replaces the
+    reviewed grant.
+
+    The refusal names the account the consumer needs and which refusal it was.  Nothing is
+    printed, logged or cached, and no other source is tried after this one fails.
+    """
+    if not isinstance(account, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", account
+    ):
+        raise SecretsError("service-token-required: invalid account name")
+    check_path(path)
+    if not isinstance(project, str) or not project:
+        raise SecretsError("service-token-required: no project for %s" % account)
+    # prod is the only environment, so a host that names another slug is refused here too and
+    # never reaches the provider.
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2, failure_kind="refused")
+    token, status = token_from_store(account, env, home=home or home_dir(env))
+    if token:
+        return token, "store"
+    bound = (env.get(env_name) or "").strip()
+    if not bound:
+        # The store's own status says which refusal it was:  no token,  an unreadable store or
+        # a locked keychain.
+        raise SecretsError("service-token-required: %s is not usable (%s)" % (account, status))
+    try:
+        check_service_token(bound)
+    except SecretsError:
+        raise SecretsError(
+            "service-token-required: %s is not usable (token-unreadable)" % account
+        ) from None
+    # The token's own grant, read from the provider:  the shape of the string never stands
+    # in for the grant it names.
+    http_status, metadata = _api_json(
+        "GET", "/v2/service-token", bound, None, env, max_bytes=128 * 1024, deadline=deadline
+    )
+    if http_status != 200 or not isinstance(metadata, dict):
+        raise SecretsError(
+            "service-token-required: %s is not usable (token-verification-failed)" % account,
+            failure_kind="unavailable",
+        )
+    try:
+        validate_service_metadata(metadata, project, (path,), ("read",))
+    except SecretsError as exc:
+        raise SecretsError(
+            "service-token-required: %s is not usable (%s)" % (account, exc.message)
+        ) from None
+    if metadata.get("name") != account:
+        raise SecretsError(
+            "service-token-required: %s is not usable (token-name-mismatch)" % account
+        )
+    return bound, "environment"
+
+
 if __name__ == "__main__":
     raise SystemExit(_bounded_read_worker() if sys.argv[1:] == ["--bounded-read-worker"] else 2)

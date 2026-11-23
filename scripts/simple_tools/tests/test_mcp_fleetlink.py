@@ -41,6 +41,8 @@ FAKE_FLEET_SHARE = textwrap.dedent("""\
 TOKEN_CLAUDE = "fla_" + "1" * 64
 TOKEN_GENERIC = "fla_" + "2" * 64
 TOKEN_CURSOR = "fla_" + "3" * 64
+# The AI Fleet Coordinator project id the reader resolves (a fixture, never a real id).
+AFC_PROJECT = "11111111-2222-3333-4444-555555555555"
 # Secret-shaped test fixtures (a GitHub token pattern the scan must catch), built at import so no literal is a token.
 TEST_GHP_FIXTURE = "ghp_" + "A1b2" * 9
 TEST_GHP_STDERR = "Error: bad %s\n" % TEST_GHP_FIXTURE
@@ -95,6 +97,14 @@ class FleetLinkHarness(IdentityHarness):
         )
         fetch.start()
         self.addCleanup(fetch.stop)
+        # The store is the authority:  this reader's own account token comes from the host's
+        # approved store,  so the fake store answers for it.
+        self.store_token = "st." + "synthetic-store-" * 3
+        store = mock.patch.object(
+            FL.FI, "token_from_store", return_value=(self.store_token, "ok")
+        )
+        store.start()
+        self.addCleanup(store.stop)
 
     def env(self, **extra):
         return self.mcp_env(PATH="%s:/usr/bin:/bin" % self.bin, **extra)
@@ -113,6 +123,7 @@ class FleetLinkHarness(IdentityHarness):
         """Store the seat's FLEETLINK_TOKEN_<SEAT> in the fake Infisical /fleetlink;  returns the key name."""
         name = "FLEETLINK_TOKEN_%s" % FL.env_code(seat)
         self.fleetlink_infisical[name] = token
+        self.fleetlink_values[name] = token
         return name
 
     def assert_fleetlink_fence(self, text: str) -> dict:
@@ -225,52 +236,84 @@ class CredentialTests(FleetLinkHarness):
             TOKEN_CURSOR, json.dumps(env), "another seat's token never reaches the child"
         )
 
-    def test_the_seats_own_variable_wins_then_the_generic_token_then_infisical(self):
+    def test_the_store_is_read_first_and_the_environment_is_a_second_source(self):
         self.token_file()
         home = self.home
         both = {
             "FLEETLINK_TOKEN_CLAUDE": TOKEN_CLAUDE,
             "FLEETLINK_TOKEN": TOKEN_GENERIC,
             "AGENT_SEAT": "CLAUDE",
+            "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": AFC_PROJECT,
         }
-        self.assertEqual(
-            FL.resolve_credential("CLAUDE", both, home),
-            ("env", "FLEETLINK_TOKEN_CLAUDE", TOKEN_CLAUDE),
-        )
-        generic = {"FLEETLINK_TOKEN": TOKEN_GENERIC, "AGENT_SEAT": "claude"}
-        self.assertEqual(
-            FL.resolve_credential("CLAUDE", generic, home),
-            ("env", "FLEETLINK_TOKEN", TOKEN_GENERIC),
-        )
-        self.assertEqual(
-            FL.resolve_credential("CLAUDE", {"FLEETLINK_TOKEN": TOKEN_GENERIC}, home)[1],
-            "FLEETLINK_TOKEN",
-        )
         file_cred = (
             "infisical",
             "Infisical AI Fleet Coordinator /fleetlink FLEETLINK_TOKEN_CLAUDE",
             TOKEN_CLAUDE,
         )
-        # The generic token names no seat:  never used when the environment names another seat or a launcher.
-        for env in (
-            {"FLEETLINK_TOKEN": TOKEN_GENERIC, "AGENT_SEAT": "CURSOR"},
-            {
-                "FLEETLINK_TOKEN": TOKEN_GENERIC,
-                "AGENT_LAUNCHER": "botfleet",
-                "AGENT_LAUNCH_SEAT": "CLAUDE",
-            },
-            {"FLEETLINK_TOKEN": TOKEN_GENERIC, "AGENT_LAUNCH_SEAT": "CLAUDE"},
-            {"FLEETLINK_TOKEN": "  "},
-        ):
-            with self.subTest(env=sorted(env)):
-                self.assertEqual(FL.resolve_credential("CLAUDE", env, home), file_cred)
+        # The store is the authority:  the value comes from Infisical even when the environment
+        # carries a copy of it.
+        self.assertEqual(FL.resolve_credential("CLAUDE", both, home), file_cred)
+        # With no value in the store, the environment is the second source, and the seat's own
+        # variable comes before the generic one.
+        self.fleetlink_infisical.clear()
+        self.assertEqual(
+            FL.resolve_credential("CLAUDE", both, home),
+            ("env", "FLEETLINK_TOKEN_CLAUDE", TOKEN_CLAUDE),
+        )
+        generic = {
+            "FLEETLINK_TOKEN": TOKEN_GENERIC,
+            "AGENT_SEAT": "claude",
+            "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": AFC_PROJECT,
+        }
+        self.assertEqual(
+            FL.resolve_credential("CLAUDE", generic, home),
+            ("env", "FLEETLINK_TOKEN", TOKEN_GENERIC),
+        )
+        self.assertEqual(
+            FL.resolve_credential(
+                "CLAUDE",
+                {
+                    "FLEETLINK_TOKEN": TOKEN_GENERIC,
+                    "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": AFC_PROJECT,
+                },
+                home,
+            )[1],
+            "FLEETLINK_TOKEN",
+        )
         # Hyphens become underscores in both the variable and the file name.
         self.assertEqual(
-            FL.resolve_credential("GROK-WEB", {"FLEETLINK_TOKEN_GROK_WEB": TOKEN_CURSOR}, home)[1],
+            FL.resolve_credential(
+                "GROK-WEB",
+                {
+                    "FLEETLINK_TOKEN_GROK_WEB": TOKEN_CURSOR,
+                    "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": AFC_PROJECT,
+                },
+                home,
+            )[1],
             "FLEETLINK_TOKEN_GROK_WEB",
         )
         self.token_file("GROK-WEB", TOKEN_CURSOR)
         self.assertEqual(FL.resolve_credential("GROK-WEB", {}, home)[2], TOKEN_CURSOR)
+
+    def test_an_environment_value_is_refused_when_the_readers_own_grant_is_not_in_place(self):
+        # The reader's own grant is the store's account token:  without it the environment is not
+        # a source at all,  and the refusal names the account to provision.
+        home = self.home
+        self.fleetlink_infisical.clear()
+        with mock.patch.object(FL.FI, "token_from_store", return_value=("", "no-token")):
+            with self.assertRaises(FL.FleetLinkFailure) as caught:
+                FL.resolve_credential(
+                    "CLAUDE",
+                    {
+                        "FLEETLINK_TOKEN_CLAUDE": TOKEN_CLAUDE,
+                        "AGENT_SEAT": "CLAUDE",
+                        "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": AFC_PROJECT,
+                    },
+                    home,
+                )
+        self.assertEqual(caught.exception.code, "not_configured")
+        self.assertIn(FL.READER_ACCOUNT, caught.exception.message)
+        self.assertNotIn(TOKEN_CLAUDE, caught.exception.message)
 
     def test_an_environment_token_reaches_the_child_and_never_the_output(self):
         self.answer(stdout=json.dumps(SHARE))
@@ -344,7 +387,8 @@ class CredentialTests(FleetLinkHarness):
         self.assertEqual(seen[0][:2], (env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"], "/fleetlink"))
         self.assertEqual(seen[0][2]["INFISICAL_READ_PATHS"], "/fleetlink")
         self.assertEqual(seen[0][3]["names"], ("FLEETLINK_TOKEN_CLAUDE",))
-        self.assertEqual(seen[0][3]["token"], env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"])
+        # The store is the authority:  the read runs under the store's own account token.
+        self.assertEqual(seen[0][3]["token"], self.store_token)
 
     def test_only_a_definitive_answer_is_cached(self):
         # A timeout or an unexpected exit must not hide a good token for ten minutes;  a token or a clean "no
