@@ -663,6 +663,5 @@ def platform_feed_table() -> tuple[tuple[str, Callable[..., Any], str, str, str]
 def feed_scopes() -> frozenset[tuple[str, str]]:
     """The provider/host scopes this shared feed table may register."""
     return frozenset(
-        (platform, host)
-        for _name, _runner, _credential, platform, host in platform_feed_table()
+        (platform, host) for _name, _runner, _credential, platform, host in platform_feed_table()
     )
