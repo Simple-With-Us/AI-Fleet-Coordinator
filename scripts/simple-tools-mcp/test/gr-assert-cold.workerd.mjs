@@ -8,6 +8,20 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { ROOT, testEnv } from "./helpers.mjs";
 import { mintGrAssertion, sha256HexText } from "../src/gr-assert.js";
 import { wakeSignature } from "../src/wake.js";
+import { GATE_LOG_NAME } from "../src/config.js";
+
+// AFC-844:  a refusal's diagnostics row is written through index.js's real wiring and
+// handed to waitUntil, so it lands just after the answer.  Read until it shows.
+async function diagnosticRows(ns, want) {
+  const log = ns.get(ns.idFromName(GATE_LOG_NAME));
+  for (let tries = 0; tries < 60; tries += 1) {
+    const rows = await log.diagnosticTail(50);
+    if (want(rows)) return rows;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return log.diagnosticTail(50);
+}
+const hasRow = (rows, kind, reason, seat) => rows.some((r) => r.kind === kind && r.reason === reason && (r.seat ?? null) === seat);
 
 globalThis.crypto ??= webcrypto;
 const channelKey = "fixture-channel-" + "k".repeat(40);
@@ -85,7 +99,10 @@ try {
   // allows the same assertion through its first successful verification.
   await kv.put(`grant:CODEX:${grantId}`, JSON.stringify({ id: grantId, userId: "CODEX" }));
   assert.deepEqual(await verify(fresh), { ok: true, seat: "CODEX" });
-  console.log("Cold callback: live grant succeeds, replay refuses, missing grant preserves nonce.");
+  const rows = await diagnosticRows(ns, (r) => hasRow(r, "gr_assert", "replayed", "CODEX") && hasRow(r, "gr_assert", "grant_invalid:no_live_grant", "CODEX"));
+  assert.ok(hasRow(rows, "gr_assert", "replayed", "CODEX"), "the replay refusal reached the diagnostics log");
+  assert.ok(hasRow(rows, "gr_assert", "grant_invalid:no_live_grant", "CODEX"), "the grant miss reached the diagnostics log with its cause");
+  console.log("Cold callback: live grant succeeds, replay refuses, missing grant preserves nonce;  both refusals are diagnostics rows.");
 } finally {
   await mf.dispose();
 }
@@ -190,7 +207,12 @@ for (const [overrides, cached] of [[{}, true], [{ GATE_IDENTITY_CACHE_MS: "0" },
     await gate.setPaused({ paused: true, by: "fixture" });
     const paused = await verify();
     if (cached) assert.equal(paused.ok, true, "the window holds the positive answer");
-    else assert.deepEqual(paused, { ok: false, reason: "paused" }, "with the window at 0 a pause bites on the next call");
+    else {
+      assert.deepEqual(paused, { ok: false, reason: "paused" }, "with the window at 0 a pause bites on the next call");
+      // AFC-844:  the holder's paused refusal names the seat in the diagnostics log.
+      const rows = await diagnosticRows(ns, (r) => hasRow(r, "gr_bearer", "paused", "CODEX"));
+      assert.ok(hasRow(rows, "gr_bearer", "paused", "CODEX"), "the paused refusal reached the diagnostics log");
+    }
   } finally {
     await mf.dispose();
   }

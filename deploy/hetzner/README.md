@@ -30,7 +30,7 @@ Secret values stay in Infisical.  This tree references service-token env file p
 
 ## Excluded
 
-Tracked files left out of desired state: `afc-wake-router.service`, `ag-wake-bridge.service`, `zc-wake-bridge.service`, `operator-sheets-drain.service`, `operator-sheets-drain.timer`, `fleet-server-status.service`, `fleet-server-status.timer`, `fleet-vm-status.service`, and `fleet-vm-status.timer`.
+Tracked files left out of desired state: `afc-wake-router.service`, `ag-wake-bridge.service`, `zc-wake-bridge.service` (retired Nov 21, 2026:  the one wake router serves the seat and the bridge script and its suite are deleted from the repo;  the template and the row stay until the live unit stops), `operator-sheets-drain.service`, `operator-sheets-drain.timer`, `fleet-server-status.service`, `fleet-server-status.timer`, `fleet-vm-status.service`, and `fleet-vm-status.timer`.
 
 Notes in the manifest also keep out the eavesdropper, session letters, message routing, `codex-operator-coordination-check`, `afc-jet-operator-wake`, the Jet wake-bridge review template, the vendor `e2scrub_all` cron, and the retired root crontab watchdog.
 

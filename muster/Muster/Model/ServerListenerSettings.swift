@@ -415,10 +415,12 @@ struct ServerSettingsAllowlist: Equatable {
             return .text(pattern: pattern, maxLength: Int(length))
         case "pairs": return .pairs
         case "seats":
+            // The editor's own bounds for `seats` (eavesdropper_settings_edit.py):  both
+            // limits run 1...256, so a wider shipped list is read, never silently dropped.
             guard let count = bound(object["maxItems"]), count == count.rounded(),
-                  (1.0...64.0).contains(count),
+                  (1.0...256.0).contains(count),
                   let length = bound(object["maxLength"]), length == length.rounded(),
-                  (1.0...32.0).contains(length) else { return nil }
+                  (1.0...256.0).contains(length) else { return nil }
             return .seats(maxItems: Int(count), maxLength: Int(length))
         case "seat-env": return nested ? .seatEnv : nil
         case "table":
@@ -988,6 +990,26 @@ enum ServerSettingsCopy {
                 ? word.uppercased()
                 : word.prefix(1).uppercased() + word.dropFirst()
         }.joined(separator: " ")
+    }
+}
+
+enum ServerSeatNames {
+    static func text(from draft: String) -> String {
+        guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
+        let names = values.map { value -> String in
+            if case .text(let name) = value { return name }
+            // Keep invalid entries visible and invalid until the operator corrects them.
+            return "[Invalid Entry]"
+        }
+        return names.joined(separator: ", ")
+    }
+
+    static func draft(from text: String) -> String {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "[]" }
+        let names = text.components(separatedBy: ",").map {
+            ServerSettingValue.text($0.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return ServerSettingValue.list(names).json ?? ""
     }
 }
 

@@ -586,7 +586,7 @@ final class OpsLogsUnitTests: XCTestCase {
 
 final class OpsRedeployNameTests: XCTestCase {
     private func plan(_ name: String) -> String {
-        #"{"ok":true,"verb":"server redeploy","target":"abc123def456","commands":[["coolify","GET","/api/v1/deploy?uuid=abc123def456"]],"result":"planned","detail":"redeploy","resourceName":""# + name + #""}"#
+        #"{"ok":true,"verb":"server redeploy","target":"abc123def456","commands":[["coolify","POST","/api/v1/deploy?uuid=abc123def456"]],"result":"planned","detail":"redeploy","resourceName":""# + name + #""}"#
     }
 
     @MainActor

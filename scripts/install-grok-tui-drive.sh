@@ -60,6 +60,19 @@ fi
 
 mkdir -p "$ACP_DST" "$SEAT_DST" "$MCP_DST" 2>/dev/null || true
 
+# Shared source closure for the copied runtime consumers.
+copy_file "$REPO_ROOT/scripts/fleet_infisical.py" "${HOME}/apps/fleet_infisical.py"
+copy_file "$REPO_ROOT/scripts/fleet_infisical_cli.py" "${HOME}/apps/fleet_infisical_cli.py"
+
+# The scoped reader the runtime reads its secret through:  the shared client and
+# the one reader command beside it,  at the stable path every consumer outside this
+# repository uses.  The account is named by the caller,  so the read uses that
+# consumer's own scoped service token and never an ambient environment token.
+SCOPED_DST="${HOME}/apps/infisical-scoped"
+copy_file "$REPO_ROOT/scripts/fleet_infisical.py" "${SCOPED_DST}/fleet_infisical.py"
+copy_file "$REPO_ROOT/scripts/infisical-scoped.py" "${SCOPED_DST}/infisical-scoped.py"
+chmod 0755 "${SCOPED_DST}/infisical-scoped.py" 2>/dev/null || true
+
 for f in grok-drive.py leader-client.py session_disk.py grok-idle-unload.py README.md acp-client.py mcp_catalog.py start.sh acp-home-config.toml; do
   copy_file "$ACP_SRC/$f" "$ACP_DST/$f"
 done

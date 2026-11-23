@@ -435,6 +435,109 @@ class UnletteredListingTests(unittest.TestCase):
         conn.close()
         self.assertEqual(ZC.zcode_unlettered_sessions(self.where), ["z-one"])
 
+    def lettered_note_for(self, sid: str) -> None:
+        """A parent's own note, as the hook writes it when the assigner issued a letter."""
+        path = os.path.join(self.home, ".simple-tools", "ZC", "letters", sid + ".json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump({"state": "open", "label": "CC"}, fh)
+
+    def zcode_store_with_parents(self) -> None:
+        path = os.path.join(self.home, ZC.STORE_SUBPATH)
+        os.makedirs(os.path.dirname(path))
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE session (id text primary key, title text, task_type text, parent_id text, "
+            "time_archived integer, time_deleted integer, time_created integer)"
+        )
+        return conn
+
+    def test_zcode_children_of_a_lettered_parent_join_the_repair_pass(self) -> None:
+        conn = self.zcode_store_with_parents()
+
+        def ms(seconds: float) -> int:
+            return int(_ago(seconds) * 1000)
+
+        self.lettered_note_for("p-lettered")
+        self.lettered_note_for("k-done")
+        rows = [
+            ("z-chat", "??: Chat work", "interactive", None, None, None, ms(3600)),
+            ("k-newer", "", "subagent_child", "p-lettered", None, None, ms(1800)),
+            ("k-older", "", "subagent_child", "p-lettered", None, None, ms(5400)),
+            ("k-done", "", "subagent_child", "p-lettered", None, None, ms(1200)),
+            ("k-orphan", "", "subagent_child", "p-gone", None, None, ms(3600)),
+            ("k-young", "", "subagent_child", "p-lettered", None, None, ms(60)),
+            ("k-ancient", "", "subagent_child", "p-lettered", None, None, ms(30 * 86400)),
+            ("k-archived", "", "subagent_child", "p-lettered", ms(100), None, ms(3600)),
+            ("k-parentless", "", "subagent_child", None, None, None, ms(3600)),
+        ]
+        conn.executemany("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+        # Newest first, "??" chats and a lettered parent's children together;  a child that already
+        # holds a letter, one whose parent holds none, one too young, one too old, an archived one and
+        # one with no parent named at all are left out.
+        self.assertEqual(ZC.zcode_unlettered_sessions(self.where), ["k-newer", "z-chat", "k-older"])
+
+    def test_zcode_child_sessions_of_one_parent(self) -> None:
+        conn = self.zcode_store_with_parents()
+
+        def ms(seconds: float) -> int:
+            return int(_ago(seconds) * 1000)
+
+        rows = [
+            ("k-first", "p-mine", "subagent_child", ms(1800)),
+            ("k-second", "p-mine", "subagent_child", ms(5400)),
+            ("k-ancient", "p-mine", "subagent_child", ms(30 * 86400)),
+            ("k-elsewhere", "other-parent", "subagent_child", ms(600)),
+            ("z-chat", None, "interactive", ms(600)),
+        ]
+        conn.executemany(
+            "INSERT INTO session (id, parent_id, task_type, time_created) VALUES (?, ?, ?, ?)", rows
+        )
+        conn.commit()
+        conn.close()
+        # Only this parent's children, newest first, inside the pass's own age window.
+        self.assertEqual(ZC.zcode_child_sessions(self.where, "p-mine"), ["k-first", "k-second"])
+        self.assertEqual(ZC.zcode_child_sessions(self.where, "nobody"), [])
+        self.assertIsNone(ZC.zcode_child_sessions(self.where, ""))
+
+    def test_zcode_lettered_children_take_no_listing_slot(self) -> None:
+        conn = self.zcode_store_with_parents()
+
+        def ms(seconds: float) -> int:
+            return int(_ago(seconds) * 1000)
+
+        for i in range(ZC.CHILD_SCAN):
+            sid = "k-done-%02d" % i
+            self.lettered_note_for(sid)
+            conn.execute(
+                "INSERT INTO session VALUES (?, '', 'subagent_child', 'p-mine', NULL, NULL, ?)",
+                (sid, ms(3600 + i)),
+            )
+        conn.execute(
+            "INSERT INTO session VALUES ('k-open', '', 'subagent_child', 'p-mine', NULL, NULL, ?)",
+            (ms(40 * 3600),),
+        )
+        conn.commit()
+        conn.close()
+        # The lettered children cost their one note read each but no listing slot, so the
+        # older unlettered child is still listed however many lettered ones sit before it.
+        self.assertEqual(ZC.zcode_child_sessions(self.where, "p-mine"), ["k-open"])
+
+    def test_zcode_child_sessions_need_the_parent_columns(self) -> None:
+        path = os.path.join(self.home, ZC.STORE_SUBPATH)
+        os.makedirs(os.path.dirname(path))
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE session (id text primary key, title text, task_type text, time_created integer)")
+        conn.execute(
+            "INSERT INTO session VALUES ('k-one', '', 'subagent_child', ?)", (int(_ago(1800) * 1000),)
+        )
+        conn.commit()
+        conn.close()
+        self.assertIsNone(ZC.zcode_child_sessions(self.where, "p-mine"))  # no parent_id column
+        self.assertEqual(ZC.zcode_unlettered_sessions(self.where), [])  # the child joins no pass
+
     def test_claude_desktop_records(self) -> None:
         org = os.path.join(CL.store_root(self.home), "account", "org")
         os.makedirs(org)

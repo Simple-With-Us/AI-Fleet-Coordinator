@@ -69,7 +69,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ascChildEnv, legacyAscAllowed, resolveFreshnessAscCredentials } from "./asc_scoped_creds.mjs";
+import { ascChildEnv, resolveFreshnessAscCredentials } from "./asc_scoped_creds.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const EXIT_CURRENT = 0;
@@ -117,17 +117,25 @@ export function splitInflight(runs, nowMs, maxHours = DEFAULT_INFLIGHT_MAX_HOURS
 // ---------------------------------------------------------------------------
 
 /**
- * "202610171703" -> Date (UTC).  null when it is not a plausible cut time.
+ * "202611160900" -> ms since epoch.  null when it is not a plausible cut time.
  *
- * The build number is the repo commit count (owner 2026-10-18), so a current
- * build carries no cut time and this returns null for it.  It still resolves
- * the 12-digit UTC stamp of a build uploaded under the retired scheme, which
- * is what lets those older builds be correlated by their cut time.
+ * The build number is the time the build itself runs in YYYYMMDDHHmm form,
+ * Central Time (owner ruling updated 2026-11-15), so the stamp reads as
+ * America/Chicago wall time.  A retired commit-count build number matches nothing here and returns
+ * null, leaving correlation by upload time as before.
  */
 export function buildCutTime(buildNumber, uploadedAt) {
   const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(String(buildNumber || ""));
   if (!m) return null;
-  const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  // Central wall time -> UTC instant; the zone resolves CST (-6) or CDT (-5).
+  const guess = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago", hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(new Date(guess));
+  const get = (t) => +((parts.find((p) => p.type === t) || {}).value || 0);
+  const wallAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
+  const t = guess + (guess - wallAsUtc);
   if (Number.isNaN(t)) return null;
   if (uploadedAt != null) {
     // A cut time after the upload, or more than 6h before it, is not a cut time.
@@ -341,11 +349,9 @@ export function makeDeps(env = process.env, options = {}) {
   const remaining = (cap) => { const n = deadline - (options.clock || Date.now)(); if (n <= 0) throw new Error("freshness-runtime-deadline-exceeded"); return Math.max(1, Math.min(cap,n)); };
   const github = options.serviceGitHub || makeServiceGitHub();
   const ascGuard = makeAscGuard();
-  const allowLegacy = legacyAscAllowed(env, options.allowLegacyAsc === true);
   const run = options.runCmd || runCmd;
   let prepared = null;
   const ascEnvironment = () => {
-    if (allowLegacy) return Promise.reject(new Error("legacy ASC credentials unsupported by dedicated freshness reader; use scoped ios-testflight-freshness-ro binding"));
     if (!prepared) {
       prepared = resolveFreshnessAscCredentials({
         env,
@@ -1359,7 +1365,7 @@ export function renderTable(report) {
 export function parseArgs(argv) {
   const opts = {
     apps: null, repos: null, json: false, shipBehind: false, dryRun: false, alert: false,
-    maxShips: 1, registry: null, concurrency: 4, help: false, allowLegacyAsc: false,
+    maxShips: 1, registry: null, concurrency: 4, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -1376,7 +1382,6 @@ export function parseArgs(argv) {
     else if (a === "--max-ships") opts.maxShips = Math.max(0, parseInt(val(), 10) || 0);
     else if (a === "--registry") opts.registry = val();
     else if (a === "--concurrency") opts.concurrency = Math.max(1, parseInt(val(), 10) || 1);
-    else if (a === "--allow-legacy-asc-creds") opts.allowLegacyAsc = true;
     else if (a === "-h" || a === "--help") opts.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -1557,7 +1562,6 @@ async function findUnmapped(ctx, registry) {
 const HELP = `usage: ios_testflight_freshness.mjs [--app KEY[,KEY]] [--repo REPO] [--json]
                                    [--ship-behind [--dry-run] [--max-ships N]] [--alert]
                                    [--registry PATH] [--concurrency N]
-                                   [--allow-legacy-asc-creds]
 
 Exit 0 every checked app is current, 1 something is behind, 2 the check failed.
 App Store Connect reads need the scoped ios-testflight-freshness-ro binding.
@@ -1573,7 +1577,7 @@ export async function main(argv = process.argv.slice(2), deps = undefined, out =
     out.write(`${err.message}\n${HELP}\n`);
     return EXIT_FAILED;
   }
-  if (deps === undefined) deps = makeDeps(process.env, { allowLegacyAsc: opts.allowLegacyAsc });
+  if (deps === undefined) deps = makeDeps(process.env);
   if (opts.help) {
     out.write(`${HELP}\n`);
     return EXIT_CURRENT;

@@ -45,6 +45,12 @@ NAME and folder, never a value.  Each has exactly one source:
                                                          registry service's signing key (listener_registry.py),
                                                          the same home every registry client reads
 
+REVIEW_ORIGIN_CODEX_READ_KEY is optional, sourced only from the secondary project prod /zulip
+through the existing listener reader. That binding names Fleet-OPS on the deployed listener.
+A record in either primary folder holds this capability rather than becoming a fallback.
+A container copy is removed. A missing, hidden, unresolved, malformed or reused key disables only the
+review-origin projection. The shared /operator read and its required values retain their existing failure rules.
+
 ZULIP_SITE is the one seat-wide value the container keeps:  it pins the realm the keys are sent to, so a value
 in the folder can never redirect them.  Errors name the stage, the token variable and the HTTP status, never a
 body or a value.  A successful load logs one line with counts and names only.  No value is ever printed or
@@ -144,6 +150,9 @@ SEAT_NAME_RE = re.compile(
 )
 # The Operator's notes-queue keys (AFC-486, docs/protocols/operator-notes.md), read from their own folder.
 OPERATOR_PATH = "/operator"
+# Optional capability, secondary /zulip only; never inherited from the container.
+REVIEW_ORIGIN_READ_KEY = "REVIEW_ORIGIN_CODEX_READ_KEY"
+OPTIONAL_PROJECTION_NAMES = frozenset({REVIEW_ORIGIN_READ_KEY})
 OPERATOR_NAMES = frozenset(
     {"OPERATOR_NOTES_WORKER_KEY", "OPERATOR_NOTES_SERVER_KEY", "OPERATOR_NOTES_RUNNER_KEY"}
 )
@@ -426,9 +435,17 @@ def fetch(
         if (
             not isinstance(item, dict)
             or not isinstance(item.get("secretKey"), str)
-            or not isinstance(item.get("secretValue"), str)
+            or (
+                (
+                    not isinstance(item.get("secretValue"), str)
+                    or item.get("secretValueHidden") is True
+                )
+                and not (
+                    requested_path in (OPERATOR_PATH, ZULIP_PATH)
+                    and item.get("secretKey") in OPTIONAL_PROJECTION_NAMES
+                )
+            )
             or item.get("type") != "shared"
-            or item.get("secretValueHidden") is True
             or ("workspace" in item and item["workspace"] != project_id)
             or ("environment" in item and item["environment"] != environment)
             or ("secretPath" in item and item["secretPath"] != requested_path)
@@ -437,6 +454,18 @@ def fetch(
             raise LoadError("%s: invalid or unverified listing" % stage)
         seen.add(item["secretKey"])
         if keep is not None and item["secretKey"] not in keep:
+            continue
+        optional_projection = (
+            requested_path in (OPERATOR_PATH, ZULIP_PATH)
+            and item["secretKey"] in OPTIONAL_PROJECTION_NAMES
+        )
+        if not isinstance(item.get("secretValue"), str) or item.get("secretValueHidden") is True:
+            if optional_projection:
+                out[item["secretKey"]] = ""  # Preserve presence without an unusable value.
+                continue
+            raise LoadError("%s: invalid or unverified listing" % stage)
+        if optional_projection and UNRESOLVED_REFERENCE_RE.search(item["secretValue"]):
+            out[item["secretKey"]] = ""
             continue
         if UNRESOLVED_REFERENCE_RE.search(item["secretValue"]):
             if item["secretKey"] in optional_names:
@@ -457,6 +486,8 @@ def _secondary_names(codes: set[str]) -> set[str]:
 def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[dict[str, str], str]:
     """An opt-in second project read with its own exact-scope token binding.
 
+    Retains routine keys and the optional origin-read key from this same existing grant.
+
     Off when INFISICAL_LISTENER_READ_PROJECT_ID is unset.  Once it is set, the read is a source the
     host configured, so a bad project id, a missing or invalid token or a failed read stops startup."""
     project = (env.get(LISTENER_READ_PROJECT) or "").strip()
@@ -470,7 +501,7 @@ def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[d
             "service-token: %s is missing or invalid (it is required while %s is set)"
             % (LISTENER_READ_TOKEN, LISTENER_READ_PROJECT)
         )
-    names = _secondary_names(codes)
+    names = _secondary_names(codes) | OPTIONAL_PROJECTION_NAMES
     source = dict(env, INFISICAL_PROJECT_ID=project)
     found = fetch(
         source,
@@ -729,7 +760,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     # (any seat, server or not), the Operator's names and the INFISICAL_ONLY names.  What follows is only what
     # Infisical returned.
     only = infisical_only_names()
-    owned = only | OPERATOR_NAMES | OPERATOR_VOICE_NAMES | {OPERATOR_CURSOR_NAME} | allowed
+    owned = only | OPERATOR_NAMES | OPERATOR_VOICE_NAMES | {OPERATOR_CURSOR_NAME} | allowed | OPTIONAL_PROJECTION_NAMES
 
     def from_container(name: str) -> bool:
         # WAKE_ROUTER_* are the router's own knobs, read by the router alone from /wake-router (including
@@ -753,7 +784,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         token=token,
         expected_paths=primary_paths,
         stage="read operator",
-        keep=OPERATOR_NAMES | infisical_only_sources(OPERATOR_PATH),
+        keep=OPERATOR_NAMES | OPTIONAL_PROJECTION_NAMES | infisical_only_sources(OPERATOR_PATH),
         **kw,
     )
     operator = {name: value for name, value in operator_all.items() if name in OPERATOR_NAMES}
@@ -770,6 +801,10 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         }
     )
     read_keys, read_note = listener_read_keys(env, codes, **kw)
+    # The one optional origin key is not a seat or routine key. No primary or
+    # container copy can replace this canonical secondary-source value.
+    projection_value = read_keys.pop(REVIEW_ORIGIN_READ_KEY, None)
+    projection_conflict = REVIEW_ORIGIN_READ_KEY in found or REVIEW_ORIGIN_READ_KEY in operator_all
     # One home per name:  a routine key held by both projects is used from neither, so deleting one copy to
     # revoke it can never leave the other in service.
     conflicts = sorted(name for name in read_keys if name in found)
@@ -787,6 +822,20 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     loaded_values: dict[str, str] = {}
     for part in (seats, operator, voice_keys, cursor_data, only_values):
         loaded_values.update(part)
+    # Missing, malformed and reused read keys disable only this optional capability.
+    # The source was already fetched under the existing secondary /zulip grant.
+    projection_ok = (
+        not projection_conflict
+        and isinstance(projection_value, str)
+        and re.fullmatch(r"[!-~]{32,512}", projection_value) is not None
+        and "${" not in projection_value
+        and projection_value not in {_strip_quotes(value) for value in loaded_values.values()}
+    )
+    if projection_ok:
+        loaded_values[REVIEW_ORIGIN_READ_KEY] = projection_value
+    projection_note = "; review-origin read key " + (
+        "loaded from secondary /zulip" if projection_ok else "not loaded (optional capability held)"
+    )
     loaded = sorted(loaded_values)
     replaced = sum(1 for name in loaded if name in env)
     out.update(loaded_values)
@@ -822,7 +871,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     return out, (
         f"loaded {len(loaded)} variables from Infisical (prod {ZULIP_PATH}; {replaced} replaced a container "
         f"value, {ignored} other names in the folder ignored){coverage}{seat_note}{operator_note}"
-        f"{only_note}{removed_note}{read_note}{voice_note}{cursor_note}"
+        f"{only_note}{removed_note}{read_note}{voice_note}{cursor_note}{projection_note}"
     )
 
 

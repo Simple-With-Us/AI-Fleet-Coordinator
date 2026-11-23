@@ -689,6 +689,24 @@ class Service(Settings):
 
 
 class Wiring(Settings):
+    def test_start_quiesced_flag_is_forwarded_as_an_exact_boolean(self) -> None:
+        self.fake.set(secrets={})
+        for argv, expected in [(["serve"], False), (["serve", "--start-quiesced"], True)]:
+            with self.subTest(argv=argv):
+                seen = []
+
+                def serve(seats, bind, port, *, start_quiesced):
+                    seen.append(start_quiesced)
+                    return 0
+
+                with (
+                    mock.patch.object(CW, "state_dir", return_value=self.state),
+                    mock.patch.object(WR, "serve", side_effect=serve),
+                ):
+                    self.assertEqual(SVC.main(argv), 0)
+                self.assertEqual(len(seen), 1)
+                self.assertIs(seen[0], expected)
+
     def test_the_router_runs_on_the_knobs_and_not_the_file(self) -> None:
         self.local(delivery_enabled=True)
         self.fake.set(
@@ -701,7 +719,8 @@ class Wiring(Settings):
         seen = {}
         before = signal.getsignal(signal.SIGHUP)
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             seen.update(config=router.config, hup=signal.getsignal(signal.SIGHUP))
             seen.update(threads=refresh_threads(), attempts=router.config["max_attempts"])
@@ -730,7 +749,8 @@ class Wiring(Settings):
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             seen["key"] = router.routine_key()
             self.fake.set(mode="fail")
@@ -751,7 +771,8 @@ class Wiring(Settings):
         self.fake.set(secrets={})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             self.fake.set(secrets=ARMED)
             os.kill(os.getpid(), signal.SIGHUP)
@@ -772,7 +793,8 @@ class Wiring(Settings):
         self.fake.set(secrets={WS.DELIVERY_ENABLED: "true", WS.DELIVERY_SEATS: "ZC"})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             seen.update(names=seats.names(), served=sorted(seats.routers))
             seen["delivery"] = seats.routers[CW.SEAT].config["delivery_enabled"]
             return 0
@@ -805,7 +827,7 @@ class Wiring(Settings):
         self.assertEqual(served.seats.not_installed, {"CODEX", "MC", "ZC"})
         self.assertEqual(
             (served.seats.down, sorted(served.seats.routers)),
-            ({}, ["AG", CW.SEAT, "GROK", "MM"]),
+            ({}, ["AG", CW.SEAT, "GROK", "MM", "OPENCODE"]),
         )
         status, health = served.seats.health()
         self.assertEqual(status, 200)
@@ -846,7 +868,7 @@ class Wiring(Settings):
                 with mock.patch.object(CW, "state_dir", return_value=self.state):
                     served = SVC.build({"HOME": str(self.home)}, importer=importer)
                 self.assertEqual(served.seats.down, {"MC": reason})
-                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK", "MM"])
+                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK", "MM", "OPENCODE"])
                 status, health = served.seats.health()
                 self.assertEqual(status, 503, "a module that is there and broken is a fault")
                 self.assertEqual(
@@ -859,7 +881,7 @@ class Wiring(Settings):
                 wake = WR.Wake(wake_id="w-%s" % reason, seat=CW.SEAT)
                 self.assertEqual(claude.accept(wake)[0], 202)
                 self.assertEqual(
-                    [m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK", "MM"]
+                    [m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK", "MM", "OPENCODE"]
                 )
 
     def test_a_non_prod_environment_stops_the_service(self) -> None:
@@ -1257,6 +1279,8 @@ class OneService(Settings):
                          "deliver_request", uuid),
                 "MM": ("minimax", "simple_tools.minimax_wake", "router_platform",
                        "deliver_request", r"^mvs_[0-9a-f]{32}$"),
+                "OPENCODE": ("opencode", "simple_tools.opencode_wake", "router_platform",
+                             "deliver_request", r"^ses_[0-9A-Za-z]{26}$"),
             },
         )
 

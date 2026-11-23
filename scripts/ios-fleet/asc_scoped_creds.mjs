@@ -23,7 +23,6 @@ import path from "node:path";
 
 export const TOKEN_ENV = "IOS_TF_FRESHNESS_INFISICAL_TOKEN";
 export const TOKEN_FILE_ENV = "IOS_TF_FRESHNESS_INFISICAL_TOKEN_FILE";
-export const LEGACY_ASC_ENV = "IOS_TF_ALLOW_LEGACY_ASC_CREDS";
 export const PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID";
 export const PROJECT_FILE = ".simple-tools/fleet-ops-project-id";
 export const KEYCHAIN_SERVICE = "infisical-service-token";
@@ -64,12 +63,6 @@ export class AscCredentialError extends Error {
     super(message);
     this.name = "AscCredentialError";
   }
-}
-
-export function legacyAscAllowed(env = process.env, flag = false) {
-  if (flag === true) return true;
-  const raw = String(env?.[LEGACY_ASC_ENV] ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes";
 }
 
 function refuse(message) {

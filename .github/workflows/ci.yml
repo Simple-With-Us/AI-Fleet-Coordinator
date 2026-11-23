@@ -303,6 +303,15 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_operator_registry test_operator_export_attempts -v
+    # Operator provenance (AFC-412):  who may speak for a seat, checked against
+    # the structured sender fields rather than display names.
+    - name: Operator provenance tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_operator_provenance -v
+    # grok-acp MCP name to ACP object expansion.  No live serve.
+    - name: MCP catalog tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_mcp_catalog -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
@@ -344,15 +353,22 @@ jobs:
       run: |
         "$PY39" -c 'import sys; assert sys.version_info[:2] == (3, 9), sys.version; print(sys.version)'
         cd scripts && "$PY39" -m unittest discover -s fleet_view/tests -t . -v
-    # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
-    # unresolved-reference guard, auth selection, and no secret in argv or error text.
-    - name: fleet_secrets tests
+    # The shared Infisical client (the one reader the fleet uses):  the consumer's own
+    # scoped service token from the consumer's own store, the Mac keychain and the
+    # server file store, the grant check, and no secret in argv, a message or a log.
+    # The scoped reader Muster starts (get, names and doctor) is gated in the same step.
+    - name: Shared Infisical client tests
       timeout-minutes: 10
       run: |
-        cd scripts && python3 -m unittest discover -s fleet_secrets/tests -t . -v
-        bash -n install-fleet-secrets.sh
-        bash -n fleet_secrets/seed-system-keychain.sh
-        bash -n fleet_secrets/switch-pm2-jobs.sh
+        cd scripts && python3 -m unittest test_fleet_infisical_store test_infisical_scoped test_install_infisical_scoped -v
+        bash -n install-infisical-scoped.sh
+    # The shared direct Infisical command (`scripts/fleet_infisical_cli.py`):  get, names, run,
+    # doctor and the allowlisted set, with the durable write ledger, the provider response
+    # boundary faked, and no secret in argv, a message or a log.
+    - name: fleet_infisical_cli tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_infisical_cli_tests -t . -v
     # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `simple-chat` on PATH, built on the real parsers, a fixed
     # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
     # `python3 -I`, and the LaunchAgent plist must parse.
@@ -390,7 +406,7 @@ jobs:
     - name: Fleet app processes tests
       timeout-minutes: 10
       run: python3 scripts/test_fleet_app_processes.py
-    # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake fleet-secrets.
+    # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake store.
     - name: Zulip provision bots tests
       timeout-minutes: 10
       run: python3 scripts/test_zulip_provision_bots.py
@@ -539,6 +555,11 @@ jobs:
     - name: Zulip linkifier tests
       timeout-minutes: 10
       run: cd scripts && python3 -m unittest test_zulip_linkifiers -v
+    # Linear project codes as linkifiers (AFC-565), from Linear to Zulip and
+    # the repo files.  No network:  Linear, Zulip, Infisical and GitHub are faked.
+    - name: Linear project linkifier tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_linear_project_linkifiers -v
     # The Google Drive backup:  the File Provider-safe copy, the rule that a refused subtree is
     # reported rather than raised, and the retention that drops the dated backup folders beyond
     # the newest N.  Temp directories only, so nothing in Drive is read or written.
@@ -636,10 +657,26 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_body_size
+    # The Mac hosts' scoped-read helpers:  the Grok ACP runtime and the Senate relay each read their
+    # own secret through the shared scoped reader, with the account named,  so an ambient environment
+    # token never satisfies the read.  A fake reader records the argv;  no real reader runs,  no secret
+    # is read,  and neither runtime starts.
+    - name: Scoped reader launchers
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_grok_acp_runtime_start test_senate_relay_runtime_start
+    # The Notes helper reads a notification key through the shared scoped reader.  A read that fails is
+    # a failed read:  the helper reports it instead of handing back an empty value as a success,  and the
+    # caller keeps the macOS notification.  The two functions are read out of the shipped script,  so the
+    # test covers the code that ships.
+    - name: Notes notification secret read
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_pushover
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
-    # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key fleet-secrets reads and the
+    # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key store reads and the
     # zero-mint, zero-write fresh-blob path (AFC-361).  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
     # needs-owner notifier checks the owner's Linear reply by.
     # CredentialPreviewTests and CredentialFailureTests pin what the board says about a credential it
@@ -695,7 +732,7 @@ jobs:
       timeout-minutes: 10
       run: node --test scripts/safari-start/worker.test.mjs
     # The alert-ingress secret provisioner (AFC-351):  the batched read against a
-    # fake `fleet-secrets` that keeps the CLI's own contract -- one name answers
+    # fake store that keeps the shared client's own contract -- one name answers
     # with the raw value, several answer with a JSON object -- so a one-name
     # batch cannot decode as the other.  No network, no secret in any assertion.
     - name: alert_ingress provisioner tests
@@ -727,7 +764,7 @@ jobs:
         npm ci --ignore-scripts --prefix scripts/simple-tools-mcp
         node --test scripts/simple-tools-mcp/test/*.test.mjs
     # The scoped-folder copy script (AFC-478) against a mocked Infisical and a fake
-    # fleet-secrets:  names-only output, collisions, exit codes and reruns.
+    # store:  names-only output, collisions, exit codes and reruns.
     - name: ST-MCP scoped-folder copy script tests
       timeout-minutes: 10
       run: python3 -I scripts/simple-tools-mcp/scripts/test_populate_scoped_folders.py
@@ -769,6 +806,11 @@ jobs:
       run: |
         python3 scripts/test_auto_merge_reusable.py
         python3 scripts/test_protected_merge_boundary.py
+    # The merge principal guard docs/AUTO-MERGE.md cites as its contract:  both
+    # actual shell paths, exercised without external writes.
+    - name: Merge principal guard tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_merge_principal_guard -v
     # Idempotent fleet hold-label provisioning (AFC-691).  No network:  the
     # transport is injected, and the workflow job is checked by reading the file.
     - name: Fleet hold label provisioning
@@ -837,6 +879,8 @@ jobs:
   mac-scripts:
     name: Mac scripts
     runs-on: macos-latest
+    # Bound the job so a stalled script cannot burn the 360-minute GitHub default.
+    timeout-minutes: 20
     steps:
     - uses: actions/checkout@v7
     # The maintenance scripts that run on Jay's Mac, and their contracts.
@@ -860,6 +904,8 @@ jobs:
   muster-macos-build:
     name: Muster macOS build
     runs-on: macos-latest
+    # Bound the job so a stalled build cannot burn the 360-minute GitHub default.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       # The interpreter FleetViewService runs, on the machine shape that has it.  The version is

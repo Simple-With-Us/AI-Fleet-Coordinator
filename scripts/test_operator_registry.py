@@ -7,13 +7,13 @@ import contextlib
 import io
 import json
 import os
-import random
 import re
 import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -124,18 +124,18 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(a["label"], "AA")
             self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
             b = self.reg.resolve_or_register(ident(native="n2"))
-        self.assertEqual(b["label"], "AA")  # wrapped back to AA once the lap is used
+        self.assertEqual(b["label"], "AA")  # the only pair is reused with a higher generation
         self.assertEqual(b["generation"], 2)  # disambiguated by generation
         self.assertEqual(R.cross_seat_ref("MM", b["label"], b["generation"]), "MM AA (gen 2)")
         self.assertEqual(R.cross_seat_ref("MM", "B", 1), "MM B")
 
-    def test_a_released_pair_waits_for_the_next_lap(self):
+    def test_a_released_pair_waits_behind_free_pairs_with_fewer_issues(self):
         a = self.reg.resolve_or_register(ident(native="n1"))
         b = self.reg.resolve_or_register(ident(native="n2"))
         self.assertEqual((a["label"], b["label"]), ("AA", "BB"))
         self.reg.close(a["record_id"], actor="MM", source="test")
         c = self.reg.resolve_or_register(ident(native="n3"))
-        self.assertEqual(c["label"], "CC")  # keep advancing:  AA comes back after ZZ
+        self.assertEqual(c["label"], "CC")  # unused pairs have fewer past issues than released AA.
 
     def test_label_exhaustion(self):
         for i in range(26):
@@ -143,10 +143,55 @@ class RegistryTest(unittest.TestCase):
         with self.assertRaises(R.LabelExhausted):
             self.reg.resolve_or_register(ident(native="n26"))
 
+    def test_a_pair_closed_without_retiring_its_alias_is_reissued(self):
+        # A session closed by direct SQL (closed_at set, its alias never retired)
+        # reads as holding no letter, so allocation must not count its pair as
+        # live forever:  the orphan alias is retired and the pair is reissued.
+        holders = [self.reg.resolve_or_register(ident(native=f"n{i}")) for i in range(26)]
+        first = holders[0]
+        self.assertEqual(first["label"], "AA")
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+            ("2026-11-22T00:00:00.000Z", first["record_id"]),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(R.candidates_for(self.db, "zulip", "AA"), [])
+        again = self.reg.resolve_or_register(ident(native="n26"))
+        self.assertEqual(again["label"], "AA")
+        self.assertEqual(again["generation"], 2)
+        conn = sqlite3.connect(self.db)
+        rows = conn.execute(
+            "SELECT record_id, retired_at FROM alias_assignments"
+            " WHERE letter = 'AA' ORDER BY generation"
+        ).fetchall()
+        live = conn.execute(
+            "SELECT COUNT(*) FROM alias_assignments WHERE letter = 'AA' AND retired_at IS NULL"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(live, 1)  # the partial unique index's one live holder
+        self.assertEqual(rows[0][0], first["record_id"])
+        self.assertIsNotNone(rows[0][1])  # the orphan alias was retired, not ignored
+        holders_now = R.candidates_for(self.db, "zulip", "AA")
+        self.assertEqual([h["record_id"] for h in holders_now], [again["record_id"]])
+
     def test_close_is_idempotent(self):
         a = self.reg.resolve_or_register(ident())
         self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
         self.assertFalse(self.reg.close(a["record_id"], actor="MM", source="test"))
+
+    def test_close_snapshot_keeps_the_label(self):
+        # close() retires the alias before it queues the final session snapshot,
+        # so a snapshot rebuilt from the live alias exports Label="" and the
+        # sheet's last row for the session loses which letter it was.
+        a = self.reg.resolve_or_register(ident())
+        self.assertEqual(a["label"], "AA")
+        self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
+        upserts = [p for p in R.pending_outbox(self.db) if p["kind"] == "session_upsert"]
+        cells = json.loads(upserts[-1]["payload"])["cells"]
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("Label")], "AA")
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("State")], "closed")
 
     def test_resumed_closed_is_explicit(self):
         a = self.reg.resolve_or_register(ident())
@@ -412,6 +457,21 @@ class RegistryTest(unittest.TestCase):
     def test_main_chats_take_the_doubled_pairs_in_order(self):
         self.assertEqual(self._labels(["n-1", "n-2", "n-3"]), ["AA", "BB", "CC"])
 
+    def test_equal_usage_tie_is_alphabetical_across_the_full_pair_alphabet(self):
+        main = [self._pair("main-%02d" % i) for i in range(26)]
+        self.assertEqual([item["label"] for item in main], list(R.PRIMARY_ORDER))
+        self.reg.close(main[0]["record_id"])  # AA and BB are the only free pairs.
+        self.reg.close(main[1]["record_id"])
+        # Put AA last in the newest-generation history.  The tie rule must still select AA, not rotate to BB.
+        with self.reg._conn:
+            changed = self.reg._conn.execute(
+                "UPDATE alias_assignments SET assigned_at = '9999-12-31T23:59:59.000Z' "
+                "WHERE platform = 'claude' AND letter = 'AA' AND generation = 1"
+            ).rowcount
+        self.assertEqual(changed, 1)
+        next_chat = self._pair("main-next")
+        self.assertEqual((next_chat["label"], next_chat["generation"]), ("AA", 2))
+
     def test_a_freed_doubled_pair_is_not_the_next_main_chat_s(self):
         first = self._pair("n-1", "primary")
         self._labels(["n-2", "n-3"])  # BB, CC
@@ -480,62 +540,43 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self._pair("c-4", "primary", "c")["label"], "CF")  # CD and CE are taken
         self.assertEqual(second["label"], "CE")
 
-    def test_a_full_row_gives_a_child_a_random_pair_of_two_different_letters(self):
-        # Owner, Nov 11 2026:  "issue random non-pair of letters like random 2 letters not identical ones to preserve
-        # those for main chats".
-        offered = []
-
-        def last(seq):
-            offered.append(list(seq))
-            return seq[-1]
-
-        self.reg._choose = last
-        self._labels(["a"])  # AA
-        row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
+    def test_a_full_child_row_refuses_instead_of_spilling_into_another_row(self):
+        self._labels(["parent"])  # AA
+        row = self._labels(["kid-%d" % i for i in range(25)], parent="parent")  # AB ... AZ
         self.assertEqual((row[0], row[-1]), ("AB", "AZ"))
-        kids = [self._pair(n, "primary", "a") for n in ("a-x", "a-y")]
+        with self.assertRaises(R.LabelExhausted) as caught:
+            self._pair("overflow", "primary", "parent")
+        self.assertEqual((caught.exception.space, caught.exception.limit), ("double", 25))
+        self.assertIn("row 'A'", str(caught.exception))
+        self.assertIsNone(self.reg.lookup("claude", "mac-1", "simplewithus", "overflow"))
         self.assertEqual(
-            [(k["label"], k["generation"], k["placed_after"]) for k in kids],
-            [("ZY", 1, ""), ("ZX", 1, "")],
+            self.reg._conn.execute(
+                "SELECT COUNT(*) FROM alias_assignments WHERE platform = 'claude' AND letter = 'BA'"
+            ).fetchone()[0],
+            0,
         )
-        # The chooser was offered every free pair of two different letters, any row, and nothing else:  no doubled
-        # pair, no live pair, so 650 less row A's 25.
-        self.assertEqual(len(offered[0]), 625)
-        self.assertTrue(all(p[0] != p[1] for p in offered[0]))
-        self.assertFalse(set(offered[0]) & set(row))
-        self.assertNotIn("ZY", offered[1])
-        # The doubled pairs stayed the main chats':  the next main chat takes BB.
-        self.assertEqual(self._pair("m-1", "primary")["label"], "BB")
 
-    def test_the_overflow_pick_is_random_in_production_and_seeded_in_tests(self):
-        self.assertIsInstance(R._OVERFLOW_RANDOM, random.SystemRandom)
-        picks = []
-        for _ in range(2):
-            self.tearDown()
-            self.setUp()
-            self.reg._choose = random.Random(1111).choice
-            self._labels(["a"])
-            self._labels(["a-%d" % i for i in range(25)], parent="a")
-            picks.append(self._pair("a-x", "primary", "a")["label"])
-        self.assertEqual(picks[0], picks[1])  # a seeded chooser answers the same every run
-        self.assertNotEqual(picks[0][0], picks[0][1])
-        self.assertNotEqual(picks[0][0], "A")
-
-    def test_a_random_pair_is_numbered_per_pair_per_seat(self):
-        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "BA", "BB")}):
-            self.reg._choose = lambda seq: seq[0]
-            self._labels(["a"])  # AA
-            self._labels(["a-1"], parent="a")  # AB:  row A is now full
-            first = self._pair("a-2", "primary", "a")
-            self.assertEqual((first["label"], first["generation"]), ("BA", 1))
-            self.reg.close(first["record_id"])
-            again = self._pair("a-3", "primary", "a")
-            self.assertEqual((again["label"], again["generation"]), ("BA", 2))
-            # Every pair of two different letters live:  the child is refused, never handed BB.
-            with self.assertRaises(R.LabelExhausted) as caught:
-                self._pair("a-4", "primary", "a")
-        self.assertIn("all 2 non-doubled pairs are active", str(caught.exception))
-        self.assertEqual((caught.exception.space, caught.exception.limit), ("double", 2))
+    def test_a_child_reissues_an_orphan_in_its_own_row_not_the_oldest_elsewhere(self):
+        # Allocation retires at most one orphan inline; for a child that one
+        # must come from the child's own row, or a full row stays exhausted
+        # while an unrelated older orphan elsewhere is retired instead.
+        self._labels(["parent"])  # AA
+        self._labels(["other"])  # BB, the older orphan outside row A
+        row = self._labels(["kid-%d" % i for i in range(25)], parent="parent")  # AB ... AZ
+        self.assertEqual((row[0], row[-1]), ("AB", "AZ"))
+        conn = sqlite3.connect(self.db)
+        for native in ("other", "kid-0"):
+            record_id = self.reg.lookup("claude", "mac-1", "simplewithus", native)["record_id"]
+            conn.execute(
+                "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                ("2026-11-22T00:00:00.000Z", record_id),
+            )
+        conn.execute(
+            "UPDATE alias_assignments SET assigned_at = '2000-01-01T00:00:00.000Z' WHERE letter = 'BB'"
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._labels(["kid-new"], parent="parent"), ["AB"])
 
     def test_a_subthreads_pairs_wrap_past_z_back_to_a(self):
         self._labels(["n-%d" % i for i in range(24)])  # AA ... XX
@@ -548,18 +589,26 @@ class RegistryTest(unittest.TestCase):
         self._labels(["n-%d" % i for i in range(26)])  # AA ... ZZ
         self.assertEqual(self._labels(["z-1", "z-2"], parent="n-25"), ["ZA", "ZB"])
 
-    def test_a_subthread_never_takes_a_doubled_pair_even_when_one_is_free(self):
+    def test_a_child_row_exhaustion_does_not_spill_even_when_other_rows_are_free(self):
         self._labels(["a"])  # AA
         row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
         self.assertEqual(row[-1], "AZ")
         self.reg.close(
             self.reg.lookup("claude", "mac-1", "simplewithus", "a")["record_id"]
         )  # AA is free
-        # A child of AZ wraps past Z to A, which would be AA, the row's doubled pair:  it is skipped, the rest of row A
-        # is live, so the subthread takes a random pair of two different letters (here the first:  BA), not AA or BB.
-        self.reg._choose = lambda seq: seq[0]
-        child = self._pair("p-1", "primary", "a-24")
-        self.assertEqual((child["label"], child["placed_after"]), ("BA", ""))
+        # A child of AZ wraps to AA, which is reserved for main chats.  Its row has no remaining child pair.
+        with self.assertRaises(R.LabelExhausted) as caught:
+            self._pair("p-1", "primary", "a-24")
+        self.assertEqual(caught.exception.limit, 25)
+
+    def test_child_row_capacity_uses_the_reduced_allowed_space(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "AC", "BB")}):
+            self._labels(["parent"])  # AA
+            self.assertEqual(self._labels(["kid-1", "kid-2"], parent="parent"), ["AB", "AC"])
+            with self.assertRaises(R.LabelExhausted) as caught:
+                self._pair("overflow", "primary", "kid-2")  # parent AC reaches the same full row.
+            self.assertEqual(caught.exception.limit, 2)
+            self.assertIn("capacity 2", str(caught.exception))
 
     def test_an_unknown_closed_single_or_own_parent_is_no_parent(self):
         parent = self._pair("p", "primary")  # AA
@@ -711,18 +760,9 @@ class RegistryTest(unittest.TestCase):
         self._labels(["a"])
         row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
         self.assertEqual(len(row), 25)
-        self.reg._choose = lambda seq: seq[0]
-        full = self._pair("a-x", "primary", "a")  # the row is full:  a random pair, not "after AA"
-        self.assertEqual((full["label"], full["placed_after"]), ("BA", ""))
-        conn = sqlite3.connect(self.db)
-        try:
-            details = conn.execute(
-                "SELECT details FROM events WHERE session_record_id = ? AND event = 'register'",
-                (full["record_id"],),
-            ).fetchone()[0]
-        finally:
-            conn.close()
-        self.assertEqual(details, "")
+        with self.assertRaises(R.LabelExhausted):
+            self._pair("a-x", "primary", "a")
+        self.assertIsNone(self.reg.lookup("claude", "mac-1", "simplewithus", "a-x"))
 
     def test_a_row_cut_down_by_a_small_space_hands_out_no_pair_outside_it(self):
         with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "BB")}):
@@ -762,12 +802,7 @@ class RegistryTest(unittest.TestCase):
             self._pair("k-2", "oldest")["label"], "BB"
         )  # a chat with no parent takes the next main-chat pair
 
-    # ---- one rule for every seat's main chats (owner, Nov 11 2026):  "keep advancing even if eventually that means
-    # not necessarily alphabetical or even if sometimes we may skip a DD if there is a prior generation DD still active
-    # and then later on will make a DD once it has been freed up and if never freed up sometimes a generation will just
-    # miss out on having a particular pair";  "after ZZ it should go to the next generation if all double letters in
-    # alphabet were used";  "it is okay to make the generation be generation of CC's for that platform";  "ok just
-    # refuse actually is fine" ----
+    # ---- one current rule for every seat's main chats:  least-used free pair, alphabetical tie, generation per pair ----
 
     def _seat_pair(self, native, platform="muse", parent="", pick="primary"):
         return self.reg.resolve_or_register(
@@ -819,17 +854,17 @@ class RegistryTest(unittest.TestCase):
             self._labelled(self._issue("g2", 4)), [("AA", 2), ("BB", 2), ("CC", 2), ("EE", 2)]
         )
 
-    def test_and_then_later_on_will_make_a_dd_once_it_has_been_freed_up_late_in_lap_2(self):
+    def test_fewer_past_issues_win_after_a_pair_is_freed(self):
         self._all_but_dd_closed()
         self._issue("g2", 20)  # AA.2 ... UU.2, DD skipped
         self._close_native("g1-3")  # DD's generation 1 chat ends late in lap 2
-        # The lap keeps advancing to ZZ and DD, freed, is made in the same lap:  "not necessarily alphabetical".
+        # DD has only one past issue, so it is selected first; when it is closed again, its tie is alphabetical.
         self.assertEqual(
             self._labelled(self._issue("g2b", 6)),
-            [("VV", 2), ("WW", 2), ("XX", 2), ("YY", 2), ("ZZ", 2), ("DD", 2)],
+            [("DD", 2), ("VV", 2), ("WW", 2), ("XX", 2), ("YY", 2), ("ZZ", 2)],
         )
 
-    def test_if_never_freed_up_in_lap_2_dd_freed_during_lap_3_still_gets_dd_2(self):
+    def test_a_freed_pair_keeps_its_generation_even_after_other_pairs_advance(self):
         made = self._all_but_dd_closed()
         g2 = self._issue("g2", 25)  # every doubled pair but DD, generation 2
         self.assertNotIn("DD", [m["label"] for m in g2])
@@ -842,13 +877,11 @@ class RegistryTest(unittest.TestCase):
         # Its generation counts its own issues ("generation of CC's for that platform"):  DD.2, and it goes first.
         self.assertEqual(self._labelled(self._issue("g3b", 2)), [("DD", 2), ("BB", 3)])
 
-    def test_a_pair_freed_late_is_made_once_and_the_lap_goes_on(self):
-        # The reviewer's sequence:  lap 1, DD live through lap 2, lap 3 issued to QQ, then DD freed.  "If never freed
-        # up sometimes a generation will just miss out on having a particular pair":  one DD, then RR, never DD twice.
+    def test_a_freed_pair_with_fewer_past_issues_is_selected_before_equal_count_pairs(self):
         made = self._all_but_dd_closed()
         for m in self._issue("g2", 25):
             self.reg.close(m["record_id"])
-        for m in self._issue("g3", 16):  # AA.3 ... QQ.3 (DD.3 is not one of them:  DD is live)
+        for m in self._issue("g3", 16):  # least-used free pairs alphabetically;  DD is still live
             self.reg.close(m["record_id"])
         self.reg.close(made[3]["record_id"])
         got = []
@@ -856,7 +889,7 @@ class RegistryTest(unittest.TestCase):
             out = self._seat_pair("g3b-%d" % i)
             got.append((out["label"], out["generation"]))
             self.reg.close(out["record_id"])
-        self.assertEqual(got, [("DD", 2), ("RR", 3), ("SS", 3), ("TT", 3)])
+        self.assertEqual(got, [("DD", 2), ("DD", 3), ("RR", 3), ("SS", 3)])
 
     def test_a_returning_chat_is_not_a_second_issue_of_its_pair(self):
         # The reviewer's sequence:  AA..EE issued, AA closed and reopened.  It keeps AA.1;  FF..ZZ still come next.
@@ -865,7 +898,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self.reg.reopen(made[0]["record_id"]), ("AA", 1, "AA"))
         nxt = self._seat_pair("r-next")
         self.assertEqual((nxt["label"], nxt["generation"]), ("FF", 1))
-        # a chat swept and reopened many times stays AA.1 and never holds AA away from the next lap
+        # A chat swept and reopened many times stays AA.1 and does not add another issue to AA's history.
         for _ in range(10):
             self.reg.close(made[0]["record_id"])
             self.assertEqual(self.reg.reopen(made[0]["record_id"])[:2], ("AA", 1))
@@ -977,7 +1010,7 @@ class RegistryTest(unittest.TestCase):
 
     def test_legacy_rows_count_each_pairs_issues(self):
         # History the old lowest-first pick left behind:  AA issued 4 times, BB twice, DD once, CC never.  The fewest
-        # issued free pair goes first, the earlier on a tie, and each takes its own count plus one.
+        # issued free pair goes first, alphabetically on a tie, and each takes its own count plus one.
         rows = [("AA", 1), ("AA", 2), ("AA", 3), ("AA", 4), ("BB", 1), ("BB", 2), ("DD", 1)]
         old = self.reg.resolve_or_register(ident(seat="MC", platform="muse", native="old"))
         self.reg.close(old["record_id"])
@@ -999,8 +1032,7 @@ class RegistryTest(unittest.TestCase):
 
     def test_count_the_history_uneven_legacy_issues_in_the_full_space(self):
         # Owner, Nov 11 2026:  "count the history".  Legacy rows:  AA issued 5 times, BB 3, every other doubled pair
-        # once, all retired.  The 24 issued once come first, in lap order from after the newest generation's last pair
-        # (AA.5), so CC.2 ... ZZ.2;  then BB.4;  then AA.6.
+        # once, all retired.  The 24 issued once come first alphabetically (CC.2 ... ZZ.2);  then BB.4;  then AA.6.
         old = self.reg.resolve_or_register(ident(seat="MC", platform="muse", native="old"))
         self.reg.close(old["record_id"])
         rows = [("AA", g) for g in range(1, 6)] + [("BB", g) for g in range(1, 4)]
@@ -1070,7 +1102,6 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual((again["label"], again["previous"]), ("BC", "K"))
 
     def test_no_path_issues_a_single_letter(self):
-        self.reg._choose = random.Random(5).choice
         labels = [self._seat_pair("m-%d" % i)["label"] for i in range(3)]
         labels += [
             self.reg.resolve_or_register(
@@ -1083,7 +1114,7 @@ class RegistryTest(unittest.TestCase):
                     parent_session_id="m-0" if i else "",
                 )
             )["label"]
-            for i in range(30)
+            for i in range(25)
         ]
         made = self._seat_pair("r-1")
         self.reg.close(made["record_id"])
@@ -1149,7 +1180,7 @@ class RegistryTest(unittest.TestCase):
 
     # ---- the seat label is the key (owner, Nov 11 2026) ----
 
-    def test_one_seat_under_two_platform_labels_shares_one_lap(self):
+    def test_one_seat_under_two_platform_labels_shares_pair_issue_counts(self):
         # Grok leader, terminal Grok and Grok Build are one seat, GROK.
         labels = [
             self._register("grok-%d" % i, platform=platform, seat="GROK")["label"]
@@ -1180,7 +1211,9 @@ class RegistryTest(unittest.TestCase):
         for _ in range(3):
             out = self._relabel("cl-1", platform="claude", force=True)
             self.assertEqual((out["outcome"], out["label"]), ("unchanged", "AA"))
-        self.assertEqual(self._register("cl-2")["label"], "BB")  # no pair of the lap was burned
+        self.assertEqual(
+            self._register("cl-2")["label"], "BB"
+        )  # no issue was added by the no-op relabel.
 
     def test_a_relabel_into_the_single_space_keeps_the_pair(self):
         self._register("cl-1")
@@ -1474,7 +1507,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(again["label"], first["label"])
 
     def test_register_refuses_a_title_that_carries_a_credential(self):
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.register_session(
                 self.db,
@@ -1482,28 +1515,28 @@ class RegistryTest(unittest.TestCase):
                 native_session_id="native-1",
                 seat="MM",
                 source="test",
-                title="Deploy with " + secret,
+                title="Deploy with " + fixture_value,
                 issuer=R.ISSUER_OPERATOR,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(stored, 0)
 
     def test_update_refuses_a_title_that_carries_a_credential(self):
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                title="Deploy with " + secret,
+                title="Deploy with " + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["title"], "Placeholder")
 
     def test_a_title_that_is_not_a_string_is_refused_not_coerced(self):
@@ -1538,36 +1571,36 @@ class RegistryTest(unittest.TestCase):
     def test_update_refuses_a_project_that_carries_a_credential(self):
         # Every field that is written is scanned, not only the title.
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                project="Deploy with " + secret,
+                project="Deploy with " + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "project_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["project"], "")
 
     def test_update_refuses_a_thread_link_that_carries_a_credential(self):
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                thread_link="https://example.invalid/" + secret,
+                thread_link="https://example.invalid/" + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "thread_link_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["thread_link"], "")
 
     def test_register_refuses_a_field_that_carries_a_credential(self):
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.register_session(
                 self.db,
@@ -1575,12 +1608,12 @@ class RegistryTest(unittest.TestCase):
                 native_session_id="native-1",
                 seat="MM",
                 source="test",
-                apple_note_link="https://example.invalid/" + secret,
+                apple_note_link="https://example.invalid/" + fixture_value,
                 issuer=R.ISSUER_OPERATOR,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "apple_note_link_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(stored, 0)
 
@@ -1930,6 +1963,53 @@ class RegistryTest(unittest.TestCase):
         self.assertTrue(retired[0]["ended_at"])
         self.assertFalse(retired[0]["live"])
 
+    def test_sweep_retires_the_alias_of_an_already_closed_session(self):
+        old = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        self.reg._conn.execute(
+            "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+            ("2026-11-22T00:00:00.000Z", old["record_id"]),
+        )
+        self.reg._conn.commit()
+        ended = R.sweep_stale(
+            self.db,
+            platform="minimax",
+            seat="MM",
+            stale_after_minutes=120,
+            now=datetime(2026, 11, 22, 12, 0, tzinfo=UTC),
+        )
+        self.assertEqual([row["record_id"] for row in ended], [old["record_id"]])
+        # An orphan retirement is reported in `ended` too, told apart by its
+        # reason, and stamped with the sweep's injected moment, not wall-clock.
+        self.assertEqual(ended[0]["reason"], "session already closed; its alias was never retired")
+        retired_at = self.reg._conn.execute(
+            "SELECT retired_at FROM alias_assignments WHERE record_id = ?", (old["record_id"],)
+        ).fetchone()[0]
+        self.assertEqual(retired_at, "2026-11-22T12:00:00.000Z")
+        history = R.letter_history(self.db, "minimax")
+        retired = [row for row in history if row["letter"] == old["label"]]
+        self.assertFalse(retired[0]["live"])
+
+    def test_retire_closed_aliases_limit_retires_one_at_a_time(self):
+        olds = [
+            self.reg.resolve_or_register(ident(platform="minimax", native=f"native-{n}"))
+            for n in (1, 2)
+        ]
+        for old in olds:
+            self.reg._conn.execute(
+                "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                ("2026-11-22T00:00:00.000Z", old["record_id"]),
+            )
+        self.reg._conn.commit()
+        with self.reg._write_txn() as conn:
+            retired = self.reg._retire_closed_aliases(
+                conn, "minimax", "2026-11-22T12:00:00.000Z", limit=1
+            )
+        self.assertEqual([row["record_id"] for row in retired], [olds[0]["record_id"]])
+        still_live = self.reg._conn.execute(
+            "SELECT COUNT(*) FROM alias_assignments WHERE retired_at IS NULL"
+        ).fetchone()[0]
+        self.assertEqual(still_live, 1)
+
     def test_missing_identity_fields_raise(self):
         with self.assertRaises(ValueError):
             self.reg.resolve_or_register({"seat": "MM"})
@@ -2249,7 +2329,7 @@ class SessionIssuesTest(unittest.TestCase):
         try:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
             self.assertEqual(
-                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3
+                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5
             )
         finally:
             conn.close()

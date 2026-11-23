@@ -29,8 +29,8 @@
 // Auth:  the existing fleet Sheets service account, reused for the Operator registries
 // (owner ruling, 2026-11-03: no dedicated SA).  The CLI reads its key JSON
 // from GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
-// /google-sheets-sa (key GOOGLE_SHEETS_SA) through fleet-secrets — the
-// same approved resolution shape as the other fleet Sheets readers.  The drain
+// /google-sheets-sa (key GOOGLE_SHEETS_SA) through the shared isolated reader and
+// an explicit own OPERATOR_SHEETS_TOKEN_FILE bootstrap.  The drain
 // runner reads the same key from /etc/operator-sheets/sa.json, which its installer
 // fetches from that Infisical path.  The sheet must be shared (Editor) with that service
 // account's client_email or every call 403s and the drain writes nothing.  This module
@@ -43,11 +43,8 @@
 // --write takes the Operator Sheets drain's writer lease (OPERATOR_SHEETS_LOCK, default
 // /tmp/operator-sheets-drain.lock) and refuses while a drain run holds it.
 
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { unlink } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { loadRegistryServiceAccount } from "./registry_export_reader.mjs";
 import crypto from "node:crypto";
 import { scanCellText } from "./operator_sheets_google.mjs";
 
@@ -92,29 +89,8 @@ function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function loadServiceAccount() {
-  let raw = process.env.GOOGLE_SHEETS_SA || "";
-  if (!raw) {
-    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
-    try {
-      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).replace(/\n$/, "");
-    } catch {
-      raw = "";
-    }
-  }
-  if (!raw) {
-    throw new Error(
-      "Operator thread registry service account missing: set GOOGLE_SHEETS_SA or add it to Infisical Fleet-OPS prod /google-sheets-sa"
-    );
-  }
-  return JSON.parse(raw);
-}
-
 export async function getGoogleAccessToken() {
-  const sa = loadServiceAccount();
+  const sa = await loadRegistryServiceAccount();
   const now = Math.floor(Date.now() / 1000);
   const signingInput = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(
     JSON.stringify({
@@ -263,7 +239,10 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
           redirect: "error",
           signal: controller.signal,
         });
-      } catch {
+      } catch (error) {
+        if (!write && error?.code === "stopped" && shouldStop()) {
+          throw sheetsError("Sheets read stopped", { code: "stopped" });
+        }
         throw sheetsError(`${where} -> no response`, {
           code: "transport_or_response_error", uncertain: write,
         });
@@ -508,6 +487,10 @@ export async function drainThreadRows({
       result.appended += 1;
     }
   } catch (err) {
+    if (err?.code === "stopped" && shouldStop()) {
+      result.stopped = true;
+      return finish();
+    }
     result.failed = 1;
     result.partial = true;
     result.code = typeof err?.code === "string" ? err.code : "write_failed";
@@ -597,7 +580,6 @@ export async function runCli(argv, {
   } finally {
     if (lease) {
       await lease.close().catch(() => {});
-      await unlink(lockPath).catch(() => {});
     }
   }
 }

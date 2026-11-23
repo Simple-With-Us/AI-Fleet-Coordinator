@@ -182,6 +182,50 @@ class AllowlistTests(Case):
                 with self.assertRaises(M.Refusal):
                     M.validate_allowlist(doc)
 
+    def test_an_unknown_spec_type_is_left_out_not_a_whole_refusal(self) -> None:
+        # Version skew: a newer allowlist names a type this editor predates
+        # (as the shipped `seats` entries did to a pre-#2341 image).  The
+        # unknown entry is dropped — neither readable nor writable — and
+        # every known entry still works, instead of refusing the whole read.
+        doc = shipped_allowlist()
+        doc["tables"]["notes_queue"]["server_seats"] = {"type": "future-list"}
+        doc["seat"]["future_knob"] = {"type": "future-thing", "extra": 1}
+        checked = M.validate_allowlist(doc)
+        self.assertNotIn("server_seats", checked["tables"]["notes_queue"])
+        self.assertIn("worker_seats", checked["tables"]["notes_queue"])
+        self.assertNotIn("future_knob", checked["seat"])
+        self.assertIn("enabled", checked["seat"])
+        answer, code = M.run_request(
+            {"action": "get", "allowlist": doc}, path=self.live
+        )
+        self.assertEqual(code, 0, answer)
+        self.assertNotIn("notes_queue.server_seats", answer["settings"])
+        answer, code = M.run_request(
+            {"action": "plan", "allowlist": doc, "set": {"notes_queue.server_seats": []}},
+            path=self.live,
+        )
+        self.assertEqual((code, answer["errorCode"]), (2, "key_not_allowed"))
+
+    def test_an_unknown_nested_spec_type_refuses_the_whole_allowlist(self) -> None:
+        # A sub-key this editor does not know would leave its parent entry
+        # with a hole in it, so the whole allowlist refuses and the refusal
+        # names the full path.  A whole entry this editor does not know is
+        # left out instead (the rule the shipped `seats` entries need).
+        doc = shipped_allowlist()
+        doc["tables"]["notes_queue"]["server_seats"] = {
+            "type": "table",
+            "keys": {"future_cap": {"type": "future-thing"}},
+        }
+        with self.assertRaises(M.Refusal) as caught:
+            M.validate_allowlist(doc)
+        self.assertIn("notes_queue.server_seats.future_cap", str(caught.exception))
+
+    def test_a_secret_named_sub_key_with_an_unknown_type_still_refuses_whole(self) -> None:
+        doc = shipped_allowlist()
+        doc["seat"]["routine"]["keys"]["token_file"] = {"type": "future-thing"}
+        with self.assertRaises(M.Refusal):
+            M.validate_allowlist(doc)
+
     def test_a_secret_named_sub_key_cannot_be_listed_inside_a_table(self) -> None:
         doc = shipped_allowlist()
         doc["seat"]["routine"]["keys"]["token_file"] = {"type": "bool"}
@@ -199,7 +243,6 @@ class AllowlistTests(Case):
             lambda d: d.update(schemaVersion=2),
             lambda d: d.update(extra=1),
             lambda d: d["tables"].update(seat={}),
-            lambda d: d["seat"].update(enabled={"type": "anything"}),
             lambda d: d["tables"]["daemon"].update(coalesce_seconds={"type": "number", "min": 5, "max": 1}),
             lambda d: d["seat"].update(enabled={"type": "bool", "extra": 1}),
         ):
@@ -1211,6 +1254,18 @@ class RequestProtocolTests(Case):
         self.assertEqual(observed[0][0], envelope["request"]["expectBaseSHA256"])
         self.assertNotIn("bootstrap", observed[0][1])
 
+    def test_private_missing_bindings_name_only_the_required_source(self):
+        for name in (M.BOOTSTRAP_PROJECT, M.BOOTSTRAP_WRITER):
+            envelope = self.bootstrap()
+            envelope["bootstrap"].pop(name)
+            with mock.patch.object(M, "run_request") as run:
+                answer, code = M.bootstrap_request(json.dumps(envelope).encode())
+            self.assertEqual(code, 2)
+            self.assertEqual(answer["requiredBinding"], name)
+            self.assertEqual(answer["unavailableSource"], name)
+            self.assertNotIn(self.writer, json.dumps(answer))
+            run.assert_not_called()
+
     def test_private_failures_are_fixed_and_scrub_even_if_input_read_or_request_raises(self):
         envelope = self.bootstrap()
         deep_val: object = 1
@@ -1232,7 +1287,8 @@ class RequestProtocolTests(Case):
                 out = io.StringIO()
                 self.assertEqual(M.main(["--bootstrap-request-stdin"], io.BytesIO(raw), out), 2)
                 self.assertEqual(json.loads(out.getvalue()), {"tool": M.TOOL, "ok": False, "result": "refused",
-                                                             "errorCode": "bootstrap_unavailable"})
+                                                             "errorCode": "bootstrap_unavailable",
+                                                             "unavailableSource": "operator_settings_bootstrap"})
                 self.assertNotIn(M.BOOTSTRAP_WRITER, os.environ)
                 self.assertNotIn(M.BOOTSTRAP_READER, os.environ)
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
@@ -1241,7 +1297,8 @@ class RequestProtocolTests(Case):
             for limited in (deep_envelope, dense_envelope):
                 answer, code = M.bootstrap_request(json.dumps(limited).encode())
                 self.assertEqual((answer, code), (
-                    {"tool": M.TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+                    {"tool": M.TOOL, "ok": False, "result": "refused", "errorCode": "bootstrap_unavailable",
+                     "unavailableSource": "operator_settings_bootstrap"}, 2
                 ))
             mocked_run.assert_not_called()
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -1524,6 +1581,108 @@ class ControlVerbTests(Case):
         self.assertIs(request["allowlist"]["applyEnabled"], False)
         self.assertNotIn("set", request)
         self.assertEqual(self.audit_rows(), [])
+
+    def test_a_get_retries_past_an_editor_that_predates_a_spec_type(self) -> None:
+        # The deployed image's editor predates `seats` and refuses the whole
+        # read for it (the Muster screenshot).  The helper drops only the
+        # entries the old editor names and retries, so the read succeeds and
+        # says what was left out;  the dropped keys stay unreadable there.
+        class OldEditorReader(FakeReader):
+            def __call__(self, argv, timeout, env, max_bytes, data=None):
+                self.calls.append({"argv": list(argv), "env": dict(env), "data": data, "timeout": timeout})
+                request = json.loads(data)
+                queue = request["allowlist"]["tables"].get("notes_queue", {})
+                for name, spec in queue.items():
+                    if isinstance(spec, dict) and spec.get("type") == "seats":
+                        doc = {
+                            "tool": "eavesdropper-settings", "ok": False, "result": "refused",
+                            "errorCode": "allowlist_invalid",
+                            "detail": "notes_queue.%s needs a type from bool, int, number, enum, string, table, pairs, seat-env" % name,
+                        }
+                        return 2, json.dumps(doc).encode(), b"", False
+                doc = {"tool": "eavesdropper-settings", "ok": True, "result": "read", "settings": {"notes_queue.enabled": True}}
+                return 0, json.dumps(doc).encode(), b"", False
+
+        answer, code, reader = self.server("plan", reader=OldEditorReader())
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "read"))
+        self.assertEqual(len(reader.calls), 3)
+        self.assertEqual(answer["skippedAllowlist"], ["notes_queue.server_seats", "notes_queue.worker_seats"])
+        self.assertIn("left out", answer["detail"])
+        final = json.loads(reader.calls[-1]["data"])
+        self.assertNotIn("server_seats", final["allowlist"]["tables"]["notes_queue"])
+
+    def test_the_retry_never_drops_a_corrupt_or_nested_entry_whole(self) -> None:
+        foc = self.foc
+        corrupt = {"tables": {"notes_queue": {"server_seats": "not-a-spec"}}}
+        self.assertIsNone(foc._strip_unknown_allowlist_entry(corrupt, "notes_queue.server_seats"))
+        # Only a newly added type may be dropped:  a type the editor has always
+        # known keeps its refusal, and so does a type no editor ever had.  The
+        # editor's own answer names the entry, but it does not choose it.
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(
+                {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "future-thing"}}}}},
+                "seat.*.budget.future_cap",
+            )
+        )
+        nested = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "seats"}}}}}
+        stripped = foc._strip_unknown_allowlist_entry(nested, "seat.*.budget.future_cap")
+        # The parent had no other sub-key, so it goes with it:  an empty parent
+        # spec would reach the editor and it refuses "%s needs its keys".
+        self.assertEqual(stripped, (("seat", "budget"), "seat.*.budget"))
+        self.assertEqual(nested["seat"], {})
+        # A parent with another sub-key keeps it, and the report names the
+        # sub-key that was left out.
+        kept = {"seat": {"budget": {"type": "table", "keys": {"future_cap": {"type": "seats"}, "wakes_per_day": {"type": "int"}}}}}
+        stripped = foc._strip_unknown_allowlist_entry(kept, "seat.*.budget.future_cap")
+        self.assertEqual(stripped, (("seat", "budget"), "seat.*.budget.future_cap"))
+        self.assertEqual(sorted(kept["seat"]["budget"]["keys"]), ["wakes_per_day"])
+
+    def test_a_nested_drop_blocks_only_its_own_sub_key(self) -> None:
+        foc = self.foc
+        stripped = (("seat", "budget"), "seat.*.budget.future_cap")
+        # A whole-entry drop still blocks every set under it.
+        self.assertTrue(foc._set_touches({"notes_queue.server_seats": ["JET"]}, (("notes_queue", "server_seats"), "notes_queue.server_seats")))
+        # A sibling-only write to the same parent entry does not touch the drop.
+        self.assertFalse(foc._set_touches({"seat.ZC.budget": {"wakes_per_day": 6}}, stripped))
+        # A value carrying the dropped sub-key stays refused.
+        self.assertTrue(foc._set_touches({"seat.ZC.budget": {"wakes_per_day": 6, "future_cap": 1}}, stripped))
+        # A removal naming the dropped sub-key stays refused; a sibling removal does not.
+        self.assertTrue(foc._set_touches({}, stripped, ["seat.ZC.budget.future_cap"]))
+        self.assertFalse(foc._set_touches({}, stripped, ["seat.ZC.budget.wakes_per_day"]))
+        # An unrelated seat or table never touches.
+        self.assertFalse(foc._set_touches({"seat.ZC.enabled": False}, stripped))
+
+    def test_a_whole_parent_removal_keeps_the_original_refusal(self) -> None:
+        # A nested sub-key drop must also block a removal of the whole parent
+        # entry:  the parent carries the dropped sub-key's stored value, so
+        # removing it through an editor that cannot see the sub-key would
+        # drop that value silently.  A sibling sub-key removal still retries.
+        foc = self.foc
+        seat_drop = (("seat", "budget"), "seat.*.budget.future_cap")
+        self.assertTrue(foc._set_touches({}, seat_drop, ["seat.ZC.budget"]))
+        table_drop = (("notes_queue", "entry"), "notes_queue.entry.future_cap")
+        self.assertTrue(foc._set_touches({}, table_drop, ["notes_queue.entry"]))
+        self.assertFalse(foc._set_touches({}, seat_drop, ["seat.ZC.budget.wakes_per_day"]))
+        self.assertFalse(foc._set_touches({}, table_drop, ["notes_queue.entry.wakes_per_day"]))
+        # A whole-entry drop still blocks a whole-parent removal too.
+        whole = (("notes_queue", "server_seats"), "notes_queue.server_seats")
+        self.assertTrue(foc._set_touches({}, whole, ["notes_queue.server_seats"]))
+
+    def test_a_change_to_a_dropped_entry_keeps_the_original_refusal(self) -> None:
+        class OldEditorReader(FakeReader):
+            def __call__(self, argv, timeout, env, max_bytes, data=None):
+                self.calls.append({"argv": list(argv), "env": dict(env), "data": data, "timeout": timeout})
+                doc = {
+                    "tool": "eavesdropper-settings", "ok": False, "result": "refused",
+                    "errorCode": "allowlist_invalid",
+                    "detail": "notes_queue.server_seats needs a type from bool, int, number, enum, string, table, pairs, seat-env",
+                }
+                return 2, json.dumps(doc).encode(), b"", False
+
+        stdin = json.dumps({"set": {"notes_queue.server_seats": ["CLAUDE"]}}).encode()
+        answer, code, reader = self.server("plan", stdin, OldEditorReader())
+        self.assertEqual((code, answer["result"], answer["errorCode"]), (2, "refused", "allowlist_invalid"))
+        self.assertEqual(len(reader.calls), 1)
 
     def test_a_plan_sends_the_changes_on_stdin_and_never_in_the_argv(self) -> None:
         document = {"tool": "eavesdropper-settings", "ok": True, "result": "planned", "changes": [{"key": "seat.ZC.enabled"}], "diff": ["+enabled = false"], "check": {"ok": True, "problems": []}}

@@ -35,7 +35,7 @@ REGISTRY_FILE = SCRIPTS_DIR.parent / "fleet-apps.json"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 TIMEOUT = 90.0
 STAMP = 1_790_000_000.0
-DUMMY_TOKEN = "dummy-bearer-value-0123456789"
+DUMMY_BEARER = "dummy-bearer-value-0123456789"
 
 LANE_STUB = '''"""Stub lane module for the installer tests."""
 import sys
@@ -252,7 +252,7 @@ class CopilotTests(World):
         super().setUp()
         (self.home / ".copilot" / "hooks").mkdir(parents=True)
         (self.home / ".copilot" / "settings.json").write_text(
-            json.dumps({"env": {"EXAMPLE": DUMMY_TOKEN}}) + "\n", encoding="utf-8"
+            json.dumps({"env": {"EXAMPLE": DUMMY_BEARER}}) + "\n", encoding="utf-8"
         )
         (self.home / ".copilot" / "hooks" / "agent-hook-otlp.json").write_text(
             json.dumps({"version": 1, "hooks": {"postToolUse": []}}) + "\n", encoding="utf-8"
@@ -274,7 +274,7 @@ class CopilotTests(World):
             "OWNER-GATED",
         ):
             self.assertIn(needle, out)
-        self.assertNotIn(DUMMY_TOKEN, out)
+        self.assertNotIn(DUMMY_BEARER, out)
 
     def test_apply_writes_the_fleet_owned_file_and_is_idempotent(self) -> None:
         settings_before = (self.home / ".copilot" / "settings.json").read_bytes()
@@ -470,7 +470,7 @@ class OpenCodePluginShapeTests(World):
         self.assertNotIn('"tool.execute.before"', text)
         self.assertNotIn("Authorization", text)
         self.assertNotIn("Bearer", text)
-        self.assertNotIn(DUMMY_TOKEN, text)
+        self.assertNotIn(DUMMY_BEARER, text)
 
     def test_an_allowed_command_is_not_denied_and_a_deny_throws_the_reason(self) -> None:
         results = {r["name"]: r for r in self.harness(EXECUTE_HARNESS)}
@@ -550,7 +550,7 @@ class OpenCodeTests(World):
             "mcp": {
                 "fixture-mcp": {
                     "type": "remote",
-                    "headers": {"Authorization": "Bearer " + DUMMY_TOKEN},
+                    "headers": {"Authorization": "Bearer " + DUMMY_BEARER},
                 }
             },
             "plugins": ["opencode-mobile@latest"],
@@ -575,7 +575,7 @@ class OpenCodeTests(World):
         self.assertIn("commandFrom(payload)", text)
         self.assertNotIn("Authorization", text)
         self.assertNotIn("Bearer", text)
-        self.assertNotIn(DUMMY_TOKEN, text)
+        self.assertNotIn(DUMMY_BEARER, text)
 
     def test_apply_lists_the_plugin_by_absolute_path_and_preserves_the_file(self) -> None:
         before = json.loads(self.config.read_text(encoding="utf-8"))
@@ -600,7 +600,7 @@ class OpenCodeTests(World):
         self.assertIn(self.paths.opencode_plugin_dir, out)
         self.assertIn("opencode-plugin/index.ts", out)
         self.assertIn("UNVERIFIED", out)
-        self.assertNotIn(DUMMY_TOKEN, out)
+        self.assertNotIn(DUMMY_BEARER, out)
         self.assertNotIn("Bearer", out)
 
     def test_verify_reads_the_entry_back_and_probes_the_guard(self) -> None:
@@ -869,6 +869,7 @@ class InstallLockAndPrivateDirTests(World):
     def test_an_existing_directory_keeps_its_own_permissions(self) -> None:
         target = self.home / "already"
         target.mkdir(mode=0o750)
+        target.chmod(0o750)
         T._makedirs_private(str(target))
         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o750)
 

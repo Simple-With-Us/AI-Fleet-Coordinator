@@ -35,12 +35,13 @@ DSH_RUNTIME = Path.home() / "apps" / "dsh-runtime"
 SHELLULAR_AGENTS = Path.home() / ".shellular" / "agents.json"
 ACP_SESSIONS = Path.home() / ".cursor" / "acp-sessions"
 API_KEY_NAMES = ("CURSOR_API_KEY", "CURSOR_SYNC_API_KEY")
-FLEET_SECRETS_BIN = (
-    Path.home() / ".local" / "bin" / "fleet-secrets"
-)  # OPS-818:  Fleet-OPS in Infisical
 REPO_SCRIPTS = Path(__file__).resolve().parent
+INFISICAL_CLI = REPO_SCRIPTS / "fleet_infisical_cli.py"
+PYTHON = Path(sys.executable).resolve()
 LIVE_FILES = (
     "cursor_chat_surfaces.py",
+    "fleet_infisical_cli.py",
+    "fleet_infisical.py",
     "cursor_acp_cloud_bridge.py",
     "cursor-chat-surfaces",
     "cursor-machine-worker.sh",
@@ -63,16 +64,28 @@ def _env_api_key() -> str | None:
     return None
 
 
-def _fleet_secrets_key() -> str | None:
-    """CURSOR_SYNC_API_KEY (or CURSOR_API_KEY) from `fleet-secrets get`, or None.  Never logged."""
-    binary = shutil.which("fleet-secrets") or (
-        str(FLEET_SECRETS_BIN) if FLEET_SECRETS_BIN.is_file() else None
-    )
-    if not binary:
+def _infisical_api_key() -> str | None:
+    """CURSOR_API_KEY or CURSOR_SYNC_API_KEY from the shared isolated CLI.  Never logged."""
+    if not INFISICAL_CLI.is_file():
         return None
     for name in API_KEY_NAMES:
         try:
-            proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+            proc = subprocess.run(
+                [
+                    str(PYTHON),
+                    "-I",
+                    str(INFISICAL_CLI),
+                    "get",
+                    name,
+                    "--path",
+                    "/",
+                    "--project",
+                    "fleet-ops",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
         except (OSError, subprocess.SubprocessError):
             return None
         value = proc.stdout.strip() if proc.returncode == 0 else ""
@@ -82,11 +95,11 @@ def _fleet_secrets_key() -> str | None:
 
 
 def load_api_key() -> str | None:
-    """CURSOR_API_KEY or CURSOR_SYNC_API_KEY from the environment, else Infisical Fleet-OPS (`fleet-secrets get`)."""
+    """Use existing Infisical-synced key transport, else the shared Infisical CLI."""
     env = _env_api_key()
     if env:
         return env
-    return _fleet_secrets_key()
+    return _infisical_api_key()
 
 
 def github_https_url(remote: str) -> str | None:
@@ -171,8 +184,8 @@ def agent_web_url(agent_id: str) -> str:
 
 
 def _basic_auth_header(api_key: str) -> str:
-    token = base64.b64encode(f"{api_key}:".encode()).decode("ascii")
-    return f"Basic {token}"
+    basic = base64.b64encode(f"{api_key}:".encode()).decode("ascii")
+    return f"Basic {basic}"
 
 
 def api_request(
@@ -434,7 +447,7 @@ def cmd_status() -> int:
         + (
             "present"
             if key
-            else "MISSING (CURSOR_SYNC_API_KEY in Infisical Fleet-OPS via `fleet-secrets get`, "
+            else "MISSING (CURSOR_SYNC_API_KEY in Infisical Fleet-OPS via the shared CLI, "
             "or CURSOR_API_KEY in the environment)"
         )
     )
@@ -487,7 +500,7 @@ def cmd_list_cloud() -> int:
     key = load_api_key()
     if not key:
         print(
-            "No Cursor API key.  Use CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`).",
+            "No Cursor API key.  Use CURSOR_SYNC_API_KEY from Infisical Fleet-OPS.",
             file=sys.stderr,
         )
         return 2
@@ -628,7 +641,7 @@ def cmd_install(shellular: bool) -> int:
         print("restart Shellular to pick up the spawn: pm2 restart shellular")
     if not load_api_key():
         print(
-            "Still need CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`).  "
+            "Still need CURSOR_SYNC_API_KEY from Infisical Fleet-OPS.  "
             "Without it the Cursor bridge execs local cursor-agent acp and iOS cannot see those chats."
         )
         return 2

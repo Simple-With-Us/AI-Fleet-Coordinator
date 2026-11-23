@@ -1263,7 +1263,7 @@ test('v2: opt-in larger-text class',()=>{
   const big='x'.repeat(83854);
   assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:big}));
   assert.ok(validWfV1Args('wf_git_blob_create',{repo,text:big,allow_large_text:true}));
-  assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'x'.repeat(100001),allow_large_text:true}));
+  assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'x'.repeat(716801),allow_large_text:true}));
   assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:big,allow_large_text:'yes'}));
   const files=[0,1,2].map(i=>({path:'f'+i+'.txt',text:'y'.repeat(20000),mode:'100644'}));
   assert.ok(!validWfV1Args('wf_git_tree_create',{repo,base_tree:S40,files}));
@@ -1287,7 +1287,7 @@ test('v2: blob_create response size follows the allow_large_text opt-in',()=>{
   const mk=(size)=>({blob:{sha:S40b,size}});
   assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo,allow_large_text:true}),true);
   assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo}),false);
-  assert.equal(validWfV1Response('wf_git_blob_create',mk(100001),{repo,allow_large_text:true}),false);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(716801),{repo,allow_large_text:true}),false);
   assert.equal(validWfV1Response('wf_git_blob_create',mk(40000),{repo}),true);
 });
 test('v2: blob_create custody dispatch end-to-end follows the opt-in',async()=>{

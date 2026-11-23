@@ -944,7 +944,8 @@ class TestAppActions(unittest.TestCase):
                 relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
             )
             self.assertEqual(
-                relay.client.calls, [("edit_pr", "example/x", 1, "t2", None, "MINTED-FAKE-TOKEN")]
+                relay.client.calls,
+                [("edit_pr", "example/x", 1, "[ECHO] t2", None, "MINTED-FAKE-TOKEN")],
             )
 
     def test_reply_thread_uses_minted_bearer(self):
@@ -1205,7 +1206,7 @@ def _named_secret_source(
     case, values=None, *, reader=None, calls=None, path="/github-apps", environ=None
 ):
     """Bind this adapter to the test's own protected synthetic reader token."""
-    from git_relay.app_tokens import FleetSecretsSource
+    from git_relay.app_tokens import InfisicalSource
 
     directory = pathlib.Path(tempfile.mkdtemp()).resolve()
     case.addCleanup(shutil.rmtree, directory, True)
@@ -1231,12 +1232,12 @@ def _named_secret_source(
             return reader(project_id, folder, env, **kwargs)
         return {name: values[name] for name in kwargs["names"] if name in values}
 
-    return FleetSecretsSource(
+    return InfisicalSource(
         path=path, credential_file=str(credential), environ=source_env, reader=scoped_reader
     )
 
 
-class TestFleetSecretsSource(unittest.TestCase):
+class TestInfisicalSource(unittest.TestCase):
     """The source uses one bounded named reader and its own explicit binding."""
 
     def _source(self, values=None, **kwargs):
@@ -1251,7 +1252,7 @@ class TestFleetSecretsSource(unittest.TestCase):
         self.assertEqual(calls[0][3]["names"], ("GH_APP_SWU_ECHO_ID",))
 
     def test_default_path_is_github_apps_and_is_overridable(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
         calls = []
         self._source({"GH_APP_SWU_ECHO_ID": "v"}, calls=calls).secret("GH_APP_SWU_ECHO_ID")
@@ -1262,7 +1263,7 @@ class TestFleetSecretsSource(unittest.TestCase):
         )
         self.assertEqual(calls[0][1], "/ghr")
         with self.assertRaises(AppTokenError):
-            FleetSecretsSource(path="github-apps")
+            InfisicalSource(path="github-apps")
 
     def test_ambient_values_and_auth_are_not_reader_inputs(self):
         calls = []
@@ -1386,7 +1387,7 @@ class TestFleetSecretsSource(unittest.TestCase):
             self.assertEqual(len(calls), 1)
 
     def test_path_guard_preserves_exact_folder_rules(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
         for bad in (
             "github-apps",
@@ -1397,8 +1398,8 @@ class TestFleetSecretsSource(unittest.TestCase):
             "/github-apps\n",
         ):
             with self.assertRaises(AppTokenError, msg=bad):
-                FleetSecretsSource(path=bad)
-        FleetSecretsSource(path="/github-apps")
+                InfisicalSource(path=bad)
+        InfisicalSource(path="/github-apps")
 
     def test_empty_value_is_refused(self):
         from git_relay.app_tokens import AppTokenError
@@ -1417,7 +1418,7 @@ class TestFleetSecretsSource(unittest.TestCase):
         self.assertNotIn("backend secret detail", str(ctx.exception))
 
 
-class TestFleetSecretsSourceAgainstNamedReader(unittest.TestCase):
+class TestInfisicalSourceAgainstNamedReader(unittest.TestCase):
     """The adapter preserves the named-reader contract and source protocol."""
 
     FOLDER = {"GH_APP_X_ID": "7", "GH_APP_X_PRIVATE_KEY": "pem"}
@@ -1966,7 +1967,7 @@ class TestAppTokenErrorMapped(unittest.TestCase):
                 logged = fh.read()
             self.assertIn("unavailable", logged)
 
-    def test_unreadable_fleet_secrets_output_is_503_not_400(self):
+    def test_unreadable_store_output_is_503_not_400(self):
         from git_relay.app_tokens import AppTokenMinter
 
         # A malformed reader result remains an unavailable source, not bad input.
@@ -2635,7 +2636,7 @@ class LegacyStateAdoption(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         captured = {}
-        real_source = app_tokens.FleetSecretsSource
+        real_source = app_tokens.InfisicalSource
 
         def fake_source(**kwargs):
             captured.update(kwargs)
@@ -2646,10 +2647,7 @@ class LegacyStateAdoption(unittest.TestCase):
         origin = pathlib.Path.cwd()
         with (
             self._app_mint_env(GIT_RELAY_SECRETS_PATH="/other-apps"),
-            unittest.mock.patch.object(
-                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
-            ),
-            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+            unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
         ):
             os.chdir(directory)
             try:
@@ -2668,12 +2666,7 @@ class LegacyStateAdoption(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         origin = pathlib.Path.cwd()
-        with (
-            self._app_mint_env(GIT_RELAY_SECRETS_PATH=""),
-            unittest.mock.patch.object(
-                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
-            ),
-        ):
+        with self._app_mint_env(GIT_RELAY_SECRETS_PATH=""):
             os.chdir(directory)
             try:
                 with self.assertRaises(SystemExit) as ctx:
@@ -2684,8 +2677,8 @@ class LegacyStateAdoption(unittest.TestCase):
 
 
 class TestOwnerTokenFromCli(unittest.TestCase):
-    """The open_pr owner token comes ONLY from `fleet-secrets get-verified`
-    at /git-relay-owner;  an ambient GITHUB_TOKEN is never consulted."""
+    """The open_pr owner token comes ONLY from the folder-proven read at
+    /git-relay-owner;  an ambient GITHUB_TOKEN is never consulted."""
 
     def _fake_source(self, captured, value=None, error=None):
         def factory(**kwargs):
@@ -2716,7 +2709,7 @@ class TestOwnerTokenFromCli(unittest.TestCase):
                 clear=True,
             ),
             unittest.mock.patch.object(
-                app_tokens, "FleetSecretsSource", self._fake_source(captured, "cli-value")
+                app_tokens, "InfisicalSource", self._fake_source(captured, "cli-value")
             ),
         ):
             self.assertEqual(server._owner_token_from_cli(), "cli-value")
@@ -2735,7 +2728,7 @@ class TestOwnerTokenFromCli(unittest.TestCase):
                 clear=True,
             ),
             unittest.mock.patch.object(
-                app_tokens, "FleetSecretsSource", self._fake_source(captured, "v")
+                app_tokens, "InfisicalSource", self._fake_source(captured, "v")
             ),
         ):
             server._owner_token_from_cli()
@@ -2753,7 +2746,7 @@ class TestOwnerTokenFromCli(unittest.TestCase):
             ),
             unittest.mock.patch.object(
                 app_tokens,
-                "FleetSecretsSource",
+                "InfisicalSource",
                 self._fake_source(
                     captured, error=app_tokens.AppTokenError("the-value-must-not-appear")
                 ),
@@ -2859,10 +2852,10 @@ class TestVerifiedSecret(unittest.TestCase):
         self.assertNotEqual(calls[0][3]["token"], environ["INFISICAL_TOKEN"])
 
     def test_unreadable_credential_file_fails_closed_before_reader(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
         reader = unittest.mock.Mock(side_effect=AssertionError("reader must not run"))
-        source = FleetSecretsSource(
+        source = InfisicalSource(
             reader=reader,
             path="/git-relay-owner",
             credential_file="/nonexistent/credential",
@@ -2886,7 +2879,7 @@ class TestVerifiedSecret(unittest.TestCase):
 
 
 class TestProductionCredentialBinding(unittest.TestCase):
-    """from_env's production entry binds every fleet-secrets source to its
+    """from_env's production entry binds every store source to its
     credential file and fails closed otherwise - the class-level
     credential_file=None shape is unreachable from production wiring."""
 
@@ -2966,10 +2959,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
                 GIT_RELAY_APPS_CREDENTIAL_FILE=str(directory / "git-relay-apps-token"),
                 GIT_RELAY_VERIFY_URL="https://sync.example/gr-internal/verify-bearer",
             ),
-            unittest.mock.patch.object(
-                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
-            ),
-            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+            unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
             unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40),
         ):
             server.from_env()
@@ -2995,7 +2985,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
         with (
             self._env(CREDENTIALS_DIRECTORY=str(directory)),
-            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+            unittest.mock.patch.object(app_tokens, "InfisicalSource", fake_source),
         ):
             server.from_env()
         self.assertEqual(captured.get("path"), "/git-relay-owner")
@@ -3013,9 +3003,9 @@ class TestScopedChildProjectBinding(unittest.TestCase):
         return str(creds)
 
     def test_missing_project_binding_fails_closed_naming_the_variable(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
-        source = FleetSecretsSource(
+        source = InfisicalSource(
             reader=lambda *a, **k: self.fail("reader must not run"),
             path="/git-relay-owner",
             credential_file=self._creds(),
@@ -3026,9 +3016,9 @@ class TestScopedChildProjectBinding(unittest.TestCase):
         self.assertIn("INFISICAL_FLEET_OPS_PROJECT_ID", str(ctx.exception))
 
     def test_blank_project_binding_is_missing(self):
-        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, InfisicalSource
 
-        source = FleetSecretsSource(
+        source = InfisicalSource(
             reader=lambda *a, **k: self.fail("reader must not run"),
             path="/git-relay-owner",
             credential_file=self._creds(),

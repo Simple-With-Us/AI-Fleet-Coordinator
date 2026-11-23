@@ -88,7 +88,7 @@ Never idle-watch a PR: take at most one bounded wait, then act on conflicts, ope
 
 ## Secret-Handling Details
 
-Never run `--output json` against secrets or dump credentials with `od`, `xxd`, `hexdump`, `strings`, `base64`, `cut -c`, or final-value `printf`.  Use scoped `fleet-secrets names`, `fleet-secrets doctor`, and `fleet-secrets run --only A,B -- CMD`.  Capture a permitted `fleet-secrets get NAME` silently into its consumer process, never display it.  Report only names and set/empty or shape facts.  GitHub App ids, private keys, and minted tokens stay with the relay.  Scan outbound bodies before persisting or sending; never re-encode or reroute a refused secret.
+Never run `--output json` against secrets or dump credentials with `od`, `xxd`, `hexdump`, `strings`, `base64`, `cut -c`, or final-value `printf`.  Use a names-only scoped Infisical read and the shared client's own status, and hand a command only the names it needs, through its environment.  Capture a permitted scoped read of NAME silently into its consumer process, never display it.  Report only names and set/empty or shape facts.  GitHub App ids, private keys, and minted tokens stay with the relay.  Scan outbound bodies before persisting or sending; never re-encode or reroute a refused secret.
 
 ## Writing And Notes Details
 

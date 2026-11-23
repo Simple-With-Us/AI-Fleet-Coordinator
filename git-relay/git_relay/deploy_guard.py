@@ -43,13 +43,21 @@ def freeze_qualified(expected, before, after, task_states, children, pending, st
     establishes no provider call in progress, unlike pending journal count.
     A pre-existing stop job or replacement process refuses the operation.
     """
-    return (
-        isinstance(expected, dict)
-        and expected == before == after
-        and type(expected.get("pid")) is int
-        and expected["pid"] > 0
-        and task_states == {expected["pid"]: "T"}
-        and children == []
-        and pending == 0
-        and stop_job is False
+    return not freeze_failures(expected, before, after, task_states, children, pending, stop_job)
+
+
+def freeze_failures(expected, before, after, task_states, children, pending, stop_job):
+    """Nonsecret failed predicate names from the same captured freeze observations."""
+    valid_pid = (
+        isinstance(expected, dict) and type(expected.get("pid")) is int and expected["pid"] > 0
     )
+    checks = (
+        ("expected_dict", isinstance(expected, dict)),
+        ("identity_unchanged", expected == before == after),
+        ("valid_pid", valid_pid),
+        ("single_frozen_main_task", valid_pid and task_states == {expected["pid"]: "T"}),
+        ("no_children", children == []),
+        ("no_pending", pending == 0),
+        ("no_unit_job", stop_job is False),
+    )
+    return [name for name, passed in checks if not passed]

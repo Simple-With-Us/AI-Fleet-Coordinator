@@ -104,7 +104,8 @@ It returns a `Delivery` whose `outcome` is one of:
     busy         the chat cannot take it yet;  the wake waits, and this uses up no attempt
     unreachable  the chat's host did not answer;  the wake waits, and this uses up no attempt
     failed       this try failed and cannot have run the wake;  it is retried up to `max_attempts`
-    refused      it can never work, or a retry could run the turn twice;  no retry
+    refused      it can never work, or a retry could run the turn twice;  no retry except for a
+                 classified target-ineligible never-run refusal on an unaddressed pick
     unknown      it may have run the wake and nobody can tell;  it is not retried (a retry could
                  run the turn twice) and not recorded as delivered;  the receipt keeps it visible
 
@@ -113,7 +114,10 @@ its own errors from that point on and return `refused`.  `route`, `code` and `no
 codes for the receipt, never message text and never a credential.  A receipt says `delivered: false`
 for a refusal only when its code is in `NEVER_RAN` or in the seat's own module's `NEVER_RAN` (the
 Router's `never_ran`):  any other refusal may follow a turn that started, so it says
-`delivered: null`, because nobody knows.
+`delivered: null`, because nobody knows.  One classified never-run refusal, `session-subagent`,
+means the selected binding cannot receive a chat wake.  An unaddressed pick may exclude that exact
+binding and pick again within the same attempt and age caps; an addressed pick and every other
+refusal stay final.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
@@ -239,6 +243,16 @@ from . import registry_api, secretscan
 CONTRACT = "simple-tools-wake/1"
 MAX_BODY = 64 * 1024
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: The fleet session-id shape (fleet-apps.json `sessionIds`):  a `require_session` wake
+#: field must carry a full id in this shape, never a fragment.
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$")
+#: A `require_letter` wake field carries exactly the letter shape:  two capitals.
+REQUIRE_LETTER_RE = re.compile(r"^[A-Z]{2}$")
+#: A `require_pr` wake field names one pull request:  owner/name#number.  The origin
+#: registry row must carry that binding (the session's own seat-lane write).
+REQUIRE_PR_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}#[1-9][0-9]{0,8}$"
+)
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(["the", "and", "for", "with", "from", "this", "that", "ops", "afc"])
 NAME_CHARS = 200
@@ -281,6 +295,10 @@ FRAGMENT_MAX_CHARS = 36
 # A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
 FRAGMENT_MAX_PLAIN = 12
 MAX_FRAGMENTS = 8
+# Durable per-wake exclusions are bounded even if a pending file is malformed or edited.
+MAX_REJECTED_TARGETS = 64
+REJECTED_TARGET_CODES = frozenset({"session-subagent"})
+REJECTED_TARGET_PICK_KINDS = frozenset({"linear-issue", "topic-match", "consultant", "most-recent"})
 # The registry's times for a row, best first.  letter_history returns only `assigned_at` today.
 RECENCY_FIELDS = ("last_seen_at", "assigned_at")
 HISTORY_LIMIT = 200
@@ -292,6 +310,9 @@ DONE_KEEP_SECONDS = 30 * 86400
 REQUEST_TIMEOUT = 30
 # What `Seats.stop` allows past a seat's own shutdown wait before it stops waiting for that seat.
 STOP_MARGIN_SECONDS = 5.0
+#: How long a shutdown waits for the activation worker before it stops the seats anyway.
+#: A hung start must not hold SIGTERM past the unit's TimeoutStopSec.
+ACTIVATION_JOIN_TIMEOUT = 30.0
 OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused", "unknown")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
@@ -367,6 +388,7 @@ NEVER_RAN = frozenset(
 # can vary is {issue}, and that has matched ISSUE_ID, so no Zulip text reaches a chat's prompt.
 UNSURE = "and the router is not sure this wake is meant for this chat."
 LINK_NOTES = {
+    "required-session": "This wake is for the exact originating session.",
     "letter": "The router linked this wake to this chat because the sender addressed its letter.",
     "reply": "This wake was linked by reply.",
     "session-id": "This wake was linked by session id.",
@@ -477,6 +499,76 @@ class Wake:
     session_fragments: tuple[str, ...] = ()
     sender_fragment: str = ""
     linked_by: str = ""  # "reply" when the listener says the letter came from a reply, else ""
+    # An exact-origin wake (the review-alert path) names one chat by full session id, with the
+    # letter and generation its creation attestation recorded as extra constraints.  It picks
+    # that chat or holds;  it never falls through to issue, topic or recency.
+    credential_scope: str = ""  # set by HTTP authentication, never parsed from payload
+    required_session: str = ""
+    require_letter: str = ""
+    require_generation: int = 0
+    require_pr: str = ""
+
+
+def workspace_root(configured: object) -> str:
+    """The host's workspace root, as a normalized absolute path, or "" when there is none.
+
+    The deployment names the root where this seat's chats live.  It is a root and not one
+    directory, because a seat works in several projects at once:  a chat in another project
+    under the root is the seat's own work, and a chat outside the root is not.
+
+    The path is normalized, so a `..` cannot climb out of the root it was named under."""
+    if not isinstance(configured, str):
+        return ""
+    text = configured.strip()
+    if not text or text.startswith("-"):
+        return ""
+    if not os.path.isabs(text):
+        return ""
+    return os.path.normpath(text)
+
+
+def _under(root: str, path: str) -> bool:
+    """Whether the path is the root itself or lies inside it.
+
+    The root's own separator is never doubled, so the filesystem root ("/") holds every
+    path under it instead of holding none of them."""
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return path == root or path.startswith(prefix)
+
+
+def workspace_allowed(recorded: object, configured: object) -> bool:
+    """Whether the selected session's own workspace is inside the host's workspace root.
+
+    The delivery runs in the session's own directory, so the session's own row is the
+    binding and the configured root is the bound:  a chat under the root is the seat's own
+    work, and a chat outside it is a wrong-chat delivery, so it is refused before anything
+    runs.
+
+    The two are compared as they are named and as they resolve, because a deployment names
+    its root one way and a session records its directory another:  a root that is itself a
+    symlink and a session row that holds the resolved path name one tree two ways, and a
+    lane that is a symlink to another volume is inside the root it was named under.
+
+    A host that has named no root has no bound, so nothing is allowed:  a delivery into an
+    unknown directory is not one."""
+    root = workspace_root(configured)
+    if not root:
+        return False
+    if not isinstance(recorded, str):
+        return False
+    path = recorded.strip()
+    if not path or path.startswith("-"):
+        return False
+    if not os.path.isabs(path):
+        return False
+    path = os.path.normpath(path)
+    if _under(root, path):
+        return True
+    resolved_root = os.path.realpath(root)
+    resolved_path = os.path.realpath(path)
+    if resolved_root == resolved_path:
+        return True
+    return _under(resolved_root, resolved_path)
 
 
 @dataclass(frozen=True)
@@ -925,6 +1017,14 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         session_fragments=fragments_in(unquoted(addressing)),
         sender_fragment=next(iter(fragments_in(sender_part)), ""),
         linked_by="reply" if payload.get("linked_by") == "reply" else "",
+        required_session=str(payload.get("require_session") or ""),
+        require_letter=str(payload.get("require_letter") or ""),
+        require_generation=(
+            payload.get("require_generation")
+            if type(payload.get("require_generation")) is int
+            else 0
+        ),
+        require_pr=str(payload.get("require_pr") or ""),
     )
 
 
@@ -1288,6 +1388,50 @@ def _turn_record(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+REVIEW_ALERT_SCOPE = "review-alerts"
+REVIEW_ALERT_CREDENTIAL = "wake-router-review-alerts"
+
+
+def review_alert_key(env: Mapping[str, str]) -> tuple[str, str]:
+    """Own optional credential, never a routine/registry key or ambient bearer.
+
+    A missing selector/credential leaves this capability disabled without
+    changing the existing routine lane. The protected file is read fresh so
+    rotation does not require keeping a second secret cache.
+    """
+    import stat
+
+    explicit = env.get("WAKE_ROUTER_REVIEW_ALERTS_CREDENTIAL_FILE", "")
+    directory = env.get("CREDENTIALS_DIRECTORY", "")
+    if not explicit and not directory:
+        return "", "not-configured"
+    path = Path(explicit) if explicit else Path(directory) / REVIEW_ALERT_CREDENTIAL
+    if not path.is_absolute():
+        return "", "credential-path"
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid not in (0, os.geteuid())
+            or info.st_mode & 0o077
+        ):
+            return "", "credential-custody"
+        raw = os.read(fd, 4097)
+        if len(raw) > 4096:
+            return "", "credential-size"
+        value = raw.decode("ascii").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", value):
+            return "", "credential-shape"
+        return value, ""
+    except (OSError, UnicodeError):
+        return "", "credential-unavailable"
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 class Router:
     """The pick, the durable queue, the workers and the receipts for one seat.  The service runs
     one per seat (`Seats`), and none shares a folder, a queue, a worker or a key with another."""
@@ -1302,6 +1446,7 @@ class Router:
         consult: Consult | None = None,
         clock: Callable[[], float] = time.time,
         never_ran: Iterable[str] = (),
+        review_key: KeySource | None = None,
     ) -> None:
         self.platform = platform
         # The refusals known to come before anything ran:  this module's, and the platform's own
@@ -1311,6 +1456,8 @@ class Router:
         self.config = config
         self.state = state
         self._key = key
+        self._review_key = review_key or (lambda: review_alert_key(self.env))
+        self._review_key_status = ""
         self.consult = consult
         self.clock = clock
         self._entries: dict[str, dict[str, Any]] = {}
@@ -1322,6 +1469,30 @@ class Router:
         # The latest read of the platform's history:  (open chats left out only because their row
         # names another seat, when it was read).  None until one has been read in this process.
         self.other_seat_scan: tuple[int, float] | None = None
+
+    def review_key(self) -> tuple[str, str]:
+        try:
+            key, why = self._review_key()
+        except Exception:
+            key, why = "", "credential-unavailable"
+        allowed = {
+            "not-configured",
+            "credential-path",
+            "credential-custody",
+            "credential-size",
+            "credential-shape",
+            "credential-unavailable",
+        }
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", key):
+            key, why = "", why if why in allowed else "credential-unavailable"
+        else:
+            why = "ready"
+        # Log transitions only, using fixed reason tokens, never file paths or values.
+        if why != self._review_key_status:
+            self._review_key_status = why
+            if why != "not-configured":
+                self._log("review-credential-" + why, "")
+        return key, "" if key else why
 
     def routine_key(self) -> tuple[str, str]:
         """(key, why) for this request:  the key, or "" and a reason token.  A source that fails
@@ -1358,7 +1529,14 @@ class Router:
         stop = STOP_WORDS | self.platform.stop_words | {self.platform.platform}
         return {w.lower() for w in WORD_RE.findall(text or "") if w.lower() not in stop}
 
-    def pick(self, wake: Wake, *, consult: bool = True, timeout: int = REGISTRY_TIMEOUT) -> Pick:
+    def pick(
+        self,
+        wake: Wake,
+        *,
+        consult: bool = True,
+        timeout: int = REGISTRY_TIMEOUT,
+        rejected_targets: Sequence[Mapping[str, Any]] = (),
+    ) -> Pick:
         """The rules, in order:  an addressed letter;  a session-id fragment;  a Linear issue;  the
         chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
         to the most recent of the tied, and no step picks the sender's own chat.  A registry that
@@ -1382,7 +1560,7 @@ class Router:
                 letter_other_seat=letter_other_seat,
             )
 
-        if wake.letter:
+        if wake.letter and not wake.required_session:
             answer = registry_api.call(
                 self.env,
                 "resolve",
@@ -1428,6 +1606,7 @@ class Router:
             )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
+        rows_by_sid: dict[str, Mapping[str, Any]] = {}
         row_issues: dict[str, list[tuple[str, float | None]]] = {}
         others: set[str] = set()  # open chats left out only because their row names another seat
         for row in answer.get("items") or []:
@@ -1443,13 +1622,59 @@ class Router:
             if target.session_id not in live:
                 live[target.session_id] = target
                 seen[target.session_id] = _row_time(row)
+                rows_by_sid[target.session_id] = row
                 row_issues[target.session_id] = _issues_of(row)
         # One assignment, so a health read on another thread sees a whole pair.
         self.other_seat_scan = (len(others - live.keys()), self.clock())
         excluded = self._excluded(list(live.values()))
         candidates = [
-            t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
+            t
+            for sid, t in live.items()
+            if sid not in excluded
+            and not _is_sender(t, wake)
+            and not any(_same_target_binding(t, rejected) for rejected in rejected_targets)
         ]
+        if wake.required_session:
+            # An exact-origin wake names one chat by full session id.  Like an
+            # addressed letter it is that chat or a hold:  falling through
+            # would wake a chat not addressed.  The attested letter and
+            # generation, when carried, are constraints on the live row:  a
+            # re-generated or re-lettered chat is not the chat that opened
+            # the PR, so the wake holds rather than follow it.
+            fits = [t for t in candidates if t.session_id == wake.required_session]
+            if len(fits) == 1:
+                target = fits[0]
+                if wake.require_generation and target.generation != wake.require_generation:
+                    return Pick(
+                        reason="required-generation-mismatch",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                if wake.require_letter and target.letter != wake.require_letter:
+                    return Pick(
+                        reason="required-letter-mismatch",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                if wake.require_pr and not _pr_bound(
+                    rows_by_sid.get(target.session_id), wake.require_pr, target.generation
+                ):
+                    # The origin row does not carry this PR binding:  the
+                    # claim is unbound and the wake holds rather than wake a
+                    # chat whose link to the PR is unproven.
+                    return Pick(
+                        reason="required-pr-unbound",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                return chosen(target, "required-session", "required-session")
+            return Pick(
+                reason="required-session-ambiguous" if fits else "required-session-not-live",
+                retry=True,
+                letter_other_seat=letter_other_seat,
+                candidates=tuple(t.letter for t in fits),
+            )
+
         if not candidates:
             return Pick(
                 reason="no-live-session",
@@ -1546,9 +1771,13 @@ class Router:
         with self._cond:
             record = _read_json(self._done(wake.wake_id))
             if isinstance(record, dict):
+                if record.get("credential_scope", "") != wake.credential_scope:
+                    return 403, {"error": "wake scope mismatch"}
                 return 200, record
             held = self._entries.get(wake.wake_id)
             if held is not None:
+                if held["wake"].get("credential_scope", "") != wake.credential_scope:
+                    return 403, {"error": "wake scope mismatch"}
                 return 202, self._accepted(held)
             entry = {
                 "wake": asdict(wake),
@@ -1558,6 +1787,7 @@ class Router:
                 "attempts": 0,
                 "failures": 0,
                 "pick": None,
+                "rejected_targets": [],
             }
             try:
                 atomic_write(self._pending(wake.wake_id), entry)
@@ -1574,6 +1804,11 @@ class Router:
             "wake_id": entry["wake"]["wake_id"],
             "receipt_id": entry["receipt_id"],
             "status": "accepted",
+            **(
+                {"credential_scope": entry["wake"]["credential_scope"]}
+                if entry["wake"].get("credential_scope")
+                else {}
+            ),
         }
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
@@ -1607,6 +1842,8 @@ class Router:
         """Replay what a restart left pending, then start the workers."""
         self.replay()
         with self._cond:
+            if self._stopping:
+                return  # a shutdown in progress must not start workers
             for _ in range(int(self.config["workers"])):
                 self._add_worker()
 
@@ -1842,7 +2079,8 @@ class Router:
             return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
-            pick = self.pick(wake)
+            rejected = entry.get("rejected_targets", [])
+            pick = self.pick(wake, consult=not rejected, rejected_targets=rejected)
             if pick.retry:
                 if pick.reason == REGISTRY_UNAVAILABLE:
                     # A registry that cannot be read is an outage, not a failed delivery.
@@ -1883,7 +2121,7 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            stale, stale_note = self._stale(pick.target)
+            stale, stale_note = self._stale(pick.target, wake)
             if stale == RELEASED:
                 self._released(entry, pick, wake)
                 return
@@ -1930,7 +2168,7 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _stale(self, target: Target) -> tuple[str, str]:
+    def _stale(self, target: Target, wake: Wake | None = None) -> tuple[str, str]:
         """The reason this chat must not be delivered to, and the note that says why.
 
         The reason is empty when the registry still has this letter on this session at the
@@ -1950,7 +2188,18 @@ class Router:
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
             return UNREADABLE_ROW, ""
-        return (RELEASED, "") if not held else ("", "")
+        if not held:
+            return RELEASED, ""
+        if (
+            wake is not None
+            and wake.require_pr
+            and not _pr_bound(answer, wake.require_pr, target.generation)
+        ):
+            # Delivery-time recheck:  the binding present at pick is gone (or
+            # its generation stamp went stale).  Do not deliver on a pick the
+            # registry no longer supports;  a bounded retry re-reads it.
+            return "required-pr-unbound", ""
+        return "", ""
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1968,6 +2217,7 @@ class Router:
             self._cond.notify_all()
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
+        wake = Wake(**entry["wake"])
         outcome = result.outcome if result.outcome in OUTCOMES else "failed"
         if result.code == REGISTRY_UNAVAILABLE and outcome not in ("unknown", "refused"):
             # A registry that cannot be read is an outage, not a failed delivery, whichever
@@ -1981,6 +2231,8 @@ class Router:
             self._finish(entry, pick, status="delivered", delivered=delivered, result=result)
         elif outcome == "refused":
             delivered = False if result.code in self.never_ran else None
+            if delivered is False and self._repick_ineligible_target(entry, pick, wake, result):
+                return
             self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
@@ -1999,6 +2251,51 @@ class Router:
                 # later turn would run it again.
                 entry["busy_seen"] = True
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
+
+    def _repick_ineligible_target(
+        self, entry: dict[str, Any], pick: Pick, wake: Wake, result: Delivery
+    ) -> bool:
+        """Durably exclude one proven never-run, ineligible binding and repick an unaddressed wake.
+
+        The current and next deliveries both consume the existing attempt budget.  The rejection
+        is written before clearing the pick or in-flight mark, so replay cannot select the same
+        target after a crash.  A failed write settles this refusal instead of risking a repeat.
+        """
+        if (
+            result.outcome != "refused"
+            or result.code not in REJECTED_TARGET_CODES
+            or result.code not in self.never_ran
+            or pick.target is None
+            or wake.letter
+            or wake.linked_by == "reply"
+            or wake.session_fragments
+            or pick.picked not in REJECTED_TARGET_PICK_KINDS
+        ):
+            return False
+
+        rejected = entry.setdefault("rejected_targets", [])
+        if not isinstance(rejected, list) or len(rejected) >= MAX_REJECTED_TARGETS:
+            return False
+        binding = _target_binding(pick.target, result.code)
+        if any(_same_target_binding(pick.target, prior) for prior in rejected):
+            return False
+        if not _valid_rejected_binding(binding):
+            return False
+
+        repicks = int(entry.get("repicks", 0)) + 1
+        entry["rejected_targets"] = [*rejected, binding]
+        entry["repicks"] = repicks
+        entry["pick"] = None
+        entry.pop("in_flight", None)
+        self._retry(
+            entry,
+            counted=True,
+            code=result.code,
+            pick=pick,
+            result=result,
+            ineligible_target=True,
+        )
+        return True
 
     def _retry_outage(
         self,
@@ -2039,6 +2336,7 @@ class Router:
         pick: Pick | None = None,
         result: Delivery | None = None,
         wait: float | None = None,
+        ineligible_target: bool = False,
     ) -> None:
         """Requeue a wake.
 
@@ -2070,7 +2368,17 @@ class Router:
         entry.pop("in_flight", None)  # the outcome says this try did not run the wake
         # Saved while this worker still owns the entry:  once it is released another worker may
         # finish it, and a late save would bring its pending file back.
-        self._save(entry)
+        if not self._save(entry) and ineligible_target:
+            # The old pending file still has the in-flight mark.  Settle visibly rather than
+            # replaying with no durable rejection or failure charge.
+            self._finish(
+                entry,
+                pick or Pick(reason=code),
+                status="dead",
+                delivered=False,
+                result=result,
+            )
+            return
         with self._cond:
             entry["running"] = False
             self._cond.notify_all()
@@ -2115,7 +2423,13 @@ class Router:
         ride, ends the run;  one addressed to another seat or letter is passed over like any
         other chat's wake.  There is no deduplication by message id."""
         target = pick.target
-        if not certain(pick) or not message_id_ok(entry["wake"]["message_id"]) or self._stopping:
+        if (
+            entry["wake"].get("required_session")
+            or entry["wake"].get("require_pr")
+            or not certain(pick)
+            or not message_id_ok(entry["wake"]["message_id"])
+            or self._stopping
+        ):
             return []
         if target is None:  # certain() has said so already;  this only tells a type checker
             return []
@@ -2167,7 +2481,9 @@ class Router:
             return False
         pick = _pick_from(other["pick"])
         return (
-            certain(pick)
+            not other["wake"].get("required_session")
+            and not other["wake"].get("require_pr")
+            and certain(pick)
             and pick.target is not None
             and turn_key(pick.target) == key
             and message_id_ok(other["wake"]["message_id"])
@@ -2374,6 +2690,11 @@ class Router:
         target = pick.target
         receipt = {
             "receipt_id": entry["receipt_id"],
+            **(
+                {"credential_scope": wake["credential_scope"]}
+                if wake.get("credential_scope")
+                else {}
+            ),
             "wake_id": wake["wake_id"],
             "seat": self.platform.seat,
             "at": self.clock(),
@@ -2406,6 +2727,8 @@ class Router:
         turn = _turn_record(entry)  # only a member of a turn has one (module docstring, Turns)
         if turn is not None:
             receipt["turn"] = turn
+        if entry.get("rejected_targets"):
+            receipt["rejected_targets"] = list(entry["rejected_targets"])
         return receipt
 
     def _finish(
@@ -2713,6 +3036,56 @@ def _session_of(entry: Mapping[str, Any]) -> str:
     return str(target.get("session_id") or "")
 
 
+def _target_binding(target: Target, code: str) -> dict[str, Any]:
+    """The exact registry binding a platform proved ineligible before starting a turn."""
+    return {
+        "host": target.host,
+        "session_id": target.session_id,
+        "letter": target.letter,
+        "generation": target.generation,
+        "code": code,
+    }
+
+
+def _valid_rejected_binding(value: object) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "host",
+        "session_id",
+        "letter",
+        "generation",
+        "code",
+    }:
+        return False
+    host, session_id, letter, generation, code = (
+        value["host"],
+        value["session_id"],
+        value["letter"],
+        value["generation"],
+        value["code"],
+    )
+    safe_host = isinstance(host, str) and (
+        host == "" or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", host) is not None
+    )
+    return (
+        safe_host
+        and isinstance(session_id, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}", session_id) is not None
+        and isinstance(letter, str)
+        and re.fullmatch(r"[A-Z]{2}", letter) is not None
+        and type(generation) is int
+        and 1 <= generation <= 2**31 - 1
+        and isinstance(code, str)
+        and code in REJECTED_TARGET_CODES
+    )
+
+
+def _same_target_binding(target: Target, value: object) -> bool:
+    return _valid_rejected_binding(value) and all(
+        getattr(target, name) == value[name]
+        for name in ("host", "session_id", "letter", "generation")
+    )
+
+
 def _order(entry: Mapping[str, Any]) -> tuple[float, str]:
     """Arrival order, with the id breaking a tie so every check agrees on who is first."""
     return entry["accepted_at"], entry["wake"]["wake_id"]
@@ -2728,6 +3101,7 @@ def _loadable(entry: object, wake_id: str) -> bool:
         Wake(**entry["wake"])
         if entry["pick"] is not None:
             _pick_from(entry["pick"])
+        rejected = entry.get("rejected_targets", [])
         return (
             isinstance(entry["receipt_id"], str)
             and type(entry["accepted_at"]) in (int, float)
@@ -2735,6 +3109,9 @@ def _loadable(entry: object, wake_id: str) -> bool:
             and type(entry["attempts"]) is int
             and type(entry["failures"]) is int
             and type(entry.get("repicks", 0)) is int
+            and isinstance(rejected, list)
+            and len(rejected) <= MAX_REJECTED_TARGETS
+            and all(_valid_rejected_binding(binding) for binding in rejected)
             and isinstance(entry.get("receipt"), (dict, type(None)))
             and _turn_marks_ok(entry)
         )
@@ -2827,6 +3204,36 @@ def _named_session(wake: Wake, live: Mapping[str, Target]) -> str:
         if len(fits) == 1 and not _is_sender(live[fits[0]], wake):
             named.add(fits[0])
     return named.pop() if len(named) == 1 else ""
+
+
+def _pr_bound(row: Mapping[str, Any] | None, require_pr: str, generation: int = 0) -> bool:
+    """Whether the registry row binds this PR (repo#number) to its session.
+
+    The binding is written by the session's own seat lane (platform_letter's
+    bind-pr), never by the relay caller.  A malformed entry proves nothing.
+    An entry stamped with a generation counts only while the row is still on
+    that generation:  a binding written before a letter re-issue is stale.
+    """
+    if not isinstance(row, Mapping):
+        return False
+    repo, _, number = require_pr.partition("#")
+    for entry in row.get("bound_prs") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("repo") or "").casefold() != repo.casefold():
+            continue
+        try:
+            if int(entry.get("number") or 0) != int(number):
+                continue
+        except (TypeError, ValueError):
+            continue
+        # The generation stamp is mandatory:  an unstamped or malformed entry
+        # is not a wildcard, it proves nothing.
+        entry_generation = entry.get("generation")
+        if type(entry_generation) is not int or entry_generation != generation:
+            continue
+        return True
+    return False
 
 
 def _issues_of(row: Mapping[str, Any]) -> list[tuple[str, float | None]]:
@@ -2934,7 +3341,10 @@ class Seats:
             every[seat] = state
         counted = [state for seat, state in every.items() if seat not in self.not_installed]
         healthy = bool(counted) and all(state["healthy"] for state in counted)
-        return (200 if healthy else 503), {"healthy": healthy, "seats": every}
+        answer = {"healthy": healthy, "seats": every}
+        if hasattr(self, "upgrade_quiesced"):
+            answer["upgrade_quiesced"] = self.upgrade_quiesced
+        return (200 if healthy else 503), answer
 
     def start(self) -> None:
         """Start each seat's router.  One that cannot start (its folder cannot be read, say) is
@@ -3037,19 +3447,27 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 self._answer(503, {"error": "the seat %s is not served (%s)" % (seat, reason)})
             return None
 
-        def _authorized(self, router: Router) -> bool:
-            """Checked against the bearer this seat's router asks its own KeySource for."""
+        def _authorized(self, router: Router) -> str:
+            """An authenticated capability, never a caller-selected scope."""
             key, why = router.routine_key()
-            if not key:
-                # Without the key nothing can be checked, so nothing is let in.
-                self._answer(503, {"error": "the routine key is unavailable (%s)" % why})
-                return False
+            service_key, _ = router.review_key()
             given = (self.headers.get("Authorization") or "").encode("utf-8")
-            # Constant time:  the bearer is the only thing between the network and a wake.
-            if not hmac.compare_digest(given, ("Bearer %s" % key).encode("utf-8")):
-                self._answer(401, {"error": "bad bearer"})
-                return False
-            return True
+            if service_key and hmac.compare_digest(given, ("Bearer " + service_key).encode()):
+                if key and hmac.compare_digest(key, service_key):
+                    self._answer(503, {"error": "service and routine credentials must differ"})
+                    return ""
+                return REVIEW_ALERT_SCOPE
+            if key and hmac.compare_digest(given, ("Bearer " + key).encode()):
+                return "routine"
+            self._answer(
+                401 if key or service_key else 503,
+                {
+                    "error": "bad bearer"
+                    if key or service_key
+                    else "the routine key is unavailable (%s)" % why
+                },
+            )
+            return ""
 
         def do_GET(self) -> None:
             path = self.path or ""
@@ -3068,9 +3486,17 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 self._answer(404, {"error": "not found"})
                 return
             router = self._router_for(found.group(1) or LEGACY_RECEIPT_SEAT)
-            if router is None or not self._authorized(router):
+            if router is None:
+                return
+            scope = self._authorized(router)
+            if not scope:
                 return
             record = router.receipt(found.group(2))
+            if scope == REVIEW_ALERT_SCOPE and (
+                record is None or record.get("credential_scope") != REVIEW_ALERT_SCOPE
+            ):
+                self._answer(404, {"error": "no such wake"})
+                return
             if record is None:
                 self._answer(404, {"error": "no such wake"})
             else:
@@ -3083,7 +3509,10 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 return
             seat = found.group(1)
             router = self._router_for(seat)
-            if router is None or not self._authorized(router):
+            if router is None:
+                return
+            scope = self._authorized(router)
+            if not scope:
                 return
             raw_length = (self.headers.get("Content-Length") or "").strip()
             if not raw_length.isdigit() or len(raw_length) > 9:
@@ -3111,7 +3540,46 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
             if not WAKE_ID_RE.fullmatch(str(payload.get("wake_id") or "")):
                 self._answer(400, {"error": "wake_id missing or malformed"})
                 return
+            require_session = str(payload.get("require_session") or "")
+            if require_session and not SESSION_ID_RE.fullmatch(require_session):
+                self._answer(400, {"error": "require_session malformed"})
+                return
+            require_letter = str(payload.get("require_letter") or "")
+            if require_letter and not REQUIRE_LETTER_RE.fullmatch(require_letter):
+                self._answer(400, {"error": "require_letter malformed"})
+                return
+            require_generation = payload.get("require_generation")
+            if require_generation is not None and (
+                type(require_generation) is not int or require_generation < 1
+            ):
+                self._answer(400, {"error": "require_generation malformed"})
+                return
+            require_pr = str(payload.get("require_pr") or "")
+            if require_pr and not REQUIRE_PR_RE.fullmatch(require_pr):
+                self._answer(400, {"error": "require_pr malformed"})
+                return
+            if getattr(seats, "upgrade_quiesced", False) and payload.get("test") is not True:
+                self._answer(503, {"error": "upgrade intake quiesced"})
+                return
+            reserved = str(payload.get("wake_id") or "").startswith("ra-")
+            if scope == REVIEW_ALERT_SCOPE:
+                if not (
+                    reserved
+                    and require_session
+                    and require_letter
+                    and type(require_generation) is int
+                    and require_generation > 0
+                    and require_pr
+                    and payload.get("channel") == REVIEW_ALERT_SCOPE
+                ):
+                    self._answer(403, {"error": "service requires exact-session generation wake"})
+                    return
+            elif reserved:
+                self._answer(403, {"error": "reserved service wake namespace"})
+                return
             wake = wake_from_payload(payload, router.platform.mention)
+            if scope == REVIEW_ALERT_SCOPE:
+                wake = replace(wake, credential_scope=REVIEW_ALERT_SCOPE)
             if payload.get("test") is True:
                 self._answer(200, router.test_answer(wake))
                 return
@@ -3121,7 +3589,7 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(target: Router | Seats, bind: str, port: int) -> int:
+def serve(target: Router | Seats, bind: str, port: int, *, start_quiesced: bool = False) -> int:
     """Run every seat's router on one port.  A seat starts without its routine key or its
     registry address, since both come from Infisical, which may be down at start.  Without the
     key it refuses its requests with 503;  without the registry it picks nothing (each wake is a
@@ -3143,11 +3611,36 @@ def serve(target: Router | Seats, bind: str, port: int) -> int:
         # shutdown() waits for serve_forever, which is this same thread, so it needs its own.
         threading.Thread(target=server.shutdown, daemon=True).start()
 
+    seats.upgrade_quiesced = start_quiesced
+    activation = threading.Event()
+    activation_stop = threading.Event()
+    expected_seats = set(seats.routers)
+
+    def activate(_signum, _frame):
+        activation.set()  # The signal handler never starts workers or mutates router state.
+
+    def activation_worker():
+        activation.wait()
+        if activation_stop.is_set() or not start_quiesced:
+            return
+        seats.start()  # This one thread runs once, even when multiple signals arrive.
+        ready = set(seats.routers) == expected_seats and not seats.down
+        if ready and seats.health()[0] == 200:
+            seats.upgrade_quiesced = False
+
+    activation_thread = threading.Thread(target=activation_worker, daemon=True)
+    if start_quiesced:
+        activation_thread.start()
+    prior_activation = signal.signal(signal.SIGUSR1, activate)
     previous = signal.signal(signal.SIGTERM, on_term)
     try:
-        seats.start()
+        if not start_quiesced:
+            seats.start()
         served = ", ".join(sorted(seats.routers)) or "none"
-        unserved = {**seats.down, **{seat: NOT_INSTALLED for seat in seats.not_installed}}
+        unserved = {
+            **seats.down,
+            **{seat: NOT_INSTALLED for seat in seats.not_installed},
+        }
         down = ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
         print(
             "wake-router listening on %s:%d for seats %s;  not served:  %s"
@@ -3159,6 +3652,21 @@ def serve(target: Router | Seats, bind: str, port: int) -> int:
         pass
     finally:
         server.server_close()
+        activation_stop.set()
+        activation.set()
+        if start_quiesced:
+            # Serialize shutdown after any replay/start, but bound the wait:  a hung start
+            # must not hold SIGTERM past the unit's TimeoutStopSec, and a late start adds
+            # no worker, because a router that is stopping starts none.
+            activation_thread.join(timeout=ACTIVATION_JOIN_TIMEOUT)
+            if activation_thread.is_alive():
+                print(
+                    f"wake-router: activation did not finish within {ACTIVATION_JOIN_TIMEOUT:g}s;"
+                    " shutdown continues",
+                    file=sys.stderr,
+                    flush=True,
+                )
         seats.stop()
         signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGUSR1, prior_activation)
     return 0

@@ -4,23 +4,386 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import http.server
 import importlib.util
 import io
 import json
 import os
+import plistlib
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.parse
+import uuid
+from datetime import UTC
 from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+
+
+def synthetic_grant() -> str:
+    """A service-token-shaped value, made up and assembled here so no token-shaped literal sits.
+
+    The client checks the shape, never the value:  the "st." prefix, the length and the
+    absence of whitespace.
+    """
+    return ".".join(["st", "synthetic", "notarealvalue", "notarealvalue"])
+
+
+def fixture_project_id() -> str:
+    """The synthetic Infisical project id,  built at run time.
+
+    No project id,  UUID or hostname is committed to source,  not even a synthetic
+    one,  so the value a reader is asked for is assembled here instead.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, "fleet-tools-doctor-fixture"))
+
+
 spec = importlib.util.spec_from_file_location("doctor", HERE / "fleet-tools-doctor.py")
 doctor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(doctor)
+
+
+class FakeClient:
+    """The shared client's surface the doctor uses, recorded and scripted.
+
+    The doctor reads names through the shared client now:  its own store first,  its own
+    account for the project and folder,  and a names-only listing with the client's grant
+    check in front of it.  Every call is recorded,  so a test says what was asked for.
+    """
+
+    ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+
+    class SecretsError(RuntimeError):
+        pass
+
+    def __init__(self, grant=None, names=("CLAUDE_ZULIP_KEY",), failure=None):
+        self.grant = synthetic_grant() if grant is None else grant
+        self.names = names
+        self.failure = failure
+        self.calls = []
+
+    def token_from_store(self, account, env, home):
+        self.calls.append(("token_from_store", account, dict(env), str(home)))
+        return (self.grant, "ok") if self.grant else ("", "no-token")
+
+    def resolve_token(self, env, project_name="fleet-ops"):
+        self.calls.append(("resolve_token", project_name))
+        if self.grant:
+            return self.grant
+        raise self.SecretsError("service-token-required:  INFISICAL_TOKEN is not set")
+
+    def infisical_project_id(self, env, home, project="fleet-ops"):
+        self.calls.append(("infisical_project_id", project))
+        return fixture_project_id()
+
+    def list_project_names(self, project_id, folder, env, *, token=None, timeout=60):
+        self.calls.append(("list_project_names", project_id, folder, token, timeout))
+        if self.failure is not None:
+            raise self.failure
+        return self.names
+
+
+class CanonicalNamesTests(unittest.TestCase):
+    def setUp(self):
+        doctor._names_cache.clear()
+        doctor._names_reason_cache.clear()
+        self.addCleanup(doctor._names_cache.clear)
+        self.addCleanup(doctor._names_reason_cache.clear)
+
+    def test_the_read_asks_for_the_exact_project_folder_and_account(self):
+        env = {"HOME": "/test-home"}
+        client = FakeClient()
+        with mock.patch.object(doctor, "shared_client", return_value=client):
+            first = doctor.infisical_names("/zulip", env, "fleet-ops")
+            second = doctor.infisical_names("/zulip", env, "fleet-ops")
+        self.assertEqual(first, frozenset({"CLAUDE_ZULIP_KEY"}))
+        self.assertEqual(second, first)
+        listings = [c for c in client.calls if c[0] == "list_project_names"]
+        self.assertEqual(len(listings), 1)  # the second call is the cache
+        _, project_id, folder, token, timeout = listings[0]
+        self.assertEqual(folder, "/zulip")
+        self.assertEqual(project_id, fixture_project_id())
+        self.assertEqual(token, synthetic_grant())
+        self.assertGreater(timeout, 0)
+        # The account is the doctor's own for that project and folder,  and the folder is
+        # the one the client reads.
+        store = [c for c in client.calls if c[0] == "token_from_store"][0]
+        self.assertEqual(store[1], "fleet-doctor-zulip-ro")
+        self.assertEqual(store[2][client.ENV_READ_PATHS], "/zulip")
+        resolved = [c for c in client.calls if c[0] == "infisical_project_id"][0]
+        self.assertEqual(resolved[1], "fleet-ops")
+
+    def test_unavailable_source_or_provider_is_unknown_and_cached(self):
+        # No token in the store and none bound in the environment:  the listing is unknown.
+        client = FakeClient(grant="")
+        with mock.patch.object(doctor, "shared_client", return_value=client):
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+        self.assertEqual([c for c in client.calls if c[0] == "list_project_names"], [])
+        self.assertIn("fleet-doctor-zulip-ro", doctor.infisical_names_reason("/zulip"))
+        # A provider that refuses:  unknown as well,  and the reason says so.
+        doctor._names_cache.clear()
+        doctor._names_reason_cache.clear()
+        refused = FakeClient(failure=FakeClient.SecretsError("token-verification-failed"))
+        with mock.patch.object(doctor, "shared_client", return_value=refused):
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+        self.assertEqual(doctor.infisical_names_reason("/zulip"), "the scoped read was refused")
+
+    def test_a_hung_listing_is_a_timeout_and_not_a_refusal(self):
+        # A transient timeout keeps its retry signal:  the reason says so,  so a
+        # report sends the reader to retry instead of to the grant.
+        doctor._names_cache.clear()
+        doctor._names_reason_cache.clear()
+        hung = FakeClient(failure=TimeoutError("the read timed out"))
+        with mock.patch.object(doctor, "shared_client", return_value=hung):
+            self.assertIsNone(doctor.infisical_names("/zulip", {}))
+        self.assertEqual(doctor.infisical_names_reason("/zulip"), "the scoped read timed out")
+
+
+class CanonicalConsumerTransportTests(unittest.TestCase):
+    """Exercise real isolated children with synthetic loopback responses and no installed CLI."""
+
+    PROJECT = fixture_project_id()
+    BINDING = "st.synthetic-command-consumer-test-only"
+    VALUE = "synthetic-consumer-value-never-output"
+
+    def test_tracked_launchagent_sources_are_valid_plists_with_the_system_interpreter_on_path(self):
+        for label in ("com.jay.fleet-tools-doctor", "com.jays.weekly-fleet-mode-digest"):
+            with self.subTest(label=label):
+                data = plistlib.loads((HERE / "launchd" / (label + ".plist")).read_bytes())
+                self.assertTrue(data["ProgramArguments"])
+                self.assertIn("/usr/bin", data["EnvironmentVariables"]["PATH"].split(":"))
+
+    @contextlib.contextmanager
+    def source(self, folder="/zulip", project=None, include_values=False):
+        project = project or self.PROJECT
+        requests = []
+        fixture = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.headers.get("Authorization") != "Bearer " + fixture.BINDING:
+                    self.send_error(401)
+                    return
+                parsed = urllib.parse.urlsplit(self.path)
+                query = urllib.parse.parse_qs(parsed.query)
+                requests.append((parsed.path, query))
+                if parsed.path == "/api/v2/service-token":
+                    body = {
+                        "workspace": project,
+                        "permissions": ["read"],
+                        "expiresAt": None,
+                        "scopes": [{"environment": "prod", "secretPath": folder}],
+                    }
+                else:
+                    name = parsed.path.rsplit("/", 1)[-1]
+                    row = {
+                        "workspace": project,
+                        "environment": "prod",
+                        "secretPath": folder,
+                        "type": "shared",
+                        "secretKey": name,
+                        "secretValueHidden": False,
+                    }
+                    if parsed.path == "/api/v3/secrets/raw":
+                        row["secretKey"] = "CLAUDE_ZULIP_KEY"
+                        if include_values:
+                            row["secretValue"] = fixture.VALUE
+                        body = {"secrets": [row]}
+                    else:
+                        row["secretValue"] = fixture.VALUE
+                        body = {"secret": row}
+                raw = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = root / "empty-bin"
+            empty.mkdir()
+            hostile = root / "hostile"
+            hostile.mkdir()
+            (hostile / "fleet_infisical.py").write_text("raise AssertionError('foreign reader')\n")
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            env = {
+                "HOME": directory,
+                "PATH": str(empty),
+                "PYTHONPATH": str(hostile),
+                "INFISICAL_TOKEN": self.BINDING,
+                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": self.BINDING,
+                "INFISICAL_FLEET_OPS_PROJECT_ID": project,
+                "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": project,
+                "INFISICAL_READ_PATHS": folder,
+                "FLEET_SECRETS_API": "http://127.0.0.1:%d/api" % server.server_port,
+            }
+            try:
+                yield root, env, requests
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_doctor_staged_source_and_config_use_only_value_disabled_names_reads(self):
+        from datetime import datetime
+
+        from fleet_config.checks import CheckContext
+        from fleet_config.checks_permissions import _secret_store_names
+
+        with self.source() as (root, env, requests):
+            staged = root / "runtime/scripts"
+            staged.mkdir(parents=True)
+            for name in ("fleet-tools-doctor.py", "fleet_infisical_cli.py", "fleet_infisical.py"):
+                shutil.copyfile(HERE / name, staged / name)
+            staged_spec = importlib.util.spec_from_file_location(
+                "staged_doctor", staged / "fleet-tools-doctor.py"
+            )
+            staged_doctor = importlib.util.module_from_spec(staged_spec)
+            staged_spec.loader.exec_module(staged_doctor)
+            # The doctor's own store is under its home:  point it at the temporary one,  so a
+            # test never reads the host's own credential store.
+            staged_doctor.HOME = root
+            # The doctor's own grant comes from its own store,  and the store is the
+            # only source the read may use:  the general ambient binding is a wider
+            # grant than this one,  so it never stands in for it.  The store read is
+            # stubbed here,  so a test never reads the host's own credential store.
+            client = staged_doctor.shared_client()
+            store = mock.patch.object(client, "token_from_store", return_value=(self.BINDING, "ok"))
+            store.start()
+            self.addCleanup(store.stop)
+            self.assertEqual(
+                staged_doctor.infisical_names("/zulip", env), frozenset({"CLAUDE_ZULIP_KEY"})
+            )
+            ctx = CheckContext(home=root, now=datetime.now(UTC), env=env)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    _secret_store_names(ctx, "/zulip"), frozenset({"CLAUDE_ZULIP_KEY"})
+                )
+            listings = [
+                (path, query) for path, query in requests if path != "/api/v2/service-token"
+            ]
+            self.assertEqual(len(listings), 2)
+            for path, query in listings:
+                self.assertEqual(path, "/api/v3/secrets/raw")
+                self.assertEqual(query["viewSecretValue"], ["false"])
+                self.assertEqual(query["workspaceId"], [self.PROJECT])
+                self.assertEqual(query["secretPath"], ["/zulip"])
+                self.assertEqual(query["environment"], ["prod"])
+
+    def test_names_consumers_refuse_a_value_bearing_metadata_listing(self):
+        from datetime import datetime
+
+        from fleet_config.checks import CheckContext, CheckError
+        from fleet_config.checks_permissions import _secret_store_names
+
+        with self.source(include_values=True) as (root, env, requests):
+            doctor._names_cache.clear()
+            self.addCleanup(doctor._names_cache.clear)
+            # The grant comes from the doctor's own store;  the store read is stubbed
+            # here,  so a test never reads the host's own credential store.
+            client = doctor.shared_client()
+            store = mock.patch.object(client, "token_from_store", return_value=(self.BINDING, "ok"))
+            store.start()
+            self.addCleanup(store.stop)
+            self.assertIsNone(doctor.infisical_names("/zulip", env))
+            ctx = CheckContext(home=root, now=datetime.now(UTC), env=env)
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                self.assertRaises(CheckError) as error,
+            ):
+                _secret_store_names(ctx, "/zulip")
+            self.assertNotIn(self.VALUE, str(error.exception))
+            self.assertTrue(requests)
+
+    def run_weekly(self, root, env):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "the weekly digest requires the existing Node runtime")
+        marker = root / "feeds-called"
+        preload = root / "feeds.mjs"
+        authorization = json.dumps("Bearer " + self.VALUE)
+        marker_path = json.dumps(str(marker))
+        preload.write_text(
+            f"""import {{ appendFileSync }} from 'node:fs';
+globalThis.fetch = async (url, options) => {{
+  if (options.headers.authorization !== {authorization})
+    throw new Error('unexpected synthetic authorization');
+  appendFileSync({marker_path}, String(url) + '\\n');
+  return {{ok: true, text: async () => JSON.stringify({{rows: [], data: []}})}};
+}};
+"""
+        )
+        staged = root / "runtime/scripts"
+        staged.mkdir(parents=True)
+        for name in (
+            "weekly-fleet-mode-digest.mjs",
+            "fleet_infisical_cli.py",
+            "fleet_infisical.py",
+        ):
+            shutil.copyfile(HERE / name, staged / name)
+        result = subprocess.run(
+            [
+                node,
+                "--import",
+                str(preload),
+                str(staged / "weekly-fleet-mode-digest.mjs"),
+                "--dry-run",
+            ],
+            env=env,
+            cwd=root / "hostile",
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(self.VALUE, result.stdout + result.stderr)
+        self.assertNotIn(self.BINDING, result.stdout + result.stderr)
+        self.assertNotIn("foreign reader", result.stdout + result.stderr)
+        return result, marker
+
+    def test_weekly_actual_named_reads_need_no_installed_secret_command(self):
+        with self.source(folder="/") as (root, env, requests):
+            result, marker = self.run_weekly(root, env)
+            self.assertEqual(len(marker.read_text().splitlines()), 2)
+            self.assertNotIn("not found", result.stdout)
+            leaves = [path for path, query in requests if path != "/api/v2/service-token"]
+            self.assertEqual(
+                sorted(leaves),
+                [
+                    "/api/v3/secrets/raw/SENTRY_AUTH_TOKEN_FULLSCOPE",
+                    "/api/v3/secrets/raw/USAGE_READ_TOKEN",
+                ],
+            )
+
+    def test_weekly_wrong_grant_refuses_before_value_or_feed_reads(self):
+        with self.source(folder="/other-purpose") as (root, env, requests):
+            env["INFISICAL_READ_PATHS"] = "/"
+            result, marker = self.run_weekly(root, env)
+            self.assertFalse(marker.exists())
+            self.assertIn("USAGE_READ_TOKEN not found", result.stdout)
+            self.assertTrue(requests)
+            self.assertTrue(all(path == "/api/v2/service-token" for path, query in requests))
+
+    def test_weekly_missing_binding_is_unavailable_without_any_provider_read(self):
+        with self.source(folder="/") as (root, env, requests):
+            env.pop("INFISICAL_TOKEN")
+            result, marker = self.run_weekly(root, env)
+            self.assertFalse(marker.exists())
+            self.assertIn("USAGE_READ_TOKEN not found", result.stdout)
+            self.assertEqual(requests, [])
 
 
 class RootSearchPathTests(unittest.TestCase):
@@ -1549,13 +1912,14 @@ class ServerTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("current", "OK"))
         self.assertIn("fired 20 minutes ago", row["reason"])
 
-    def test_wrappers_and_the_fleet_secrets_link(self):
+    def test_wrappers_and_no_row_for_the_retired_reader(self):
         current = str(self.fleet_cli / "current")
         self.touch(
             ".local/bin/simple-chat",
             f"release = Path({current!r})\nargv = [str(release / 'scripts/simple-chat')]\n",
         )
         self.touch(".local/bin/simple-board", "exec /usr/bin/python3 /somewhere/else/board\n")
+        # A leftover binary on the host changes nothing:  the retired reader has no row.
         self.touch("elsewhere/fleet-secrets", "#!/bin/sh\n")
         (self.home / ".local/bin/fleet-secrets").symlink_to(self.home / "elsewhere/fleet-secrets")
         report = doctor.Report()
@@ -1564,7 +1928,7 @@ class ServerTests(HomeCase):
         self.assertEqual(report.row("tool:simple-chat")["state"], "current")
         self.assertEqual(report.row("tool:simple-board")["state"], "missing")  # points elsewhere
         self.assertEqual(report.row("tool:recall")["state"], "missing")  # absent
-        self.assertEqual(report.row("tool:fleet-secrets")["state"], "stale")  # wrong link
+        self.assertIsNone(report.row("tool:fleet-secrets"))  # the retired reader is gone
         self.assertEqual(report.row("tool:fleetlink")["state"], "missing")
 
 

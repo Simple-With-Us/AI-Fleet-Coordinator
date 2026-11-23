@@ -16,14 +16,14 @@ BASE = {
     "scripts/simple_tools/secretscan.py": "cb9256fdb92f10eb834ccfeee6a87c21c6b1f11c325d46c7704950cc5f9aa9d5",
 }
 INPUTS = {
-    "git": "47e12d5c2f9cbd8f3284801849cfa09f85abbb447ba3f69e4b504ba6853da6b4",
-    "catalog.json": "3325eb0a1971fa3fb0b1843d9cf1f89d48e7867279576eb89535983d236f31cc",
+    "git": "dca54aadfd668d42a0e28814c6b79061b1b748c96d02b1de54a1714554767969",
+    "catalog.json": "dc23ca30cfbf1fe38fee1db86dd94cc4a70dc63be2d706d2abeacf22cdd4a285",
 }
 RESULTS = dict(
     BASE,
     **{
-        "scripts/git-tools/git": "67462bec3257b5179634007658c5f9d18485055c50507f1419e80849adff29fd",
-        "scripts/git-tools/catalog.json": "0f9e7722bffb44cfed4da9bb612829eea2ea06f30f42fc2e4ce8e1a5fe4e9d61",
+        "scripts/git-tools/git": "c14dcb15634b2fb9dafdbbf6aac355a9c843048c6f6c684d860790031b27cfbb",
+        "scripts/git-tools/catalog.json": "ff58292d779ce8f1738ece13f51c131c097fbddd8054d3287fcccc5009978be6",
     },
 )
 
@@ -56,6 +56,35 @@ def once(text, old, new):
 
 
 def transform(text, source):
+    start, stop = "_KNOWN_PATTERN_DIGESTS = frozenset(", "\n\n\ndef _pattern_known"
+    block = source[source.index(start) : source.index(stop)]
+    # Fail closed: the spliced block must be exactly one assignment of a frozenset of 64-hex strings.
+    tree = ast.parse(block)
+    ok = len(tree.body) == 1 and isinstance(tree.body[0], ast.Assign)
+    if ok:
+        node = tree.body[0]
+        call = node.value
+        ok = (
+            [t.id for t in node.targets if isinstance(t, ast.Name)] == ["_KNOWN_PATTERN_DIGESTS"]
+            and len(node.targets) == 1
+            and isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "frozenset"
+            and len(call.args) == 1
+            and not call.keywords
+            and isinstance(call.args[0], (ast.Tuple, ast.Set, ast.List))
+            and len(call.args[0].elts) > 0
+            and all(
+                isinstance(e, ast.Constant)
+                and isinstance(e.value, str)
+                and len(e.value) == 64
+                and all(c in "0123456789abcdef" for c in e.value)
+                for e in call.args[0].elts
+            )
+        )
+    if not ok:
+        raise ValueError("digest block is not a plain frozenset of digests")
+    text = once(text, text[text.index(start) : text.index(stop)], block)
     nodes = {
         n.name: n for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
     }
@@ -63,6 +92,19 @@ def transform(text, source):
     def segment(name):
         return ast.get_source_segment(source, nodes[name]) + "\n\n"
 
+    limits_start, limits_stop = "INPUT_LIMITS = {", "\n}\n"
+    limits = source[
+        source.index(limits_start) : source.index(limits_stop, source.index(limits_start))
+    ]
+    old_limits = text[text.index(limits_start) : text.index(limits_stop, text.index(limits_start))]
+    # Fail closed: the spliced block must be one plain dict of string keys and integer expressions.
+    plain = (ast.Dict, ast.Constant, ast.BinOp, ast.Mult, ast.Load)
+    node = ast.parse(limits + "\n}").body[0]
+    if not isinstance(node, ast.Assign) or not all(
+        isinstance(n, plain) for n in ast.walk(node.value)
+    ):
+        raise ValueError("input limits block is not a plain dict of constants")
+    text = once(text, old_limits, limits)
     section = source[
         source.index("PUSH_MAX_COMMITS =") : source.index(
             "# A report, never a merge authorization."
@@ -166,6 +208,7 @@ def build(baseline, inputs, destination):
     manifest = {
         "baseline": "f17794b5008cb7052f243f35a7da751dd1d11fe1",
         "source_merge": "c92db57b12c231d6cd0b473233adc6430f6baed6",
+        "input_source": "740e4f541fa74eb9fc1b29ebaae97117976ca100",
         "activation_performed": False,
         "files": RESULTS,
         "state": "UNREVIEWED_NOT_INSTALLED",

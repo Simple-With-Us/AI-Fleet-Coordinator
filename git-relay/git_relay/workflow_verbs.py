@@ -40,7 +40,7 @@ from .app_tokens import AppTokenError
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .provider_scan import PROVIDER_PATTERN, provider_token_text
 from .reviewed_fixtures import unreviewed_file_secret
-from .secret_scan import find_secret, first_secret_start
+from .secret_scan import find_secret, first_secret_start, scan_refusal
 from .server import PreReadUnavailable, _perm_within_ceiling
 
 
@@ -160,7 +160,9 @@ def _check_instant(value):
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
 # still UTF-8 validated and secret-scanned, refused not cropped.
-MAX_WORKFLOW_TEXT_LARGE = 100000
+MAX_WORKFLOW_TEXT_LARGE = (
+    716800  # 700 KiB: one relay read answer (base64 of it) must fit the 1 MiB GitHub body bound
+)
 MAX_WORKFLOW_TEXT_LARGE_B64 = 4 * ((MAX_WORKFLOW_TEXT_LARGE + 2) // 3) + 8
 MAX_FILES = 20
 MAX_FILES_RAW = 4 * 1024 * 1024
@@ -7191,7 +7193,7 @@ class WorkflowVerbs:
         entries, seen, total, referenced_total = [], set(), 0, 0
         source_cache = {}
         validated_blobs = {}
-        for value in files:
+        for index, value in enumerate(files):
             if not isinstance(value, dict):
                 raise Refused("invalid file")
             _only(value, ("path", "text", "sha", "mode", "source_commit"))
@@ -7338,8 +7340,9 @@ class WorkflowVerbs:
                     validated_blobs[sha] = decoded_raw
                 decoded_raw = validated_blobs[sha]
                 # Cache verified bytes only, not path-dependent scan approvals.
-                if unreviewed_file_secret(repo, path, decoded_raw, known=self.loaded_known):
-                    raise Refused("credential-shaped content refused")
+                category = unreviewed_file_secret(repo, path, decoded_raw, known=self.loaded_known)
+                if category:
+                    raise Refused(scan_refusal(path, category))
                 try:
                     decoded = decoded_raw.decode("utf-8")
                 except UnicodeDecodeError:
@@ -7352,8 +7355,11 @@ class WorkflowVerbs:
                 seen.add(path)
                 entries.append({"path": path, "mode": mode, "type": "blob", "sha": sha})
                 continue
-            if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
+            if not isinstance(text, str) or self._provider_token_text(text):
                 raise Refused("invalid file content or path")
+            text_category = find_secret(text)
+            if text_category:
+                raise Refused(scan_refusal(f"args.files[{index}].text", text_category))
             try:
                 total += len(text.encode("utf-8"))
             except UnicodeEncodeError:
@@ -7916,12 +7922,14 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if len(raw) > MAX_FILE_RAW:
             raise Refused("file too large")
-        if (
-            find_secret(message)
-            or any(v and v in message for v in self.loaded_known)
-            or unreviewed_file_secret(repo, path, raw, known=self.loaded_known)
-        ):
-            raise Refused("credential-shaped content refused")
+        message_category = find_secret(message)
+        if message_category:
+            raise Refused(scan_refusal("args.message", message_category))
+        if any(v and v in message for v in self.loaded_known):
+            raise Refused(scan_refusal("args.message", "a loaded credential"))
+        content_category = unreviewed_file_secret(repo, path, raw, known=self.loaded_known)
+        if content_category:
+            raise Refused(scan_refusal("args.content_b64", content_category))
         # Shape is checked before any upstream read. The default-branch path still
         # compares this sha with the blob it reads, or refuses a create over a file.
         if "prior_sha" in args:
@@ -8149,6 +8157,7 @@ class WorkflowVerbs:
             or content.get("encoding") != "base64"
         ):
             raise Refused("base file unverifiable")
+        finding = None
         try:
             raw = base64.b64decode("".join(content["content"].split()), validate=True)
             if (
@@ -8158,27 +8167,28 @@ class WorkflowVerbs:
             ):
                 raise ValueError()
             # Only immutable, reviewed source/output fixture pairs can preserve
-            # dedicated source lines. Registry is empty until owner policy approval.
+            # dedicated source lines. Records require owner policy approval.
             preserve = reviewed_base(repo, path, raw)
             # Scan every complete input, even an eligible reviewed fixture. A
             # finding may be retained only after exact output/origin validation.
             base_finding = find_secret(raw.decode("utf-8"))
-            if (
-                (base_finding and not preserve)
-                or self._provider_token_text(raw.decode("utf-8"))
-                or self.bearer in raw.decode("utf-8")
-            ):
+            if base_finding and not preserve:
+                finding = base_finding
+                raise ValueError()
+            if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode("utf-8"):
                 raise ValueError()
             result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
             result_finding = find_secret(result.decode("utf-8"))
-            if (
-                (result_finding and not preserve)
-                or self._provider_token_text(result.decode("utf-8"))
-                or self.bearer
-                and self.bearer in result.decode("utf-8")
+            if result_finding and not preserve:
+                finding = result_finding
+                raise ValueError()
+            if self._provider_token_text(result.decode("utf-8")) or (
+                self.bearer and self.bearer in result.decode("utf-8")
             ):
                 raise ValueError()
         except (ValueError, TypeError, KeyError, UnicodeError):
+            if finding:
+                raise Refused(scan_refusal(path, finding)) from None
             raise Refused("credential-shaped or invalid patch content") from None
         mode = self._entry_mode(repo, tree, path, {})
         if mode not in ("100644", "100755"):
@@ -8237,7 +8247,7 @@ class WorkflowVerbs:
             raise Refused("invalid files")
         seen, plan, total = set(), [], 0
         total_raw = 0
-        for f in files:
+        for index, f in enumerate(files):
             if not isinstance(f, dict) or set(f) - {"path", "content_b64", "delete"}:
                 raise Refused("invalid files")
             path = _path(f)
@@ -8267,11 +8277,15 @@ class WorkflowVerbs:
             total_raw += len(raw)
             if len(raw) > MAX_FILE_RAW or total_raw > MAX_FILES_RAW:
                 raise Refused("files too large")
-            if unreviewed_file_secret(repo, path, raw, known=self.loaded_known):
-                raise Refused("credential-shaped content refused")
+            category = unreviewed_file_secret(repo, path, raw, known=self.loaded_known)
+            if category:
+                raise Refused(scan_refusal(f"args.files[{index}].content_b64", category))
             plan.append((path, content))
-        if find_secret(message) or any(v and v in message for v in self.loaded_known):
-            raise Refused("credential-shaped content refused")
+        message_category = find_secret(message)
+        if message_category:
+            raise Refused(scan_refusal("args.message", message_category))
+        if any(v and v in message for v in self.loaded_known):
+            raise Refused(scan_refusal("args.message", "a loaded credential"))
         default = _obj(self._get(f"/repos/{repo}")).get("default_branch")
         if _is_default_branch(branch, default):
             raise Refused("default branch is not writable")

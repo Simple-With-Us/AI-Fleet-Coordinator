@@ -2,7 +2,7 @@
 
 The runner is the safety seam of the package:  a command that is not on the allowlist
 is refused before any process exists,  every command has an explicit timeout,  and the
-output is capped.  These tests use a fake ``fleet-secrets`` in a temporary directory,  so
+output is capped.  These tests use a fake ``security`` in a temporary directory, so
 no test starts a real fleet tool,  no test writes outside its own temporary tree and no
 test reads a secret.
 """
@@ -16,6 +16,7 @@ import unittest
 
 from fleet_config import apply as apply_module
 from fleet_config.checks import (
+    INFISICAL_CLI,
     CommandRefused,
     check_cli_allowed,
     run_cli,
@@ -38,17 +39,50 @@ class AllowlistTests(unittest.TestCase):
         with self.assertRaises(CommandRefused):
             check_cli_allowed(["/bin/sh", "-c", "echo hello"])
 
-    def test_the_fleet_secrets_command_is_allowed(self):
+    def test_the_retired_reader_command_is_refused(self):
+        with self.assertRaises(CommandRefused):
+            check_cli_allowed(["fleet-secrets", "names", "--path", "/zulip"])
+
+    def test_the_retired_reader_command_is_refused_by_path(self):
+        with self.assertRaises(CommandRefused):
+            check_cli_allowed(["/opt/fleet/bin/fleet-secrets", "names"])
+
+    def test_the_keychain_tool_is_allowed(self):
         self.assertEqual(
-            check_cli_allowed(["fleet-secrets", "names", "--path", "/zulip"]),
-            "fleet-secrets",
+            check_cli_allowed(["security", "find-certificate", "-a", "-c", "name", "-p"]),
+            "security",
         )
 
-    def test_the_fleet_secrets_command_is_allowed_by_path(self):
+    def test_the_canonical_names_command_is_allowed(self):
         self.assertEqual(
-            check_cli_allowed(["/opt/fleet/bin/fleet-secrets", "names"]),
-            "fleet-secrets",
+            check_cli_allowed([sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/zulip"]),
+            "fleet_infisical_cli.py",
         )
+
+    def test_the_canonical_metadata_doctor_is_allowed(self):
+        self.assertEqual(
+            check_cli_allowed([sys.executable, "-I", INFISICAL_CLI, "doctor", "--json"]),
+            "fleet_infisical_cli.py",
+        )
+
+    def test_canonical_command_cannot_change_interpreter_source_or_operation(self):
+        rejected = [
+            ["/other/python3", "-I", INFISICAL_CLI, "names"],
+            [sys.executable, "-I", "/other/fleet_infisical_cli.py", "names"],
+            [sys.executable, INFISICAL_CLI, "names"],
+            [sys.executable, "-I", INFISICAL_CLI, "get", "A_KEY"],
+            [sys.executable, "-I", INFISICAL_CLI, "run", "--only", "A_KEY"],
+            [sys.executable, "-I", INFISICAL_CLI, "set", "A_KEY"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/../other"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--path", "/zulip", "--path", "/"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--project", "other"],
+            [sys.executable, "-I", INFISICAL_CLI, "names", "--json"],
+            ["fleet-secrets", "names"],
+            ["/other/fleet-secrets", "names"],
+        ]
+        for argv in rejected:
+            with self.subTest(argv=argv), self.assertRaises(CommandRefused):
+                check_cli_allowed(argv)
 
     def test_an_installer_module_is_allowed(self):
         self.assertEqual(
@@ -90,7 +124,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_an_allowlisted_command_runs_and_answers(self):
         with tempfile.TemporaryDirectory() as temp:
-            script = write_script(temp, "fleet-secrets", "echo CLAUDE_ZULIP_KEY")
+            script = write_script(temp, "security", "echo CLAUDE_ZULIP_KEY")
             result = run_cli([script, "names"], timeout=10)
         self.assertEqual(result.returncode, 0)
         self.assertIn("CLAUDE_ZULIP_KEY", result.stdout.decode("utf-8"))
@@ -98,21 +132,21 @@ class RunnerTests(unittest.TestCase):
 
     def test_a_command_that_overruns_its_budget_is_a_timeout(self):
         with tempfile.TemporaryDirectory() as temp:
-            script = write_script(temp, "fleet-secrets", "sleep 30")
+            script = write_script(temp, "security", "sleep 30")
             result = run_cli([script, "names"], timeout=1)
         self.assertTrue(result.timed_out)
         self.assertIsNone(result.returncode)
 
     def test_the_output_is_capped(self):
         with tempfile.TemporaryDirectory() as temp:
-            script = write_script(temp, "fleet-secrets", "printf 'x%.0s' $(seq 1 5000)")
+            script = write_script(temp, "security", "printf 'x%.0s' $(seq 1 5000)")
             result = run_cli([script, "names"], timeout=10, max_output_bytes=100)
         self.assertTrue(result.truncated)
         self.assertLessEqual(len(result.stdout), 100)
 
     def test_a_command_that_cannot_start_is_an_error_and_not_a_crash(self):
         with tempfile.TemporaryDirectory() as temp:
-            missing = os.path.join(temp, "fleet-secrets")
+            missing = os.path.join(temp, "security")
             result = run_cli([missing, "names"], timeout=10)
         self.assertTrue(result.error)
         self.assertIsNone(result.returncode)
