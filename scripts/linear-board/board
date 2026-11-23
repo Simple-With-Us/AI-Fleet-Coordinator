@@ -4758,7 +4758,7 @@ def read_flag_text(raw: str, flag: str, max_bytes: int = INPUT_MAX_BYTES) -> str
     # A bounded read rather than read_bytes-then-slice:  the cap applies to the I/O and the
     # memory, and a file grown after the stat is rejected instead of silently truncated.
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
     except OSError as e:
         die(f"{flag} {path}: cannot read it ({e.strerror or type(e).__name__})", EXIT_USAGE)
     try:
