@@ -236,7 +236,9 @@ def run(args, now=None, token_fn=access_token, fetch_fn=fetch, notify_fn=notify_
             # A network failure says nothing about the login:  an alarm already raised for it stays.
             prior = (state.get("active") or {}).get("access:login_needed")
             if isinstance(prior, dict):
-                alarms.setdefault("access:login_needed", prior.get("summary", "access:login_needed"))
+                alarms.setdefault(
+                    "access:login_needed", prior.get("summary", "access:login_needed")
+                )
     if doc is not None:
         found, counts = desired_alarms(doc, state.get("diagCounts"))
         alarms.update(found)
