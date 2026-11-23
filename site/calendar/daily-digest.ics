@@ -10,58 +10,85 @@ X-WR-TIMEZONE:America/Chicago
 REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
+UID:fleet-daily-2026-11-23@AI-Fleet-Coordinator
+DTSTAMP:20261123T063307Z
+DTSTART;VALUE=DATE:20261123
+DTEND;VALUE=DATE:20261124
+SUMMARY:Fleet: 2 merged · 0 opened · 0 closed
+DESCRIPTION:2 PRs merged · 0 issues opened · 0 issues closed\n\nMerged PR
+ s:\n- [AI-Fleet-Coordinator#2471] (instinct) Restore seat ZC to the canoni
+ cal ZC prefix\; guard seat record names\n- [BotFleet#2184] (minimax) Infis
+ ical Is The Only Source For BotFleet's Credential Consumers (Refs OPS-1102
+ )
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-23
+CATEGORIES:fleet-daily,agent-activity
+STATUS:CONFIRMED
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VEVENT
 UID:fleet-daily-2026-11-22@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261122
 DTEND;VALUE=DATE:20261123
-SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
-DESCRIPTION:35 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 72 merged · 0 opened · 0 closed
+DESCRIPTION:72 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#2090] The smoke takes its settings from the c
  ommit it is testing\n- [AI-Fleet-Coordinator#2229] fix(relay): name the ma
  tched category in scanner refusals\n- [AI-Fleet-Coordinator#2308] (minimax
  ) Retire the fleet-secrets CLI for scoped service tokens\n- [AI-Fleet-Coor
  dinator#2313] secret scan: match-pinned admission for edit_pr-base git_rel
- ay/server.py candidate\n- [AI-Fleet-Coordinator#2331] (claude) Worker: Rec
- ord Each Refused Relay Check As A Diagnostics Row (AFC-844)\n- [AI-Fleet-C
- oordinator#2344] (zcode) Relay: A Quoted Git SHA Is Prose\, Not A Credenti
- al (AFC-834)\n- [AI-Fleet-Coordinator#2407] chore: record the fleet iOS ve
- rsions in the manifest\n- [AI-Fleet-Coordinator#2411] (zcode) the Operator
-  notes go to Side-Chats\, never as DMs\n- [AI-Fleet-Coordinator#2426] (zco
- de) Enroll ZCode Subagent Children On The Parent's Turn End\n- [AI-Fleet-C
- oordinator#2434] (instinct) Preserve wake custody through controlled route
- r upgrades\n- [AI-Fleet-Coordinator#2441] (minimax) The Sweep Asks The Hos
- t First (AFC-878)\n- [AI-Fleet-Coordinator#2442] (muse) Fix Muster Operato
- r settings read refused for notes_queue seat lists\n- [AI-Fleet-Coordinato
- r#2443] (instinct) Post the Operator review message to Side-Chats before t
- he exact-origin wake\n- [AI-Fleet-Coordinator#2444] (minimax) Infisical is
-  the only source for every secret and variable\n- [AI-Fleet-Coordinator#24
- 45] (instinct) Review-alerts receiver: narrowed service reads plus protect
- ed creation origin claims\n- [AI-Fleet-Coordinator#2446] (zcode) Listener:
-  A Router Wake Surfaces Its Held-Back Items On The Receipt\, Not At Accept
-  (AFC-841)\n- [AI-Fleet-Coordinator#2447] (ag) Fix — platform-letter tit
- le sync\, orphan .pbtxt writes\, and Stop turn retry (AFC-885)\n- [AI-Flee
- t-Coordinator#2448] chore: record the fleet iOS versions in the manifest\n
- - [AI-Fleet-Coordinator#2449] (instinct) Classify exact public Python sour
- ce expressions without credential waivers\n- [AI-Fleet-Coordinator#2450] c
- hore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest\n- [AI-
- Fleet-Coordinator#2451] (instinct) Single-source native-origin projection 
- credentials through Fleet-OPS reader\n- [BotFleet#2170] (muse) Add Setting
- s > Phone tab with fake-testable model (BF-2652)\n- [BotFleet#2171] (muse)
-  Add server companion bridge core with isolated contract tests (BF-2652)\n
- - [Clutch#288] (instinct) Restore gated merge-service automation and rearm
-  sweep\n- [Clutch#296] (opencode) UI Overhaul: Turn Cockpit\, One Home Sur
- face\, Stop/Queue\, Working Folders\n- [Clutch#301] (minimax) Fix The Host
-  Id Type In The Turn Activity Store\n- [Clutch#302] (minimax) Native UI/UX
-  and capability program spec\n- [DealDex#604] Update non-major dependencie
- s\n- [DealDex#606] (instinct) Restore gated merge-service automation and r
- earm sweep\n- [Personal-Site#282] chore: update static mirror of live site
-  2026-11-11\n- [Socratic-Trade#5433] (ag) Remove LoginView preconditionFai
- lure crash path on auth presentation anchor (ST-4649)\n- [Usage-Monitor#20
- 77] chore(ci): unred main - allowlist unfixable picomatch advisory\, ignor
- e hash-manifest gitleaks hits\n- [Usage-Monitor#2080] Update dependency ef
- fect to v4\n- [Usage-Monitor#2081] (zcode) ops: watchdog heartbeat token r
- eads the login keychain\, not fleet-secrets\n- [codecaps#537] (instinct) R
- estore gated merge-service automation and rearm sweep
+ ay/server.py candidate\n- [AI-Fleet-Coordinator#2318] secret scan: match-p
+ inned admission for edit_pr ref-validation server.py candidate\n- [AI-Flee
+ t-Coordinator#2331] (claude) Worker: Record Each Refused Relay Check As A 
+ Diagnostics Row (AFC-844)\n- [AI-Fleet-Coordinator#2339] (minimax) Fix the
+  Coolify redeploy path in fleet-ops-control\n- [AI-Fleet-Coordinator#2344]
+  (zcode) Relay: A Quoted Git SHA Is Prose\, Not A Credential (AFC-834)\n- 
+ [AI-Fleet-Coordinator#2405] (zcode) docs: watchdog row for the keychain to
+ ken move\n- [AI-Fleet-Coordinator#2407] chore: record the fleet iOS versio
+ ns in the manifest\n- [AI-Fleet-Coordinator#2411] (zcode) the Operator not
+ es go to Side-Chats\, never as DMs\n- [AI-Fleet-Coordinator#2426] (zcode) 
+ Enroll ZCode Subagent Children On The Parent's Turn End\n- [AI-Fleet-Coord
+ inator#2432] (instinct) Wire protected PR creation receipts and scoped rev
+ iew reads\n- [AI-Fleet-Coordinator#2434] (instinct) Preserve wake custody 
+ through controlled router upgrades\n- [AI-Fleet-Coordinator#2441] (minimax
+ ) The Sweep Asks The Host First (AFC-878)\n- [AI-Fleet-Coordinator#2442] (
+ muse) Fix Muster Operator settings read refused for notes_queue seat lists
+ \n- [AI-Fleet-Coordinator#2443] (instinct) Post the Operator review messag
+ e to Side-Chats before the exact-origin wake\n- [AI-Fleet-Coordinator#2444
+ ] (minimax) Infisical is the only source for every secret and variable\n- 
+ [AI-Fleet-Coordinator#2445] (instinct) Review-alerts receiver: narrowed se
+ rvice reads plus protected creation origin claims\n- [AI-Fleet-Coordinator
+ #2446] (zcode) Listener: A Router Wake Surfaces Its Held-Back Items On The
+  Receipt\, Not At Accept (AFC-841)\n- [AI-Fleet-Coordinator#2447] (ag) Fix
+  — platform-letter title sync\, orphan .pbtxt writes\, and Stop turn ret
+ ry (AFC-885)\n- [AI-Fleet-Coordinator#2448] chore: record the fleet iOS ve
+ rsions in the manifest\n- [AI-Fleet-Coordinator#2449] (instinct) Classify 
+ exact public Python source expressions without credential waivers\n- [AI-F
+ leet-Coordinator#2450] chore: record com.socratictrade.ios 0.1.0 in the fl
+ eet iOS manifest\n- [AI-Fleet-Coordinator#2451] (instinct) Single-source n
+ ative-origin projection credentials through Fleet-OPS reader\n- [AI-Fleet-
+ Coordinator#2452] (muse) audit fixes: hermetic ops-control tests\, registr
+ y Label\, note link\, sheets limit\, Muster banner\n- [AI-Fleet-Coordinato
+ r#2453] chore: record the fleet iOS versions in the manifest\n- [AI-Fleet-
+ Coordinator#2454] (minimax\, codex) Give — A Server Route Through The Ap
+ p-Server Daemon\n- [AI-Fleet-Coordinator#2455] (muse) follow-up: free leak
+ ed letter pairs\, bound CI jobs\, wire critical suites\n- [AI-Fleet-Coordi
+ nator#2456] chore: record com.socratictrade.ios 0.1.0 in the fleet iOS man
+ ifest\n- [AI-Fleet-Coordinator#2457] (instinct) recall: hosted route when 
+ the bearer env is set\n- [AI-Fleet-Coordinator#2458] (muse-assist) [ROB] R
+ emove the Shortcuts-app pre-launch from the notes pin/unpin path\n- [AI-Fl
+ eet-Coordinator#2459] (instinct) push client: carry main's reviewed patter
+ n digests\n- [AI-Fleet-Coordinator#2460] (minimax) Never Read A Credential
+  From The Environment\n- [AI-Fleet-Coordinator#2461] (instinct) Raise the 
+ relay text ceiling from 100 KB to 700 KiB across relay\, Worker and push c
+ lient\n- [AI-Fleet-Coordinator#2462] (instinct) push client builder: pin t
+ he 700 KiB limits release inputs\n- [AI-Fleet-Coordinator#2463] (instinct)
+  push client: carry the 6 MiB blob and tree input limits\n- [AI-Fleet-Coor
+ dinator#2464] (instinct) Scope wake host facts to each platform without ch
+ anging sibling fences\n- [AI-Fleet-Coordinator#2465] (instinct\, minimax) 
+ Bind — review origin to verified top-level native calls\n- [BotFleet#217
+ 0] (muse) Add Settings > Phone tab with fake-testable model (BF-2652)\n  
+ … +32 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-22
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -69,7 +96,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-21@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261121
 DTEND;VALUE=DATE:20261122
 SUMMARY:Fleet: 114 merged · 0 opened · 0 closed
@@ -132,7 +159,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-20@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261121
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -196,7 +223,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
 SUMMARY:Fleet: 58 merged · 0 opened · 0 closed
@@ -262,7 +289,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -333,7 +360,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -375,7 +402,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -432,7 +459,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -493,7 +520,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -554,7 +581,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -612,7 +639,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -676,7 +703,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -744,7 +771,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -808,7 +835,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -870,7 +897,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -940,59 +967,53 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
-SUMMARY:Fleet: 77 merged · 0 opened · 0 closed
-DESCRIPTION:77 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#1453] lane retire: accept dirty paths already
-  published to origin/main\n- [AI-Fleet-Coordinator#1454] ZCode session let
- ters: the adapter\, the wrapper and the registry API branch\n- [AI-Fleet-C
- oordinator#1461] Worker CPU: cheaper git reads\, hashing and Infisical ref
- resh (Refs AFC-617)\n- [AI-Fleet-Coordinator#1462] Listener drain on curre
- nt main: defer-marked pauses\, broadcast parking\, offer fence\, hook gate
-  (AFC-652\, supersedes #1424)\n- [AI-Fleet-Coordinator#1463] Muster App Pr
- ocesses: Every Fleet App's Processes On The Mac And The Server\n- [AI-Flee
- t-Coordinator#1468] Temp-Build Rule Class For Builds Aimed At System Temp 
- (AFC-618)\n- [AI-Fleet-Coordinator#1471] Update non-major dependencies\n- 
- [AI-Fleet-Coordinator#1480] (minimax) The OpenRouter Wake Fallback Is — 
- M3.1 Flash\n- [AI-Fleet-Coordinator#1486] AFC-658: additive seat insertion
-  policy + external own-seat runtime proof\n- [AI-Fleet-Coordinator#1487] S
- erver Report: Each File Against origin/main\, And The Host's Own Config By
-  Digest (BACKEND-15)\n- [AI-Fleet-Coordinator#1490] Mac Runtime-Sync: The 
- Repo Matches The Live Job (Template\, Script\, Doctor\, Docs)\n- [AI-Fleet
- -Coordinator#1491] Muster Server Route Spec 5.1: Rulings From The Independ
- ent Review Of BB's Build\n- [AI-Fleet-Coordinator#1492] Seat Activity: Ser
- ver Seats Show What The Server's Eavesdropper Says\n- [AI-Fleet-Coordinato
- r#1493] Muster Grid Views: Keep The Last Answer On Screen\, Say Why A Cell
-  Is Empty\, Draw Files Lazily\n- [AI-Fleet-Coordinator#1495] Review one ex
- act CodeCaps widget presentation scanner fixture\n- [AI-Fleet-Coordinator#
- 1496] Muster Grid Model: Compliance Results\, Started Watches\, A Wall-Clo
- ck Safety Net And A Wake Run\n- [AI-Fleet-Coordinator#1497] Muster: say bo
- ts\, not personas\n- [AI-Fleet-Coordinator#1498] Worker CPU: tool calls wi
- thout the SDK\, cheaper Infisical refresh\, cold-isolate benchmark (AFC-61
- 7)\n- [AI-Fleet-Coordinator#1500] Add the Kody first-review prompter (flee
- t)\n- [AI-Fleet-Coordinator#1501] chore: record the fleet iOS versions in 
- the manifest\n- [AI-Fleet-Coordinator#1503] Muster Grid Views: Compliance 
- Results\, Watch Coverage And The Last Trusted Run\n- [AI-Fleet-Coordinator
- #1504] AFC-649: a known-cap consult declaration has no expiry unless revie
- w_by is given\n- [BotFleet#1551] Optional Infisical Authentication And Sco
- ped Tokens\n- [BotFleet#1597] Add Tailscale Always-On MDM Policy Plist\n- 
- [BotFleet#1615] Update dependency @vitejs/plugin-react to v6.2.1\n- [BotFl
- eet#1616] Update non-major dependencies\n- [BotFleet#1617] Update non-majo
- r dependencies\n- [BotFleet#1618] Update dependency posthog-js to v1.444.4
- \n- [BotFleet#1619] Update non-major dependencies to v4.3.4\n- [BotFleet#1
- 620] Add ZCode ACP engine over the zcode-acp-server bridge\n- [Clutch#254]
-  Update dependency vitest to v5.1.0\n- [Clutch#255] (muse-assist) Add Z Co
- de as a native engine beside mcode and\n- [Congress.Trade#2927] Update Nod
- e.js to v26\n- [Congress.Trade#2944] Amended Filing Supersedes Only Its Ov
- erlapping Predecessor\n- [Congress.Trade#2950] fix(build): resync deno.loc
- k with the dependency spec\n- [ContactLogo#305] chore(deps): update depend
- ency @vitejs/plugin-react to v6.2.1\n- [ContactLogo#306] chore(deps): upda
- te dependency @tanstack/react-query to v5.105.2\n- [DealDex#559] chore(dep
- s): update non-major dependencies\n- [DealDex#562] build(deps): bump glob\
- , @sentry/node and @sentry/vite-plugin\n- [FleetLink#171] Fix MCP refusal 
- classification with stable machine codes\n  … +37 more
+SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
+DESCRIPTION:59 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#1454] ZCode session letters: the adapter\, th
+ e wrapper and the registry API branch\n- [AI-Fleet-Coordinator#1498] Worke
+ r CPU: tool calls without the SDK\, cheaper Infisical refresh\, cold-isola
+ te benchmark (AFC-617)\n- [AI-Fleet-Coordinator#1503] Muster Grid Views: C
+ ompliance Results\, Watch Coverage And The Last Trusted Run\n- [AI-Fleet-C
+ oordinator#1504] AFC-649: a known-cap consult declaration has no expiry un
+ less review_by is given\n- [BotFleet#1551] Optional Infisical Authenticati
+ on And Scoped Tokens\n- [BotFleet#1597] Add Tailscale Always-On MDM Policy
+  Plist\n- [BotFleet#1615] Update dependency @vitejs/plugin-react to v6.2.1
+ \n- [BotFleet#1616] Update non-major dependencies\n- [BotFleet#1617] Updat
+ e non-major dependencies\n- [BotFleet#1618] Update dependency posthog-js t
+ o v1.444.4\n- [BotFleet#1619] Update non-major dependencies to v4.3.4\n- [
+ BotFleet#1620] Add ZCode ACP engine over the zcode-acp-server bridge\n- [C
+ lutch#254] Update dependency vitest to v5.1.0\n- [Clutch#255] (muse-assist
+ ) Add Z Code as a native engine beside mcode and\n- [Congress.Trade#2927] 
+ Update Node.js to v26\n- [Congress.Trade#2944] Amended Filing Supersedes O
+ nly Its Overlapping Predecessor\n- [Congress.Trade#2950] fix(build): resyn
+ c deno.lock with the dependency spec\n- [ContactLogo#305] chore(deps): upd
+ ate dependency @vitejs/plugin-react to v6.2.1\n- [ContactLogo#306] chore(d
+ eps): update dependency @tanstack/react-query to v5.105.2\n- [DealDex#559]
+  chore(deps): update non-major dependencies\n- [DealDex#562] build(deps): 
+ bump glob\, @sentry/node and @sentry/vite-plugin\n- [FleetLink#171] Fix MC
+ P refusal classification with stable machine codes\n- [FleetLink#172] Make
+  admin listing and private fixture tests deterministic\n- [HogHunter#275] 
+ Settings: keep each Advanced switch next to its own label (HH-220)\n- [Hog
+ Hunter#276] HH-222 Report Leftover Agent Build And Rebase Checkouts In /pr
+ ivate/tmp\n- [Personal-Site#264] chore: update static mirror of live site 
+ 2026-11-02\n- [Personal-Site#267] fix(deps): update dependency @hookform/r
+ esolvers to v7\n- [Socratic-Trade#4963] fix(deps): update observability\n-
+  [Socratic-Trade#4994] Add Audit Events Account Kind Created Index\n- [Soc
+ ratic-Trade#4996] Salvage Data Cascade Fixes For Quotes\, History\, Eviden
+ ce\, SimFin And Marketaux\n- [Socratic-Trade#4998] (minimax) Switch — To
+  M3.1 Flash With M3 Alias\n- [Socratic-Trade#5011] (minimax) PR #4998 foll
+ ow-up: merge main and address Kody — findings\n- [Socratic-Trade#5012] c
+ hore(deps): update dependency eslint-config-next to v16.4.4\n- [Socratic-T
+ rade#5013] chore(deps): update dependency next to v16.4.4\n- [Socratic-Tra
+ de#5014] chore(deps): update dependency vitest to v5.1.0\n- [Socratic-Trad
+ e#5015] feat(usage-monitor): report self-hosted Qdrant as windowed call vo
+ lume\n- [Socratic-Trade#5016] fix(usage-monitor): report per-row Qdrant ev
+ ents as request volume\n- [Usage-Monitor#1896] Salvage Telemetry Hub Offli
+ ne Lifecycle Work\n- [Usage-Monitor#1907] Update non-major dependencies\n-
+  [Usage-Monitor#1908] Update non-major dependencies\n  … +19 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-07
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1000,7 +1021,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 49 merged · 0 opened · 0 closed
@@ -1055,7 +1076,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
@@ -1105,7 +1126,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -1160,7 +1181,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 122 merged · 0 opened · 0 closed
@@ -1219,7 +1240,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
+DTSTAMP:20261123T063307Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 91 merged · 0 opened · 0 closed
@@ -1276,65 +1297,6 @@ DESCRIPTION:91 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  : native headroom editing with null-clear write-through (BF-2559 slice 7b)
  \n  … +51 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-02
-CATEGORIES:fleet-daily,agent-activity
-STATUS:CONFIRMED
-TRANSP:TRANSPARENT
-END:VEVENT
-BEGIN:VEVENT
-UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261122T202440Z
-DTSTART;VALUE=DATE:20261101
-DTEND;VALUE=DATE:20261102
-SUMMARY:Fleet: 62 merged · 0 opened · 0 closed
-DESCRIPTION:62 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#1233] (minimax) feat(session-letter): title t
- he — thread with its letter at session start\n- [AI-Fleet-Coordinator#12
- 34] fix(coding-memory): re-assert the coding RAM soft limits after a platf
- orm reset\n- [AI-Fleet-Coordinator#1237] feat(fleet-tools): one bearer per
-  seat\, and the rules that say so\n- [AI-Fleet-Coordinator#1240] feat(skil
- ls): every seat's session-start names the thread and the credential\n- [Bo
- tFleet#1446] fix(deploy): guard actual Git publisher configuration\n- [Bot
- Fleet#1447] Update non-major dependencies\n- [BotFleet#1448] Update non-ma
- jor dependencies\n- [BotFleet#1449] fix(linux-server): pin the server's V8
-  heap instead of inheriting the cgroup limit\n- [BotFleet#1450] Update dep
- endency electron to v45.1.0\n- [BotFleet#1451] Log silent failures in mess
- age-db and store data paths\n- [BotFleet#1452] (sentry) Report process cra
- shes to — and flag degraded health when webhook ingress fails\n- [BotFle
- et#1453] (cursor) test : unskip pooled pin rejection test\n- [BotFleet#145
- 4] (claude) feat(config): migrate computer-call and — idle env tunables 
- into knob-map\n- [BotFleet#1455] Make companion wrapper — stop remove th
- e published runtime claim\n- [BotFleet#1458] Serve GET /api/placement/iden
- tity for the native server handshake\n- [BotFleet#1459] Skip Bot Review Ch
- urn On UI Pass Webhook Triggers\n- [BotFleet#1460] Inject native runtime i
- nto the Mac companion listener\n- [BotFleet#1461] feat(ios): render GFM ta
- bles and label Mermaid fences in chat\n- [BotFleet#1462] feat(ios-fleet): 
- read-only fleet TestFlight build-state audit for the q6hr check\n- [BotFle
- et#1463] Stamp the server release build for the version handshake (BF-2588
- )\n- [BotFleet#1464] fix(ios-ship): skip the unvendored icon audit on host
- ed ships so the version manifest publishes\n- [BotFleet#1465] feat(ios): r
- eadable question cards with a typed answer\n- [BotFleet#1467] Wake A Class
- ify Trigger Once Per PR State\n- [BotFleet#1469] routines: bound run histo
- ry fairly across routines (BF-2477)\n- [BotFleet#1470] Clarify ACP engine 
- and voice settings copy for non-developers\n- [BotFleet#1471] iOS: preserv
- e Latest model alias in picker and catalog display\n- [BotFleet#1472] ui: 
- restore ACP engine in computer and VPS copy\n- [BotFleet#1473] Update depe
- ndency @assistant-ui/react to v0.15.32\n- [Congress.Trade#2909] Add Opt-In
-  Browser Transport With Hide-Automation Option for Senate eFD (CT-2442)\n-
-  [Congress.Trade#2917] Update non-major dependencies\n- [Congress.Trade#29
- 18] Pin Clock To Fixture Time In Delivery-Mode SSE Tests\n- [Congress.Trad
- e#2919] Pin the clock in the deliveryMode SSE tests so main CI is green ag
- ain\n- [Congress.Trade#2920] Fold Senate Fetch-Success Stall Into the Edge
- -Deny Alert\n- [Congress.Trade#2921] Update non-major dependencies\n- [Con
- gress.Trade#2922] fix(prices): drain terminal tickers into not_covered so 
- st_peer_prices stalls are real (CT-2443)\n- [Congress.Trade#2923] fix(late
- ncy): don't page on self-healing FMP probe silence (CT-2335)\n- [Congress.
- Trade#2924] feat(admin): canonicalize already-published off-by-one amount 
- bounds ($1\,000 → $1\,001)\n- [Congress.Trade#2925] ops: keep Coolify/Gi
- tHub/Pushover tokens out of curl argv\n- [Congress.Trade#2926] feat(admin)
- : surface ingest-failure filings in the review-queue listing\n- [Congress.
- Trade#2928] (cursor) fix(admin): accept empty seenAt in ingest-failure\n  
- … +22 more
-URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-01
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
