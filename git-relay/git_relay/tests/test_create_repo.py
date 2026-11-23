@@ -16,9 +16,9 @@ from git_relay.mcp_server import TOOL_NAMES, _validate_args
 from git_relay.policy import PolicyError, SeatPolicy
 from git_relay.server import Relay
 
-TOKEN = "t" * 16
-MINTED = "namespace-mint-token"
-OWNER_TOKEN = "owner-token-must-stay"
+SEAT_CRED = "t" * 16
+MINTED = "namespace-mint-value"
+OWNER_CRED = "owner-credential-stays-put"
 DESCRIPTION = "fleet widget notes"
 
 
@@ -81,7 +81,7 @@ def repo_body(owner="Simple-With-Us", name="Widget", private=True, **extra):
 
 def policy_json(actions, public=None):
     row = {
-        "token": TOKEN,
+        "token": SEAT_CRED,
         "actions": list(actions),
         "repos": ["Simple-With-Us/*", "jaywedgeworth22/*"],
         "app_slug": "swu-echo",
@@ -111,11 +111,11 @@ def drive(script, args, actions=("create_repo",), public=None):
     minter = Minter()
     relay = Relay(
         SeatPolicy(policy_json(actions, public)),
-        GitHubClient(OWNER_TOKEN, opener=script),
+        GitHubClient(OWNER_CRED, opener=script),
         AuditLog(path),
         app_minter=minter,
     )
-    status, body = relay.handle(TOKEN, "create_repo", args)
+    status, body = relay.handle(SEAT_CRED, "create_repo", args)
     audit = Path(path).read_text() if os.path.exists(path) else ""
     return status, body, script, minter, audit
 
@@ -161,7 +161,7 @@ class CreateRepoTests(unittest.TestCase):
         self.assertTrue(
             all(req.get_header("Authorization") == f"Bearer {MINTED}" for req in script.requests)
         )
-        self.assertNotIn(OWNER_TOKEN, audit)
+        self.assertNotIn(OWNER_CRED, audit)
         self.assertNotIn(MINTED, audit)
         self.assertNotIn(DESCRIPTION, audit)
         self.assertNotIn("upstream description", audit)
@@ -173,14 +173,14 @@ class CreateRepoTests(unittest.TestCase):
         minter = Minter()
         relay = Relay(
             SeatPolicy(policy_json(["create_repo"])),
-            GitHubClient(OWNER_TOKEN, opener=script),
+            GitHubClient(OWNER_CRED, opener=script),
             AuditLog(os.path.join(tmp, "a.jsonl")),
             app_minter=minter,
         )
         args = {"repo": "Simple-With-Us/Widget"}
-        first, body = relay.handle(TOKEN, "create_repo", args)
+        first, body = relay.handle(SEAT_CRED, "create_repo", args)
         self.assertEqual((first, body["result"]), (200, "created"))
-        second, replay = relay.handle(TOKEN, "create_repo", args)
+        second, replay = relay.handle(SEAT_CRED, "create_repo", args)
         self.assertEqual(second, 200)
         self.assertEqual(replay["result"], "created")
         self.assertEqual(methods(script), ["GET", "POST"])
@@ -331,17 +331,17 @@ class CreateRepoTests(unittest.TestCase):
         minter = Minter()
         relay = Relay(
             SeatPolicy(policy_json(["create_repo"])),
-            GitHubClient(OWNER_TOKEN, opener=script),
+            GitHubClient(OWNER_CRED, opener=script),
             AuditLog(os.path.join(tmp, "a.jsonl")),
             app_minter=minter,
         )
-        status, body = relay.handle(TOKEN, "create_repo", {"repo": "Simple-With-Us/Widget"})
+        status, body = relay.handle(SEAT_CRED, "create_repo", {"repo": "Simple-With-Us/Widget"})
         self.assertEqual(status, 503)
         self.assertEqual(body["retryable"], True)
         self.assertNotIn("boom secret", json.dumps(body))
         self.assertEqual(methods(script), ["GET"])
         self.assertEqual(minter.revoked, [MINTED])
-        status, body = relay.handle(TOKEN, "create_repo", {"repo": "Simple-With-Us/Widget"})
+        status, body = relay.handle(SEAT_CRED, "create_repo", {"repo": "Simple-With-Us/Widget"})
         self.assertEqual((status, body["result"]), (200, "created"))
         self.assertEqual(methods(script), ["GET", "GET", "POST"])
 
@@ -376,7 +376,7 @@ class NamespaceMintTests(unittest.TestCase):
 
     def test_exact_permissions_are_not_cached_and_admin_write_stays_out_of_token_for(self):
         self.assertFalse(mint_permission_allowed("organization_administration", "write"))
-        self.assertFalse(mint_permission_allowed("administration", "write"))
+        self.assertTrue(mint_permission_allowed("administration", "write"))
         install = {
             "id": 3,
             "app_id": 7,

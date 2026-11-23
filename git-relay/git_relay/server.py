@@ -76,7 +76,9 @@ LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_creat
 # Sealed secret values (up to 48 KiB, base64 plus envelope) exceed the default 64 KiB cap; the verb owns the exact bound.
 MAX_SECRET_PUT_REQUEST_BYTES = 128 * 1024
 SECRET_PUT_REQUEST_ACTIONS = frozenset(
-    a for a in SeatPolicy.WORKFLOW_ACTIONS if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
+    a
+    for a in SeatPolicy.WORKFLOW_ACTIONS
+    if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
 )
 
 
@@ -1069,6 +1071,24 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_secret_delete_repo_codespaces",
         "wf_secret_put_env_actions",
         "wf_secret_delete_env_actions",
+        "wf_hook_create",
+        "wf_hook_update",
+        "wf_hook_delete",
+        "wf_hook_ping",
+        "wf_hook_test",
+        "wf_hook_redeliver",
+        "wf_org_hook_create",
+        "wf_org_hook_update",
+        "wf_org_hook_delete",
+        "wf_org_hook_ping",
+        "wf_deploy_key_add",
+        "wf_deploy_key_delete",
+        "wf_environment_put",
+        "wf_environment_delete",
+        "wf_env_branch_policy_create",
+        "wf_env_branch_policy_delete",
+        "wf_env_variable_set",
+        "wf_env_variable_delete",
         "wf_org_variable_set",
         "wf_org_variable_delete",
         "wf_org_variable_repos_set",
