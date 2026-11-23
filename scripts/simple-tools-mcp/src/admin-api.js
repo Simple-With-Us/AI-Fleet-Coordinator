@@ -71,6 +71,24 @@ const ACTIONS = new Set(["mint", "rotate", "revoke"]);
 const MINT_ID_RE = /^[0-9a-f]{32}$/;
 const MAX_BODY = 4096;
 
+// Read the body as a stream and stop at the cap, so a chunked or understated Content-Length never buffers more
+// than MAX_BODY bytes.  Returns null past the cap.
+async function readCapped(request, max) {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) { try { await reader.cancel(); } catch { /* ignore */ } return null; }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 function json(status, body) {
   return new Response(JSON.stringify(body), {
     status,
@@ -102,8 +120,8 @@ export async function adminBearerAction(request, deps) {
   const declared = Number(request.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MAX_BODY) return json(413, { ok: false, error: "bad_body" });
   let raw;
-  try { raw = await request.text(); } catch { return json(400, { ok: false, error: "bad_body" }); }
-  if (raw.length > MAX_BODY) return json(413, { ok: false, error: "bad_body" });
+  try { raw = await readCapped(request, MAX_BODY); } catch { return json(400, { ok: false, error: "bad_body" }); }
+  if (raw === null) return json(413, { ok: false, error: "bad_body" });
   let body;
   try { body = JSON.parse(raw); } catch { return json(400, { ok: false, error: "bad_body" }); }
   if (!body || typeof body !== "object" || Array.isArray(body)) return json(400, { ok: false, error: "bad_body" });
@@ -137,6 +155,7 @@ export async function adminBearerAction(request, deps) {
   if (action === "mint" && hasLive) return json(409, { ok: false, error: "bearer_active", hint: "use rotate to replace a live bearer" });
   if (action === "rotate" && !hasLive) return json(409, { ok: false, error: "no_active_bearer", hint: "use mint" });
 
+  if (!Number.isFinite(deps.ttlMs) || deps.ttlMs <= 0) return json(503, { ok: false, error: "ttl_unavailable" });
   let token, kind, mcpAccept;
   if (isBot) {
     await deps.prepare("bot");
@@ -153,7 +172,6 @@ export async function adminBearerAction(request, deps) {
     ({ token } = await deps.newSeatBearer(identity));
     kind = "seat";
   }
-  if (!Number.isFinite(deps.ttlMs) || deps.ttlMs <= 0) return json(503, { ok: false, error: "ttl_unavailable" });
   const expiresAt = now + deps.ttlMs;
   const minted = await gate.gbBearerMintChecked({ mintId, hash: await deps.sha256Hex(token), by: deps.email, expiresAt, mcpAccept });
   if (!minted.minted && minted.reason === "completed") return json(200, { ok: true, action, identity, completed: true, tokenShown: false, result: minted.result ?? null });

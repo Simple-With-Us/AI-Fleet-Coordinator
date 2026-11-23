@@ -189,3 +189,13 @@ test("a failing revoke, a bad ttl and an oversized body answer in JSON, never a 
   const r3 = await j(await adminBearerAction(req({ action: "revoke", identity: "WISE", pad: "x".repeat(5000) }), c.d));
   assert.equal(r3.status, 413); assert.equal(c.calls.revokes, 0);
 });
+
+test("a body that understates its length is cut off at the cap while streaming", async () => {
+  const c = deps();
+  const big = new TextEncoder().encode(JSON.stringify({ action: "revoke", identity: "WISE", pad: "x".repeat(9000) }));
+  const stream = new ReadableStream({ start(ctl) { ctl.enqueue(big.slice(0, 3000)); ctl.enqueue(big.slice(3000)); ctl.close(); } });
+  const base = req({ action: "revoke", identity: "WISE" });
+  const r = new Request(base.url, { method: "POST", headers: base.headers, body: stream, duplex: "half" });
+  const out = await j(await adminBearerAction(r, c.d));
+  assert.equal(out.status, 413); assert.equal(c.calls.revokes, 0);
+});
