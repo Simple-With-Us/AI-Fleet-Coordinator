@@ -112,6 +112,9 @@ EMPTY_LANE_HOURS = 24
 RELAY_PAGE = 50
 RELAY_MAX_PAGES = 20
 RELAY_HEAD_PAGE = 20
+# Live branches through the relay (gr_wf_branches), pages of 50: seats cannot authenticate git over ssh, so the
+# live-branch check reads the relay first and falls back to `git ls-remote` only when the relay gave no answer.
+RELAY_BRANCH_PAGES = 60
 RELAY_BULK_LIMIT = RELAY_PAGE * RELAY_MAX_PAGES
 # How far back along origin/<default> the squash-merge tree comparison looks.
 TREE_LANDED_COMMITS = 100
@@ -295,6 +298,25 @@ def _relay_ok(args: Sequence[str]) -> bool:
     )
 
 
+def _relay_branches_ok(args: Sequence[str]) -> bool:
+    """simple-git call gr_wf_branches --args-json {repo, per_page, page} --json: one page of live branches."""
+    a = list(args)
+    if len(a) != 5 or a[:2] != ["call", "gr_wf_branches"] or a[2] != "--args-json" or a[4] != "--json":
+        return False
+    try:
+        query = json.loads(a[3])
+    except ValueError:
+        return False
+    return (
+        isinstance(query, dict)
+        and set(query) == {"repo", "per_page", "page"}
+        and bool(_GH_REPO.match(str(query.get("repo", ""))))
+        and query["per_page"] == RELAY_PAGE
+        and type(query["page"]) is int
+        and 1 <= query["page"] <= RELAY_BRANCH_PAGES
+    )
+
+
 def check_allowed(
     argv: Sequence[str],
     *,
@@ -312,7 +334,7 @@ def check_allowed(
     --no-renames <sha> HEAD | rev-list --max-count=50 <sha> --not refs/remotes/origin/<ref> | symbolic-ref -q --short
     refs/remotes/origin/HEAD | ls-remote --heads origin | fetch --no-tags --no-write-fetch-head --no-recurse-submodules
     --quiet origin refs/pull/<n>/head (objects only: no ref and no FETCH_HEAD is written).  simple-git: call
-    gr_wf_pr_list_page --args-json <the two bounded shapes> --json.
+    gr_wf_pr_list_page --args-json <the two bounded shapes> --json | call gr_wf_branches --args-json {repo, per_page, page} --json.
     lsof: -d cwd -Fpcn."""
     if (
         not argv
@@ -326,7 +348,7 @@ def check_allowed(
     if argv[0] == "git":
         key = _git_key(argv[1:], root, fold)
     elif argv[0] == "simple-git":
-        key = "relay" if _relay_ok(argv[1:]) else None
+        key = "relay" if (_relay_ok(argv[1:]) or _relay_branches_ok(argv[1:])) else None
     elif argv[0] == "lsof":
         key = "lsof" if list(argv[1:]) == ["-d", "cwd", "-Fpcn"] else None
     if key is None:
@@ -1257,8 +1279,53 @@ def _default_branch(run: Runner, tree: Path) -> str:
     return "main"
 
 
-def _remote_heads(run: Runner, tree: Path) -> dict[str, str] | None:
-    """{branch: sha} of every branch that exists on origin right now, or None when ls-remote failed."""
+def _relay_heads(run: Runner, repo: str, tree: Path) -> dict[str, str] | None:
+    """{branch: sha} of every live branch through the relay (gr_wf_branches), or None unless the list is
+    provably complete: a failed page, a malformed row, or more branches than the page bound is no answer."""
+    heads: dict[str, str] = {}
+    for page in range(1, RELAY_BRANCH_PAGES + 1):
+        res = run(
+            [
+                "simple-git",
+                "call",
+                "gr_wf_branches",
+                "--args-json",
+                json.dumps({"repo": repo, "per_page": RELAY_PAGE, "page": page}, separators=(",", ":"), sort_keys=True),
+                "--json",
+            ],
+            cwd=tree,
+        )
+        if not res.ok:
+            return None
+        try:
+            data = json.loads(res.out or "{}")
+        except ValueError:
+            return None
+        st = data.get("structured") if isinstance(data, dict) else None
+        if not isinstance(st, dict) or not isinstance(st.get("branches"), list):
+            return None
+        for row in st["branches"]:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("name"), str)
+                or not row["name"]
+                or not isinstance(row.get("sha"), str)
+                or not _SHA.match(row["sha"])
+            ):
+                return None
+            heads[row["name"]] = row["sha"]
+        if st.get("has_more") is not True:
+            return heads
+    return None
+
+
+def _remote_heads(run: Runner, tree: Path, repo: str | None = None) -> dict[str, str] | None:
+    """{branch: sha} of every branch that exists on origin right now, or None when no live read worked.
+    The relay first (https, the seat's own bearer, no ssh key needed); `git ls-remote` only as the fallback."""
+    if repo:
+        got = _relay_heads(run, repo, tree)
+        if got is not None:
+            return got
     res = run(["git", "ls-remote", "--heads", "origin"], cwd=tree)
     if not res.ok:
         return None
@@ -1368,14 +1435,14 @@ def _gather(
         if not lanes:
             continue
         default = _default_branch(run, tree)
-        heads = _remote_heads(run, tree)
+        repo = _owner_repo(run, app, tree)
+        heads = _remote_heads(run, tree, repo)
         if heads is None:
             errors.append(
-                f"{app.lane_dir}: git ls-remote --heads origin failed; no live origin branch can vouch "
+                f"{app.lane_dir}: neither the relay branch list nor git ls-remote --heads origin answered; no live origin branch can vouch "
                 "for a push or a deleted upstream, so only a lane whose HEAD a merged or closed PR "
                 "holds can be removed"
             )
-        repo = _owner_repo(run, app, tree)
         prs, truncated = _bulk_prs(run, repo, tree) if repo else (None, False)
         if prs is None:
             errors.append(

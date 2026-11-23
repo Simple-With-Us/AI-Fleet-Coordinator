@@ -1975,5 +1975,75 @@ class ParserTests(unittest.TestCase):
         self.assertIn("prune", out.getvalue())
 
 
+
+class RelayBranchCheckTests(unittest.TestCase):
+    """The live-branch check reads the relay (https, the seat's bearer) before it tries ssh `git ls-remote`."""
+
+    REPO = "Simple-With-Us/Example"
+    SHA_A = "a" * 40
+    SHA_B = "b" * 40
+
+    @staticmethod
+    def _q(page: int = 1, per_page: int = 50, repo: str = "Simple-With-Us/Example") -> list[str]:
+        return [
+            "call",
+            "gr_wf_branches",
+            "--args-json",
+            json.dumps({"repo": repo, "per_page": per_page, "page": page}),
+            "--json",
+        ]
+
+    def test_allowlist_takes_only_the_bounded_branch_page(self) -> None:
+        self.assertEqual(R.check_allowed(["simple-git", *self._q()]), R._CAPS["relay"])
+        for bad in (self._q(per_page=100), self._q(page=0), self._q(page=R.RELAY_BRANCH_PAGES + 1), self._q(repo="not a repo")):
+            with self.assertRaises(K.CommandRefused):
+                R.check_allowed(["simple-git", *bad])
+        with self.assertRaises(K.CommandRefused):
+            R.check_allowed(["simple-git", "call", "gr_wf_branches", "--args-json", '{"repo":"a/b","per_page":50,"page":1,"x":1}', "--json"])
+
+    def _runner(self, pages: list, ssh_ok: bool = False):
+        calls: list[list[str]] = []
+
+        def run(argv, cwd=None):
+            calls.append(list(argv))
+            if argv[0] == "simple-git":
+                page = json.loads(argv[argv.index("--args-json") + 1])["page"]
+                got = pages[page - 1] if page - 1 < len(pages) else None
+                if got is None:
+                    return D.CmdResult(1, "", "relay refused")
+                return D.CmdResult(0, json.dumps({"structured": got}), "")
+            if argv[:3] == ["git", "ls-remote", "--heads"]:
+                if ssh_ok:
+                    return D.CmdResult(0, f"{self.SHA_B}\trefs/heads/viassh\n", "")
+                return D.CmdResult(128, "", "Permission denied (publickey)")
+            raise AssertionError(argv)
+
+        return run, calls
+
+    def test_relay_pages_are_merged(self) -> None:
+        pages = [
+            {"branches": [{"name": "main", "sha": self.SHA_A}], "has_more": True},
+            {"branches": [{"name": "feat/x", "sha": self.SHA_B}], "has_more": False},
+        ]
+        run, calls = self._runner(pages)
+        heads = R._remote_heads(run, Path("."), self.REPO)
+        self.assertEqual(heads, {"main": self.SHA_A, "feat/x": self.SHA_B})
+        self.assertFalse(any(c[0] == "git" for c in calls))
+
+    def test_relay_failure_falls_back_to_ssh_then_fails_closed(self) -> None:
+        run, _ = self._runner([None], ssh_ok=True)
+        self.assertEqual(R._remote_heads(run, Path("."), self.REPO), {"viassh": self.SHA_B})
+        run, _ = self._runner([None], ssh_ok=False)
+        self.assertIsNone(R._remote_heads(run, Path("."), self.REPO))
+
+    def test_malformed_or_unbounded_relay_list_is_no_answer(self) -> None:
+        bad_row = [{"branches": [{"name": "x", "sha": "nope"}], "has_more": False}]
+        run, _ = self._runner(bad_row)
+        self.assertIsNone(R._relay_heads(run, self.REPO, Path(".")))
+        endless = [{"branches": [{"name": f"b{i}", "sha": self.SHA_A}], "has_more": True} for i in range(R.RELAY_BRANCH_PAGES)]
+        run, _ = self._runner(endless)
+        self.assertIsNone(R._relay_heads(run, self.REPO, Path(".")))
+
+
 if __name__ == "__main__":
     unittest.main()
