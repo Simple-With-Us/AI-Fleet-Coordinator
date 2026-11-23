@@ -2150,9 +2150,9 @@
   },
   {
    "name": "gr_wf_git_blob_create",
-   "description": "Create unattached bounded UTF-8 blob (default 40000 utf-8 bytes; a larger class to 100000 applies ONLY with allow_large_text exactly true); no ref or tree changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "description": "Create unattached bounded UTF-8 blob (default 40000 utf-8 bytes; a larger class to 716800 applies ONLY with allow_large_text exactly true); no ref or tree changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
    "read": false,
-   "input_bytes": 212992,
+   "input_bytes": 6291456,
    "schema": {
     "type": "object",
     "additionalProperties": false,
@@ -2287,9 +2287,9 @@
   },
   {
    "name": "gr_wf_git_tree_create",
-   "description": "Create unattached tree from base tree and up to 20 text files or existing-blob sha references (text cumulative 40000 utf-8 bytes default; 100000 ONLY with allow_large_text exactly true; source_commit requires exact same-path metadata proof plus full byte/provider/live credential checks; a referenced blob is fetched, identity/content-verified and secret-scanned like supplied text, each at most 700 KiB raw because the relay reads it through a 1 MiB response cap, bounded separately at 4 MiB raw total); no workflow paths/ref changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "description": "Create unattached tree from base tree and up to 20 text files or existing-blob sha references (text cumulative 40000 utf-8 bytes default; 716800 ONLY with allow_large_text exactly true; source_commit requires exact same-path metadata proof plus full byte/provider/live credential checks; a referenced blob is fetched, identity/content-verified and secret-scanned like supplied text, each at most 700 KiB raw because the relay reads it through a 1 MiB response cap, bounded separately at 4 MiB raw total); no workflow paths/ref changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
    "read": false,
-   "input_bytes": 245760,
+   "input_bytes": 6291456,
    "schema": {
     "type": "object",
     "additionalProperties": false,

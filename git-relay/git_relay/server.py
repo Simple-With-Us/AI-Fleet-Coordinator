@@ -69,9 +69,9 @@ BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
 # permission, scan budget or workflow verb is widened.
 MAX_FILE_REQUEST_BYTES = 6 * 1024 * 1024
 FILE_REQUEST_ACTIONS = frozenset({"wf_file_put", "wf_files_put"})
-# The opt-in large-text git creates carry up to 100,000 bytes of text; the
+# The opt-in large-text git creates carry up to 716,800 bytes of text (JSON escaping can expand it several times); the
 # envelope allowance stays narrow and the verb owns the exact text bound.
-MAX_LARGE_TEXT_REQUEST_BYTES = 256 * 1024
+MAX_LARGE_TEXT_REQUEST_BYTES = 6 * 1024 * 1024
 LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_create"})
 
 

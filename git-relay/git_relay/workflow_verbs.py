@@ -160,7 +160,9 @@ def _check_instant(value):
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
 # still UTF-8 validated and secret-scanned, refused not cropped.
-MAX_WORKFLOW_TEXT_LARGE = 100000
+MAX_WORKFLOW_TEXT_LARGE = (
+    716800  # 700 KiB: one relay read answer (base64 of it) must fit the 1 MiB GitHub body bound
+)
 MAX_WORKFLOW_TEXT_LARGE_B64 = 4 * ((MAX_WORKFLOW_TEXT_LARGE + 2) // 3) + 8
 MAX_FILES = 20
 MAX_FILES_RAW = 4 * 1024 * 1024
