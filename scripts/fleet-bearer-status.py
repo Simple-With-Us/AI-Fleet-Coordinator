@@ -59,11 +59,12 @@ def access_token():
 
 def fetch(url, token):
     req = urllib.request.Request(
-        url, headers={
+        url,
+        headers={
             "cf-access-token": token,
             "Accept": "application/json",
             "User-Agent": "fleet-bearer-status/1",
-        }
+        },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read(2_000_000))

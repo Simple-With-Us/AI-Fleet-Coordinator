@@ -120,10 +120,14 @@ class T(unittest.TestCase):
         self.assertNotIn("token", s.lower().replace("tokens", ""))
 
 
-
 class ReviewFixTests(unittest.TestCase):
     def test_delta_edge_keys_clear_silently(self):
-        state = {"active": {"delta:mcp:mcp_http_401": {"since": 1, "lastAlarm": 1}, "access:login_needed": {"since": 1, "lastAlarm": 1}}}
+        state = {
+            "active": {
+                "delta:mcp:mcp_http_401": {"since": 1, "lastAlarm": 1},
+                "access:login_needed": {"since": 1, "lastAlarm": 1},
+            }
+        }
         notify, recovered = fbs.reconcile(state, {}, 100)
         self.assertEqual(notify, [])
         self.assertEqual(recovered, ["access:login_needed"])
@@ -156,6 +160,7 @@ class ReviewFixTests(unittest.TestCase):
             self.assertEqual(os.listdir(d), [])
             fbs.write_atomic(os.path.join(d, "s.json"), {"x": 1})
             self.assertEqual(os.listdir(d), ["s.json"])
+
 
 if __name__ == "__main__":
     unittest.main()
