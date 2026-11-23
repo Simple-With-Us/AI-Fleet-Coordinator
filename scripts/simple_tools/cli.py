@@ -62,7 +62,7 @@ from . import live as LIVE
 from . import router as ROUTER
 from . import zulip as Z
 from .identity import EMAIL_TAG_OVERRIDES, seat_tag_for  # noqa: F401 - re-exported (daemon, listener_cli, tests)
-from .state import State, state_root
+from .state import PostReceiptPending, State, state_root
 from .zulip import (
     ApiError,
     CredentialError,
@@ -364,7 +364,20 @@ class Agent:
         return sorted(result.get("messages") or [], key=lambda m: m.get("id", 0))
 
     def is_self(self, message: Mapping[str, Any]) -> bool:
-        """Posted by this session: in its ledger, or (if the ledger was lost) carrying its exact tag."""
+        """All consumers share the same bounded stream-post receipt fence."""
+        if self.sent_by_this_bot(message):
+            try:
+                with self.state.stream_post_guard():
+                    return self._is_self_confirmed(message)
+            except PostReceiptPending:
+                raise UsageError(
+                    "session publication receipt is still pending; ownership is unknown; "
+                    "no delivery cursor was advanced"
+                ) from None
+        return self._is_self_confirmed(message)
+
+    def _is_self_confirmed(self, message: Mapping[str, Any]) -> bool:
+        """Read the confirmed ledger and exact session tag, without guessing."""
         message_id = message.get("id")
         if isinstance(message_id, int) and message_id in self.state.posted():
             return True
@@ -1771,8 +1784,19 @@ def _reformatted(agent: Agent, body: str) -> list[str]:
 
 def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
     try:
+        with agent.state.stream_post_guard():
+            return _send_stream_with_receipt(agent, channel, topic, body)
+    except PostReceiptPending:
+        raise UsageError(
+            "session publication receipt is still pending; no new post was attempted"
+        ) from None
+
+
+def _send_stream_with_receipt(agent: Agent, channel: str, topic: str, body: str) -> int:
+    try:
         result = agent.client.post(
-            "messages", {"type": "stream", "to": channel, "topic": topic, "content": body}
+            "messages",
+            {"type": "stream", "to": channel, "topic": topic, "content": body},
         )
     except NetworkError as exc:
         if exc.maybe_sent:

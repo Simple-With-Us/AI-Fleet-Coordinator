@@ -31,6 +31,7 @@ import os
 import stat
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,14 @@ POSTED_LIMIT = 500
 ENV_STATE_DIR = "SIMPLE_TOOLS_STATE_DIR"
 
 _THREAD_LOCK = threading.RLock()
+_POST_LOCKS_GUARD = threading.Lock()
+_POST_LOCKS: dict[str, threading.RLock] = {}
+_POST_HELD = threading.local()
+POST_RECEIPT_WAIT = 5.0
+
+
+class PostReceiptPending(TimeoutError):
+    """The session receipt fence could not be acquired within its bound."""
 
 
 def state_root(env: Mapping[str, str], home: Path | None = None) -> Path:
@@ -215,6 +224,71 @@ class State:
             cursors[key] = current
 
         self._update(self.path, mutate)
+
+    @contextlib.contextmanager
+    def stream_post_guard(self, *, timeout: float = POST_RECEIPT_WAIT) -> Iterator[None]:
+        """Bounded session receipt fence, reentrant within its owning thread.
+
+        A timeout leaves ownership unknown, never classifies an own post as a
+        sibling. The caller must stop without moving its delivery cursor.
+        Neither the global state-update lock nor a sibling session is held.
+        """
+        raw_root = Path(os.path.abspath(self.root))
+        # The filesystem prefix is outside the state store (e.g. macOS /var
+        # aliases /private/var). Never resolve the state root or its children:
+        # that would erase evidence of a redirected seat/session directory.
+        root = raw_root.parent.resolve() / raw_root.name
+        session = root / self.seat / (self.tag or NO_SESSION)
+        for directory in (root, session.parent, session):
+            if directory.is_symlink():
+                raise PermissionError("refusing symlinked state directory")
+        make_private_dir(session)
+        lock_path = session / "stream-post.lock"
+        key = str(lock_path)
+        held = getattr(_POST_HELD, "keys", None)
+        if held is None:
+            held = _POST_HELD.keys = set()
+        if key in held:
+            yield
+            return
+        deadline = time.monotonic() + max(0.0, timeout)
+        with _POST_LOCKS_GUARD:
+            local = _POST_LOCKS.setdefault(key, threading.RLock())
+        if not local.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise PostReceiptPending("session publication receipt is still pending")
+        fd = None
+        locked = False
+        try:
+            fd = os.open(
+                str(lock_path),
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise PermissionError("refusing nonregular session lock")
+            os.fchmod(fd, 0o600)
+            if fcntl is not None:
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise PostReceiptPending("session publication receipt is still pending")
+                        time.sleep(min(0.01, remaining))
+            locked = True
+            held.add(key)
+            yield
+        finally:
+            held.discard(key)
+            try:
+                if fd is not None:
+                    if locked and fcntl is not None:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+            finally:
+                local.release()
 
     # ---- posted ledger --------------------------------------------------------------------
     def posted(self) -> set[int]:
