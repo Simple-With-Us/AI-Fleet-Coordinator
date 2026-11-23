@@ -54,6 +54,7 @@ final class MusterNavigationTests: XCTestCase {
             .hosts: .acrossFleet,
             .appProcesses: .acrossFleet,
             .virtualMachines: .acrossFleet,
+            .bearers: .acrossFleet,
             .actionHistory: .acrossFleet,
         ]
         XCTAssertEqual(expected.count, MusterDestination.allCases.count)
@@ -71,7 +72,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.listed(under: .machine(.server)),
                        [.serverStatus, .operator, .serverResourceLimits, .serverUpdates])
         XCTAssertEqual(MusterDestination.listed(under: .acrossFleet),
-                       [.appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory])
+                       [.appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .bearers, .actionHistory])
     }
 
     /// One name per panel:  no two panels share a title.

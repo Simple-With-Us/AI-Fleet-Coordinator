@@ -30,6 +30,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     case hosts
     case appProcesses
     case virtualMachines
+    case bearers
     case actionHistory
 
     var id: String { rawValue }
@@ -54,6 +55,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .hosts: return "Tools And Worker Health"
         case .appProcesses: return "App Processes"
         case .virtualMachines: return "Virtual Machines"
+        case .bearers: return "Bearers"
         case .actionHistory: return "Action History"
         }
     }
@@ -76,6 +78,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .hosts: return "rectangle.split.2x1"
         case .appProcesses: return "rectangle.stack"
         case .virtualMachines: return "cube"
+        case .bearers: return "key.horizontal"
         case .actionHistory: return "list.bullet.clipboard"
         }
     }
@@ -95,7 +98,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
             return .machine(.mac)
         case .serverStatus, .operator, .serverResourceLimits, .serverUpdates:
             return .machine(.server)
-        case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory:
+        case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .bearers, .actionHistory:
             return .acrossFleet
         }
     }
