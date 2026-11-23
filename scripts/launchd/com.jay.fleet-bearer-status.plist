@@ -5,9 +5,11 @@
   (GET /admin/api/bearers) with the owner's own Cloudflare Access login, write
   ~/.local/state/fleet-tools/bearer-status.json (0600, atomic) for Muster's Bearers panel, and raise a macOS
   notification for a problem, a growth in /mcp 401 or relay refusals, or a missing Access login (de-duplicated,
-  again every 6 hours, with a recovery notice).  One-time owner step:
+  again every 6 hours, with a recovery notice).  Credential: the Access service token "muster-admin-api" from
+  ~/.config/fleet-tools/muster-admin-api.json (user-only), else the owner's Access login, one-time owner step:
             cloudflared access login https://agents.simplewithus.com/admin
-  Install:  cp this file to ~/Library/LaunchAgents/ and
+  Install:  cp scripts/fleet-bearer-status.py to ~/.local/share/fleet-tools/ (a stable copy outside any lane),
+            cp this file to ~/Library/LaunchAgents/ and
             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.fleet-bearer-status.plist
   Stop:     launchctl bootout gui/$(id -u)/com.jay.fleet-bearer-status
 -->
@@ -19,7 +21,7 @@
   <array>
     <string>/usr/bin/python3</string>
     <string>-I</string>
-    <string>/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet-bearer-status.py</string>
+    <string>/Users/jay/.local/share/fleet-tools/fleet-bearer-status.py</string>
     <string>--write</string>
     <string>/Users/jay/.local/state/fleet-tools/bearer-status.json</string>
   </array>

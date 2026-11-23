@@ -2,7 +2,8 @@
 """Poll the owner bearer status API and raise alarms for Muster.
 
 Every run (the LaunchAgent com.jay.fleet-bearer-status, every 5 minutes) reads
-GET https://agents.simplewithus.com/admin/api/bearers with the owner's own Cloudflare Access login
+GET https://agents.simplewithus.com/admin/api/bearers with the Access service token "muster-admin-api" when ~/.config/fleet-tools/muster-admin-api.json exists (user-only,
+{"clientId", "clientSecret"}), else with the owner's own Cloudflare Access login
 (`cloudflared access token`, run once by the owner with `cloudflared access login`), then writes
 ~/.local/state/fleet-tools/bearer-status.json (0600, atomic):
 
@@ -23,6 +24,7 @@ every 6 hours while it stays, and a recovery notice goes out once when it clears
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -36,6 +38,37 @@ OUT = os.path.expanduser("~/.local/state/fleet-tools/bearer-status.json")
 STATE = os.path.expanduser("~/.local/state/fleet-tools/bearer-alarm-state.json")
 REALARM_S = 6 * 3600
 CLOUDFLARED = ("/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared")
+
+
+SERVICE_FILE = os.path.expanduser("~/.config/fleet-tools/muster-admin-api.json")
+
+
+def service_token(path=None):
+    """(client id, client secret) of the Cloudflare Access service token "muster-admin-api", or None.
+
+    Read from a user-only file ({"clientId", "clientSecret"}).  The file must be a regular file owned by this user
+    with no group or other permission bits, so a loose file is ignored rather than trusted.  The Worker accepts
+    this token only on /admin/api/* and only for the client ids it lists.  Values are never printed or stored
+    anywhere else."""
+    path = SERVICE_FILE if path is None else path
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+            return None
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    cid = doc.get("clientId") if isinstance(doc, dict) else None
+    sec = doc.get("clientSecret") if isinstance(doc, dict) else None
+    if isinstance(cid, str) and cid and isinstance(sec, str) and sec:
+        return (cid, sec)
+    return None
+
+
+def credentials():
+    """The service token when its file is present, else the owner's Access JWT from cloudflared."""
+    return service_token() or access_token()
 
 
 def access_token():
@@ -66,10 +99,14 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def fetch(url, token):
+    if isinstance(token, tuple):
+        auth = {"CF-Access-Client-Id": token[0], "CF-Access-Client-Secret": token[1]}
+    else:
+        auth = {"cf-access-token": token}
     req = urllib.request.Request(
         url,
         headers={
-            "cf-access-token": token,
+            **auth,
             "Accept": "application/json",
             "User-Agent": "fleet-bearer-status/1",
         },
@@ -203,7 +240,7 @@ def write_atomic(path, doc):
         os.close(dfd)
 
 
-def run(args, now=None, token_fn=access_token, fetch_fn=fetch, notify_fn=notify_mac):
+def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_mac):
     now = time.time() if now is None else now
     try:
         with open(args.state) as f:

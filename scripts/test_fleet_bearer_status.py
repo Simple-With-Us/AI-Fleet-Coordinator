@@ -233,5 +233,57 @@ class ReviewRound2Tests(unittest.TestCase):
         )
 
 
+class ServiceTokenFileTests(unittest.TestCase):
+    def _write(self, d, mode, doc):
+        p = os.path.join(d, "svc.json")
+        with open(p, "w") as f:
+            json.dump(doc, f)
+        os.chmod(p, mode)
+        return p
+
+    def test_reads_a_user_only_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self._write(d, 0o600, {"clientId": "id.access", "clientSecret": "s3"})
+            self.assertEqual(fbs.service_token(p), ("id.access", "s3"))
+
+    def test_ignores_a_loose_missing_or_malformed_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            loose = self._write(d, 0o644, {"clientId": "a", "clientSecret": "b"})
+            self.assertIsNone(fbs.service_token(loose))
+            self.assertIsNone(fbs.service_token(os.path.join(d, "none.json")))
+            bad = self._write(d, 0o600, {"clientId": "a"})
+            self.assertIsNone(fbs.service_token(bad))
+            bad2 = self._write(d, 0o600, ["x"])
+            self.assertIsNone(fbs.service_token(bad2))
+
+    def test_fetch_sends_service_headers_not_the_jwt_header(self):
+        seen = {}
+
+        class R:
+            def read(self, n):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class O:
+            def open(self, req, timeout=0):
+                seen.update({k.lower(): v for k, v in req.header_items()})
+                return R()
+
+        old = fbs._OPENER
+        fbs._OPENER = O()
+        try:
+            fbs.fetch("https://x/y", ("cid", "sec"))
+            self.assertEqual(seen.get("cf-access-client-id"), "cid")
+            self.assertEqual(seen.get("cf-access-client-secret"), "sec")
+            self.assertNotIn("cf-access-token", seen)
+        finally:
+            fbs._OPENER = old
+
+
 if __name__ == "__main__":
     unittest.main()
