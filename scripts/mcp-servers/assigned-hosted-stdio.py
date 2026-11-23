@@ -137,13 +137,19 @@ def origin_shape_once(env, identity, params):
         name = "origin-identities-shape.once"
         marker = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         info = os.fstat(marker)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size != 0):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or info.st_size != 0
+        ):
             return
         # Only the unlink winner emits, even across adapter processes.
         os.unlink(name, dir_fd=directory)
         meta = params.get("_meta")
         context = meta.get("com.simplewithus/native-origin/1") if isinstance(meta, dict) else None
+
         def kind(value):
             if value is None:
                 return "missing-or-null"
@@ -158,13 +164,19 @@ def origin_shape_once(env, identity, params):
             if isinstance(value, list):
                 return "array"
             return "other"
+
         fields = ("version", "platform", "session_id", "turn_id", "tool_call_id")
-        shape = {"diagnostic": "mm-origin-identities-shape/1", "tool": "identities",
-                 "meta_type": kind(meta), "context_type": kind(context),
-                 "field_types": {key: kind(context.get(key) if isinstance(context, dict) else None)
-                                 for key in fields},
-                 "exact_context_keys": isinstance(context, dict) and set(context) == set(fields),
-                 "private_note_claims_valid": bool(native_origin_claims(env, identity, meta))}
+        shape = {
+            "diagnostic": "mm-origin-identities-shape/1",
+            "tool": "identities",
+            "meta_type": kind(meta),
+            "context_type": kind(context),
+            "field_types": {
+                key: kind(context.get(key) if isinstance(context, dict) else None) for key in fields
+            },
+            "exact_context_keys": isinstance(context, dict) and set(context) == set(fields),
+            "private_note_claims_valid": bool(native_origin_claims(env, identity, meta)),
+        }
         print(json.dumps(shape, sort_keys=True), file=sys.stderr)
     except (OSError, ValueError, TypeError):
         return
