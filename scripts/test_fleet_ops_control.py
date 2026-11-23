@@ -442,6 +442,10 @@ class AllowlistNotesTests(Base):
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
         ),
+        "com.jay.fleet-bearer-status": (
+            "reporting",
+            "Stopping this stops the bearer status report and its alarms, so Muster's Bearers panel goes out of date and then reads as not known.",
+        ),
         "com.jay.fleet-api-health": (
             "reporting",
             "Stopping this stops the ST and CT health report, so Muster's API health rows go out "
