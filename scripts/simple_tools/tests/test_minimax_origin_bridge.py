@@ -217,6 +217,16 @@ class Claims(unittest.TestCase):
             self.assertTrue(marker.exists())
             marker.unlink()
 
+    def test_non_identity_diagnostic_has_zero_filesystem_calls(self):
+        with mock.patch.object(AD.os, "open", side_effect=AssertionError("filesystem touched")):
+            for identity, params in (
+                ("MM", {"name": "guide"}),
+                ("MM", {"name": "gr_open_pr"}),
+                ("CODEX", {"name": "identities"}),
+                ("MM", None),
+            ):
+                AD.origin_shape_once(self.env, identity, params)
+
     def test_codex_existing_per_call_path_is_preserved(self):
         self.note("CODEX", UUID, "codex")
         claims = AD.native_origin_claims(self.env, "CODEX", {"threadId": UUID})
@@ -461,6 +471,27 @@ console.log(JSON.stringify({np,p,main,results:[project({...np,toolCallId:"call-c
                     mock.patch.object(BR, "replace", side_effect=replace),
                 ):
                     BR.run_chunk(root, apply=True)
+
+    def test_durability_directory_rejects_symlink_mode_and_inode_swap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "chunks"
+            folder.mkdir()
+            info = folder.stat()
+            identity = (info.st_dev, info.st_ino)
+            BR.sync_directory(folder, identity)
+            folder.chmod(0o777)
+            with self.assertRaises(ValueError):
+                BR.sync_directory(folder, identity)
+            folder.chmod(0o700)
+            folder.rename(root / "old")
+            folder.mkdir()
+            with self.assertRaises(ValueError):
+                BR.sync_directory(folder, identity)
+            folder.rmdir()
+            folder.symlink_to(root / "old", target_is_directory=True)
+            with self.assertRaises(OSError):
+                BR.sync_directory(folder, identity)
 
     def test_bad_anchor_and_hash_refuse(self):
         with self.assertRaises(ValueError):

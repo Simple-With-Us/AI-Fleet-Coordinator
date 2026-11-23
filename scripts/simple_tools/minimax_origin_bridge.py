@@ -84,6 +84,25 @@ def private_read(path: Path) -> tuple[bytes, int]:
         os.close(fd)
 
 
+def sync_directory(path: Path, expected: tuple[int, int] | None = None) -> None:
+    """Sync the checked directory itself, never a substituted link or inode."""
+    before = path.lstat()
+    wanted = expected if expected is not None else (before.st_dev, before.st_ino)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+            or (info.st_dev, info.st_ino) != wanted
+        ):
+            raise ValueError("unsafe or changed MiniMax durability directory")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def replace(path: Path, data: bytes, mode: int) -> None:
     fd, temporary = tempfile.mkstemp(prefix=".afc-mm-origin-", dir=path.parent)
     try:
@@ -93,11 +112,7 @@ def replace(path: Path, data: bytes, mode: int) -> None:
             target.flush()
             os.fsync(target.fileno())
         os.replace(temporary, path)
-        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
+        sync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -113,6 +128,8 @@ def run_chunk(
         info = directory.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
             raise ValueError("unsafe MiniMax package directory")
+    chunks_info = (root / "chunks").lstat()
+    chunks_identity = (chunks_info.st_dev, chunks_info.st_ino)
     package, _ = private_read(root / "package.json")
     identity = json.loads(package)
     if identity.get("name") != "@minimax-ai/code" or identity.get("version") != VERSION:
@@ -176,11 +193,7 @@ def run_chunk(
             os.close(backup_fd)
         # Persist even a pre-existing backup entry: an earlier sync failure may
         # have left it visible but not durable. Never replace live bytes first.
-        parent = os.open(backup.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
+        sync_directory(backup.parent, chunks_identity)
         # Recheck immediately before atomic replacement. No overwrite of upstream drift.
         latest, _ = private_read(path)
         if latest != current:
