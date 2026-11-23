@@ -93,12 +93,16 @@ def transform(text, source):
         return ast.get_source_segment(source, nodes[name]) + "\n\n"
 
     limits_start, limits_stop = "INPUT_LIMITS = {", "\n}\n"
-    limits = source[source.index(limits_start) : source.index(limits_stop, source.index(limits_start))]
+    limits = source[
+        source.index(limits_start) : source.index(limits_stop, source.index(limits_start))
+    ]
     old_limits = text[text.index(limits_start) : text.index(limits_stop, text.index(limits_start))]
     # Fail closed: the spliced block must be one plain dict of string keys and integer expressions.
     plain = (ast.Dict, ast.Constant, ast.BinOp, ast.Mult, ast.Load)
     node = ast.parse(limits + "\n}").body[0]
-    if not isinstance(node, ast.Assign) or not all(isinstance(n, plain) for n in ast.walk(node.value)):
+    if not isinstance(node, ast.Assign) or not all(
+        isinstance(n, plain) for n in ast.walk(node.value)
+    ):
         raise ValueError("input limits block is not a plain dict of constants")
     text = once(text, old_limits, limits)
     section = source[
