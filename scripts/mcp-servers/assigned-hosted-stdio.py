@@ -112,6 +112,69 @@ def native_origin_claims(env, identity, meta=None):
             os.close(fd)
 
 
+def origin_shape_once(env, identity, params):
+    """Default-off, host-armed one-shot for identities only. Never emits values.
+
+    An empty private MM/origin-identities-shape.once marker is consumed atomically
+    before fixed-field types/validity are printed. No request/response/body dump.
+    """
+    if identity != "MM" or not isinstance(params, dict) or params.get("name") != "identities":
+        return
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        return
+    directory = None
+    marker = None
+    try:
+        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in (".simple-tools", "MM"):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+            info = os.fstat(directory)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                return
+        name = "origin-identities-shape.once"
+        marker = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        info = os.fstat(marker)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size != 0):
+            return
+        # Only the unlink winner emits, even across adapter processes.
+        os.unlink(name, dir_fd=directory)
+        meta = params.get("_meta")
+        context = meta.get("com.simplewithus/native-origin/1") if isinstance(meta, dict) else None
+        def kind(value):
+            if value is None:
+                return "missing-or-null"
+            if type(value) is bool:
+                return "boolean"
+            if type(value) is int:
+                return "integer"
+            if isinstance(value, str):
+                return "string"
+            if isinstance(value, dict):
+                return "object"
+            if isinstance(value, list):
+                return "array"
+            return "other"
+        fields = ("version", "platform", "session_id", "turn_id", "tool_call_id")
+        shape = {"diagnostic": "mm-origin-identities-shape/1", "tool": "identities",
+                 "meta_type": kind(meta), "context_type": kind(context),
+                 "field_types": {key: kind(context.get(key) if isinstance(context, dict) else None)
+                                 for key in fields},
+                 "exact_context_keys": isinstance(context, dict) and set(context) == set(fields),
+                 "private_note_claims_valid": bool(native_origin_claims(env, identity, meta))}
+        print(json.dumps(shape, sort_keys=True), file=sys.stderr)
+    except (OSError, ValueError, TypeError):
+        return
+    finally:
+        if marker is not None:
+            os.close(marker)
+        if directory is not None:
+            os.close(directory)
+
+
 ENDPOINT = "https://agents.simplewithus.com/mcp"
 MAX_BYTES = 4 * 1024 * 1024
 MAX_FILE_ARGS_BYTES = 6 * 1024 * 1024
@@ -487,6 +550,8 @@ class Adapter:
                         "assigned-hosted-stdio: review origin unavailable for this native context; alert held",
                         file=sys.stderr,
                     )
+        if method == "tools/call":
+            origin_shape_once(self.env, self.identity, message.get("params"))
         headers = {
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",

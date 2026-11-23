@@ -1,8 +1,11 @@
 """Hermetic tests for the exact-version MiniMax context bridge and assigned transport."""
 
 import importlib.util
+import contextlib
 import io
 import json
+import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -169,6 +172,51 @@ class Claims(unittest.TestCase):
             any(name.startswith("origin_") for name in captured[-1]["params"]["arguments"])
         )
 
+    def test_shape_diagnostic_is_private_empty_marker_only_and_one_shot(self):
+        marker = self.home / ".simple-tools/MM/origin-identities-shape.once"
+        params = {
+            "name": "identities",
+            "_meta": {BR.META_KEY: self.context, "untrusted-sensitive-key": "do-not-log"},
+            "arguments": {"secret": "never-log-this"},
+        }
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            AD.origin_shape_once(self.env, "MM", params)
+        self.assertEqual(output.getvalue(), "")
+        marker.touch(mode=0o600)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            AD.origin_shape_once(self.env, "CODEX", params)
+            AD.origin_shape_once(self.env, "MM", {**params, "name": "gr_open_pr"})
+        self.assertTrue(marker.exists())
+        with contextlib.redirect_stderr(output):
+            AD.origin_shape_once(self.env, "MM", params)
+            AD.origin_shape_once(self.env, "MM", params)
+        self.assertFalse(marker.exists())
+        self.assertEqual(len(output.getvalue().splitlines()), 1)
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["private_note_claims_valid"])
+        self.assertTrue(result["exact_context_keys"])
+        self.assertEqual(result["field_types"]["session_id"], "string")
+        for value in (
+            SID,
+            "turn-1",
+            "call-1",
+            "do-not-log",
+            "never-log-this",
+            "untrusted-sensitive-key",
+        ):
+            self.assertNotIn(value, output.getvalue())
+        for mode, text in ((0o644, ""), (0o600, "content")):
+            marker.write_text(text)
+            marker.chmod(mode)
+            output = io.StringIO()
+            with contextlib.redirect_stderr(output):
+                AD.origin_shape_once(self.env, "MM", params)
+            self.assertEqual(output.getvalue(), "")
+            self.assertTrue(marker.exists())
+            marker.unlink()
+
     def test_codex_existing_per_call_path_is_preserved(self):
         self.note("CODEX", UUID, "codex")
         claims = AD.native_origin_claims(self.env, "CODEX", {"threadId": UUID})
@@ -316,6 +364,103 @@ console.log(JSON.stringify({np,p,main,results:[project({...np,toolCallId:"call-c
                 (root / BR.CHUNK).write_bytes(plugin + b"drift")
                 with self.assertRaises((ValueError, OSError)):
                     BR.run(root, rollback=True, apply=True)
+
+    def test_backup_directory_is_durable_before_live_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "chunks").mkdir()
+            (root / "package.json").write_text(
+                json.dumps({"name": "@minimax-ai/code", "version": "0.7.4"})
+            )
+            original = (BR.PLUGIN_OLD + ";" + BR.POOL_OLD).encode()
+            path = root / BR.CHUNK
+            path.write_bytes(original)
+            events = []
+            real_fsync = os.fsync
+            real_replace = BR.replace
+
+            def fsync(fd):
+                events.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+                real_fsync(fd)
+
+            def replace(*args):
+                self.assertGreaterEqual(len(events), 2)
+                self.assertEqual(events[-2:], ["file", "directory"])
+                events.append("replace")
+                real_replace(*args)
+
+            with (
+                mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(original)),
+                mock.patch.object(BR.os, "fsync", side_effect=fsync),
+                mock.patch.object(BR, "replace", side_effect=replace),
+            ):
+                BR.run_chunk(root, apply=True)
+            self.assertIn("replace", events)
+            # A directory durability failure leaves live source untouched.
+            path.write_bytes(original)
+            (root / (BR.CHUNK + BR.BACKUP_SUFFIX)).unlink()
+
+            def fail_directory(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError("synthetic directory sync failure")
+                real_fsync(fd)
+
+            with (
+                mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(original)),
+                mock.patch.object(BR.os, "fsync", side_effect=fail_directory),
+            ):
+                with self.assertRaises(OSError):
+                    BR.run_chunk(root, apply=True)
+            self.assertEqual(path.read_bytes(), original)
+            # A retry must sync the already-visible backup directory entry too.
+            with (
+                mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(original)),
+                mock.patch.object(BR.os, "fsync", side_effect=fail_directory),
+            ):
+                with self.assertRaises(OSError):
+                    BR.run_chunk(root, apply=True)
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_backup_file_sync_failure_retry_requires_file_then_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "chunks").mkdir()
+            (root / "package.json").write_text(
+                json.dumps({"name": "@minimax-ai/code", "version": "0.7.4"})
+            )
+            original = (BR.PLUGIN_OLD + ";" + BR.POOL_OLD).encode()
+            path = root / BR.CHUNK
+            path.write_bytes(original)
+            events = []
+            real_fsync, real_replace = os.fsync, BR.replace
+
+            def fail_file(fd):
+                if stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError("synthetic backup content sync failure")
+                real_fsync(fd)
+
+            with mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(original)):
+                with mock.patch.object(BR.os, "fsync", side_effect=fail_file):
+                    with self.assertRaises(OSError):
+                        BR.run_chunk(root, apply=True)
+                    self.assertTrue((root / (BR.CHUNK + BR.BACKUP_SUFFIX)).exists())
+                    with self.assertRaises(OSError):
+                        BR.run_chunk(root, apply=True)
+                self.assertEqual(path.read_bytes(), original)
+
+                def fsync(fd):
+                    events.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+                    real_fsync(fd)
+
+                def replace(*args):
+                    self.assertEqual(events, ["file", "directory"])
+                    real_replace(*args)
+
+                with (
+                    mock.patch.object(BR.os, "fsync", side_effect=fsync),
+                    mock.patch.object(BR, "replace", side_effect=replace),
+                ):
+                    BR.run_chunk(root, apply=True)
 
     def test_bad_anchor_and_hash_refuse(self):
         with self.assertRaises(ValueError):

@@ -154,6 +154,33 @@ def run_chunk(
                 target.write(original)
                 target.flush()
                 os.fsync(target.fileno())
+        # A visible backup may survive a failed file fsync. Re-open without
+        # following links, verify the same bounded bytes/ownership, then sync
+        # that verified descriptor before syncing the directory or live write.
+        backup_fd = os.open(backup, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(backup_fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or info.st_mode & 0o022
+            ):
+                raise ValueError("unsafe MiniMax backup ownership or mode")
+            with os.fdopen(backup_fd, "rb", closefd=False) as source:
+                saved = source.read(len(original) + 1)
+            if saved != original:
+                raise ValueError("MiniMax backup changed before sync")
+            os.fsync(backup_fd)
+        finally:
+            os.close(backup_fd)
+        # Persist even a pre-existing backup entry: an earlier sync failure may
+        # have left it visible but not durable. Never replace live bytes first.
+        parent = os.open(backup.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
         # Recheck immediately before atomic replacement. No overwrite of upstream drift.
         latest, _ = private_read(path)
         if latest != current:
