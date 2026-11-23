@@ -652,6 +652,22 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "failed")
         self.assertEqual(delivery.code, "resume-exit-3")
 
+    def test_a_clean_exit_without_a_prompt_in_the_transcript_is_failed(self):
+        # A clean exit is not the outcome either:  the transcript decides, so a wake the
+        # store says is in neither table ran nothing and the try may be repeated.
+        self._transcript_tables()
+        delivery = self._deliver_local(runner=self._runner_that(0, b""))
+        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.code, "resume-exit-0")
+
+    def test_a_clean_exit_with_a_prompt_in_the_transcript_is_sent(self):
+        self._transcript_tables()
+        delivery = self._deliver_local(
+            runner=self._runner_that(0, b"", session_id=SID)
+        )
+        self.assertEqual(delivery.outcome, "sent")
+        self.assertEqual(delivery.note, "zcode-exit-0")
+
     def test_another_chat_transcript_does_not_count_for_this_one(self):
         self._transcript_tables()
         delivery = self._deliver_local(
