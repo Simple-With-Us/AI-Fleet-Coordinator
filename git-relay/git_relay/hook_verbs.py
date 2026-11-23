@@ -213,9 +213,7 @@ class HookVerbsMixin:
         body = _hook_body(args, wv.Refused, True)
         body["name"] = "web"
         body.setdefault("active", True)
-        data = self.client._call(
-            "POST", f"/repos/{repo}/hooks", body, bearer=self.bearer
-        )
+        data = self.client._call("POST", f"/repos/{repo}/hooks", body, bearer=self.bearer)
         return {"hook": _hook_receipt(data)}
 
     def wf_hook_update(self, repo, args):
