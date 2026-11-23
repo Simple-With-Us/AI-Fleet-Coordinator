@@ -729,6 +729,11 @@ def deliver_local(
             returncode = getattr(child, "returncode", 0)
             failure = _failure_signature(output)
             if returncode == 0 and not failure:
+                # A clean exit is not the outcome either:  the transcript decides, so a prompt
+                # the store says is in neither table ran nothing and the try may be repeated.
+                # A store that cannot say keeps the exit-code answer this path has always given.
+                if _prompt_persisted(env, session_id, wake.wake_id) is False:
+                    return WR.Delivery("failed", "resume", code="resume-exit-0")
                 # The prompt reached the session, and nothing proves it was acted on:  the
                 # receipt records the hand-over without claiming a confirmed delivery.
                 return WR.Delivery("sent", "resume", ack="unknown", note="zcode-exit-0")
