@@ -2924,17 +2924,33 @@ def _read_infisical_names(names, folder):
         return {}
 
 
+def wanted_names(cfg: Config) -> tuple[str, ...]:
+    """The names this run needs from the store.
+
+    A local repository needs only the password,  so it never asks for the B2 names it does not
+    use,  and a name it does not need can never fail the run.  The master names keep the explicit
+    restore gate:  they are read only while FLEET_WORK_BACKUP_ALLOW_MASTER=1.
+    """
+    if cfg.repository:
+        return (CRED_NAMES["password"],)
+    wanted = list(CRED_NAMES.values())
+    if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
+        wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
+    return tuple(wanted)
+
+
 def read_credentials(cfg: Config) -> dict[str, str]:
     """This job's own names, from the store only.
 
     The store is the only source:  the values come from the job's own scoped grant,  and the
     environment is never a source,  so a hand-set copy can never shadow the store.  The master
     names keep the explicit restore gate:  they are read only while FLEET_WORK_BACKUP_ALLOW_MASTER=1.
+
+    One run reads once:  the answer is handed to the callers that need it,  so a scheduled run
+    pays a single store read instead of one per caller.  There is no cache here:  a value that
+    was read is passed,  never held,  so no rotation can be outlived by a stale answer.
     """
-    wanted = list(CRED_NAMES.values())
-    if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
-        wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
-    wanted = tuple(wanted)
+    wanted = wanted_names(cfg)
     values = _read_infisical_names(wanted, CREDENTIAL_FOLDER)
     return {
         name: value
@@ -2943,7 +2959,9 @@ def read_credentials(cfg: Config) -> dict[str, str]:
     }
 
 
-def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, list[str]]:
+def restic_env(
+    cfg: Config, allow_master: bool = False, credentials: dict[str, str] | None = None
+) -> tuple[dict | None, list[str]]:
     """Return (env for the restic subprocess, missing key NAMES).  Values never leave this process
     except in that env.  ``cfg.repository`` (FLEET_WORK_BACKUP_REPOSITORY) points restic at another
     repository, a local one for a test or a mirror, and then only the password is needed.
@@ -2954,7 +2972,7 @@ def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, li
 
     The bucket name is B2_FLEET_WORK_BUCKET_NAME only:  there is no fallback to the fleet's shared bucket name, because
     a fallback could point this backup at a bucket it does not own."""
-    src = dict(read_credentials(cfg))
+    src = dict(credentials if credentials is not None else read_credentials(cfg))
     password = src.get(CRED_NAMES["password"], "")
     env = dict(os.environ)
     for var in ("RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND", "RESTIC_REPOSITORY_FILE"):
@@ -3131,11 +3149,13 @@ def b2_key_problems(cfg: Config, key_id: str, app_key: str, bucket: str) -> list
     return probs
 
 
-def check_b2_setup(cfg: Config) -> list[tuple[bool, str]]:
+def check_b2_setup(
+    cfg: Config, credentials: dict[str, str] | None = None
+) -> list[tuple[bool, str]]:
     """b2_key_problems for the key this job would use (never the master key).  A local repository needs none."""
     if cfg.repository:
         return []
-    src = dict(read_credentials(cfg))
+    src = dict(credentials if credentials is not None else read_credentials(cfg))
     key_id, app_key, bucket = (src.get(CRED_NAMES[k], "") for k in ("key_id", "app_key", "bucket"))
     if not (key_id and app_key and bucket):
         return [
@@ -3156,18 +3176,20 @@ def check_b2_setup(cfg: Config) -> list[tuple[bool, str]]:
 B2_RECHECK_EVERY = 24 * 3600
 
 
-def b2_gate(cfg: Config, state: dict) -> tuple[list[str], list[str]]:
+def b2_gate(
+    cfg: Config, state: dict, credentials: dict[str, str] | None = None
+) -> tuple[list[str], list[str]]:
     """The B2 check for a scheduled run:  (hard problems, soft problems).  The key can change after the install (the
     sync follows Infisical), so a run checks it too.  A passing verdict is kept for a day per key (a hash of the key
     id in state.json), so a steady run costs two read-only B2 calls a day and a new key is checked on its first run."""
     if cfg.repository:
         return [], []
-    src = dict(read_credentials(cfg))
+    src = dict(credentials if credentials is not None else read_credentials(cfg))
     tag = hashlib.sha256(("fwb-b2:" + src.get(CRED_NAMES["key_id"], "")).encode()).hexdigest()[:16]
     seen = state.get("b2_ok") or {}
     if seen.get("key") == tag and cfg.now() - float(seen.get("at", 0)) < B2_RECHECK_EVERY:
         return [], list(seen.get("soft") or [])
-    probs = check_b2_setup(cfg)
+    probs = check_b2_setup(cfg, credentials)
     hard = [t for h, t in probs if h]
     soft = [t for h, t in probs if not h]
     if hard:
@@ -3811,12 +3833,13 @@ def _run(cfg: Config, args, held: list[int]) -> int:
         if not restic_path(cfg):
             log_not_ok(cfg, status="error", reason="restic-missing", hint="brew install restic")
             return 2
-        env, missing = restic_env(cfg)
+        credentials = read_credentials(cfg)
+        env, missing = restic_env(cfg, credentials=credentials)
         if env is None:
             log_not_ok(cfg, status="error", reason="missing-credentials", names=",".join(missing))
             return 2
         state = read_state(cfg)
-        b2_hard, b2_soft = b2_gate(cfg, state)
+        b2_hard, b2_soft = b2_gate(cfg, state, credentials)
         write_state(cfg, state)
         if b2_hard:
             detail_log(cfg, [f"b2-refused {t}" for t in b2_hard])
@@ -4336,11 +4359,12 @@ def cmd_init(cfg: Config, args) -> int:
     if not restic_path(cfg):
         say("restic is not installed (brew install restic)")
         return 2
-    env, missing = restic_env(cfg)
+    credentials = read_credentials(cfg)
+    env, missing = restic_env(cfg, credentials=credentials)
     if env is None:
         say(f"missing credentials in the secret store or the environment: {', '.join(missing)}")
         return 2
-    probs = check_b2_setup(cfg)
+    probs = check_b2_setup(cfg, credentials)
     for hard, text in probs:
         say(("REFUSED:  " if hard else "warning:  ") + text)
     if any(hard for hard, _ in probs):

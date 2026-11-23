@@ -1060,6 +1060,39 @@ class RunCase(RunBase):
         self.assertIn("RESTIC_FLEET_WORK_PASSWORD", line)
         self.assertEqual(self.argv(), [])
 
+    def test_a_local_repository_needs_only_the_password(self):
+        """A local repository run needs the password only,  so the B2 names never fail it."""
+        self.set_creds(names=("RESTIC_FLEET_WORK_PASSWORD",))
+        calls = []
+        original = fwb._read_infisical_names
+
+        def counting(names, folder):
+            calls.append(tuple(names))
+            return original(names, folder)
+
+        self.cfg.repository = str(self.tmp / "mirror")
+        with mock.patch.object(fwb, "_read_infisical_names", side_effect=counting):
+            env, missing = fwb.restic_env(self.cfg)
+        self.assertEqual(missing, [])
+        self.assertEqual(env["RESTIC_PASSWORD"], PW)
+        self.assertEqual(env["RESTIC_REPOSITORY"], str(self.tmp / "mirror"))
+        # Only the name this run uses is asked for,  so a name it does not need can never fail it.
+        self.assertEqual(set(calls[-1]), {"RESTIC_FLEET_WORK_PASSWORD"})
+
+    def test_one_run_reads_the_store_once(self):
+        """The run reads the store once and hands the answer on:  one read, not one per caller."""
+        calls = []
+        original = fwb._read_infisical_names
+
+        def counting(names, folder):
+            calls.append(tuple(names))
+            return original(names, folder)
+
+        with mock.patch.object(fwb, "_read_infisical_names", side_effect=counting):
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(set(calls[0]), set(fwb.CRED_NAMES.values()))
+
     def test_the_bucket_name_has_no_fallback_to_the_shared_fleet_bucket(self):
         """The shared name in fleet-secrets or the environment must never point the backup at the shared bucket."""
         self.set_creds(
