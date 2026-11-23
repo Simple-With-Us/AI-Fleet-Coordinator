@@ -119,3 +119,29 @@ class SecretVerbs(unittest.TestCase):
             c.calls[0][0:2], ("PATCH", f"/orgs/{ORG}/actions/variables/UM_MODE")
         )
         self.assertEqual(out["name"], "UM_MODE")
+
+class _Seq(Client):
+    def _call(self, method, path, payload=None, bearer=None, expected_status=None, allow_empty_object=False):
+        from git_relay.github_client import RelayGitHubError
+
+        self.calls.append((method, path, payload, bearer))
+        reply = self.replies.pop(0)
+        if isinstance(reply, int):
+            raise RelayGitHubError(reply, "x")
+        return reply
+
+
+class Review(unittest.TestCase):
+    def test_variable_upsert_converges_after_409(self):
+        c = _Seq(404, 409, {})
+        out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_org_variable_set", REPO).run(
+            "wf_org_variable_set", {"repo": REPO, "name": "UM_MODE", "value": "on"}
+        )
+        self.assertEqual([m for m, *_ in c.calls], ["PATCH", "POST", "PATCH"])
+        self.assertEqual(out["name"], "UM_MODE")
+
+    def test_secret_repos_rejects_oversized_page(self):
+        rows = [{"id": i, "full_name": "o/r"} for i in range(3)]
+        with self.assertRaises(Exception):
+            run("wf_secret_repos_org_actions", {"repo": REPO, "name": "X_1", "per_page": 1}, {"repositories": rows, "total_count": 3})
+

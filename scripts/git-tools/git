@@ -1722,15 +1722,20 @@ def _seal(public_key_b64: str, value: bytes) -> str:
 
 def cmd_secret_put(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
     """Seal a value locally and store it as a GitHub secret.  The value comes from a file or stdin only."""
+    cap = 48 * 1024 + 2  # one byte past the limit plus a possible trailing newline
     if a.value_file == "-":
-        raw = sys.stdin.buffer.read()
+        raw = sys.stdin.buffer.read(cap + 1)
     else:
         with open(a.value_file, "rb") as handle:
-            raw = handle.read()
+            raw = handle.read(cap + 1)
+    if len(raw) > cap:
+        die("the value must be 1 byte to 48 KiB;  nothing was sent", EXIT_USAGE)
     if a.strip_newline and raw.endswith(b"\n"):
         raw = raw[:-1]
     if not raw or len(raw) > 48 * 1024:
         die("the value must be 1 byte to 48 KiB;  nothing was sent", EXIT_USAGE)
+    if a.repo_ids and not (a.scope.startswith("org_") and a.visibility == "selected"):
+        die("--repo-ids needs an org scope with --visibility selected;  nothing was sent", EXIT_USAGE)
     base = {"repo": a.repo}
     if a.scope == "env_actions":
         if not a.environment:

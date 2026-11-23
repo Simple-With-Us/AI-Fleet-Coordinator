@@ -236,8 +236,10 @@ def _make(scope, kind):
         rows = data.get("repositories") if isinstance(data, dict) else None
         if not isinstance(rows, list) or type(data.get("total_count")) is not int:
             raise RelayGitHubError(502, "secret repositories unverifiable")
+        if len(rows) > limit:
+            raise RelayGitHubError(502, "secret repositories unverifiable")
         out = []
-        for r in rows[:limit]:
+        for r in rows:
             if not isinstance(r, dict) or type(r.get("id")) is not int:
                 raise RelayGitHubError(502, "secret repositories unverifiable")
             out.append({"id": r["id"], "full_name": r.get("full_name")})
@@ -331,14 +333,26 @@ class SecretVerbsMixin:
         except RelayGitHubError as exc:
             if exc.status != 404:
                 raise
-            self.client._call(
-                "POST",
-                f"/orgs/{org}/actions/variables",
-                {"name": name, **body},
-                bearer=self.bearer,
-                expected_status=201,
-                allow_empty_object=True,
-            )
+            try:
+                self.client._call(
+                    "POST",
+                    f"/orgs/{org}/actions/variables",
+                    {"name": name, **body},
+                    bearer=self.bearer,
+                    expected_status=201,
+                    allow_empty_object=True,
+                )
+            except RelayGitHubError as race:
+                if race.status != 409:
+                    raise
+                # A concurrent call created it first: converge with one PATCH.
+                self.client._call(
+                    "PATCH",
+                    f"/orgs/{org}/actions/variables/{name}",
+                    body,
+                    bearer=self.bearer,
+                    expected_status=204,
+                )
         return {"completed": True, "name": name}
 
     def wf_org_variable_delete(self, repo, args):
