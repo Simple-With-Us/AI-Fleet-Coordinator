@@ -127,7 +127,8 @@ wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_
 wf_artifact_get wf_artifacts_page wf_caches_page wf_cache_usage wf_run_attempt_get wf_run_attempt_jobs
 wf_run_pending_deployments wf_repo_variables wf_repo_variable_get wf_issue_events wf_issue_timeline
 wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_deploy_keys wf_org_installations
-wf_branch_rules wf_rulesets""".split()
+wf_branch_rules wf_rulesets
+wf_secrets_org_actions wf_secret_key_org_actions wf_secret_repos_org_actions wf_secrets_org_dependabot wf_secret_key_org_dependabot wf_secret_repos_org_dependabot wf_secrets_org_codespaces wf_secret_key_org_codespaces wf_secret_repos_org_codespaces wf_secrets_repo_actions wf_secret_key_repo_actions wf_secrets_repo_dependabot wf_secret_key_repo_dependabot wf_secrets_repo_codespaces wf_secret_key_repo_codespaces wf_secrets_env_actions wf_secret_key_env_actions wf_org_variables wf_org_variable_repos""".split()
 READ_TOOLS = frozenset(["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS])
 
 # Per-action input byte limits (gr-workflow-v1.js WF_V1_INPUT_LIMITS; default 64 KiB).
