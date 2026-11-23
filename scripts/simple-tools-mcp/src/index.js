@@ -68,7 +68,7 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
-import { bearerStatusRows, adminBearerAction } from "./admin-api.js";
+import { bearerStatusRows, adminBearerAction, diagnosticSummaryRows } from "./admin-api.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
@@ -1356,7 +1356,9 @@ async function serveAdmin(request, env, config, oauth, email) {
       resolveCredentials: (identity) => resolveBearerSeatCredentials(env, config, identity),
       config,
     });
-    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows }), {
+    let diagnostics = null;
+    try { diagnostics = diagnosticSummaryRows(await gate(env, GATE_LOG_NAME).diagnosticTail(50)); } catch { /* Reported as null, never as an empty list. */ }
+    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows, diagnostics }), {
       status: 200,
       headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
     });

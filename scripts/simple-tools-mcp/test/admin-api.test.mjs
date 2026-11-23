@@ -154,3 +154,11 @@ test("a completed or refused mint form never shows a token; revoke revokes and e
   const r3 = await j(await adminBearerAction(req({ action: "revoke", identity: "GB1" }), rv.d));
   assert.equal(r3.body.ok, true); assert.equal(rv.calls.revokes, 1); assert.deepEqual(rv.calls.evicted, ["GB1"]);
 });
+
+import { diagnosticSummaryRows } from "../src/admin-api.js";
+test("diagnosticSummaryRows keeps names and counts only", () => {
+  const rows = diagnosticSummaryRows([{ kind: "mcp", reason: "mcp_http_401", seat: null, count: 288, status: 401, ts: 5, secret: "x", message: "leak" }, null, "junk"]);
+  assert.deepEqual(rows[0], { kind: "mcp", reason: "mcp_http_401", seat: null, count: 288, status: 401, ts: 5 });
+  assert.ok(!JSON.stringify(rows).includes("leak"));
+  assert.deepEqual(diagnosticSummaryRows(undefined), []);
+});

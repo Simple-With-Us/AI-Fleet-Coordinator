@@ -24,6 +24,16 @@ export function bearerProblem(row, now) {
   return "ok";
 }
 
+/** The recent runtime diagnostics as names and counts only (kind, reason, seat, count, upstream status, time):  what
+ *  the alarm poll diffs for relay refusals and mcp_http_401 growth.  Anything else on a row is dropped. */
+export function diagnosticSummaryRows(rows) {
+  const word = (v) => (typeof v === "string" ? v.slice(0, 64) : null);
+  const num = (v) => (Number.isFinite(v) ? v : null);
+  return (Array.isArray(rows) ? rows : []).slice(0, 100).map((r) => ({
+    kind: word(r?.kind), reason: word(r?.reason), seat: word(r?.seat), count: num(r?.count), status: num(r?.status), ts: num(r?.ts),
+  }));
+}
+
 /** deps: { gateFor(identity), resolveCredentials(identity), now }.  Each read fails on its own. */
 export async function bearerStatusRows(deps) {
   const now = deps.now ?? Date.now();
