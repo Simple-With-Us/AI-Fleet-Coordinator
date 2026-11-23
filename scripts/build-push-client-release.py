@@ -195,6 +195,7 @@ def build(baseline, inputs, destination):
     manifest = {
         "baseline": "f17794b5008cb7052f243f35a7da751dd1d11fe1",
         "source_merge": "c92db57b12c231d6cd0b473233adc6430f6baed6",
+        "input_source": "740e4f541fa74eb9fc1b29ebaae97117976ca100",
         "activation_performed": False,
         "files": RESULTS,
         "state": "UNREVIEWED_NOT_INSTALLED",
