@@ -67,8 +67,8 @@ import {
 import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
-import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } from "./bearer-identities.js";
-import { bearerStatusRows } from "./admin-api.js";
+import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
+import { bearerStatusRows, adminBearerAction, diagnosticSummaryRows } from "./admin-api.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
@@ -1356,9 +1356,29 @@ async function serveAdmin(request, env, config, oauth, email) {
       resolveCredentials: (identity) => resolveBearerSeatCredentials(env, config, identity),
       config,
     });
-    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows }), {
+    let diagnostics = null;
+    try { diagnostics = diagnosticSummaryRows(await gate(env, GATE_LOG_NAME).diagnosticTail(50)); } catch { /* Reported as null, never as an empty list. */ }
+    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows, diagnostics }), {
       status: 200,
       headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
+  if (path === "/admin/api/bearers/action") {
+    // Owner JSON actions for Muster (mint, rotate, revoke), behind the same Access owner check as /admin.
+    return adminBearerAction(request, {
+      issuer: config.issuer,
+      email,
+      identities: { bot: GB_IDENTITIES, seat: BEARER_SEATS },
+      gateFor: (identity) => gate(env, identity),
+      evict: (identity) => IDENTITY_CACHE.evictSeat(identity),
+      newBotBearer: newGbBearer,
+      newSeatBearer,
+      sha256Hex,
+      ttlMs: GB_BEARER_TTL_MS,
+      prepare: (kind) => Promise.all((kind === "bot" ? ["/zulip", "/linear"] : ["/zulip"]).map((p) => prefetchFolder(env, p))),
+      botCredentialsLoaded: async (identity) => (await resolveDelegatedCredentials(env)).roles.has(identity),
+      seatCredentials: (identity) => resolveBearerSeatCredentials(env, config, identity),
+      missingRecords: (identity) => (BEARER_SEATS.includes(identity) ? seatCredentialRecordNames(identity, config) : null),
     });
   }
   if (path === "/admin" && request.method === "GET") {
@@ -1466,7 +1486,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         let credentialsUnavailable = false;
         try { credentials = await resolveBearerSeatCredentials(env, config, identity); }
         catch { credentialsUnavailable = true; }
-        return { identity, kind: "seat", credentials: Boolean(credentials), credentialsUnavailable, status, mismatches, mismatchesUnavailable };
+        return { identity, kind: "seat", credentials: Boolean(credentials), credentialsUnavailable, missingRecords: credentials || credentialsUnavailable ? null : seatCredentialRecordNames(identity, config), status, mismatches, mismatchesUnavailable };
       }),
     ]);
     // Observability for the Infisical transition (kody 4365623014):  the mode

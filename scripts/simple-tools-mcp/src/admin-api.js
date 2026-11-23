@@ -24,6 +24,16 @@ export function bearerProblem(row, now) {
   return "ok";
 }
 
+/** The recent runtime diagnostics as names and counts only (kind, reason, seat, count, upstream status, time):  what
+ *  the alarm poll diffs for relay refusals and mcp_http_401 growth.  Anything else on a row is dropped. */
+export function diagnosticSummaryRows(rows) {
+  const word = (v) => (typeof v === "string" ? v.slice(0, 64) : null);
+  const num = (v) => (Number.isFinite(v) ? v : null);
+  return (Array.isArray(rows) ? rows : []).slice(0, 100).map((r) => ({
+    kind: word(r?.kind), reason: word(r?.reason), seat: word(r?.seat), count: num(r?.count), status: num(r?.status), ts: num(r?.ts),
+  }));
+}
+
 /** deps: { gateFor(identity), resolveCredentials(identity), now }.  Each read fails on its own. */
 export async function bearerStatusRows(deps) {
   const now = deps.now ?? Date.now();
@@ -47,4 +57,107 @@ export async function bearerStatusRows(deps) {
     };
     return { ...row, problem: bearerProblem(row, now) };
   }));
+}
+
+// ---------------------------------------------------------------- owner action API (POST)
+//
+// Mint, rotate and revoke for one bearer identity, as JSON for Muster.  It runs behind the same Cloudflare
+// Access owner check as /admin (the owner's own Access JWT, e.g. from `cloudflared access token`);  a service
+// token carries no email and never passes.  The one response that carries a bearer is a successful mint or
+// rotate, with `Cache-Control: no-store`;  the Worker keeps only the hash and logs no token.  The mint id is
+// the caller's single-use 32-hex form id (12-hex ms timestamp + 20 random hex), so a retry of a finished mint
+// is answered from the gate's tombstone without touching the bearer.
+const ACTIONS = new Set(["mint", "rotate", "revoke"]);
+const MINT_ID_RE = /^[0-9a-f]{32}$/;
+const MAX_BODY = 4096;
+
+function json(status, body) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store, private", Pragma: "no-cache" },
+  });
+}
+
+/** CSRF guard for a browser that holds the Access cookie:  JSON content type, a custom header, no cross-site fetch. */
+export function adminApiRequestRefusal(request, issuer) {
+  if (request.method !== "POST") return "method";
+  const ct = String(request.headers.get("content-type") ?? "").toLowerCase();
+  if (!/^application\/json(\s*;|$)/.test(ct)) return "content_type";
+  if (request.headers.get("x-admin-api") !== "1") return "missing_header";
+  const site = request.headers.get("sec-fetch-site");
+  if (site !== null && site !== "none" && site !== "same-origin") return "cross_site";
+  const origin = request.headers.get("origin");
+  if (origin !== null && origin !== issuer) return "origin";
+  return null;
+}
+
+/**
+ * deps: { issuer, email, identities: { bot: string[], seat: string[] }, gateFor(identity), evict(identity),
+ *         newBotBearer(identity), newSeatBearer(identity), sha256Hex(text), ttlMs, prepare(), botCredentialsLoaded(identity),
+ *         seatCredentials(identity), missingRecords(identity), now }
+ */
+export async function adminBearerAction(request, deps) {
+  const refusal = adminApiRequestRefusal(request, deps.issuer);
+  if (refusal) return json(refusal === "method" ? 405 : 403, { ok: false, error: "request_refused", reason: refusal });
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY) return json(413, { ok: false, error: "bad_body" });
+  let raw;
+  try { raw = await request.text(); } catch { return json(400, { ok: false, error: "bad_body" }); }
+  if (raw.length > MAX_BODY) return json(413, { ok: false, error: "bad_body" });
+  let body;
+  try { body = JSON.parse(raw); } catch { return json(400, { ok: false, error: "bad_body" }); }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json(400, { ok: false, error: "bad_body" });
+  const { action, identity } = body;
+  if (!ACTIONS.has(action)) return json(400, { ok: false, error: "unknown_action" });
+  const isBot = deps.identities.bot.includes(identity);
+  const isSeat = deps.identities.seat.includes(identity);
+  if (typeof identity !== "string" || (!isBot && !isSeat)) return json(400, { ok: false, error: "unknown_identity" });
+  const gate = deps.gateFor(identity);
+  const now = deps.now ?? Date.now();
+
+  if (action === "revoke") {
+    try { await gate.gbBearerRevoke({ by: deps.email }); } catch { return json(503, { ok: false, error: "revoke_unavailable" }); }
+    deps.evict(identity);
+    return json(200, { ok: true, action, identity });
+  }
+
+  const mintId = body.mint_id;
+  if (typeof mintId !== "string" || !MINT_ID_RE.test(mintId)) return json(400, { ok: false, error: "bad_mint_id" });
+  // A retry of a mint that already completed is acked from its tombstone BEFORE the live-bearer checks, which that
+  // very mint would otherwise trip.  Never carries the token.
+  if (typeof gate.gbBearerMintFormResult === "function") {
+    let done = null;
+    try { done = await gate.gbBearerMintFormResult(mintId); } catch { /* fall through to the checked mint */ }
+    if (done) return json(200, { ok: true, action, identity, completed: true, tokenShown: false, result: done });
+  }
+  let status = null;
+  try { status = await gate.gbBearerStatus(); } catch { return json(503, { ok: false, error: "status_unavailable" }); }
+  const exp = typeof status?.expires_at === "number" ? status.expires_at : Date.parse(status?.expires_at ?? "");
+  const hasLive = Boolean(status?.active) && !status?.expired && !(Number.isFinite(exp) && exp <= now);
+  if (action === "mint" && hasLive) return json(409, { ok: false, error: "bearer_active", hint: "use rotate to replace a live bearer" });
+  if (action === "rotate" && !hasLive) return json(409, { ok: false, error: "no_active_bearer", hint: "use mint" });
+
+  let token, kind, mcpAccept;
+  if (isBot) {
+    await deps.prepare("bot");
+    if (!(await deps.botCredentialsLoaded(identity))) return json(409, { ok: false, error: "credentials_missing", missingRecords: deps.missingRecords(identity) });
+    ({ token } = await deps.newBotBearer(identity));
+    kind = "bot"; mcpAccept = true;
+  } else {
+    let credentials = null;
+    try { await deps.prepare("seat"); credentials = await deps.seatCredentials(identity); } catch { /* never an env fallback */ }
+    if (!credentials) return json(409, { ok: false, error: "credentials_missing", missingRecords: deps.missingRecords(identity) });
+    if (typeof body.mcp_accept === "boolean") mcpAccept = body.mcp_accept;
+    else if (action === "rotate" && typeof status?.mcp_accept === "boolean") mcpAccept = status.mcp_accept;
+    else return json(400, { ok: false, error: "mcp_accept_required" });
+    ({ token } = await deps.newSeatBearer(identity));
+    kind = "seat";
+  }
+  if (!Number.isFinite(deps.ttlMs) || deps.ttlMs <= 0) return json(503, { ok: false, error: "ttl_unavailable" });
+  const expiresAt = now + deps.ttlMs;
+  const minted = await gate.gbBearerMintChecked({ mintId, hash: await deps.sha256Hex(token), by: deps.email, expiresAt, mcpAccept });
+  if (!minted.minted && minted.reason === "completed") return json(200, { ok: true, action, identity, completed: true, tokenShown: false, result: minted.result ?? null });
+  if (!minted.minted) return json(409, { ok: false, error: "mint_refused", reason: minted.reason });
+  deps.evict(identity);
+  return json(200, { ok: true, action, identity, kind, token, expiresAt: new Date(expiresAt).toISOString(), mcpAccept });
 }

@@ -1489,6 +1489,17 @@ function mintFormTs(mintId) {
 
 const GB_MINT_ID_RE = /^[0-9a-f]{32}$/;
 
+/** The stored outcome of a mint form that already completed (never the token), or null.  A pure read:  the owner
+ *  action API asks it first so a retry of a finished mint is acked instead of refused by the live-bearer check. */
+export async function gbBearerMintFormResult(store, mintId, now = Date.now()) {
+  if (typeof mintId !== "string" || !GB_MINT_ID_RE.test(mintId)) return null;
+  const forms = (await store.get(GB_MINT_FORMS_KEY)) ?? { consumed: [] };
+  const hit = (forms.consumed ?? []).find((c) => c.mint_id === mintId);
+  const ts = mintFormTs(mintId);
+  if (!hit || ts === null || now - ts > GB_MINT_FORM_TTL_MS) return null;
+  return hit.result ?? {};
+}
+
 export async function gbBearerMintChecked(store, { mintId, hash, by, expiresAt, mcpAccept }, now = Date.now()) {
   if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
   // Exactly one outcome-bearing audit row per mint ATTEMPT, from a central
