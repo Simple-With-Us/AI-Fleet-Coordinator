@@ -752,6 +752,79 @@ class SessionRegistry:
         ).fetchone()
         return text if live else ""
 
+    def _retire_closed_aliases(
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        now: str,
+        seat: str | None = None,
+        limit: int | None = None,
+        letters: frozenset[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retire the live alias rows of sessions that are already closed, in the caller's transaction.
+
+        A close that only set closed_at (a listener-SQL close, say) never retired the session's alias, so the row
+        still sits in idx_alias_active and its pair can never be issued again, while every read path already treats
+        a closed session as holding no letter.  Retire each such orphan the way close() retires an alias (the row,
+        a close event and the final session snapshot, with the letter captured first), so the pair is actually
+        freed rather than merely ignored.  Returns the retired rows, oldest assignment first.  `limit` bounds how
+        many orphans one call retires:  the hot allocation path passes 1 (enough to free a pair to issue, since an
+        unretired orphan still counts live and is never issued over), and sweep_stale drains the remainder.
+        """
+        reason = "session already closed; its alias was never retired"
+        query = (
+            "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
+            " s.native_session_id AS native_session_id, s.title AS title, s.last_seen_at AS last_seen_at"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? AND a.retired_at IS NULL AND s.closed_at IS NOT NULL"
+        )
+        params: tuple[Any, ...] = (platform,)
+        if seat is not None:
+            query += " AND s.seat = ?"
+            params = (platform, seat)
+        if letters is not None:
+            if not letters:
+                return []
+            query += " AND a.letter IN (%s)" % ",".join("?" * len(letters))
+            params = (*params, *sorted(letters))
+        query += " ORDER BY a.assigned_at ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (*params, max(0, int(limit)))
+        orphans = conn.execute(query, params).fetchall()
+        retired: list[dict[str, Any]] = []
+        for orphan in orphans:
+            conn.execute(
+                "UPDATE alias_assignments SET retired_at = ?"
+                " WHERE platform = ? AND letter = ? AND generation = ? AND record_id = ?"
+                " AND retired_at IS NULL",
+                (now, platform, orphan["letter"], orphan["generation"], orphan["record_id"]),
+            )
+            self._insert_event(
+                conn,
+                orphan["record_id"],
+                orphan["letter"],
+                "close",
+                "registry",
+                "closed",
+                "orphan_alias_retire",
+                reason,
+                now,
+            )
+            self._enqueue_session_upsert(conn, orphan["record_id"], now, label=orphan["letter"])
+            retired.append(
+                {
+                    "record_id": orphan["record_id"],
+                    "label": orphan["letter"],
+                    "generation": orphan["generation"],
+                    "native_session_id": orphan["native_session_id"],
+                    "title": orphan["title"],
+                    "last_seen_at": orphan["last_seen_at"],
+                    "reason": reason,
+                }
+            )
+        return retired
+
     def _allocate(
         self,
         conn: sqlite3.Connection,
@@ -779,7 +852,16 @@ class SessionRegistry:
         the owner's Oct 29 naming:  DD's children DE, DF, DG;  XX's XY, XZ, XA, XB;  never the doubled pair) that is not
         live is taken.  When the parent's row is full, the subthread is refused a letter; it never moves to another row.
         A child never takes the doubled pair reserved for main chats."""
+        # A closed session holds no letter (every read path joins on closed_at IS NULL), so an alias
+        # its close never retired must not count as live here:  retire one orphan first, in this
+        # same transaction, which frees a pair in idx_alias_active for reissue without making a
+        # bulk close cost O(orphans) writes on the hot register path.  Any orphans left still count
+        # live below and are never issued over; sweep_stale drains the remainder.  A child is
+        # confined to its parent's row, so its one inline retirement must come from that row's
+        # candidate pairs, not the oldest orphan platform-wide.
         members = frozenset(LETTER_SPACES["double"])
+        wanted = tuple(p for p in pairs_after(after) if p in members) if after else None
+        self._retire_closed_aliases(conn, platform, now, limit=1, letters=wanted)
         live = {
             r["letter"]
             for r in conn.execute(
@@ -2435,14 +2517,28 @@ def sweep_stale(
 
     The letters themselves stay in alias_assignments with their start and end times,
     so the history of the platform is complete after a sweep.
+
+    A session that is already closed but whose alias was never retired has its
+    alias retired too:  its letter already ended, and leaving the row live would
+    keep its pair out of allocation forever.
+
+    The returned list mixes both kinds of ending:  freshly stale sessions this
+    sweep itself closed, and already-closed sessions whose orphan alias it
+    merely retired.  Tell them apart by `reason` ("stale and replaced by a
+    newer session" vs "session already closed; its alias was never retired");
+    do not read the list's length as a count of newly ended sessions.
     """
     namespace = normalize_platform(platform)
     moment = now or datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    sweep_now = moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     cutoff = moment - timedelta(minutes=max(1, int(stale_after_minutes)))
     registry = SessionRegistry(db_path)
     ended: list[dict[str, Any]] = []
     try:
         with registry._write_txn() as conn:
+            ended.extend(registry._retire_closed_aliases(conn, namespace, sweep_now, seat=seat))
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE platform = ? AND seat = ? AND closed_at IS NULL"
                 " ORDER BY registered_at ASC",
@@ -2481,7 +2577,7 @@ def sweep_stale(
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:
                     continue
-                now = _utcnow()
+                now = sweep_now
                 conn.execute(
                     "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
                     (now, row["record_id"]),
