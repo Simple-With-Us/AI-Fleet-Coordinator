@@ -82,6 +82,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -115,6 +116,7 @@ RELAY_HEAD_PAGE = 20
 # Live branches through the relay (gr_wf_branches), pages of 50: seats cannot authenticate git over ssh, so the
 # live-branch check reads the relay first and falls back to `git ls-remote` only when the relay gave no answer.
 RELAY_BRANCH_PAGES = 60
+RELAY_BRANCH_BUDGET = 180.0  # seconds for the whole branch walk
 RELAY_BULK_LIMIT = RELAY_PAGE * RELAY_MAX_PAGES
 # How far back along origin/<default> the squash-merge tree comparison looks.
 TREE_LANDED_COMMITS = 100
@@ -1283,7 +1285,11 @@ def _relay_heads(run: Runner, repo: str, tree: Path) -> dict[str, str] | None:
     """{branch: sha} of every live branch through the relay (gr_wf_branches), or None unless the list is
     provably complete: a failed page, a malformed row, or more branches than the page bound is no answer."""
     heads: dict[str, str] = {}
+    # One absolute budget for the whole walk, not a fresh relay cap per page.
+    deadline = time.monotonic() + RELAY_BRANCH_BUDGET
     for page in range(1, RELAY_BRANCH_PAGES + 1):
+        if time.monotonic() >= deadline:
+            return None
         res = run(
             [
                 "simple-git",
@@ -1314,8 +1320,11 @@ def _relay_heads(run: Runner, repo: str, tree: Path) -> dict[str, str] | None:
             ):
                 return None
             heads[row["name"]] = row["sha"]
-        if st.get("has_more") is not True:
+        more = st.get("has_more")
+        if more is False:
             return heads
+        if more is not True:
+            return None  # a missing or malformed has_more is no proof the list is complete
     return None
 
 

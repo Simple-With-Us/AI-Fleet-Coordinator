@@ -2036,6 +2036,14 @@ class RelayBranchCheckTests(unittest.TestCase):
         run, _ = self._runner([None], ssh_ok=False)
         self.assertIsNone(R._remote_heads(run, Path("."), self.REPO))
 
+    def test_missing_has_more_and_expired_budget_are_no_answer(self) -> None:
+        run, _ = self._runner([{"branches": [{"name": "x", "sha": self.SHA_A}]}])
+        self.assertIsNone(R._relay_heads(run, self.REPO, Path(".")))
+        run, calls = self._runner([{"branches": [], "has_more": False}])
+        with unittest.mock.patch.object(R, "RELAY_BRANCH_BUDGET", -1.0):
+            self.assertIsNone(R._relay_heads(run, self.REPO, Path(".")))
+        self.assertEqual(calls, [])
+
     def test_malformed_or_unbounded_relay_list_is_no_answer(self) -> None:
         bad_row = [{"branches": [{"name": "x", "sha": "nope"}], "has_more": False}]
         run, _ = self._runner(bad_row)
