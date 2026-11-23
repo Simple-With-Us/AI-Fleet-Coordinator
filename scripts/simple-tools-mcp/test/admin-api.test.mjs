@@ -175,3 +175,17 @@ test("a retry of a completed mint is acked even though its bearer is now live", 
   const r2 = await j(await adminBearerAction(req({ action: "mint", identity: "WISE", mint_id: fresh, mcp_accept: true }), a.d));
   assert.equal(r2.status, 409); assert.equal(r2.body.error, "bearer_active");
 });
+
+test("a failing revoke, a bad ttl and an oversized body answer in JSON, never a throw", async () => {
+  const a = deps();
+  const inner = a.d.gateFor;
+  a.d.gateFor = (i) => ({ ...inner(i), gbBearerRevoke: async () => { throw new Error("do down"); } });
+  const r = await j(await adminBearerAction(req({ action: "revoke", identity: "WISE" }), a.d));
+  assert.equal(r.status, 503); assert.equal(r.body.error, "revoke_unavailable");
+  const b = deps({ d: { ttlMs: Number.NaN } });
+  const r2 = await j(await adminBearerAction(req({ action: "mint", identity: "WISE", mint_id: MINT_ID, mcp_accept: true }), b.d));
+  assert.equal(r2.status, 503); assert.equal(b.calls.mints.length, 0);
+  const c = deps();
+  const r3 = await j(await adminBearerAction(req({ action: "revoke", identity: "WISE", pad: "x".repeat(5000) }), c.d));
+  assert.equal(r3.status, 413); assert.equal(c.calls.revokes, 0);
+});
