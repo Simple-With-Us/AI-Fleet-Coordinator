@@ -2225,6 +2225,56 @@ def issue_ids_in(text: str, *, any_case: bool = False) -> set[str]:
     return {OR.valid_issue_id(m.group(1)) for m in _issue_finder(any_case).finditer(text)} - {""}
 
 
+def _agents_environment_bootstrap_tail(value: Mapping[str, Any]) -> str | None:
+    """Return the user text after Codex's injected AGENTS/environment bootstrap, if present."""
+    kind = value.get("type")
+    if value.get("role") == "user":
+        content = value.get("content")
+    elif kind == "user_message":
+        # Codex's event_msg transcript form wraps the same bootstrap in
+        # payload.type=user_message and payload.message, without a role field.
+        content = value.get("message")
+    else:
+        return None
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    elif isinstance(content, Mapping) and isinstance(content.get("content"), list):
+        text = "\n".join(
+            part["text"]
+            for part in content["content"]
+            if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+        )
+    elif isinstance(content, Mapping) and isinstance(content.get("content"), str):
+        text = content["content"]
+    else:
+        return None
+    recognized = (
+        text.lstrip().startswith("# AGENTS.md instructions for ")
+        and "<INSTRUCTIONS>" in text
+        and "</INSTRUCTIONS>" in text
+    )
+    if not recognized:
+        return None
+    instructions_close = text.find("</INSTRUCTIONS>", text.find("<INSTRUCTIONS>"))
+    suffix_start = instructions_close + len("</INSTRUCTIONS>")
+    suffix = text[suffix_start:]
+    environment_prefix = suffix.lstrip()
+    if environment_prefix.startswith("<environment_context>"):
+        closing_tag = "</environment_context>"
+        environment = suffix.find("<environment_context>")
+        closing = suffix.find(closing_tag, environment)
+        if closing < 0:
+            return None
+        return suffix[closing + len(closing_tag) :].strip()
+    return suffix.strip()
+
+
 def _topic_issue_ids(text: str) -> set[str]:
     found: set[str] = set()
     for m in _TOPIC_FLAG.finditer(text):
@@ -2253,7 +2303,14 @@ def _transcript_strings(
             or (isinstance(kind, str) and kind in _QUOTED_TYPES)
             or value.get("isMeta") is True
         )
+        bootstrap_tail = _agents_environment_bootstrap_tail(value)
+        if bootstrap_tail is not None:
+            if bootstrap_tail:
+                (quoted if hidden else own).append(bootstrap_tail)
+            return
         for key, item in value.items():
+            if key == "world_state":
+                continue
             _transcript_strings(item, own, quoted, hidden or key in _QUOTED_KEYS, depth + 1)
     elif isinstance(value, list):
         for item in value:
@@ -2277,7 +2334,8 @@ def parsed_lines(lines: list[str]) -> list[tuple[str, Any]]:
 def issue_ids_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> set[str]:
     """The issue ids a stretch of transcript names: any id in the chat's own words (its prompts, its
     replies, the commands and tool inputs it wrote), and the topic of any Zulip post, even one a tool's
-    output shows.  A line that is not JSON is read as the chat's own words."""
+    output shows.  Known runtime context (developer/system envelopes, Codex world state and a recognizable
+    AGENTS/environment bootstrap) is excluded.  A line that is not JSON is read as the chat's own words."""
     found: set[str] = set()
     for line, entry in parsed_lines(lines) if parsed is None else parsed:
         if entry is _NOT_JSON:
