@@ -49,8 +49,12 @@ def native_origin_claims(env, identity, meta=None):
             or context.get("platform") != platform
             or not isinstance(context.get("session_id"), str)
             or not re.fullmatch(r"mvs_[0-9a-f]{32}", context["session_id"])
-            or any(not isinstance(context.get(name), str) or not context[name].strip()
-                   or len(context[name]) > 256 for name in ("turn_id", "tool_call_id"))
+            or any(
+                not isinstance(context.get(name), str)
+                or not context[name].strip()
+                or len(context[name]) > 256
+                for name in ("turn_id", "tool_call_id")
+            )
             or "threadId" in meta
             or "x-codex-turn-metadata" in meta
         ):
