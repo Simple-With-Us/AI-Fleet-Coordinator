@@ -16,7 +16,8 @@ export function bearerProblem(row, now) {
   if (st.expired) return "bearer_expired";
   if (row.paused) return "paused";
   if (st.mcp_accept_recorded === false || st.mcp_accept === false) return "mcp_not_accepted";
-  const exp = Date.parse(st.expires_at ?? "");
+  // gbBearerStatus reports epoch milliseconds;  accept an ISO string too.
+  const exp = typeof st.expires_at === "number" ? st.expires_at : Date.parse(st.expires_at ?? "");
   if (Number.isFinite(exp) && exp - now < EXPIRY_SOON_MS) return "expiring_soon";
   if (Number(row.mismatches?.count) > 0) return "wrong_secret_attempts";
   return "ok";
