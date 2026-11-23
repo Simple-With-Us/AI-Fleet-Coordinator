@@ -41,12 +41,14 @@ export async function waitForAdmission({fd=3, timeoutMs=60000, signal}={}) {
 export async function runSupervised({runExec, createRuntime, shutdownRuntime, prompt, options, wait=waitForAdmission, processRef=process}) {
   const controller=new AbortController();
   const cancel=()=>controller.abort();
-  let runtime, closed=false;
-  const shutdown=async value=>{
-    if(closed)return;
-    closed=true;
-    return shutdownRuntime(value);
+  let runtime, shutdownAttempt, primaryError;
+  // Cache the attempt, not a successful-close claim. A rejection may follow
+  // partial cleanup, so never retry an uncertain shutdown automatically.
+  const shutdown=value=>{
+    if(!shutdownAttempt) shutdownAttempt=Promise.resolve().then(()=>shutdownRuntime(value));
+    return shutdownAttempt;
   };
+  const reportCleanupFailure=()=>processRef.stderr?.write?.('Supervised runtime cleanup failed; host cleanup remains required\n');
   processRef.once('SIGINT',cancel); processRef.once('SIGTERM',cancel); processRef.once('SIGHUP',cancel);
   try {
     await runExec(prompt,options,'0.7.4',{
@@ -59,17 +61,27 @@ export async function runSupervised({runExec, createRuntime, shutdownRuntime, pr
           if(controller.signal.aborted)throw new Error('Catalog admission cancelled');
           return runtime;
         } catch(error) {
-          await shutdown(runtime);
+          try { await shutdown(runtime); }
+          catch { reportCleanupFailure(); }
           throw error;
         }
       },
       shutdownRuntime:shutdown,
     });
+  } catch(error) {
+    primaryError=error;
+    throw error;
   } finally {
     processRef.off('SIGINT',cancel); processRef.off('SIGTERM',cancel); processRef.off('SIGHUP',cancel);
     // Stock runExec owns normal shutdown. Cleanup covers a dependency failure
     // after creation but before the stock run receives the runtime.
-    if(runtime&&!closed) await shutdown(runtime);
+    if(runtime&&!shutdownAttempt) {
+      try { await shutdown(runtime); }
+      catch(error) {
+        if(primaryError) reportCleanupFailure();
+        else throw error;
+      }
+    }
   }
 }
 
@@ -100,13 +112,22 @@ async function main() {
   const optionsInfo=await lstat(optionsPath);
   if(!optionsInfo.isFile()||optionsInfo.uid!==process.geteuid()||(optionsInfo.mode&0o077))throw new Error('Options must be private owner file');
   const options=JSON.parse(await readFile(optionsPath,'utf8'));
-  const permitted=new Set(['session','cwd','model','permission','maxSteps','timeout','outputFormat','input']);
-  if(!options||typeof options!=='object'||Array.isArray(options)||Object.keys(options).some(key=>!permitted.has(key)))throw new Error('Unsupported exec options');
+  validateExecOptionValues(options);
   if(typeof options.session!=='string'||!/^mvs_[0-9a-f]{32}$/.test(options.session)||typeof options.cwd!=='string'||options.permission!=='off'||options.input!=='-')throw new Error('Expected bounded existing-session exec options');
   if(typeof options.maxSteps!=='string'||!Number.isInteger(Number(options.maxSteps))||Number(options.maxSteps)<1||Number(options.maxSteps)>16)throw new Error('Invalid step bound');
   const entry=join(root,'cli.js');
   const load=relative=>import(pathToFileURL(join(root,relative)).href);
   await runPinnedBoot({entry,options,load});
+}
+
+const EXEC_FLAGS=Object.freeze({session:'--session',cwd:'--cwd',model:'--model',permission:'--permission',maxSteps:'--max-steps',timeout:'--timeout',outputFormat:'--output-format',input:'--input'});
+
+export function validateExecOptionValues(options) {
+  if(!options||typeof options!=='object'||Array.isArray(options)
+     ||Object.entries(options).some(([key,value])=>!Object.hasOwn(EXEC_FLAGS,key)||typeof value!=='string')) {
+    throw new Error('Unsupported exec options');
+  }
+  return options;
 }
 
 // Validate the standalone launcher's package boundary without a dependency on
@@ -120,12 +141,12 @@ export function validatePinnedPackage(pkg) {
 // of Node/proxy/CLI validation. Suppress only its final process.exit so guard
 // removal and caller cleanup run normally; do not suppress its exit code.
 export async function runPinnedBoot({entry,options,load,processRef=process,supervise=runSupervised}) {
+  validateExecOptionValues(options);
   const identity=await load('chunks/chunk-334CV6RF.js');
   const allow=identity.B(identity.A(entry));
   const environment=await load('chunks/chunk-CMWH3NZU.js');
   const argv=[processRef.execPath,entry,'exec'];
-  const flags={session:'--session',cwd:'--cwd',model:'--model',permission:'--permission',maxSteps:'--max-steps',timeout:'--timeout',outputFormat:'--output-format',input:'--input'};
-  for(const [key,value] of Object.entries(options))argv.push(`${flags[key]}=${String(value)}`);
+  for(const [key,value] of Object.entries(options))argv.push(`${EXEC_FLAGS[key]}=${value}`);
   const startup=environment.t(argv.slice(2),allow);
   const data=await load('chunks/data-dir-VLNTBIAQ.js');
   environment.r({dataDir:data.getTuiDataDirPath(),...(startup?{startupBuildEnvironment:startup}:{})});

@@ -124,3 +124,43 @@ test('leading-hyphen and spaced values stay in a single named argv token',async(
   await runPinnedBoot({entry:'/p/cli.js',options:{model:'--permission=full',cwd:'/path with spaces',input:'-'},load:async name=>modules[name],processRef:{execPath:'/node'}});
   assert.deepEqual(observed,['exec','--model=--permission=full','--cwd=/path with spaces','--input=-']);
 });
+
+
+test('cleanup rejection preserves admission failure and makes one attempt',async()=>{
+  const denial=Error('admission denied'),cleanup=Error('cleanup failed');
+  const proc=new EventEmitter(),diagnostics=[];proc.stderr={write:x=>diagnostics.push(x)};
+  let attempts=0;
+  await assert.rejects(runSupervised({processRef:proc,options:{},createRuntime:async()=>({}),
+    wait:async()=>{throw denial},shutdownRuntime:async()=>{attempts++;throw cleanup},
+    runExec:async(p,o,v,d)=>{await d.createRuntime()}}),error=>error===denial);
+  assert.equal(attempts,1);assert.equal(diagnostics.length,1);
+  assert.match(diagnostics[0],/host cleanup remains required/);
+  assert.equal(proc.listenerCount('SIGTERM'),0);
+});
+test('normal shutdown rejection is not silently reported as success or retried',async()=>{
+  const cleanup=Error('cleanup failed');let attempts=0;
+  await assert.rejects(runSupervised({processRef:new EventEmitter(),options:{},wait:async()=>{},
+    createRuntime:async()=>({}),shutdownRuntime:async()=>{attempts++;throw cleanup},
+    runExec:async(p,o,v,d)=>{const r=await d.createRuntime();await d.shutdownRuntime(r)}}),error=>error===cleanup);
+  assert.equal(attempts,1);
+});
+test('option boundary refuses unknown and nonstring values before boot side effects',async()=>{
+  const {runPinnedBoot,validateExecOptionValues}=await import('../minimax_supervised_exec.mjs');
+  for(const options of [null,[],{unknown:'x'},{toString:'x'},{model:null},{timeout:900000},{outputFormat:{}},{model:undefined}]){
+    let loads=0;
+    assert.throws(()=>validateExecOptionValues(options),/Unsupported exec options/);
+    await assert.rejects(runPinnedBoot({options,load:async()=>{loads++}}),/Unsupported exec options/);
+    assert.equal(loads,0);
+  }
+  const options={timeout:'900s',model:'--permission=full',cwd:'/path with spaces',input:'-'};
+  assert.equal(validateExecOptionValues(options),options);
+});
+
+test('fallback cleanup failure preserves stock failure without retry',async()=>{
+  const stock=Error('stock failed');let attempts=0;const proc=new EventEmitter(),diagnostics=[];
+  proc.stderr={write:x=>diagnostics.push(x)};
+  await assert.rejects(runSupervised({processRef:proc,options:{},wait:async()=>{},
+    createRuntime:async()=>({}),shutdownRuntime:async()=>{attempts++;throw Error('cleanup')},
+    runExec:async(p,o,v,d)=>{await d.createRuntime();throw stock}}),error=>error===stock);
+  assert.equal(attempts,1);assert.equal(diagnostics.length,1);
+});
