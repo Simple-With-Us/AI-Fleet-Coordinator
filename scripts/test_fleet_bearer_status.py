@@ -162,5 +162,50 @@ class ReviewFixTests(unittest.TestCase):
             self.assertEqual(os.listdir(d), ["s.json"])
 
 
+class ReviewRound2Tests(unittest.TestCase):
+    def _args(self, d):
+        return types.SimpleNamespace(
+            state=os.path.join(d, "state.json"),
+            write=os.path.join(d, "out.json"),
+            url="https://x.invalid/admin/api/bearers",
+            dry_run=False,
+            no_notify=True,
+        )
+
+    def test_a_non_dict_state_file_resets(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self._args(d)
+            with open(a.state, "w") as f:
+                f.write("[1, 2]")
+            out = fbs.run(a, now=1000, token_fn=lambda: "a.b.c", fetch_fn=lambda u, t: DOC_OK, notify_fn=lambda *x: None)
+            self.assertTrue(out["ok"])
+
+    def test_a_network_failure_keeps_the_login_alarm(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self._args(d)
+            fbs.run(a, now=1000, token_fn=lambda: None, fetch_fn=None, notify_fn=lambda *x: None)
+
+            def boom(u, t):
+                raise OSError("down")
+
+            out = fbs.run(a, now=1300, token_fn=lambda: "a.b.c", fetch_fn=boom, notify_fn=lambda *x: None)
+            keys = [x["key"] for x in out["alarms"]]
+            self.assertIn("access:login_needed", keys)
+            self.assertEqual(out["recovered"], [])
+
+    def test_diag_baseline_survives_a_poll_without_the_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self._args(d)
+            full = {"rows": [], "diagnostics": [{"kind": "mcp", "reason": "mcp_http_401", "count": 50, "ts": 1}]}
+            empty = {"rows": [], "diagnostics": []}
+            docs = iter([full, empty, full])
+            for t in (1000, 1300, 1600):
+                out = fbs.run(a, now=t, token_fn=lambda: "a.b.c", fetch_fn=lambda u, tk: next(docs), notify_fn=lambda *x: None)
+            self.assertEqual(out["alarms"], [])
+
+    def test_a_redirect_is_not_followed(self):
+        handler = fbs._NoRedirect()
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {}, "https://other.invalid/"))
+
 if __name__ == "__main__":
     unittest.main()
