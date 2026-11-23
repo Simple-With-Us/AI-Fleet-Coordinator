@@ -68,10 +68,12 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
 # The 173rd is simple_tools/opencode_wake.py (AFC-865, the OpenCode seat's wake delivery:  the one wake
 # router serves it like every other seat with a platform module).
-# From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
-# the canonical operator-settings modules reached 181 shipped files);
+# From here the cap is 191 (raised from 190 for AFC-859:  simple_tools/operator_platform_feeds.py
+# ships alongside the legacy simple_tools/cursor_cloud_letters.py it replaces at cutover, so the
+# bundle carries both during the transition;  the cap was 190, raised from 180 under AFC-789 once
+# fleet_infisical_bootstrap.py plus the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
-MAX_FILES = 190
+MAX_FILES = 191
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
