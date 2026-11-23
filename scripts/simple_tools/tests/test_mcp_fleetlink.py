@@ -312,6 +312,68 @@ class CredentialTests(FleetLinkHarness):
         )
         self.assertEqual(len(FL._binding_cache), 2)
 
+    def test_a_concurrent_prune_does_not_break_the_binding(self):
+        # The cache is shared state:  a prune that races another thread's prune takes the same
+        # stale entry,  so the resolution refetches the grant instead of raising.
+        stale_key = ("project", "home", "api", "digest")
+        expired = FL.time.monotonic() - FL.TOKEN_CACHE_TTL - 1
+
+        class RacingCache(dict):
+            """A cache whose reader loses an entry to a concurrent prune."""
+
+            def items(self):
+                snapshot = list(dict.items(self))
+                for item in snapshot:
+                    yield item
+                # Another thread pruned the same entry between the snapshot and the removal.
+                self.pop(stale_key, None)
+
+        cache = RacingCache()
+        cache[stale_key] = (expired, "held")
+        home = self.home
+        env = dict(
+            self.env(),
+            HOME=str(home),
+            INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID=AFC_PROJECT,
+        )
+        with mock.patch.object(FL, "_binding_cache", cache):
+            self.assertEqual(FL._reader_binding(env, home, AFC_PROJECT), self.store_token)
+        self.assertNotIn(stale_key, cache)
+
+    def test_the_cache_cap_survives_a_concurrent_eviction(self):
+        # The cap evicts the oldest route,  and a concurrent prune may take that entry first,  so
+        # the eviction must not raise either.
+        now = FL.time.monotonic()
+
+        class RacingCache(dict):
+            """A cache whose second reader loses the oldest entry to a concurrent prune."""
+
+            def __init__(self):
+                super().__init__()
+                self.reads = 0
+
+            def items(self):
+                self.reads += 1
+                snapshot = list(dict.items(self))
+                for item in snapshot:
+                    yield item
+                if self.reads > 1 and snapshot:
+                    oldest = min(snapshot, key=lambda item: item[1][0])[0]
+                    self.pop(oldest, None)
+
+        cache = RacingCache()
+        for index in range(FL.BINDING_CACHE_MAX):
+            cache[("project", str(index), "api", "digest")] = (now + index, "held")
+        home = self.home
+        env = dict(
+            self.env(),
+            HOME=str(home),
+            INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID=AFC_PROJECT,
+        )
+        with mock.patch.object(FL, "_binding_cache", cache):
+            self.assertEqual(FL._reader_binding(env, home, AFC_PROJECT), self.store_token)
+        self.assertEqual(len(cache), FL.BINDING_CACHE_MAX)
+
     def test_an_environment_value_is_refused_when_the_readers_own_grant_is_not_in_place(self):
         # The reader's own grant is the store's account token:  without it the environment is not
         # a source at all,  and the refusal names the account to provision.
