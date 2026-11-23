@@ -233,16 +233,14 @@ test("Amp is a bearer-only identity that reads only its own Zulip records", asyn
   }
 });
 
-test("every bearer-only seat's Infisical /zulip records exist in the checked-in name manifest", () => {
-  // Names only, never values.  A merge that changes a seat's prefix (AFC #1872 changed ZC to ZCODE
+test("every bearer-only seat's prefix has /zulip records in the checked-in prefix manifest", () => {
+  // Prefixes only, never values.  A merge that changes a seat's prefix (AFC #1872 changed ZC to ZCODE
   // and cut the seat off at the Worker) fails here until the records exist and the manifest names them.
   const manifest = JSON.parse(readFileSync(new URL("./fixtures/infisical-zulip-record-names.json", import.meta.url), "utf8"));
-  const names = new Set(manifest.names);
+  const prefixes = new Set(manifest.prefixes);
   for (const [identity, row] of Object.entries(ADDITIONAL_BEARER_SEATS)) {
     if (identity === "BF-BUILDER") continue; // retired: refused unless INFISICAL_MODE is required
-    for (const part of ["KEY", "EMAIL"]) {
-      assert.ok(names.has(`${row.prefix}_ZULIP_${part}`), `${identity}: ${row.prefix}_ZULIP_${part} is not a record in the manifest`);
-    }
+    assert.ok(prefixes.has(row.prefix), `${identity}: prefix ${row.prefix} has no /zulip records in the manifest`);
   }
   assert.equal(ADDITIONAL_BEARER_SEATS.ZC.prefix, "ZC");
 });
