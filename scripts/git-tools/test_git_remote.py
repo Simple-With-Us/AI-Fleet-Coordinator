@@ -1730,7 +1730,9 @@ class TestReview1199(unittest.TestCase):
                     walk(item)
 
         walk(tools)
-        self.assertEqual(len(patterns), 19)  # live capture includes paired dispatch intent_id
+        self.assertEqual(
+            len(patterns), 22
+        )  # live capture: paired dispatch intent_id, the two origin claims, and the PRRT thread id; all digests are already in _KNOWN_PATTERN_DIGESTS
         # every real pattern compiles and matches a plausible value inside the child, fast
         samples = {
             "repo": "acme/widgets",
