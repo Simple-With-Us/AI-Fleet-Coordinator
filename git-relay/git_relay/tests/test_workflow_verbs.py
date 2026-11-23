@@ -352,7 +352,17 @@ class Tests(unittest.TestCase):
                 "wf_commit_statuses",
                 "wf_commit_status_create",
             ) or action.startswith(
-                ("wf_deployment", "wf_repo_variable", "wf_secret", "wf_org_variable", "wf_hook", "wf_org_hook", "wf_deploy_key", "wf_environment", "wf_env_")
+                (
+                    "wf_deployment",
+                    "wf_repo_variable",
+                    "wf_secret",
+                    "wf_org_variable",
+                    "wf_hook",
+                    "wf_org_hook",
+                    "wf_deploy_key",
+                    "wf_environment",
+                    "wf_env_",
+                )
             ):
                 continue  # deliberately outside the ceiling; see the next test
             self.assertEqual(set(perms) - set(CEILING), set(), action)

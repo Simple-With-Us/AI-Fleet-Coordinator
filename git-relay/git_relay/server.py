@@ -76,7 +76,9 @@ LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_creat
 # Sealed secret values (up to 48 KiB, base64 plus envelope) exceed the default 64 KiB cap; the verb owns the exact bound.
 MAX_SECRET_PUT_REQUEST_BYTES = 128 * 1024
 SECRET_PUT_REQUEST_ACTIONS = frozenset(
-    a for a in SeatPolicy.WORKFLOW_ACTIONS if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
+    a
+    for a in SeatPolicy.WORKFLOW_ACTIONS
+    if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
 )
 
 

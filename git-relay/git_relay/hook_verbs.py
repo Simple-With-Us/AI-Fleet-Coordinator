@@ -180,7 +180,11 @@ def _env_policy_row(item):
     ):
         raise RelayGitHubError(502, "branch policy unverifiable")
     kind = item.get("type")
-    return {"id": item["id"], "name": item["name"], "type": kind if kind in ("branch", "tag") else None}
+    return {
+        "id": item["id"],
+        "name": item["name"],
+        "type": kind if kind in ("branch", "tag") else None,
+    }
 
 
 def _name_arg(wf, args):
@@ -201,17 +205,24 @@ class HookVerbsMixin:
     def wf_hook_create(self, repo, args):
         from . import workflow_verbs as wv
 
-        wv._only(args, ("repo", "url", "content_type", "insecure_ssl", "secret", "events", "active"))
+        wv._only(
+            args, ("repo", "url", "content_type", "insecure_ssl", "secret", "events", "active")
+        )
         body = _hook_body(args, wv.Refused, True)
         body["name"] = "web"
         body.setdefault("active", True)
-        data = self.client._call("POST", f"/repos/{repo}/hooks", body, bearer=self.bearer, expected_status=201)
+        data = self.client._call(
+            "POST", f"/repos/{repo}/hooks", body, bearer=self.bearer, expected_status=201
+        )
         return {"hook": _hook_receipt(data)}
 
     def wf_hook_update(self, repo, args):
         from . import workflow_verbs as wv
 
-        wv._only(args, ("repo", "id", "url", "content_type", "insecure_ssl", "secret", "events", "active"))
+        wv._only(
+            args,
+            ("repo", "id", "url", "content_type", "insecure_ssl", "secret", "events", "active"),
+        )
         hook = _id(args, wv.Refused)
         body = _hook_body(args, wv.Refused, False)
         if not body:
@@ -241,7 +252,13 @@ class HookVerbsMixin:
 
         wv._only(args, ("repo", "id"))
         hook = _id(args, wv.Refused)
-        self.client._call("POST", f"/repos/{repo}/hooks/{hook}/pings", None, bearer=self.bearer, expected_status=204)
+        self.client._call(
+            "POST",
+            f"/repos/{repo}/hooks/{hook}/pings",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
         return {"completed": True, "id": hook}
 
     def wf_hook_test(self, repo, args):
@@ -249,7 +266,13 @@ class HookVerbsMixin:
 
         wv._only(args, ("repo", "id"))
         hook = _id(args, wv.Refused)
-        self.client._call("POST", f"/repos/{repo}/hooks/{hook}/tests", None, bearer=self.bearer, expected_status=204)
+        self.client._call(
+            "POST",
+            f"/repos/{repo}/hooks/{hook}/tests",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
         return {"completed": True, "id": hook}
 
     def wf_hook_deliveries(self, repo, args):
@@ -270,7 +293,11 @@ class HookVerbsMixin:
         hook = _id(args, wv.Refused)
         delivery = _id(args, wv.Refused, "delivery_id")
         self.client._call(
-            "POST", f"/repos/{repo}/hooks/{hook}/deliveries/{delivery}/attempts", None, bearer=self.bearer, expected_status=202
+            "POST",
+            f"/repos/{repo}/hooks/{hook}/deliveries/{delivery}/attempts",
+            None,
+            bearer=self.bearer,
+            expected_status=202,
         )
         return {"completed": True, "id": hook, "delivery_id": delivery}
 
@@ -285,7 +312,11 @@ class HookVerbsMixin:
         data = self._get(f"/orgs/{org}/hooks?per_page={limit}&page={page}")
         if not isinstance(data, list) or len(data) > limit:
             raise RelayGitHubError(502, "hook page unverifiable")
-        return {"hooks": [_hook_receipt(x) for x in data], "page": page, "has_more": len(data) == limit}
+        return {
+            "hooks": [_hook_receipt(x) for x in data],
+            "page": page,
+            "has_more": len(data) == limit,
+        }
 
     def wf_org_hook_get(self, repo, args):
         from . import workflow_verbs as wv
@@ -297,24 +328,35 @@ class HookVerbsMixin:
     def wf_org_hook_create(self, repo, args):
         from . import workflow_verbs as wv
 
-        wv._only(args, ("repo", "url", "content_type", "insecure_ssl", "secret", "events", "active"))
+        wv._only(
+            args, ("repo", "url", "content_type", "insecure_ssl", "secret", "events", "active")
+        )
         body = _hook_body(args, wv.Refused, True)
         body["name"] = "web"
         body.setdefault("active", True)
         data = self.client._call(
-            "POST", f"/orgs/{repo.split('/')[0]}/hooks", body, bearer=self.bearer, expected_status=201
+            "POST",
+            f"/orgs/{repo.split('/')[0]}/hooks",
+            body,
+            bearer=self.bearer,
+            expected_status=201,
         )
         return {"hook": _hook_receipt(data)}
 
     def wf_org_hook_update(self, repo, args):
         from . import workflow_verbs as wv
 
-        wv._only(args, ("repo", "id", "url", "content_type", "insecure_ssl", "secret", "events", "active"))
+        wv._only(
+            args,
+            ("repo", "id", "url", "content_type", "insecure_ssl", "secret", "events", "active"),
+        )
         hook = _id(args, wv.Refused)
         body = _hook_body(args, wv.Refused, False)
         if not body:
             raise wv.Refused("nothing to update")
-        data = self.client._call("PATCH", f"/orgs/{repo.split('/')[0]}/hooks/{hook}", body, bearer=self.bearer)
+        data = self.client._call(
+            "PATCH", f"/orgs/{repo.split('/')[0]}/hooks/{hook}", body, bearer=self.bearer
+        )
         return {"hook": _hook_receipt(data)}
 
     def wf_org_hook_delete(self, repo, args):
@@ -330,7 +372,11 @@ class HookVerbsMixin:
         wv._only(args, ("repo", "id"))
         hook = _id(args, wv.Refused)
         self.client._call(
-            "POST", f"/orgs/{repo.split('/')[0]}/hooks/{hook}/pings", None, bearer=self.bearer, expected_status=204
+            "POST",
+            f"/orgs/{repo.split('/')[0]}/hooks/{hook}/pings",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "id": hook}
 
@@ -368,7 +414,11 @@ class HookVerbsMixin:
 
         wv._only(args, ("repo", "title", "key", "read_only"))
         title, key = args.get("title"), args.get("key")
-        if not isinstance(title, str) or not 1 <= len(title) <= 200 or any(ord(c) < 32 for c in title):
+        if (
+            not isinstance(title, str)
+            or not 1 <= len(title) <= 200
+            or any(ord(c) < 32 for c in title)
+        ):
             raise wv.Refused("invalid title")
         if not isinstance(key, str) or not _PUBKEY.fullmatch(key.strip()):
             raise wv.Refused("invalid key; send a PUBLIC ssh key")
@@ -397,7 +447,14 @@ class HookVerbsMixin:
 
         wv._only(
             args,
-            ("repo", "name", "wait_timer", "prevent_self_review", "reviewers", "deployment_branch_policy"),
+            (
+                "repo",
+                "name",
+                "wait_timer",
+                "prevent_self_review",
+                "reviewers",
+                "deployment_branch_policy",
+            ),
         )
         name = self._environment_name(args)
         body = {}
@@ -444,7 +501,9 @@ class HookVerbsMixin:
 
         wv._only(args, ("repo", "name"))
         name = self._environment_name(args)
-        return self._delete_receipt(repo, f"/repos/{repo}/environments/{quote(name, safe='')}", "name", name)
+        return self._delete_receipt(
+            repo, f"/repos/{repo}/environments/{quote(name, safe='')}", "name", name
+        )
 
     def wf_env_branch_policies(self, repo, args):
         from . import workflow_verbs as wv
@@ -457,9 +516,17 @@ class HookVerbsMixin:
             f"/repos/{repo}/environments/{quote(name, safe='')}/deployment-branch-policies?per_page={limit}&page={page}"
         )
         rows = data.get("branch_policies") if isinstance(data, dict) else None
-        if not isinstance(rows, list) or len(rows) > limit or type(data.get("total_count")) is not int:
+        if (
+            not isinstance(rows, list)
+            or len(rows) > limit
+            or type(data.get("total_count")) is not int
+        ):
             raise RelayGitHubError(502, "branch policies unverifiable")
-        return {"policies": [_env_policy_row(x) for x in rows], "total_count": data["total_count"], "page": page}
+        return {
+            "policies": [_env_policy_row(x) for x in rows],
+            "total_count": data["total_count"],
+            "page": page,
+        }
 
     def wf_env_branch_policy_create(self, repo, args):
         from . import workflow_verbs as wv
@@ -468,7 +535,11 @@ class HookVerbsMixin:
         name = self._environment_name(args)
         pattern = args.get("policy_name")
         kind = args.get("type", "branch")
-        if not isinstance(pattern, str) or not _BRANCH_PATTERN.fullmatch(pattern) or kind not in ("branch", "tag"):
+        if (
+            not isinstance(pattern, str)
+            or not _BRANCH_PATTERN.fullmatch(pattern)
+            or kind not in ("branch", "tag")
+        ):
             raise wv.Refused("invalid branch policy")
         data = self.client._call(
             "POST",
@@ -508,11 +579,19 @@ class HookVerbsMixin:
             f"/repos/{repo}/environments/{quote(name, safe='')}/variables?per_page={limit}&page={page}"
         )
         rows = data.get("variables") if isinstance(data, dict) else None
-        if not isinstance(rows, list) or len(rows) > limit or type(data.get("total_count")) is not int:
+        if (
+            not isinstance(rows, list)
+            or len(rows) > limit
+            or type(data.get("total_count")) is not int
+        ):
             raise RelayGitHubError(502, "environment variables unverifiable")
         out = []
         for row in rows:
-            if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not _VAR.fullmatch(row["name"]):
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("name"), str)
+                or not _VAR.fullmatch(row["name"])
+            ):
                 raise RelayGitHubError(502, "environment variables unverifiable")
             value = row.get("value")
             if not isinstance(value, str) or len(value) > 8192:
@@ -521,8 +600,12 @@ class HookVerbsMixin:
                 {
                     "name": row["name"],
                     "value": value,
-                    "created_at": row.get("created_at") if isinstance(row.get("created_at"), str) else None,
-                    "updated_at": row.get("updated_at") if isinstance(row.get("updated_at"), str) else None,
+                    "created_at": row.get("created_at")
+                    if isinstance(row.get("created_at"), str)
+                    else None,
+                    "updated_at": row.get("updated_at")
+                    if isinstance(row.get("updated_at"), str)
+                    else None,
                 }
             )
         return {"variables": out, "total_count": data["total_count"], "page": page}
@@ -536,18 +619,35 @@ class HookVerbsMixin:
         value = self._variable_value(args)
         base = f"/repos/{repo}/environments/{quote(name, safe='')}/variables"
         try:
-            self.client._call("PATCH", f"{base}/{var}", {"name": var, "value": value}, bearer=self.bearer, expected_status=204)
+            self.client._call(
+                "PATCH",
+                f"{base}/{var}",
+                {"name": var, "value": value},
+                bearer=self.bearer,
+                expected_status=204,
+            )
         except RelayGitHubError as exc:
             if exc.status != 404:
                 raise
             try:
                 self.client._call(
-                    "POST", base, {"name": var, "value": value}, bearer=self.bearer, expected_status=201, allow_empty_object=True
+                    "POST",
+                    base,
+                    {"name": var, "value": value},
+                    bearer=self.bearer,
+                    expected_status=201,
+                    allow_empty_object=True,
                 )
             except RelayGitHubError as race:
                 if race.status != 409:
                     raise
-                self.client._call("PATCH", f"{base}/{var}", {"name": var, "value": value}, bearer=self.bearer, expected_status=204)
+                self.client._call(
+                    "PATCH",
+                    f"{base}/{var}",
+                    {"name": var, "value": value},
+                    bearer=self.bearer,
+                    expected_status=204,
+                )
         return {"completed": True, "name": name, "variable": var}
 
     def wf_env_variable_delete(self, repo, args):
@@ -557,7 +657,10 @@ class HookVerbsMixin:
         name = self._environment_name(args)
         var = self._env_var_name(args, wv.Refused)
         out = self._delete_receipt(
-            repo, f"/repos/{repo}/environments/{quote(name, safe='')}/variables/{var}", "variable", var
+            repo,
+            f"/repos/{repo}/environments/{quote(name, safe='')}/variables/{var}",
+            "variable",
+            var,
         )
         out["name"] = name
         return out

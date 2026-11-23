@@ -23,7 +23,11 @@ def hook(**kw):
         "name": "web",
         "active": True,
         "events": ["push"],
-        "config": {"url": "https://example.invalid/h", "content_type": "json", "secret": "********"},
+        "config": {
+            "url": "https://example.invalid/h",
+            "content_type": "json",
+            "secret": "********",
+        },
     }
     base.update(kw)
     return base
@@ -40,7 +44,13 @@ class HookVerbs(unittest.TestCase):
     def test_create_sends_secret_but_never_returns_it(self):
         c, out = run(
             "wf_hook_create",
-            {"repo": REPO, "url": "https://example.invalid/h", "secret": "s3cr3t-value", "events": ["push"], "active": False},
+            {
+                "repo": REPO,
+                "url": "https://example.invalid/h",
+                "secret": "s3cr3t-value",
+                "events": ["push"],
+                "active": False,
+            },
             hook(active=False),
         )
         self.assertEqual(c.calls[0][0:2], ("POST", f"/repos/{REPO}/hooks"))
@@ -107,16 +117,39 @@ class HookVerbs(unittest.TestCase):
         with self.assertRaises(Refused):
             run("wf_environment_put", {"repo": REPO, "name": "x", "wait_timer": 99999})
         with self.assertRaises(Refused):
-            run("wf_environment_put", {"repo": REPO, "name": "x", "deployment_branch_policy": {"protected_branches": True, "custom_branch_policies": True}})
-        c, out = run("wf_env_branch_policy_create", {"repo": REPO, "name": "prod", "policy_name": "main"}, {"id": 4, "name": "main", "type": "branch"})
+            run(
+                "wf_environment_put",
+                {
+                    "repo": REPO,
+                    "name": "x",
+                    "deployment_branch_policy": {
+                        "protected_branches": True,
+                        "custom_branch_policies": True,
+                    },
+                },
+            )
+        c, out = run(
+            "wf_env_branch_policy_create",
+            {"repo": REPO, "name": "prod", "policy_name": "main"},
+            {"id": 4, "name": "main", "type": "branch"},
+        )
         self.assertEqual(out["policy"], {"id": 4, "name": "main", "type": "branch"})
 
     def test_env_variables(self):
-        c, out = run("wf_env_variable_set", {"repo": REPO, "name": "prod", "variable": "FOO", "value": "1"}, {})
-        self.assertEqual(c.calls[0][0:2], ("PATCH", f"/repos/{REPO}/environments/prod/variables/FOO"))
+        c, out = run(
+            "wf_env_variable_set",
+            {"repo": REPO, "name": "prod", "variable": "FOO", "value": "1"},
+            {},
+        )
+        self.assertEqual(
+            c.calls[0][0:2], ("PATCH", f"/repos/{REPO}/environments/prod/variables/FOO")
+        )
         self.assertEqual(out, {"completed": True, "name": "prod", "variable": "FOO"})
         with self.assertRaises(Refused):
-            run("wf_env_variable_set", {"repo": REPO, "name": "prod", "variable": "GITHUB_X", "value": "1"})
+            run(
+                "wf_env_variable_set",
+                {"repo": REPO, "name": "prod", "variable": "GITHUB_X", "value": "1"},
+            )
 
 
 if __name__ == "__main__":
