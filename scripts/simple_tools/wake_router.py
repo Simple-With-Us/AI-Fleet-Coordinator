@@ -1076,7 +1076,10 @@ def load_config(
     path: Path, defaults: Mapping[str, Any], *, required: bool = False
 ) -> dict[str, Any]:
     """The defaults overlaid with a JSON file.  It widens as freely as it narrows, so nothing that
-    runs a router reads its settings this way:  wake_settings lets a local file only narrow."""
+    runs a router reads its settings this way:  wake_settings lets a local file only narrow.
+    Shared service-file extensions such as delivery_seats and seat_host_facts are intentionally
+    not accepted here. Use wake_settings.read_local/read_once or WakeSettings for that file;
+    adding its map here without a seat and governed narrowing would not apply it safely."""
     return {**defaults, **read_local_config(path, defaults, required=required)}
 
 

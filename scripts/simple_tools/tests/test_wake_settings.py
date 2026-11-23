@@ -511,6 +511,15 @@ class LocalFile(Settings):
 
 
 class SeatHostFacts(Settings):
+    def test_shared_map_uses_governed_loader_not_legacy_widening_loader(self) -> None:
+        self.local(workspace="/shared/fleet",
+                   seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}})
+        with self.assertRaises(SystemExit):
+            WR.load_config(self.local_path, SVC.file_defaults())
+        settings = self.opencode()
+        self.assertEqual(settings["workspace"], "/native/opencode")
+        self.assertFalse(settings["delivery_enabled"])
+
     def opencode(self) -> WS.WakeSettings:
         from simple_tools import opencode_wake as OW
 
