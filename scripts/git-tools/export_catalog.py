@@ -204,7 +204,7 @@ def main(argv):
         return 1
     json.dump(
         {
-            "provenance": "hosted simple-tools MCP tools/list, captured by the host's own seat 2026-10-31; "
+            "provenance": "hosted simple-tools MCP tools/list, captured by the host's own seat 2026-11-23 (P1 and P2 git tools); "
             "identity enum neutralized (caller-relative); list presence is not execution proof",
             "tools": catalog,
         },
