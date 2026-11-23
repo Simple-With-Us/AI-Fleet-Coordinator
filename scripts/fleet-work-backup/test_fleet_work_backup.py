@@ -3484,7 +3484,9 @@ class MiscCase(unittest.TestCase):
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
             ):
                 self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
-                self.assertNotIn("B2_FLEET_WORK_BUCKET_NAME", calls[0])
+                # The store is asked for every name:  the environment is never a source,  so a
+                # hand-set copy cannot skip the read or shadow the answer.
+                self.assertEqual(set(calls[0]), set(fwb.CRED_NAMES.values()))
                 self.assertEqual(len(calls), 1)
                 api.status = 503
                 # The provider is down,  so the binding cannot prove itself:  the refusal
@@ -3495,7 +3497,10 @@ class MiscCase(unittest.TestCase):
                 self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
                 with mock.patch.dict(os.environ, {n: "synced" for n in fwb.CRED_NAMES.values()}):
                     before = len(calls)
-                    self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                    # The environment is never a source,  so the store is still the only answer
+                    # and its refusal still reaches the caller.
+                    with self.assertRaises(fwb.BindingRefused):
+                        fwb.read_credentials(fwb.Config(home=Path("/")))
                     self.assertEqual(len(calls), before)
 
 
@@ -3519,6 +3524,57 @@ class MiscCase(unittest.TestCase):
                 with self.assertRaises(fwb.BindingRefused) as caught:
                     fwb._read_infisical_names(("WANTED",), fwb.CREDENTIAL_FOLDER)
         self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
+
+    def test_the_environment_cannot_shadow_the_store_at_this_file(self):
+        """The store is the only source:  a hand-set copy is never the value this job uses."""
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        client = fwb._infisical_reader()
+        original = client.bounded_fetch_project
+        values = {
+            "B2_FLEET_WORK_BUCKET_NAME": "store bucket",
+            "B2_FLEET_WORK_KEY_ID": "store key id",
+            "B2_FLEET_WORK_APPLICATION_KEY": "store application key",
+            "RESTIC_FLEET_WORK_PASSWORD": "store password",
+        }
+        wrong = {
+            "B2_FLEET_WORK_BUCKET_NAME": "env bucket",
+            "B2_FLEET_WORK_KEY_ID": "env key id",
+            "B2_FLEET_WORK_APPLICATION_KEY": "env application key",
+            "RESTIC_FLEET_WORK_PASSWORD": "env password",
+        }
+        with ScopedReadAPI(
+            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+        ) as api:
+            calls = []
+            def read(project, folder, env, **options):
+                calls.append(options["names"])
+                return original(project, folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+            with (
+                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    "INFISICAL_TOKEN": api.token,
+                    "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                    "HOME": str(Path(tempfile.mkdtemp(prefix="fwb-store-"))),
+                    **wrong}, clear=True),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                # The store answers for every name,  and the copy in the environment is not it.
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
+                self.assertEqual(set(calls[-1]), set(fwb.CRED_NAMES.values()))
+                # The child environment carries the store's values,  and no copy of the values the
+                # environment holds.
+                env, missing = fwb.restic_env(fwb.Config(home=Path("/")))
+                self.assertEqual(missing, [])
+                self.assertEqual(env["RESTIC_PASSWORD"], values["RESTIC_FLEET_WORK_PASSWORD"])
+                self.assertEqual(env["AWS_ACCESS_KEY_ID"], values["B2_FLEET_WORK_KEY_ID"])
+                self.assertEqual(
+                    env["AWS_SECRET_ACCESS_KEY"], values["B2_FLEET_WORK_APPLICATION_KEY"]
+                )
+                self.assertIn("/" + values["B2_FLEET_WORK_BUCKET_NAME"] + "/", env["RESTIC_REPOSITORY"])
+                for name, wrong_value in wrong.items():
+                    self.assertNotIn(name, env)
+                    self.assertNotIn(wrong_value, "".join(env.values()))
 
     def test_read_credentials_master_names_keep_the_existing_explicit_gate(self):
         sys.path.insert(0, str(HERE.parent))

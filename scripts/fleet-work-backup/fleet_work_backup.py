@@ -2925,15 +2925,16 @@ def _read_infisical_names(names, folder):
 
 
 def read_credentials(cfg: Config) -> dict[str, str]:
-    """Read only missing job names; master names retain the explicit restore gate."""
-    if all(os.environ.get(name) for name in CRED_NAMES.values()):
-        return {}
+    """This job's own names, from the store only.
+
+    The store is the only source:  the values come from the job's own scoped grant,  and the
+    environment is never a source,  so a hand-set copy can never shadow the store.  The master
+    names keep the explicit restore gate:  they are read only while FLEET_WORK_BACKUP_ALLOW_MASTER=1.
+    """
     wanted = list(CRED_NAMES.values())
     if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
         wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
-    wanted = tuple(name for name in wanted if not os.environ.get(name))
-    if not wanted:
-        return {}
+    wanted = tuple(wanted)
     values = _read_infisical_names(wanted, CREDENTIAL_FOLDER)
     return {
         name: value
@@ -2954,13 +2955,14 @@ def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, li
     The bucket name is B2_FLEET_WORK_BUCKET_NAME only:  there is no fallback to the fleet's shared bucket name, because
     a fallback could point this backup at a bucket it does not own."""
     src = dict(read_credentials(cfg))
-    for name in list(CRED_NAMES.values()) + list(MASTER_NAMES.values()):
-        if os.environ.get(name):
-            src[name] = os.environ[name]
     password = src.get(CRED_NAMES["password"], "")
     env = dict(os.environ)
     for var in ("RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND", "RESTIC_REPOSITORY_FILE"):
         env.pop(var, None)
+    # A copy of a credential in the environment never reaches the child:  the store's values are
+    # the only ones this job uses,  so the child sees those and nothing else.
+    for name in list(CRED_NAMES.values()) + list(MASTER_NAMES.values()):
+        env.pop(name, None)
     if cfg.repository:
         if not password:
             return None, [CRED_NAMES["password"]]
@@ -3134,9 +3136,6 @@ def check_b2_setup(cfg: Config) -> list[tuple[bool, str]]:
     if cfg.repository:
         return []
     src = dict(read_credentials(cfg))
-    for name in CRED_NAMES.values():
-        if os.environ.get(name):
-            src[name] = os.environ[name]
     key_id, app_key, bucket = (src.get(CRED_NAMES[k], "") for k in ("key_id", "app_key", "bucket"))
     if not (key_id and app_key and bucket):
         return [
@@ -3164,9 +3163,6 @@ def b2_gate(cfg: Config, state: dict) -> tuple[list[str], list[str]]:
     if cfg.repository:
         return [], []
     src = dict(read_credentials(cfg))
-    for name in CRED_NAMES.values():
-        if os.environ.get(name):
-            src[name] = os.environ[name]
     tag = hashlib.sha256(("fwb-b2:" + src.get(CRED_NAMES["key_id"], "")).encode()).hexdigest()[:16]
     seen = state.get("b2_ok") or {}
     if seen.get("key") == tag and cfg.now() - float(seen.get("at", 0)) < B2_RECHECK_EVERY:
@@ -3217,14 +3213,14 @@ def infisical_get(cfg: Config, name: str) -> tuple[int, str]:
 
 def cmd_new_password(cfg: Config, args) -> int:
     """Generate the repository password and write it to Infisical, never printing it.  Write-once:  it refuses when
-    the secret store, the environment or Infisical already has one (a replaced password locks every snapshot), and
+    the secret store or Infisical already has one (a replaced password locks every snapshot), and
     any read it cannot make is a refusal, never 'absent'.  The value reaches the CLI as a file path (``NAME=@file``,
     a 0600 file in a 0700 folder, removed afterwards), never in argv;  the CLI's output is discarded;  the value is
     read back and compared in memory, and only 'matched' and its length are reported."""
     name = CRED_NAMES["password"]
-    if read_credentials(cfg).get(name) or os.environ.get(name):
+    if read_credentials(cfg).get(name):
         say(
-            f"{name} is already in the secret store or the environment:  the repository has its password;  "
+            f"{name} is already in the secret store:  the repository has its password;  "
             f"it is never replaced (README, Credentials).  Nothing written."
         )
         return 1

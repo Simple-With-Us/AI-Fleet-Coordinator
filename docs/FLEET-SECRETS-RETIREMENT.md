@@ -69,6 +69,13 @@ reader, used by many consumers, each of which should instead hold its own narrow
 
    This is about the token.  A consumer whose own contract used to say a host binds a secret *value* in the environment (a realm credential for a given realm, for example) keeps its own contract, but the value resolves from the store now:  the environment is never a source for a value either, and the token that fetches it is still the consumer's own scoped service token.
 
+   **The backup job's values are the store's alone.**  `scripts/fleet-work-backup/fleet_work_backup.py` is the
+   conformance site this pull request closed:  the restic and B2 names (`RESTIC_FLEET_WORK_PASSWORD`,
+   `B2_FLEET_WORK_KEY_ID`, `B2_FLEET_WORK_APPLICATION_KEY`, `B2_FLEET_WORK_BUCKET_NAME`) and the master-key
+   names come from the store through `fleet-work-backup-ro`,  and the environment is never a source for them.
+   `FLEET_WORK_BACKUP_ALLOW_MASTER=1` stays in the environment:  it is an operator's per-run consent for a
+   restore and not a value or a copy of one,  so it is a knob and not a secret.
+
 5. **No fallback, no cached copy.**  There is no route to the shared reader, to a machine identity, to the System
    Keychain old identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields
    nothing, and the consumer says which of those it was.
