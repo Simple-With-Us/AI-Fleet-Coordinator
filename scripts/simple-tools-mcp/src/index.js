@@ -1354,6 +1354,7 @@ async function serveAdmin(request, env, config, oauth, email) {
     const rows = await bearerStatusRows({
       gateFor: (identity) => gate(env, identity),
       resolveCredentials: (identity) => resolveBearerSeatCredentials(env, config, identity),
+      config,
     });
     return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows }), {
       status: 200,

@@ -9,6 +9,7 @@ const EXPIRY_SOON_MS = 14 * 24 * 60 * 60 * 1000;
 /** The first thing wrong for one identity, or "ok".  A pure function of the row's facts. */
 export function bearerProblem(row, now) {
   if (row.statusUnavailable) return "status_unavailable";
+  if (row.credentialsUnavailable) return "credentials_unavailable";
   if (!row.credentialsLoaded) return "credentials_missing";
   const st = row.status ?? {};
   if (!st.active && !st.expired) return "no_bearer";
@@ -37,7 +38,7 @@ export async function bearerStatusRows(deps) {
       statusUnavailable: status.status === "rejected",
       credentialsLoaded,
       credentialsUnavailable: credentials.status === "rejected",
-      missingRecords: credentialsLoaded ? null : seatCredentialRecordNames(identity),
+      missingRecords: credentialsLoaded ? null : seatCredentialRecordNames(identity, deps.config),
       status: status.status === "fulfilled" ? status.value : null,
       mismatches: mismatches.status === "fulfilled" ? (mismatches.value?.[identity] ?? null) : null,
       paused: state.status === "fulfilled" ? Boolean(state.value?.paused) : null,

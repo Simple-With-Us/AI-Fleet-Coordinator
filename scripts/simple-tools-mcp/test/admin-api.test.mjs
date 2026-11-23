@@ -10,6 +10,7 @@ test("bearerProblem names the first failure in a fixed order", () => {
   const base = { credentialsLoaded: true, status: good, paused: false, mismatches: null };
   assert.equal(bearerProblem(base, NOW), "ok");
   assert.equal(bearerProblem({ ...base, credentialsLoaded: false }, NOW), "credentials_missing");
+  assert.equal(bearerProblem({ ...base, credentialsLoaded: false, credentialsUnavailable: true }, NOW), "credentials_unavailable");
   assert.equal(bearerProblem({ ...base, status: { ...good, active: false } }, NOW), "no_bearer");
   assert.equal(bearerProblem({ ...base, status: { ...good, active: false, expired: true } }, NOW), "bearer_expired");
   assert.equal(bearerProblem({ ...base, paused: true }, NOW), "paused");
@@ -37,4 +38,9 @@ test("bearerStatusRows covers every identity, isolates failures and carries no s
   assert.deepEqual(by.ZC.missingRecords, seatCredentialRecordNames("ZC"));
   assert.equal(by.WISE.problem, "ok");
   assert.ok(!JSON.stringify(rows).includes('"key"'));
+});
+
+test("CODEX and MA record names follow hosting", () => {
+  assert.deepEqual(seatCredentialRecordNames("MA", { hostedSeats: [] }).names, ["MA_ZULIP_KEY", "MA_ZULIP_EMAIL"]);
+  assert.notDeepEqual(seatCredentialRecordNames("MA", { hostedSeats: ["MA"] }).names, ["MA_ZULIP_KEY", "MA_ZULIP_EMAIL"]);
 });
