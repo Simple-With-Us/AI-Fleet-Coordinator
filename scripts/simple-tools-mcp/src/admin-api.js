@@ -121,6 +121,13 @@ export async function adminBearerAction(request, deps) {
 
   const mintId = body.mint_id;
   if (typeof mintId !== "string" || !MINT_ID_RE.test(mintId)) return json(400, { ok: false, error: "bad_mint_id" });
+  // A retry of a mint that already completed is acked from its tombstone BEFORE the live-bearer checks, which that
+  // very mint would otherwise trip.  Never carries the token.
+  if (typeof gate.gbBearerMintFormResult === "function") {
+    let done = null;
+    try { done = await gate.gbBearerMintFormResult(mintId); } catch { /* fall through to the checked mint */ }
+    if (done) return json(200, { ok: true, action, identity, completed: true, tokenShown: false, result: done });
+  }
   let status = null;
   try { status = await gate.gbBearerStatus(); } catch { return json(503, { ok: false, error: "status_unavailable" }); }
   const exp = typeof status?.expires_at === "number" ? status.expires_at : Date.parse(status?.expires_at ?? "");
