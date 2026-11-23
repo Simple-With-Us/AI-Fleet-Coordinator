@@ -544,8 +544,12 @@ class GitHubClient:
         # generic node cap on otherwise supported tree proofs. No write or other
         # GET route receives this allowance; depth and Unicode checks are unchanged.
         route, _, query = path.partition("?")
-        recursive_tree = method == "GET" and query == "recursive=1" and _RECURSIVE_TREE_ROUTE.fullmatch(route)
-        _reject_surrogates(data, max_nodes=MAX_RECURSIVE_TREE_BODY if recursive_tree else MAX_RESPONSE_NODES)
+        recursive_tree = (
+            method == "GET" and query == "recursive=1" and _RECURSIVE_TREE_ROUTE.fullmatch(route)
+        )
+        _reject_surrogates(
+            data, max_nodes=MAX_RECURSIVE_TREE_BODY if recursive_tree else MAX_RESPONSE_NODES
+        )
         return data
 
     def _read_until(self, resp, size: int, deadline) -> bytes:
