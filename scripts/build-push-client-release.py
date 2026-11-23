@@ -16,13 +16,13 @@ BASE = {
     "scripts/simple_tools/secretscan.py": "cb9256fdb92f10eb834ccfeee6a87c21c6b1f11c325d46c7704950cc5f9aa9d5",
 }
 INPUTS = {
-    "git": "1f815ea1b36d3acab074e0e95706b6068e59c78de37581193e5daf79bf58db40",
+    "git": "dca54aadfd668d42a0e28814c6b79061b1b748c96d02b1de54a1714554767969",
     "catalog.json": "dc23ca30cfbf1fe38fee1db86dd94cc4a70dc63be2d706d2abeacf22cdd4a285",
 }
 RESULTS = dict(
     BASE,
     **{
-        "scripts/git-tools/git": "e32a1495d5124e4c47f18e7e42001a58f9cf4f852c3a02748a1c45b510afdd07",
+        "scripts/git-tools/git": "c14dcb15634b2fb9dafdbbf6aac355a9c843048c6f6c684d860790031b27cfbb",
         "scripts/git-tools/catalog.json": "ff58292d779ce8f1738ece13f51c131c097fbddd8054d3287fcccc5009978be6",
     },
 )
@@ -92,6 +92,19 @@ def transform(text, source):
     def segment(name):
         return ast.get_source_segment(source, nodes[name]) + "\n\n"
 
+    limits_start, limits_stop = "INPUT_LIMITS = {", "\n}\n"
+    limits = source[
+        source.index(limits_start) : source.index(limits_stop, source.index(limits_start))
+    ]
+    old_limits = text[text.index(limits_start) : text.index(limits_stop, text.index(limits_start))]
+    # Fail closed: the spliced block must be one plain dict of string keys and integer expressions.
+    plain = (ast.Dict, ast.Constant, ast.BinOp, ast.Mult, ast.Load)
+    node = ast.parse(limits + "\n}").body[0]
+    if not isinstance(node, ast.Assign) or not all(
+        isinstance(n, plain) for n in ast.walk(node.value)
+    ):
+        raise ValueError("input limits block is not a plain dict of constants")
+    text = once(text, old_limits, limits)
     section = source[
         source.index("PUSH_MAX_COMMITS =") : source.index(
             "# A report, never a merge authorization."
