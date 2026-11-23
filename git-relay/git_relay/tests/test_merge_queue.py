@@ -69,7 +69,13 @@ class Queue(unittest.TestCase):
             self.assertEqual(len(c.calls), 3)
 
     def test_typed_refusal_with_entry_present_is_success(self):
-        entry = {"id": "MQ1", "state": "AWAITING_CHECKS", "position": 1, "jump": False, "enqueuedAt": "2026-11-23T22:00:00Z"}
+        entry = {
+            "id": "MQ1",
+            "state": "AWAITING_CHECKS",
+            "position": 1,
+            "jump": False,
+            "enqueuedAt": "2026-11-23T22:00:00Z",
+        }
         c = Client(
             {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
             self._typed(),
@@ -103,7 +109,13 @@ class Queue(unittest.TestCase):
         self.assertEqual(len(c.calls), 2)
 
     def test_typed_dequeue_refusal_with_entry_still_queued_is_definite(self):
-        entry = {"id": "MQ1", "state": "QUEUED", "position": 1, "jump": False, "enqueuedAt": "2026-11-23T22:00:00Z"}
+        entry = {
+            "id": "MQ1",
+            "state": "QUEUED",
+            "position": 1,
+            "jump": False,
+            "enqueuedAt": "2026-11-23T22:00:00Z",
+        }
         c = Client(
             {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
             self._typed(),
