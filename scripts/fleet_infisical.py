@@ -2878,6 +2878,7 @@ def _token_from_file(home: Path, account: str) -> tuple[str, str]:
 
 # --------------------------------------------------------------------------- consumer bindings
 
+
 def consumer_binding(
     account: str,
     path: str,

@@ -776,9 +776,7 @@ class StandaloneReaderClosureTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as temporary,
             ):
                 root = Path(temporary)
-                account = (
-                    "fleet-work-backup-ro" if nested else "outbox-bridge-ro"
-                )
+                account = "fleet-work-backup-ro" if nested else "outbox-bridge-ro"
                 api = ScopedReadAPI(
                     {"WANTED": "public fixture"},
                     project=str(uuid.uuid4()),

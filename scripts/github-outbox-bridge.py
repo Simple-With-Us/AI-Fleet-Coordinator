@@ -78,6 +78,7 @@ TOKEN_ACCOUNT = "outbox-bridge-ro"
 class BindingRefused(RuntimeError):
     """This bridge's own scoped token is not usable:  the message names the account and the refusal."""
 
+
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -555,7 +556,8 @@ def _own_token(client, folder, project):
     except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
         detail = getattr(exc, "message", "") or type(exc).__name__
         raise BindingRefused(
-            "the %s scoped token for %s could not be resolved (%s)" % (TOKEN_ACCOUNT, folder, detail)
+            "the %s scoped token for %s could not be resolved (%s)"
+            % (TOKEN_ACCOUNT, folder, detail)
         ) from None
     return token
 

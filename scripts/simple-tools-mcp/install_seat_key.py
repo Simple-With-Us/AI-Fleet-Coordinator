@@ -69,6 +69,8 @@ TOKEN_ACCOUNTS = {
 
 class BindingRefused(Exception):
     """The consumer's own scoped token is not usable:  the message names the account and the refusal."""
+
+
 REALM = "https://simplewithus.zulipchat.com"
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
 MEMBER_ROLE = 400

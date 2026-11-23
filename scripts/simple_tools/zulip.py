@@ -649,9 +649,7 @@ def _scoped_binding(scoped: Mapping[str, str], path: str, project: str | None = 
         raise FI.SecretsError(f"service-token-required: no scoped token covers {path}")
     if project is None:
         project = _project_scope(scoped, FI.home_dir(scoped))
-    token, _source = FI.consumer_binding(
-        account, path, scoped, project, home=FI.home_dir(scoped)
-    )
+    token, _source = FI.consumer_binding(account, path, scoped, project, home=FI.home_dir(scoped))
     return token
 
 
