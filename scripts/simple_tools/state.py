@@ -163,7 +163,14 @@ def _as_int(value: Any) -> int | None:
 
 
 def _state_component(value: str, name: str) -> str:
-    if not isinstance(value, str) or not value or value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise ValueError("invalid state " + name)
     return value
 
@@ -311,7 +318,9 @@ class State:
                         except BlockingIOError:
                             remaining = deadline - time.monotonic()
                             if remaining <= 0:
-                                raise PostReceiptPending("session publication receipt is still pending")
+                                raise PostReceiptPending(
+                                    "session publication receipt is still pending"
+                                )
                             time.sleep(min(0.01, remaining))
                 locked = True
                 held.add(key)
