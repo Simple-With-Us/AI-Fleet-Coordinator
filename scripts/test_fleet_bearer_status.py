@@ -32,6 +32,11 @@ DOC_BAD = {
     ],
 }
 
+DIAG0 = [
+    {"kind": "mcp", "reason": "mcp_http_401", "count": 288, "ts": 1},
+    {"kind": "gr_assert", "reason": "x_refused", "count": 9, "ts": 1},
+]
+
 
 class T(unittest.TestCase):
     def setUp(self):
@@ -63,8 +68,7 @@ class T(unittest.TestCase):
         self.go(DOC_BAD, 1000)
         keys = [x for _, x in self.sent]
         self.assertTrue(any("ZC: credentials_missing (missing ZC_ZULIP_KEY)" in k for k in keys))
-        self.assertTrue(any("401" in k for k in keys))
-        self.assertTrue(any("relay refusals" in k for k in keys))
+        self.assertFalse(any("401" in k for k in keys))  # first poll: diagnostics only set the baseline
         self.go({**DOC_BAD, "diagnostics": []}, 1300)  # same problem, no new growth
         alarms_before = len([1 for t, _ in self.sent if "alarm" in t])
         self.go({**DOC_BAD, "diagnostics": []}, 1400)
@@ -78,6 +82,23 @@ class T(unittest.TestCase):
         with open(self.args.write) as f:
             self.assertEqual(json.load(f)["alarms"], [])
         self.assertEqual(oct(os.stat(self.args.write).st_mode & 0o777), "0o600")
+
+    def test_first_poll_baselines_and_only_growth_alarms(self):
+        self.go({"rows": [], "diagnostics": DIAG0}, 10)
+        self.assertEqual(self.sent, [])  # lifetime counts are history, not an alarm
+        self.go({"rows": [], "diagnostics": DIAG0}, 400)
+        self.assertEqual(self.sent, [])
+        grown = [{**DIAG0[0], "count": 291}, {**DIAG0[1], "count": 12}]
+        out = self.go({"rows": [], "diagnostics": grown}, 800)
+        keys = sorted(a["key"] for a in out["alarms"])
+        self.assertEqual(keys, ["delta:mcp_http_401", "delta:relay_refusal"])
+        self.assertTrue(any("3 new /mcp 401" in x for _, x in self.sent))
+        self.assertTrue(any("3 new relay refusals" in x for _, x in self.sent))
+        out = self.go({"rows": [], "diagnostics": grown}, 1200)  # no further growth: recovers
+        self.assertEqual(out["alarms"], [])
+        reset = [{**DIAG0[0], "count": 2}]
+        out = self.go({"rows": [], "diagnostics": reset}, 1600)  # evicted row began again: counts in full
+        self.assertTrue(any("2 new /mcp 401" in x for _, x in self.sent))
 
     def test_no_login_and_refused_login_alarm_and_keep_identity_alarms(self):
         out = self.go(None, 10, token=None)

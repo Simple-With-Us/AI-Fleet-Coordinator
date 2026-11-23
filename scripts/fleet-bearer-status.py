@@ -81,37 +81,42 @@ def row_summary(r):
     }
 
 
-def desired_alarms(doc, last_ts):
-    """(alarms {key: summary}, newest diagnostic ts) from one API document and the newest ts already seen."""
+def desired_alarms(doc, last_counts):
+    """(alarms {key: summary}, new counts) from one API document and the per-row counts seen on the last poll.
+
+    A diagnostic row is an aggregate:  its `count` is the lifetime total for (kind, reason, seat) and its `ts` is the
+    last occurrence, so growth is the difference from the count seen last time.  `last_counts` None means the first
+    poll:  it only records the baseline, so history never alarms.  A count below the stored one (the row was evicted
+    and began again) counts in full.  Relay refusals are the git relay's own check rows (kinds gr_bearer, gr_assert)."""
     alarms = {}
     for r in doc.get("rows", []):
         p = r.get("problem")
         if p and p != "ok":
-            miss = (
-                (r.get("missingRecords") or {}).get("names")
-                if isinstance(r.get("missingRecords"), dict)
-                else None
-            )
+            miss = (r.get("missingRecords") or {}).get("names") if isinstance(r.get("missingRecords"), dict) else None
             extra = f" (missing {', '.join(miss)})" if miss else ""
             alarms[f"problem:{r.get('identity')}:{p}"] = f"{r.get('identity')}: {p}{extra}"
-    newest = last_ts
+    counts = {}
     n401 = nref = 0
     for d in doc.get("diagnostics") or []:
-        ts = d.get("ts")
-        if not isinstance(ts, (int, float)) or ts <= last_ts:
+        c = d.get("count")
+        if not isinstance(c, int) or c < 0:
             continue
-        newest = max(newest, ts)
-        reason = str(d.get("reason") or "")
-        c = d.get("count") if isinstance(d.get("count"), int) else 1
+        kind, reason = str(d.get("kind") or ""), str(d.get("reason") or "")
+        key = f"{kind}|{reason}|{d.get('seat') or ''}"
+        counts[key] = c
+        if last_counts is None:
+            continue
+        prev = last_counts.get(key, 0)
+        grew = c - prev if c >= prev else c
         if reason == "mcp_http_401":
-            n401 += c
-        elif "refus" in reason or reason.startswith("relay_"):
-            nref += c
+            n401 += grew
+        elif kind in ("gr_bearer", "gr_assert"):
+            nref += grew
     if n401:
         alarms["delta:mcp_http_401"] = f"{n401} new /mcp 401 responses since the last poll"
     if nref:
         alarms["delta:relay_refusal"] = f"{nref} new relay refusals since the last poll"
-    return alarms, newest
+    return alarms, counts
 
 
 def reconcile(state, alarms, now):
@@ -191,9 +196,10 @@ def run(args, now=None, token_fn=access_token, fetch_fn=fetch, notify_fn=notify_
             error = "unreachable"
             alarms["access:status_unreachable"] = "The bearer status API could not be read"
     if doc is not None:
-        found, newest = desired_alarms(doc, state.get("lastDiagTs", 0))
+        found, counts = desired_alarms(doc, state.get("diagCounts"))
         alarms.update(found)
-        state["lastDiagTs"] = newest
+        if doc.get("diagnostics") is not None:
+            state["diagCounts"] = counts
     elif state.get("active"):
         # An unreadable poll must not clear identity alarms:  carry them over.
         for k, v in state["active"].items():
