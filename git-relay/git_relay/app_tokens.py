@@ -44,6 +44,7 @@ MINT_PERMISSION_CEILING = (
     "organization_codespaces_secrets",
     "organization_actions_variables",
     "organization_hooks",
+    "environments",
     "repository_hooks",
     "administration",
     "statuses",
