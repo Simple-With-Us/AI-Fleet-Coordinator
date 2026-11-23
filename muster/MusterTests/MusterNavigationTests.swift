@@ -29,9 +29,9 @@ final class MusterNavigationTests: XCTestCase {
     func test_sidebar_names_every_place_once() {
         let named = [MusterDestination.overview]
             + MusterDestination.sidebarPlaces.flatMap { MusterDestination.listed(under: $0) }
-        XCTAssertEqual(named.count, 17)
+        XCTAssertEqual(named.count, 18)
         XCTAssertEqual(Set(named), Set(MusterDestination.allCases))
-        XCTAssertEqual(MusterDestination.allCases.count, 17)
+        XCTAssertEqual(MusterDestination.allCases.count, 18)
     }
 
     /// The rule, stated per panel:  where each panel's data and actions live.  The sidebar
