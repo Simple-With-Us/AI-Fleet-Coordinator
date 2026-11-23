@@ -19,6 +19,44 @@ class StateTests(unittest.TestCase):
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
         self.root = self.tmp / "root"
 
+    def test_state_components_refuse_path_escape(self):
+        for value in ("", ".", "..", "../outside", "a/b", "a\\b", "a\x00b"):
+            for seat, tag in ((value, "session"), ("CLAUDE", value)):
+                with self.subTest(seat=seat, tag=tag), self.assertRaises(ValueError):
+                    S.State(self.root, seat, tag)
+        self.assertFalse(self.root.exists())
+
+    def test_post_guard_pins_directory_before_root_swap(self):
+        from unittest import mock
+        self.root.mkdir()
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        original_open = S.os.open
+        swapped = False
+        def race_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            fd = original_open(path, flags, *args, **kwargs)
+            if path == self.root.name and kwargs.get("dir_fd") is not None and not swapped:
+                self.root.rename(self.tmp / "pinned-root")
+                self.root.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return fd
+        with mock.patch.object(S.os, "open", race_open):
+            with S.State(self.root, "CLAUDE", "session").stream_post_guard():
+                pass
+        self.assertTrue(swapped)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertTrue((self.tmp / "pinned-root/CLAUDE/session/stream-post.lock").exists())
+
+    def test_post_guard_allows_parent_alias_not_store_symlink(self):
+        parent = self.tmp / "actual-parent"
+        parent.mkdir()
+        alias = self.tmp / "alias-parent"
+        alias.symlink_to(parent, target_is_directory=True)
+        with S.State(alias / "root", "CLAUDE", "session").stream_post_guard():
+            pass
+        self.assertTrue((parent / "root/CLAUDE/session/stream-post.lock").exists())
+
     def mode(self, path: Path) -> int:
         return stat.S_IMODE(os.stat(path).st_mode)
 

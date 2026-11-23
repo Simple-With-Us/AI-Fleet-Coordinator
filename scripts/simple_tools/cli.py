@@ -78,7 +78,15 @@ __all__ = ["Runtime", "build_parser", "format_time", "main"]
 
 
 class ReceiptDeferred(UsageError):
-    """Ownership is temporarily unknown; retry this batch without advancing it."""
+    """Ownership is temporarily unknown; retry this batch without advancing it.
+
+    wait/listen retain and retry their pending batch. Synchronous read/dm-read
+    fail closed without advancing the fetched batch cursor. Filtering can defer
+    before any output, but direct formatting/include-self paths may already have
+    emitted earlier messages; retrying the read can repeat those messages.
+    Retry once the in-flight post has completed; do not infer sibling ownership
+    or retry an uncertain post from this read refusal.
+    """
 
 
 RESOLVED_PREFIX = "\u2714 "  # the check mark Zulip itself uses for resolved topics

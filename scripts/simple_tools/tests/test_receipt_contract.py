@@ -198,3 +198,25 @@ class ReceiptContractTests(unittest.TestCase):
                     self.assertIs(output[0]["sibling"], True)
                 else:
                     self.assertIn("(sibling)", output[0])
+
+    def test_sync_read_and_dm_read_defer_without_output_or_cursor_advance(self):
+        for direct in (False, True):
+            with self.subTest(direct=direct):
+                agent = object.__new__(cli.Agent)
+                agent.state = mock.Mock()
+                agent.state.cursor.return_value = 41
+                @contextlib.contextmanager
+                def pending():
+                    raise PostReceiptPending("fixture pending")
+                    yield
+                agent.state.stream_post_guard = pending
+                agent.creds = SimpleNamespace(email="fixture@example.invalid")
+                agent.fetch = mock.Mock(return_value=[{"id":42, "sender_email":agent.creds.email}])
+                agent.emit = mock.Mock()
+                args = SimpleNamespace(channel="channel", topic="topic", new=True,
+                    since=None, limit=20, include_self=False, exclude_self=True, with_=[])
+                with mock.patch.object(cli, "_dm_with_ids", return_value=[1]):
+                    with self.assertRaises(cli.ReceiptDeferred):
+                        (cli.cmd_dm_read if direct else cli.cmd_read)(agent, args)
+                agent.emit.assert_not_called()
+                agent.state.advance_cursor.assert_not_called()
