@@ -44,6 +44,85 @@ class Queue(unittest.TestCase):
                     a, {"repo": REPO, "number": 1, "expected_sha": SHA, "jump": True}, REPO
                 )
 
+    # An UNTYPED GraphQL error may follow a partial mutation, so it holds the key as unknown (below).  A TYPED
+    # refusal (every error one of FORBIDDEN, NOT_FOUND, UNPROCESSABLE) plus a read-back is a settled outcome:
+    # without this a seat whose first enqueue GitHub declined could never retry, because the idempotency ledger
+    # refused every identical replay as "unknown" and the call never reached GitHub again.
+    def _typed(self, kind="UNPROCESSABLE"):
+        return {"data": None, "errors": [{"type": kind, "message": "declined"}]}
+
+    @staticmethod
+    def _readback(entry):
+        return {"data": {"repository": {"pullRequest": {"id": "PR1", "mergeQueueEntry": entry}}}}
+
+    def test_typed_refusal_with_no_entry_is_a_definite_refusal(self):
+        for kind in ("UNPROCESSABLE", "FORBIDDEN", "NOT_FOUND"):
+            c = Client(
+                {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
+                self._typed(kind),
+                self._readback(None),
+            )
+            with self.assertRaises(Refused):
+                self.handle(c, "wf_merge_queue_enqueue").run(
+                    "wf_merge_queue_enqueue", {"repo": REPO, "number": 1, "expected_sha": SHA}
+                )
+            self.assertEqual(len(c.calls), 3)
+
+    def test_typed_refusal_with_entry_present_is_success(self):
+        entry = {"id": "MQ1", "state": "AWAITING_CHECKS", "position": 1, "jump": False, "enqueuedAt": "2026-11-23T22:00:00Z"}
+        c = Client(
+            {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
+            self._typed(),
+            self._readback(entry),
+        )
+        got = self.handle(c, "wf_merge_queue_enqueue").run(
+            "wf_merge_queue_enqueue", {"repo": REPO, "number": 1, "expected_sha": SHA}
+        )
+        self.assertEqual(got["entry"], {"id": "MQ1", "pull_request_id": "PR1"})
+
+    def test_typed_refusal_with_unreadable_readback_stays_unknown(self):
+        c = Client(
+            {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
+            self._typed(),
+            {"data": {"repository": {"pullRequest": {"id": "PR1"}}}},
+        )
+        with self.assertRaises(RelayGitHubError):
+            self.handle(c, "wf_merge_queue_enqueue").run(
+                "wf_merge_queue_enqueue", {"repo": REPO, "number": 1, "expected_sha": SHA}
+            )
+
+    def test_mixed_typed_errors_stay_unknown(self):
+        c = Client(
+            {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
+            {"data": None, "errors": [{"type": "UNPROCESSABLE"}, {"type": "FORBIDDEN"}]},
+        )
+        with self.assertRaises(RelayGitHubError):
+            self.handle(c, "wf_merge_queue_enqueue").run(
+                "wf_merge_queue_enqueue", {"repo": REPO, "number": 1, "expected_sha": SHA}
+            )
+        self.assertEqual(len(c.calls), 2)
+
+    def test_typed_dequeue_refusal_with_entry_still_queued_is_definite(self):
+        entry = {"id": "MQ1", "state": "QUEUED", "position": 1, "jump": False, "enqueuedAt": "2026-11-23T22:00:00Z"}
+        c = Client(
+            {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
+            self._typed(),
+            self._readback(entry),
+        )
+        with self.assertRaises(Refused):
+            self.handle(c, "wf_merge_queue_dequeue").run(
+                "wf_merge_queue_dequeue", {"repo": REPO, "number": 1, "expected_sha": SHA}
+            )
+        c = Client(
+            {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
+            self._typed(),
+            self._readback(None),
+        )
+        with self.assertRaises(RelayGitHubError):
+            self.handle(c, "wf_merge_queue_dequeue").run(
+                "wf_merge_queue_dequeue", {"repo": REPO, "number": 1, "expected_sha": SHA}
+            )
+
     def test_graphql_partial_errors_hold_unknown(self):
         c = Client(
             {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
