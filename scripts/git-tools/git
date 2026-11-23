@@ -2386,11 +2386,11 @@ def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str,
 PUSH_MAX_COMMITS = 100  # one push
 PUSH_DEADLINE_S = 1800  # the whole push, in place of OVERALL_DEADLINE_S
 PUSH_TEXT_BYTES = 40000  # gr_wf_git_tree_create:  text per call (workflow_verbs.py MAX_WORKFLOW_TEXT)
-PUSH_LARGE_TEXT_BYTES = 100000  # with allow_large_text exactly true (MAX_WORKFLOW_TEXT_LARGE):  one file's ceiling
+PUSH_LARGE_TEXT_BYTES = 716800  # with allow_large_text exactly true (MAX_WORKFLOW_TEXT_LARGE):  one file's ceiling
 PUSH_REF_BLOB_BYTES = 700 * 1024  # an existing blob named by sha (MAX_REF_BLOB_RAW)
 PUSH_REF_TOTAL_BYTES = 4 * 1024 * 1024  # all blobs named by sha in one call (MAX_FILES_RAW)
 PUSH_TREE_FILES = 20  # files in one call (MAX_FILES)
-PUSH_TREE_WIRE_BYTES = 200000  # serialized text in one call, under the 245760-byte request allowance
+PUSH_TREE_WIRE_BYTES = 5 * 1024 * 1024  # serialized text in one call, under the 6 MiB request allowance
 PUSH_MESSAGE_BYTES = 32768
 _PUSH_BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 _PUSH_REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")

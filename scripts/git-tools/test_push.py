@@ -166,7 +166,7 @@ class FakeRelay:
     def t_git_tree_create(self, args):
         files = args["files"]
         texts = [f["text"] for f in files if "text" in f]
-        cap = 100000 if args.get("allow_large_text") is True else 40000
+        cap = 716800 if args.get("allow_large_text") is True else 40000
         if not 1 <= len(files) <= 20 or sum(len(t.encode()) for t in texts) > cap:
             self.refuse("gr_wf_git_tree_create", reason="bad_request_content_too_large")
         if any(
@@ -1330,7 +1330,7 @@ class Identity(PushCase):
             "git update-ref refs/heads/BRANCH NEW_SHA OLD_SHA",
         ):
             self.assertTrue(phrase in text, f"the help does not say: {phrase}")
-        self.assertEqual(G.PUSH_LARGE_TEXT_BYTES, 100000)
+        self.assertEqual(G.PUSH_LARGE_TEXT_BYTES, 716800)
 
     def test_the_repository_comes_from_the_remote_url_or_the_flag(self):
         for url in (
