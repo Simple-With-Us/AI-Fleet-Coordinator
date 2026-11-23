@@ -2,8 +2,8 @@ import base64
 import os
 import unittest
 
-from git_relay.secret_verbs import SCOPES, SECRET_SPECS
 from git_relay.secret_scan import scan_args
+from git_relay.secret_verbs import SCOPES, SECRET_SPECS
 from git_relay.server import _REAPPLY_STATE_ACTIONS
 from git_relay.workflow_verbs import SPECS, Refused, WorkflowVerbs
 
@@ -91,11 +91,20 @@ class SecretVerbs(unittest.TestCase):
             {
                 "total_count": 1,
                 "secrets": [
-                    {"name": "A", "created_at": "x", "updated_at": "y", "visibility": "all", "value": "leak"}
+                    {
+                        "name": "A",
+                        "created_at": "x",
+                        "updated_at": "y",
+                        "visibility": "all",
+                        "value": "leak",
+                    }
                 ],
             },
         )
-        self.assertEqual(out["secrets"], [{"name": "A", "created_at": "x", "updated_at": "y", "visibility": "all"}])
+        self.assertEqual(
+            out["secrets"],
+            [{"name": "A", "created_at": "x", "updated_at": "y", "visibility": "all"}],
+        )
 
     def test_key_and_delete(self):
         c, out = run("wf_secret_key_repo_actions", {"repo": REPO}, {"key_id": "12", "key": "QUJD"})
@@ -105,5 +114,7 @@ class SecretVerbs(unittest.TestCase):
 
     def test_org_variable_upsert(self):
         c, out = run("wf_org_variable_set", {"repo": REPO, "name": "UM_MODE", "value": "on"})
-        self.assertEqual(c.calls[0][0:2], ("PATCH", "/orgs/Simple-With-Us/actions/variables/UM_MODE"))
+        self.assertEqual(
+            c.calls[0][0:2], ("PATCH", "/orgs/Simple-With-Us/actions/variables/UM_MODE")
+        )
         self.assertEqual(out["name"], "UM_MODE")

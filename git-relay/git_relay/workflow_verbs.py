@@ -365,7 +365,7 @@ SPECS = {
     "wf_file_patch": ({"contents": "write"}, True),
     "wf_merge_guarded": ({"contents": "write", "pull_requests": "write"}, True),
 }
-from .secret_verbs import SECRET_SPECS, SecretVerbsMixin  # noqa: E402
+from .secret_verbs import SECRET_SPECS, SecretVerbsMixin
 
 SPECS.update(SECRET_SPECS)
 ACTIONS = tuple(SPECS)
