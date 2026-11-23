@@ -74,6 +74,8 @@ TOKEN_CACHE_TTL = 600.0
 # The reader's own resolved grant, held for the same lifetime as the token cache,  so one
 # credential resolution serves both the read and the environment check.
 _binding_cache: dict[tuple[str, str, str, str], tuple[float, str]] = {}
+# The cache never holds more than this many routes,  so a long-lived process stays bounded.
+BINDING_CACHE_MAX = 128
 FETCH_TIMEOUT_S = 60.0  # one scoped direct read: token metadata and the named secret
 KEY_ABSENT_EXIT = 3  # the shared reader's definite missing-key outcome
 TIMEOUT_S = 120.0
@@ -256,6 +258,10 @@ def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str 
         hashlib.sha256(bound.encode("utf-8")).hexdigest(),
     )
     now = time.monotonic()
+    # A long-lived process prunes what expired and caps what is left,  so a rotation
+    # never grows the cache without bound.
+    for stale in [k for k, (at, _token) in _binding_cache.items() if now - at >= TOKEN_CACHE_TTL]:
+        del _binding_cache[stale]
     held = _binding_cache.get(key)
     if held is not None and now - held[0] < TOKEN_CACHE_TTL:
         return held[1]
@@ -271,6 +277,9 @@ def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str 
     except (FI.SecretsError, OSError):
         return None
     if token:
+        if key not in _binding_cache and len(_binding_cache) >= BINDING_CACHE_MAX:
+            oldest = min(_binding_cache.items(), key=lambda item: item[1][0])[0]
+            del _binding_cache[oldest]
         _binding_cache[key] = (now, token)
     return token
 

@@ -471,7 +471,8 @@ Never `echo` the value, never put it in argv, and never write it to a log or a t
 `zulip-provision-ro` (`/zulip_operator`), `zulip-linkifiers-operator-ro` (`/zulip_operator`),
 `zulip-linkifiers-zulip-ro` (`/zulip`), `zulip-linkifiers-root-ro` (`/`),
 `outbox-bridge-ro` (`/zulip`), `fleet-work-backup-ro` (`/`), `install-seat-key-ro` (`/`),
-`fleetlink-ro` (AI Fleet Coordinator, `/fleetlink`), `fleet-rag-fleetops-ro` (`/global-api-keys`)
+`install-seat-key-zulip-ro` (`/zulip`), `fleetlink-ro` (AI Fleet Coordinator, `/fleetlink`),
+`fleet-rag-fleetops-ro` (`/global-api-keys`), `notes-client-ro` (AI Fleet Coordinator, `/`)
 and `notes-operator-ro` (AI Fleet Coordinator, `/operator`).  A consumer that reads a folder it
 does not name is refused, and the refusal names the account to provision.
 

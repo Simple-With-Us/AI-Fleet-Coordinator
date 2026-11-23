@@ -361,6 +361,23 @@ class CredentialTests(unittest.TestCase):
                 self.assertIn(L.TOKEN_ACCOUNTS["/zulip"], str(caught.exception))
                 self.assertNotIn("public fixture", str(caught.exception))
 
+    def test_a_partial_refusal_leaves_the_name_missing_and_not_the_account(self):
+        """One folder refuses and the other answers empty:  the name is missing.
+
+        The message then names the name the caller wanted,  not an account that did
+        answer,  so the operator is never sent to provision the wrong grant.
+        """
+        from fleet_knobs.tests._fake import ScopedReadAPI
+
+        with ScopedReadAPI({}, project=str(uuid.uuid4()), path="/") as api:
+            with self.real_reader(api, {L.TOKEN_ACCOUNTS["/"]: api.token}) as folders:
+                with self.assertRaises(SystemExit) as caught:
+                    L.credentials(None)
+                message = str(caught.exception)
+                self.assertIn("CODEX_ZULIP_EMAIL", message)
+                self.assertNotIn(L.TOKEN_ACCOUNTS["/zulip"], message)
+                self.assertNotIn("public fixture", message)
+
     def test_member_root_binding_retries_with_the_same_real_reader(self):
         from fleet_knobs.tests._fake import ScopedReadAPI
 
