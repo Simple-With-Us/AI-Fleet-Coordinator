@@ -64,7 +64,7 @@ import {
   sameOriginPost,
   safeEqual,
 } from "./policy.js";
-import { verifyAccessJwt } from "./access.js";
+import { verifyAccessJwt, parseServiceClientIds } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
@@ -1079,7 +1079,8 @@ async function serveApp(request, env, _ctx) {
 
   if (route !== "authorize" && route !== "admin") return notFound();
 
-  const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access);
+  const adminApiPath = route === "admin" && new URL(request.url).pathname.startsWith("/admin/api/");
+  const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access, { allowService: adminApiPath, serviceClientIds: parseServiceClientIds(env.ADMIN_API_SERVICE_CLIENT_IDS) });
   if (!who.ok) {
     // Name the variable, never its value:  an unprovisioned AUD or team domain
     // is an operator fix, and saying which one turns a mystery 403 into a
@@ -1103,7 +1104,8 @@ async function serveApp(request, env, _ctx) {
     if (request.method === "POST") return authorizePost(request, env, config, oauth, who.email);
     return textResponse("Method Not Allowed", 405, { Allow: "GET, POST" });
   }
-  return serveAdmin(request, env, config, oauth, who.email);
+  // A service principal has no email:  the actor recorded on its changes names the token, never a secret.
+  return serveAdmin(request, env, config, oauth, who.service ? `service-token:${who.serviceTokenId}` : who.email);
 }
 
 async function authorizeGet(request, env, config, oauth, email) {
