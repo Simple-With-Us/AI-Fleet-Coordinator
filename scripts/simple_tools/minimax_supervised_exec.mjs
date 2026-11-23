@@ -95,7 +95,7 @@ async function main() {
     if(createHash('sha256').update(bytes).digest('hex')!==hash)throw new Error('Pinned runtime file hash mismatch');
   }
   const pkg=JSON.parse(await readFile(join(root,'package.json'),'utf8'));
-  if(pkg.name!=='@minimax-ai/code'||pkg.version!=='0.7.4')throw new Error('Unsupported package version');
+  validatePinnedPackage(pkg);
   if(process.env.AFC_MM_CATALOG_SHAPE!=='1')throw new Error('Catalog observation must be explicitly enabled');
   const optionsInfo=await lstat(optionsPath);
   if(!optionsInfo.isFile()||optionsInfo.uid!==process.geteuid()||(optionsInfo.mode&0o077))throw new Error('Options must be private owner file');
@@ -109,6 +109,13 @@ async function main() {
   await runPinnedBoot({entry,options,load});
 }
 
+// Validate the standalone launcher's package boundary without a dependency on
+// the repository's optional JS packages. Real manifests contain extra fields.
+export function validatePinnedPackage(pkg) {
+  if(!pkg||typeof pkg!=='object'||Array.isArray(pkg)||pkg.name!=='@minimax-ai/code'||pkg.version!=='0.7.4')throw new Error('Unsupported package version');
+  return pkg;
+}
+
 // Mirror cli.js initialization before main/runExec imports. Main remains owner
 // of Node/proxy/CLI validation. Suppress only its final process.exit so guard
 // removal and caller cleanup run normally; do not suppress its exit code.
@@ -118,7 +125,7 @@ export async function runPinnedBoot({entry,options,load,processRef=process,super
   const environment=await load('chunks/chunk-CMWH3NZU.js');
   const argv=[processRef.execPath,entry,'exec'];
   const flags={session:'--session',cwd:'--cwd',model:'--model',permission:'--permission',maxSteps:'--max-steps',timeout:'--timeout',outputFormat:'--output-format',input:'--input'};
-  for(const [key,value] of Object.entries(options))argv.push(flags[key],String(value));
+  for(const [key,value] of Object.entries(options))argv.push(`${flags[key]}=${String(value)}`);
   const startup=environment.t(argv.slice(2),allow);
   const data=await load('chunks/data-dir-VLNTBIAQ.js');
   environment.r({dataDir:data.getTuiDataDirPath(),...(startup?{startupBuildEnvironment:startup}:{})});

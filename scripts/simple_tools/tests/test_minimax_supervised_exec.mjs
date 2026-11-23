@@ -77,7 +77,7 @@ test('stock boot ordering, parsed exec delegation and guard cleanup',async()=>{
     'chunks/chunk-CMWH3NZU.js':{t:argv=>(events.push(['startup',argv]),undefined),r:args=>events.push(['environment',args])},
     'chunks/data-dir-VLNTBIAQ.js':{getTuiDataDirPath:()=>'/same-data'},
     'chunks/chunk-DCFP5ZHZ.js':{h:async entry=>(events.push(['guard',entry]),{remove:()=>events.push('remove')})},
-    'chunks/main-G357CS7U.js':{runTuiCli:async args=>{events.push('main');assert.equal(args.allowStartupEnvironmentSelection,false);assert.deepEqual(args.processRef.argv,['/node','/p/cli.js','exec','--session','existing','--max-steps','16']);await args.runExec(undefined,parsed,'0.7.4');args.processRef.exit(0)}},
+    'chunks/main-G357CS7U.js':{runTuiCli:async args=>{events.push('main');assert.equal(args.allowStartupEnvironmentSelection,false);assert.deepEqual(args.processRef.argv,['/node','/p/cli.js','exec','--session=existing','--max-steps=16']);await args.runExec(undefined,parsed,'0.7.4');args.processRef.exit(0)}},
     'chunks/run-exec-command-UQB5WLPC.js':{runTuiExecCommand:()=>{}},
     'chunks/lifecycle-GP7HDNAT.js':{createTuiRuntime:()=>{},shutdownTuiRuntime:()=>{}}
   };
@@ -103,4 +103,24 @@ test('cancellation during slow creation closes returned runtime before admission
   const work=runSupervised({processRef:proc,prompt:'',options:{},createRuntime:()=>created,shutdownRuntime:async()=>events.push('close'),wait:async({signal})=>{if(signal.aborted)throw Error('cancel')},runExec:async(p,o,v,d)=>{await d.createRuntime();events.push('admit')}});
   proc.emit('SIGTERM');finish(runtime);await assert.rejects(work);
   assert.deepEqual(events,['close']);
+});
+
+
+test('package boundary rejects wrong shapes and accepts real extra manifest fields',async()=>{
+  const {validatePinnedPackage}=await import('../minimax_supervised_exec.mjs');
+  for(const pkg of [null,[],true,1,'package',{}, {name:'@minimax-ai/code',version:0.74},{name:'other',version:'0.7.4'}])assert.throws(()=>validatePinnedPackage(pkg),/Unsupported package version/);
+  const pkg={name:'@minimax-ai/code',version:'0.7.4',type:'module',dependencies:{},scripts:{postinstall:'untrusted data, not executed'}};
+  assert.equal(validatePinnedPackage(pkg),pkg);
+});
+test('leading-hyphen and spaced values stay in a single named argv token',async()=>{
+  const {runPinnedBoot}=await import('../minimax_supervised_exec.mjs');let observed;
+  const modules={
+    'chunks/chunk-334CV6RF.js':{A:()=>'',B:()=>false},
+    'chunks/chunk-CMWH3NZU.js':{t:argv=>(observed=argv,undefined),r:()=>{}},
+    'chunks/data-dir-VLNTBIAQ.js':{getTuiDataDirPath:()=>'/same-data'},
+    'chunks/chunk-DCFP5ZHZ.js':{h:async()=>({remove:()=>{}})},
+    'chunks/main-G357CS7U.js':{runTuiCli:async()=>{}}
+  };
+  await runPinnedBoot({entry:'/p/cli.js',options:{model:'--permission=full',cwd:'/path with spaces',input:'-'},load:async name=>modules[name],processRef:{execPath:'/node'}});
+  assert.deepEqual(observed,['exec','--model=--permission=full','--cwd=/path with spaces','--input=-']);
 });
