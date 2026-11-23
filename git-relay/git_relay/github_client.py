@@ -333,7 +333,7 @@ MAX_RESPONSE_DEPTH = 128
 MAX_RESPONSE_NODES = 100_000
 
 
-def _reject_surrogates(node):
+def _reject_surrogates(node, *, max_nodes=MAX_RESPONSE_NODES):
     """Validate decoded bodies with runtime-independent work/depth limits.
 
     Parser recursion behavior differs across Python versions. Keep outcome status
@@ -350,7 +350,7 @@ def _reject_surrogates(node):
             stack.pop()
             continue
         nodes += 1
-        if nodes > MAX_RESPONSE_NODES or depth > MAX_RESPONSE_DEPTH:
+        if nodes > max_nodes or depth > MAX_RESPONSE_DEPTH:
             raise RelayGitHubError(
                 0, "github response exceeded structure bound", code="response_too_large"
             )
@@ -539,7 +539,13 @@ class GitHubClient:
             # loosening Python's safety limits.  A 200 with a body the relay
             # cannot read means the write may have landed:  outcome UNKNOWN.
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
-        _reject_surrogates(data)
+        # Immutable recursive trees already have a dedicated finite byte budget.
+        # Count keys and values within that budget without imposing the smaller
+        # generic node cap on otherwise supported tree proofs. No write or other
+        # GET route receives this allowance; depth and Unicode checks are unchanged.
+        route, _, query = path.partition("?")
+        recursive_tree = method == "GET" and query == "recursive=1" and _RECURSIVE_TREE_ROUTE.fullmatch(route)
+        _reject_surrogates(data, max_nodes=MAX_RECURSIVE_TREE_BODY if recursive_tree else MAX_RESPONSE_NODES)
         return data
 
     def _read_until(self, resp, size: int, deadline) -> bytes:

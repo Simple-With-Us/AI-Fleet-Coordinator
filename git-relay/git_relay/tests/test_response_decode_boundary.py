@@ -1,5 +1,6 @@
 """Decode failures after an upstream write remain unknown, never local refusal."""
 
+import json
 import unittest
 
 from git_relay.github_client import (
@@ -97,6 +98,32 @@ class ResponseDecodeBoundaryTests(unittest.TestCase):
 
     def test_empty_completion_still_works(self):
         self.assertEqual(self.call(b""), {})
+
+    def test_recursive_tree_keeps_supported_byte_budget_without_losing_validation(self):
+        payload = {"sha": "a" * 40, "tree": [
+            {"path": f"p{i}", "mode": "100644", "type": "blob", "sha": "b" * 40,
+             "size": 1, "url": "https://api.github.com/repos/o/r/git/blobs/" + "b" * 40}
+            for i in range(8000)], "truncated": False}
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        self.assertLess(len(raw), 2 * 1024 * 1024)
+        path = "/repos/o/r/git/trees/" + "a" * 40 + "?recursive=1"
+        client = GitHubClient("fixture", opener=lambda *a, **k: Response(raw))
+        self.assertEqual(client._call("GET", path), payload)
+        for method, route in [("POST", path), ("GET", path.replace("recursive=1", "per_page=100")),
+                              ("GET", path.replace("a" * 40, "main"))]:
+            with self.subTest(method=method, route=route):
+                with self.assertRaises(RelayGitHubError):
+                    client._call(method, route)
+        # Depth and Unicode remain checked even with the finite tree allowance.
+        with self.assertRaises(RelayGitHubError):
+            _reject_surrogates({"bad": chr(0xD800)}, max_nodes=2 * 1024 * 1024)
+        deep = 0
+        for _ in range(MAX_RESPONSE_DEPTH + 1):
+            deep = [deep]
+        with self.assertRaises(RelayGitHubError):
+            _reject_surrogates(deep, max_nodes=2 * 1024 * 1024)
+        with self.assertRaises(RelayGitHubError):
+            _reject_surrogates([0] * (2 * 1024 * 1024), max_nodes=2 * 1024 * 1024)
 
 
 if __name__ == "__main__":
