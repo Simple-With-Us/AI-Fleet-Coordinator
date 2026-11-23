@@ -16,28 +16,47 @@ import urllib.request
 
 
 def native_origin_claims(env, identity, meta=None):
-    """Codex-only same-seat claims from its existing private local note.
+    """Same-seat claims from runtime-owned per-call context and a private local note.
 
-    No process launch, registry call, signing key or post-open mutation.
+    No startup-session fallback, registry call, signing key or post-open mutation.
     Operator independently binds the protected relay receipt before effects.
     """
-    if identity != "CODEX":
-        return {}
-    # A shared MCP process has no authoritative startup thread. Use only this call.
     if not isinstance(meta, dict):
         return {}
-    candidates = []
-    if "threadId" in meta:
-        candidates.append(meta["threadId"])
-    turn = meta.get("x-codex-turn-metadata")
-    if isinstance(turn, dict) and "thread_id" in turn:
-        candidates.append(turn["thread_id"])
-    if not candidates or any(not isinstance(x, str) for x in candidates):
-        return {}
-    sid = candidates[0]
-    if any(x != sid for x in candidates):
-        return {}
-    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sid):
+    if identity == "CODEX":
+        platform = "codex"
+        candidates = []
+        if "threadId" in meta:
+            candidates.append(meta["threadId"])
+        turn = meta.get("x-codex-turn-metadata")
+        if isinstance(turn, dict) and "thread_id" in turn:
+            candidates.append(turn["thread_id"])
+        if not candidates or any(not isinstance(x, str) for x in candidates):
+            return {}
+        sid = candidates[0]
+        if any(x != sid for x in candidates):
+            return {}
+        if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sid):
+            return {}
+    elif identity == "MM":
+        platform = "minimax"
+        context = meta.get("com.simplewithus/native-origin/1")
+        if (
+            not isinstance(context, dict)
+            or set(context) != {"version", "platform", "session_id", "turn_id", "tool_call_id"}
+            or type(context.get("version")) is not int
+            or context["version"] != 1
+            or context.get("platform") != platform
+            or not isinstance(context.get("session_id"), str)
+            or not re.fullmatch(r"mvs_[0-9a-f]{32}", context["session_id"])
+            or any(not isinstance(context.get(name), str) or not context[name].strip()
+                   or len(context[name]) > 256 for name in ("turn_id", "tool_call_id"))
+            or "threadId" in meta
+            or "x-codex-turn-metadata" in meta
+        ):
+            return {}
+        sid = context["session_id"]
+    else:
         return {}
     home = env.get("HOME", "")
     if not os.path.isabs(home):
@@ -45,7 +64,7 @@ def native_origin_claims(env, identity, meta=None):
     fd = None
     try:
         fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        for part in (".simple-tools", "CODEX", "letters"):
+        for part in (".simple-tools", identity, "letters"):
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = child
@@ -70,7 +89,7 @@ def native_origin_claims(env, identity, meta=None):
         if (
             not isinstance(note, dict)
             or note.get("session_id") != sid
-            or note.get("platform") != "codex"
+            or note.get("platform") != platform
             or note.get("state") != "open"
             or not re.fullmatch(r"[A-Z]{2}", str(note.get("label") or ""))
             or type(note.get("generation")) is not int
