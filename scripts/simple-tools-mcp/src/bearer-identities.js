@@ -76,3 +76,14 @@ export async function resolveBearerSeatCredentials(env, config, identity) {
   const email = config.botEmails[identity];
   return key && email ? { key, email } : null;
 }
+
+// The Infisical record names a seat's credentials come from, for /admin and the owner status API
+// to say what is missing.  Names only.  BF-BUILDER is retired and needs INFISICAL_MODE "required".
+export function seatCredentialRecordNames(identity) {
+  if (identity === "BF-BUILDER") return { names: ["BF_BUILDER_ZULIP_KEY", "BF_BUILDER_ZULIP_EMAIL"], note: "retired: refused unless INFISICAL_MODE is required" };
+  const row = Object.hasOwn(ADDITIONAL_BEARER_SEATS, identity) ? ADDITIONAL_BEARER_SEATS[identity] : null;
+  if (row) return { names: [`${row.prefix}_ZULIP_KEY`, `${row.prefix}_ZULIP_EMAIL`], note: null };
+  if (identity === "MA") return { names: ["MA_ZULIP_KEY", "MA_ZULIP_EMAIL"], note: null };
+  const names = Object.hasOwn(SEAT_SECRETS, identity) ? SEAT_SECRETS[identity] : null;
+  return names ? { names: [names.infisical.name], note: "bot email comes from the Worker config" } : { names: [], note: "no credential source declared" };
+}
