@@ -16,14 +16,14 @@ BASE = {
     "scripts/simple_tools/secretscan.py": "cb9256fdb92f10eb834ccfeee6a87c21c6b1f11c325d46c7704950cc5f9aa9d5",
 }
 INPUTS = {
-    "git": "6f7d2126ddd4d32b9d04e3051d72e162764d0c4d66c6359e4df1cbf51d8a35cd",
-    "catalog.json": "3325eb0a1971fa3fb0b1843d9cf1f89d48e7867279576eb89535983d236f31cc",
+    "git": "1f815ea1b36d3acab074e0e95706b6068e59c78de37581193e5daf79bf58db40",
+    "catalog.json": "dc23ca30cfbf1fe38fee1db86dd94cc4a70dc63be2d706d2abeacf22cdd4a285",
 }
 RESULTS = dict(
     BASE,
     **{
-        "scripts/git-tools/git": "9fd8feb31574c16ab9db2546ba47382debbd80bb950eb9092f0d7b1b075e9261",
-        "scripts/git-tools/catalog.json": "0f9e7722bffb44cfed4da9bb612829eea2ea06f30f42fc2e4ce8e1a5fe4e9d61",
+        "scripts/git-tools/git": "e32a1495d5124e4c47f18e7e42001a58f9cf4f852c3a02748a1c45b510afdd07",
+        "scripts/git-tools/catalog.json": "ff58292d779ce8f1738ece13f51c131c097fbddd8054d3287fcccc5009978be6",
     },
 )
 
