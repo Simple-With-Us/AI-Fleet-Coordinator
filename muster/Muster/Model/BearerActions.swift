@@ -148,7 +148,7 @@ struct AccessServiceToken: Equatable {
               info.st_uid == getuid(),
               let data = try? handle.readToEnd(),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let id = object["clientId"] as? String, Self.headerSafe(id),
+              let id = object["clientId"] as? String, Self.headerSafe(id), !id.contains(":"),
               let secret = object["clientSecret"] as? String, Self.headerSafe(secret) else { return nil }
         return AccessServiceToken(clientId: id, clientSecret: secret)
     }

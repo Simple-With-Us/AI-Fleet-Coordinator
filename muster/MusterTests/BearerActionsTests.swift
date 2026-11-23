@@ -107,6 +107,10 @@ final class AccessServiceTokenTests: XCTestCase {
         XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a","clientSecret":"b c"}"#, mode: 0o600)))
     }
 
+    func testIgnoresAClientIdThatCannotRoundTrip() throws {
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a:b","clientSecret":"c"}"#, mode: 0o600)))
+    }
+
     func testIgnoresALooseMissingOrIncompleteFile() throws {
         XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a","clientSecret":"b"}"#, mode: 0o644)))
         XCTAssertNil(AccessServiceToken.load(path: NSTemporaryDirectory() + "no-such-file.json"))
