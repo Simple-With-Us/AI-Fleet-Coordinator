@@ -140,6 +140,21 @@ class SourceTests(Fixture):
         self.assertTrue(policy.allowed_path("scripts/simple_tools/core.py"))
         self.assertNotIn("docs/private-fixture.md", bundle["files"])
 
+    def test_current_sender_receiver_count_budget_is_preserved(self):
+        actual = Path(__file__).with_name("fleet-cli-release.py")
+        policy = S.receiver_policy(actual.read_bytes())
+        self.assertEqual(S.MAX_FILES, 200)
+        self.assertEqual(policy.MAX_FILES, S.MAX_FILES)
+        root = actual.parent.parent
+        tracked = subprocess.check_output(
+            ["git", "-C", str(root), "ls-files", "-z"]
+        ).decode().split("\0")
+        selected = {path for path in tracked if path and policy.shipped_path(path)}
+        self.assertLessEqual(len(selected), S.MAX_FILES)
+        self.assertIn("scripts/simple_tools/operator_platform_feeds.py", selected)
+        self.assertIn("scripts/simple_tools/cursor_cloud_letters.py", selected)
+        self.assertNotIn("scripts/simple_tools/minimax_supervised_exec.mjs", selected)
+
     def test_repo_only_files_are_not_shipped(self):
         actual = Path(__file__).with_name("fleet-cli-release.py")
         if not actual.is_file():

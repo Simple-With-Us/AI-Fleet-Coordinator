@@ -51,7 +51,7 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
 # env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
-# simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# simple_tools/operator_platform_feeds.py (the shared Operator's external-platform data feeds).
 # The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
 # unit template stays repo-only under simple_tools/server/).
 # The 163rd is simple_tools/platform_letter_clutch.py (the Clutch session-letter adapter) and the 164th is
@@ -68,11 +68,10 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
 # The 173rd is simple_tools/opencode_wake.py (AFC-865, the OpenCode seat's wake delivery:  the one wake
 # router serves it like every other seat with a platform module).
-# From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
-# the canonical operator-settings modules reached 181 shipped files);
-# fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
-# MiniMax catalog observation adds the 191st shipped file. Keep the matching
-# sender/receiver count budget bounded, with room for small additive modules.
+# The current sender/receiver file-count budget is 200. AFC-859 adds the shared
+# operator_platform_feeds.py alongside cursor_cloud_letters.py during cutover;
+# retain the current budget rather than restoring its older proposed 191-file cap.
+# The sender and receiver must agree, and the actual supported tree must fit.
 MAX_FILES = 200
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
