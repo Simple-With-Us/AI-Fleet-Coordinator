@@ -76,6 +76,7 @@ from .zulip import (
 
 __all__ = ["Runtime", "build_parser", "format_time", "main"]
 
+
 class ReceiptDeferred(UsageError):
     """Ownership is temporarily unknown; retry this batch without advancing it."""
 
@@ -371,7 +372,11 @@ class Agent:
         """All consumers share the same bounded stream-post receipt fence."""
         if self.sent_by_this_bot(message):
             try:
-                guard = self.state.stream_post_guard() if receipt_timeout is None else self.state.stream_post_guard(timeout=receipt_timeout)
+                guard = (
+                    self.state.stream_post_guard()
+                    if receipt_timeout is None
+                    else self.state.stream_post_guard(timeout=receipt_timeout)
+                )
                 with guard:
                     return self._is_self_confirmed(message)
             except PostReceiptPending:
@@ -452,7 +457,9 @@ class Agent:
         except (I.UnknownSeat, I.SeatRegistryError):
             return seat, None
 
-    def message_json(self, message: Mapping[str, Any], *, sibling: bool | None = None) -> dict[str, Any]:
+    def message_json(
+        self, message: Mapping[str, Any], *, sibling: bool | None = None
+    ) -> dict[str, Any]:
         is_bot = self.sender_is_bot(message)
         seat, seat_app = self.sender_seat(message, is_bot)
         return {
@@ -584,10 +591,20 @@ class Delivery:
         self._recent = RecentIds()
         self._lock = threading.Lock()
 
-    def _is_self(self, message: Mapping[str, Any], live: bool, receipt_timeout: float | None = None,
-                 stop: threading.Event | None = None, deadline: float | None = None) -> bool:
+    def _is_self(
+        self,
+        message: Mapping[str, Any],
+        live: bool,
+        receipt_timeout: float | None = None,
+        stop: threading.Event | None = None,
+        deadline: float | None = None,
+    ) -> bool:
         agent = self.agent
-        own = agent.is_self(message) if receipt_timeout is None else agent.is_self(message, receipt_timeout=receipt_timeout)
+        own = (
+            agent.is_self(message)
+            if receipt_timeout is None
+            else agent.is_self(message, receipt_timeout=receipt_timeout)
+        )
         if own:
             return True
         if live and agent.sent_by_this_bot(message):
@@ -650,7 +667,11 @@ class Delivery:
                 if lock_wait is not None and receipt_deadline is not None:
                     lock_wait = min(lock_wait, max(0, receipt_deadline - time.monotonic()))
                 candidate = fresh and message_id not in self._recent
-                own = self._is_self(message, live, lock_wait, receipt_stop, receipt_deadline) if candidate else False
+                own = (
+                    self._is_self(message, live, lock_wait, receipt_stop, receipt_deadline)
+                    if candidate
+                    else False
+                )
                 show = candidate and (self.include_self or not own)
                 if receipt_stop is not None and receipt_stop.is_set():
                     break
@@ -662,7 +683,9 @@ class Delivery:
                     # Carry the ownership established for this exact message into
                     # formatting. Re-entering the fence here can race a new post
                     # and lose the bounded cancellation contract.
-                    self.agent.emit(message, sibling=self.agent.sent_by_this_bot(message) and not own)
+                    self.agent.emit(
+                        message, sibling=self.agent.sent_by_this_bot(message) and not own
+                    )
                     self._recent.add(message_id)
                 for scope in matched:
                     state.advance_cursor(*scope.cursor_args, message_id)
@@ -681,9 +704,14 @@ class Delivery:
 
 
 def deliver_with_receipt_retry(
-    delivery: Delivery, messages: Sequence[Mapping[str, Any]], scopes: Sequence[Scope],
-    *, assume: Scope | None = None, live: bool = False,
-    stop: threading.Event | None = None, deadline: float | None = None,
+    delivery: Delivery,
+    messages: Sequence[Mapping[str, Any]],
+    scopes: Sequence[Scope],
+    *,
+    assume: Scope | None = None,
+    live: bool = False,
+    stop: threading.Event | None = None,
+    deadline: float | None = None,
 ) -> int:
     """Retain the actual fetched/event batch until its ownership is known.
 
@@ -697,8 +725,15 @@ def deliver_with_receipt_retry(
             # A stop is observed within one short lock attempt; wait never starts
             # a lock wait longer than its remaining deadline.
             lock_wait = 0.1 if deadline is None else min(0.1, max(0, deadline - time.monotonic()))
-            delivery.deliver(messages, scopes, assume=assume, live=live, receipt_timeout=lock_wait,
-                             receipt_stop=stop, receipt_deadline=deadline)
+            delivery.deliver(
+                messages,
+                scopes,
+                assume=assume,
+                live=live,
+                receipt_timeout=lock_wait,
+                receipt_stop=stop,
+                receipt_deadline=deadline,
+            )
             break
         except ReceiptDeferred:
             delay = 0.1 if deadline is None else min(0.1, max(0, deadline - time.monotonic()))
@@ -742,7 +777,9 @@ def backfill_pages(
     while (stop is None or not stop.is_set()) and (deadline is None or time.monotonic() < deadline):
         before = agent.state.cursor(*scope.cursor_args)
         batch = baseline_or_backfill(agent, scope, delivery)
-        printed = deliver_with_receipt_retry(delivery, batch, scopes, assume=scope, stop=stop, deadline=deadline)
+        printed = deliver_with_receipt_retry(
+            delivery, batch, scopes, assume=scope, stop=stop, deadline=deadline
+        )
         total += printed
         if (until_printed and printed) or len(batch) < BACKFILL_LIMIT:
             break
@@ -2580,7 +2617,15 @@ def cmd_wait(agent: Agent, args: argparse.Namespace) -> int:
         while True:
             if agent.rt.stop is not None and agent.rt.stop.is_set():
                 return 0
-            if backfill_pages(agent, scope, delivery, [scope], until_printed=True, stop=agent.rt.stop, deadline=deadline):
+            if backfill_pages(
+                agent,
+                scope,
+                delivery,
+                [scope],
+                until_printed=True,
+                stop=agent.rt.stop,
+                deadline=deadline,
+            ):
                 return 0
             try:
                 while True:
@@ -2594,8 +2639,12 @@ def cmd_wait(agent: Agent, args: argparse.Namespace) -> int:
                         )
                         return 4
                     if deliver_with_receipt_retry(
-                        delivery, queue.poll(min(agent.rt.events_timeout, remaining)), [scope],
-                        live=True, stop=agent.rt.stop, deadline=deadline,
+                        delivery,
+                        queue.poll(min(agent.rt.events_timeout, remaining)),
+                        [scope],
+                        live=True,
+                        stop=agent.rt.stop,
+                        deadline=deadline,
                     ):
                         return 0
             except QueueExpired:
@@ -2660,8 +2709,11 @@ def cmd_listen(agent: Agent, args: argparse.Namespace) -> int:
                     drain(watcher)
                     watcher.needs_backfill = False
                 deliver_with_receipt_retry(
-                    delivery, watcher.queue.poll(agent.rt.events_timeout), watcher.scopes,
-                    live=True, stop=stop,
+                    delivery,
+                    watcher.queue.poll(agent.rt.events_timeout),
+                    watcher.scopes,
+                    live=True,
+                    stop=stop,
                 )
                 failures = 0
             except QueueExpired:
