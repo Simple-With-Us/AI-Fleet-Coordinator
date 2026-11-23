@@ -120,5 +120,42 @@ class T(unittest.TestCase):
         self.assertNotIn("token", s.lower().replace("tokens", ""))
 
 
+
+class ReviewFixTests(unittest.TestCase):
+    def test_delta_edge_keys_clear_silently(self):
+        state = {"active": {"delta:mcp:mcp_http_401": {"since": 1, "lastAlarm": 1}, "access:login_needed": {"since": 1, "lastAlarm": 1}}}
+        notify, recovered = fbs.reconcile(state, {}, 100)
+        self.assertEqual(notify, [])
+        self.assertEqual(recovered, ["access:login_needed"])
+        self.assertEqual(state["active"], {})
+
+    def test_access_token_falls_through_to_next_binary(self):
+        good = "a.b.c"
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd[0])
+            if cmd[0] == "/bad":
+                raise OSError("broken")
+            return types.SimpleNamespace(returncode=0, stdout=good + "\n")
+
+        old = (fbs.CLOUDFLARED, fbs.subprocess.run, fbs.os.path.exists)
+        try:
+            fbs.CLOUDFLARED = ["/bad", "/good"]
+            fbs.subprocess.run = fake_run
+            fbs.os.path.exists = lambda p: True
+            self.assertEqual(fbs.access_token(), good)
+        finally:
+            fbs.CLOUDFLARED, fbs.subprocess.run, fbs.os.path.exists = old
+        self.assertEqual(calls, ["/bad", "/good"])
+
+    def test_write_atomic_leaves_no_tmp_on_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(TypeError):
+                fbs.write_atomic(os.path.join(d, "s.json"), {"x": object()})
+            self.assertEqual(os.listdir(d), [])
+            fbs.write_atomic(os.path.join(d, "s.json"), {"x": 1})
+            self.assertEqual(os.listdir(d), ["s.json"])
+
 if __name__ == "__main__":
     unittest.main()

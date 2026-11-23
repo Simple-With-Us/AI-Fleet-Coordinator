@@ -40,24 +40,30 @@ CLOUDFLARED = ("/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared")
 
 def access_token():
     for exe in CLOUDFLARED:
-        if os.path.exists(exe):
-            try:
-                r = subprocess.run(
-                    [exe, "access", "token", "-app=" + APP],
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                return None
-            tok = r.stdout.strip()
-            return tok if r.returncode == 0 and tok.count(".") == 2 else None
+        if not os.path.exists(exe):
+            continue
+        try:
+            r = subprocess.run(
+                [exe, "access", "token", "-app=" + APP],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        tok = r.stdout.strip()
+        if r.returncode == 0 and tok.count(".") == 2:
+            return tok
     return None
 
 
 def fetch(url, token):
     req = urllib.request.Request(
-        url, headers={"cf-access-token": token, "Accept": "application/json"}
+        url, headers={
+            "cf-access-token": token,
+            "Accept": "application/json",
+            "User-Agent": "fleet-bearer-status/1",
+        }
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read(2_000_000))
@@ -139,7 +145,8 @@ def reconcile(state, alarms, now):
                 notify.append((key, text))
     for key in [k for k in active if k not in alarms]:
         # Growth keys are edge events:  they clear on the next quiet poll.
-        recovered.append(key)
+        if not key.startswith("delta:"):
+            recovered.append(key)
         del active[key]
     return notify, recovered
 
@@ -162,11 +169,25 @@ def notify_mac(title, text):
 def write_atomic(path, doc):
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f, indent=1)
-        f.write("\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(doc, f, indent=1)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    dfd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def run(args, now=None, token_fn=access_token, fetch_fn=fetch, notify_fn=notify_mac):
