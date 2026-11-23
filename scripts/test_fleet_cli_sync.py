@@ -146,9 +146,9 @@ class SourceTests(Fixture):
         self.assertEqual(S.MAX_FILES, 200)
         self.assertEqual(policy.MAX_FILES, S.MAX_FILES)
         root = actual.parent.parent
-        tracked = subprocess.check_output(
-            ["git", "-C", str(root), "ls-files", "-z"]
-        ).decode().split("\0")
+        tracked = (
+            subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"]).decode().split("\0")
+        )
         selected = {path for path in tracked if path and policy.shipped_path(path)}
         self.assertLessEqual(len(selected), S.MAX_FILES)
         self.assertIn("scripts/simple_tools/operator_platform_feeds.py", selected)
