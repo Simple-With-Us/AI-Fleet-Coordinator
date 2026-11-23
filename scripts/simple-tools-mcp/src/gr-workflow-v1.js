@@ -21,7 +21,7 @@ const CHUNK = { type: 'integer', minimum: 1, maximum: 262144 };
 const ASSET_NAME = { type: 'string', pattern: '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$' };
 // Largest base64 payload: 180 KiB raw.  The Worker MCP body bound (256 KiB) stays the outer limit.
 const BINARY_B64 = 245760;
-// The opt-in 716800-byte text class needs envelope headroom for JSON escaping; both stay under the 256 KiB MCP body bound.
+// The opt-in 716800-byte text class needs envelope headroom for JSON escaping. The file actions (wf_file_put, wf_files_put, wf_git_blob_create, wf_git_tree_create) use the 6 MiB file-args envelope via the allowlisted mcp-body.js path; binary upload stays under the 256 KiB MCP body bound.
 export const WF_V1_INPUT_LIMITS = Object.freeze({ wf_release_asset_upload_binary: 253952, wf_file_put: FILE_INPUT_BYTES, wf_files_put: FILE_INPUT_BYTES, wf_git_blob_create: FILE_INPUT_BYTES, wf_git_tree_create: FILE_INPUT_BYTES });
 export const workflowInputLimit = action => WF_V1_INPUT_LIMITS[action] ?? 65536;
 const STR = { type: 'string', maxLength: 500 };
