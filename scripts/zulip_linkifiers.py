@@ -352,9 +352,10 @@ def _fleet_secret(name: str, *, required: bool = True) -> str:
     """One named read, retaining the member-only /zulip-to-root retry.
 
     Every folder in the retry gets its turn:  a refusal on one folder says that folder has no
-    grant on this host,  so the next folder still answers.  When no folder answers and the name
-    is required,  the refusal names every account the operator has to provision;  an optional
-    name is simply absent and the caller's documented default applies.
+    grant on this host,  so the next folder still answers.  The refusal names the accounts to
+    provision only when every folder refused,  because a folder that answered empties the name
+    and the caller says which one is missing;  an optional name is simply absent and the
+    caller's documented default applies.
     """
     folders = ("/zulip_operator",) if name.startswith("ZULIP_OPERATOR_") else ("/zulip", "/")
     refusals = []
@@ -366,7 +367,7 @@ def _fleet_secret(name: str, *, required: bool = True) -> str:
             continue
         if value:
             return value
-    if refusals and required:
+    if required and len(refusals) == len(folders):
         raise BindingRefused("; ".join(refusals))
     return ""
 

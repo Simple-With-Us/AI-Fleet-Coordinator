@@ -60,10 +60,12 @@ reader, used by many consumers, each of which should instead hold its own narrow
    works.  The refusal names the account the operator has to provision and which refusal it was, and no
    other source is tried after it.
 
-   **A value is not a source either.**  A name a consumer resolves (a FleetLink bot token, the recall
-   bearer, the Operator's notes key) comes from Infisical through that consumer's own grant.  The
-   environment is never a source for a value:  a name the grant does not hold stays absent,  and the
-   consumer says which one it was.
+   **A value is not a source either.**  A name a consumer resolves (the recall bearer, the Operator's
+   notes key) comes from Infisical through that consumer's own grant.  The environment is never a
+   source for a value:  a name the grant does not hold stays absent,  and the consumer says which
+   one it was.  The FleetLink seat token is the one documented exception,  and it is narrow: 
+   its own reader grant (`fleetlink-ro`) has to be in place before the environment is consulted at
+   all,  so a hand-set copy never stands in for the reviewed grant.
 
    This is about the token.  A consumer whose own contract used to say a host binds a secret *value* in the environment (a realm credential for a given realm, for example) keeps its own contract, but the value resolves from the store now:  the environment is never a source for a value either, and the token that fetches it is still the consumer's own scoped service token.
 

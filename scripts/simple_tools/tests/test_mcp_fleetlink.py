@@ -295,6 +295,23 @@ class CredentialTests(FleetLinkHarness):
         self.token_file("GROK-WEB", TOKEN_CURSOR)
         self.assertEqual(FL.resolve_credential("GROK-WEB", {}, home)[2], TOKEN_CURSOR)
 
+    def test_the_held_grant_is_partitioned_by_the_route(self):
+        # The held grant is keyed by the route the way the token cache is:  another Infisical
+        # host,  another project or a rotated binding never reuses it.
+        FL._binding_cache.clear()
+        home = self.home
+        env = dict(self.env(), INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID=AFC_PROJECT)
+        self.assertEqual(
+            FL._reader_binding(dict(env, HOME=str(home)), home, AFC_PROJECT), self.store_token
+        )
+        self.assertEqual(len(FL._binding_cache), 1)
+        FL._reader_binding(
+            dict(env, HOME=str(home), FLEET_SECRETS_API="http://127.0.0.1:1/api"),
+            home,
+            AFC_PROJECT,
+        )
+        self.assertEqual(len(FL._binding_cache), 2)
+
     def test_an_environment_value_is_refused_when_the_readers_own_grant_is_not_in_place(self):
         # The reader's own grant is the store's account token:  without it the environment is not
         # a source at all,  and the refusal names the account to provision.

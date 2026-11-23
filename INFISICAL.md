@@ -435,10 +435,12 @@ consumer's account.  A general binding scoped to `/` or to several folders fail
 longer serve a consumer, and a bound copy of the consumer's own grant still works.  The refusal
 names the account the operator has to provision and which refusal it was.
 
-A value is not a source either.  A name a consumer resolves (a FleetLink bot token, the recall bearer, the
-Operator's notes key) comes from Infisical through that consumer's own grant.  The environment is
-never a source for a value:  a name the grant does not hold stays absent,  and the consumer says
-which one it was.
+A value is not a source either.  A name a consumer resolves (the recall bearer, the Operator's
+notes key) comes from Infisical through that consumer's own grant.  The environment is never a
+source for a value:  a name the grant does not hold stays absent,  and the consumer says which
+one it was.  The FleetLink seat token is the one documented exception,  and it is narrow: 
+its own reader grant (`fleetlink-ro`) has to be in place before the environment is consulted at
+all,  so a hand-set copy never stands in for the reviewed grant.
 
 **No fallback and no cached copy.**  There is no route to a shared reader, to a machine identity, to the retired System Keychain identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields nothing, and the consumer says which of those it was.
 

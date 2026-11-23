@@ -73,7 +73,7 @@ INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
 # The reader's own resolved grant, held for the same lifetime as the token cache,  so one
 # credential resolution serves both the read and the environment check.
-_binding_cache: dict[tuple[str, str], tuple[float, str]] = {}
+_binding_cache: dict[tuple[str, str, str, str], tuple[float, str]] = {}
 FETCH_TIMEOUT_S = 60.0  # one scoped direct read: token metadata and the named secret
 KEY_ABSENT_EXIT = 3  # the shared reader's definite missing-key outcome
 TIMEOUT_S = 120.0
@@ -244,9 +244,17 @@ def _reader_binding(scoped: Mapping[str, str], home: Path, project: str) -> str 
     binding scoped to "/" or to several folders fails that check,  so it can no longer serve the reader.
 
     The resolved grant is held for the token cache's own lifetime,  so a miss does not pay the
-    provider's metadata call twice:  the read and the environment check share one answer.
+    provider's metadata call twice:  the read and the environment check share one answer.  The
+    key partitions by the route the way the token cache does,  so another Infisical host,  another
+    project or a rotated binding never reuses a held grant.
     """
-    key = (project, str(home))
+    bound = (scoped.get(FI.COORDINATOR_READ_TOKEN_ENV_NAME) or "").strip()
+    key = (
+        project,
+        str(home),
+        scoped.get(FI.ENV_API, FI.API_BASE),
+        hashlib.sha256(bound.encode("utf-8")).hexdigest(),
+    )
     now = time.monotonic()
     held = _binding_cache.get(key)
     if held is not None and now - held[0] < TOKEN_CACHE_TTL:
