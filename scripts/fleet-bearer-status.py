@@ -142,7 +142,9 @@ def desired_alarms(doc, last_counts):
 
 def reconcile(state, alarms, now):
     """Update state in place;  return (to_notify [(key, text)], recovered [key])."""
-    active = state.setdefault("active", {})
+    if not isinstance(state.get("active"), dict):
+        state["active"] = {}
+    active = state["active"]
     notify, recovered = [], []
     for key, text in alarms.items():
         cur = active.get(key)

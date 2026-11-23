@@ -220,6 +220,12 @@ class ReviewRound2Tests(unittest.TestCase):
                 )
             self.assertEqual(out["alarms"], [])
 
+    def test_a_non_dict_active_state_resets(self):
+        state = {"active": ["x"]}
+        notify, recovered = fbs.reconcile(state, {"k": "v"}, 100)
+        self.assertEqual(notify, [("k", "v")])
+        self.assertEqual(list(state["active"]), ["k"])
+
     def test_a_redirect_is_not_followed(self):
         handler = fbs._NoRedirect()
         self.assertIsNone(
