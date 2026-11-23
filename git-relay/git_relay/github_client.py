@@ -529,13 +529,17 @@ class GitHubClient:
             return {}
         try:
             data = json.loads(raw)
-        except (ValueError, RecursionError) as exc:
+        except RecursionError as exc:
+            raise RelayGitHubError(
+                0, "github response exceeded structure bound", code="response_too_large"
+            ) from exc
+        except ValueError as exc:
             # Every failure of the decode itself must be RelayGitHubError, not
             # a raw ValueError:  Relay.handle reads ValueError as a local
             # refusal and releases the outcome key, allowing a duplicate write
             # after the upstream call landed.  That covers JSONDecodeError,
             # UnicodeDecodeError, the int-conversion digit limit (a valid
-            # long numeric token), and deep-nesting RecursionError - without
+            # long numeric token) - without
             # loosening Python's safety limits.  A 200 with a body the relay
             # cannot read means the write may have landed:  outcome UNKNOWN.
             raise RelayGitHubError(0, "github response was not valid JSON") from exc

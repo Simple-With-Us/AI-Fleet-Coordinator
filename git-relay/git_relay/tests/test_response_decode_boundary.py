@@ -139,6 +139,15 @@ class ResponseDecodeBoundaryTests(unittest.TestCase):
         with self.assertRaises(RelayGitHubError):
             _reject_surrogates([0] * (2 * 1024 * 1024), max_nodes=2 * 1024 * 1024)
 
+    def test_decoder_recursion_is_explicit_terminal_structure_failure(self):
+        for method in ("GET", "POST"):
+            with self.subTest(method=method):
+                client = GitHubClient("fixture", opener=lambda *a, **k: Response(b"[" * 100000 + b"0" + b"]" * 100000))
+                with self.assertRaises(RelayGitHubError) as raised:
+                    client._call(method, "/repos/fixture/example/issues")
+                self.assertEqual(raised.exception.code, "response_too_large")
+                self.assertEqual(raised.exception.status, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
