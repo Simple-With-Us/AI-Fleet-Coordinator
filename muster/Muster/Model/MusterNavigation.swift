@@ -169,6 +169,7 @@ extension MusterDestination {
         case .hosts: return ["tools", "worker", "workers", "doctor", "versions", "hosts"]
         case .appProcesses: return ["processes", "scan", "doctor", "apps"]
         case .virtualMachines: return ["vm", "vms", "machines", "parallels"]
+        case .bearers: return ["bearer", "bearers", "mint", "rotate", "revoke", "tokens", "keys", "access"]
         case .actionHistory: return ["audit", "log", "actions", "ops", "history", "touch id"]
         }
     }
@@ -188,7 +189,7 @@ extension MusterDestination {
         case .operator: return 8
         case .serverResourceLimits: return 9
         case .serverUpdates, .appsAndWork, .seats, .controls, .hosts, .appProcesses,
-             .virtualMachines, .actionHistory:
+             .virtualMachines, .bearers, .actionHistory:
             return nil
         }
     }
@@ -279,6 +280,8 @@ extension MusterDestination {
             return "The doctor's process scan of the Mac and the server, read on the Mac."
         case .virtualMachines:
             return "Each machine's own report, copied to the Mac."
+        case .bearers:
+            return "Each identity's bearer as the Worker's owner status API last reported it to the Mac's poll.  Mint, rotate and revoke run the Worker's owner action API."
         case .actionHistory:
             return "Actions started from the Mac, on the Mac or the server."
         }

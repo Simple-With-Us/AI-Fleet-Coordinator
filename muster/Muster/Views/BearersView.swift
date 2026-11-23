@@ -166,9 +166,11 @@ struct BearersView: View {
     private func run(_ item: PendingAction) {
         running = true
         resultLine = "Running " + item.action.verb.lowercased() + " for " + item.row.identity + "\u{2026}"
-        Task {
+        Task { @MainActor in
+            // A mint needs a value (the Worker refuses a seat mint without one);  a rotate passes the live
+            // bearer's own value through, nil when it is not known, and the Worker keeps it.
             let request = BearerActionRequest.make(item.action, identity: item.row.identity,
-                                                   mcpAccept: item.row.mcpAccept ?? true)
+                                                   mcpAccept: item.action == .mint ? (item.row.mcpAccept ?? true) : item.row.mcpAccept)
             let outcome = await BearerActionRunner(transport: LiveBearerActionTransport()).run(request)
             resultLine = outcome.summary
             if case .minted(let identity, let bearer, let expiresAt) = outcome {

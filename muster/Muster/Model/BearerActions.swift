@@ -130,8 +130,12 @@ struct LiveBearerActionTransport: BearerActionTransport {
                 process.standardOutput = out
                 process.standardError = Pipe()
                 do { try process.run() } catch { continue }
+                // A hung cloudflared must not hold the panel:  stop it after twenty seconds.
+                let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: watchdog)
                 let data = out.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                watchdog.cancel()
                 let token = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 if process.terminationStatus == 0, token.split(separator: ".").count == 3 { return token }
             }
