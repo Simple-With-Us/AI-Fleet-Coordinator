@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-23 00:33 CST · timezone America/Chicago_
+_Generated 2026-11-23 03:14 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,12 +11,23 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-23
 
-*2 PRs merged · 0 issues opened · 0 issues closed*
+*13 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
+- **AFC** `Instinct` `MiniMax` [#2466](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2466): Observe — catalog readiness before bounded native exec _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2471](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2471): Restore seat ZC to the canonical ZC prefix; guard seat record names _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2473](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2473): Every consumer resolves its own grant from its own store (OPS-1102) _(by jaywedgeworth22)_
+- **AFC** [#2476](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2476): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
 - **BF** `MiniMax` [#2184](https://github.com/Simple-With-Us/BotFleet/pull/2184): Infisical Is The Only Source For BotFleet's Credential Consumers (Refs OPS-1102) _(by jaywedgeworth22)_
+- **BF** `Muse Code` [#2185](https://github.com/Simple-With-Us/BotFleet/pull/2185): Skip redundant ACP version probes at the dispatch gate (BF-2468) _(by jaywedgeworth22)_
+- **BF** [#2186](https://github.com/Simple-With-Us/BotFleet/pull/2186): Update non-major dependencies _(by renovate[bot])_
+- **BF** [#2191](https://github.com/Simple-With-Us/BotFleet/pull/2191): Update non-major dependencies _(by renovate[bot])_
+- **HH** [#387](https://github.com/Simple-With-Us/HogHunter/pull/387): Fix the reclaim engine scan livelock: remember where a truncated scan stopped _(by jaywedgeworth22)_
+- **ST** `Antigravity` [#5435](https://github.com/Simple-With-Us/Socratic-Trade/pull/5435): Prioritize intraday VIX, wire Congress positioning score, add Polymarket fed_hold, and fix 2x paper slippage (ST-4647) _(by jaywedgeworth22)_
+- **ST** `Muse Code` [#5448](https://github.com/Simple-With-Us/Socratic-Trade/pull/5448): ST-4661: fetchWithRetry 5xx retry-once, v22 explicit columns, exit-guard probe _(by jaywedgeworth22)_
+- **ST** [#5449](https://github.com/Simple-With-Us/Socratic-Trade/pull/5449): Update non-major dependencies _(by renovate[bot])_
+- **ST** [#5450](https://github.com/Simple-With-Us/Socratic-Trade/pull/5450): Update observability to v11.14.0 _(by renovate[bot])_
 
 ## 2026-11-22
 
@@ -1439,14 +1450,12 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-07
 
-*59 PRs merged · 0 issues opened · 0 issues closed*
+*57 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** [#1454](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1454): ZCode session letters: the adapter, the wrapper and the registry API branch _(by jaywedgeworth22)_
 - **AFC** [#1498](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1498): Worker CPU: tool calls without the SDK, cheaper Infisical refresh, cold-isolate benchmark (AFC-617) _(by jaywedgeworth22)_
 - **AFC** [#1503](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1503): Muster Grid Views: Compliance Results, Watch Coverage And The Last Trusted Run _(by jaywedgeworth22)_
-- **AFC** [#1504](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1504): AFC-649: a known-cap consult declaration has no expiry unless review_by is given _(by jaywedgeworth22)_
 - **BF** [#1551](https://github.com/Simple-With-Us/BotFleet/pull/1551): Optional Infisical Authentication And Scoped Tokens _(by jaywedgeworth22)_
 - **BF** [#1597](https://github.com/Simple-With-Us/BotFleet/pull/1597): Add Tailscale Always-On MDM Policy Plist _(by jaywedgeworth22)_
 - **BF** [#1615](https://github.com/Simple-With-Us/BotFleet/pull/1615): Update dependency @vitejs/plugin-react to v6.2.1 _(by renovate[bot])_
@@ -1505,12 +1514,11 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-06
 
-*49 PRs merged · 0 issues opened · 0 issues closed*
+*48 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** [#1330](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1330): Alert Ingress: Serialize Standing Status Refreshes _(by jaywedgeworth22)_
-- **AFC** [#1413](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1413): Operator pending-inbox read for hosted seats (OPS-1047) _(by jaywedgeworth22)_
 - **BF** [#1588](https://github.com/Simple-With-Us/BotFleet/pull/1588): Make Startup Infisical Bootstrap An Explicit Local Opt-In _(by jaywedgeworth22)_
 - **BF** [#1591](https://github.com/Simple-With-Us/BotFleet/pull/1591): Default Busy Send To Queue And Ask On Backlog (BF-2442) _(by jaywedgeworth22)_
 - **BF** [#1593](https://github.com/Simple-With-Us/BotFleet/pull/1593): Show Trajectory Steps Newest First _(by jaywedgeworth22)_
