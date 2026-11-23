@@ -162,3 +162,16 @@ test("diagnosticSummaryRows keeps names and counts only", () => {
   assert.ok(!JSON.stringify(rows).includes("leak"));
   assert.deepEqual(diagnosticSummaryRows(undefined), []);
 });
+
+test("a retry of a completed mint is acked even though its bearer is now live", async () => {
+  const live = { active: true, expired: false, mcp_accept: true, expires_at: NOW + 1e9 };
+  const a = deps({ status: live });
+  const inner = a.d.gateFor;
+  a.d.gateFor = (i) => ({ ...inner(i), gbBearerMintFormResult: async (id) => (id === MINT_ID ? { mint_count: 2 } : null) });
+  const r = await j(await adminBearerAction(req({ action: "mint", identity: "WISE", mint_id: MINT_ID, mcp_accept: true }), a.d));
+  assert.equal(r.status, 200); assert.equal(r.body.completed, true); assert.ok(!("token" in r.body));
+  assert.equal(a.calls.mints.length, 0);
+  const fresh = "ffffffffffff" + "0".repeat(20);
+  const r2 = await j(await adminBearerAction(req({ action: "mint", identity: "WISE", mint_id: fresh, mcp_accept: true }), a.d));
+  assert.equal(r2.status, 409); assert.equal(r2.body.error, "bearer_active");
+});
