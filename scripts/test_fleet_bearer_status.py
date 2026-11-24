@@ -11,6 +11,8 @@ spec = importlib.util.spec_from_file_location(
 )
 fbs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fbs)
+# Production lists no open finding now;  these tests need one, so they pin their own.
+fbs.OPEN_FINDINGS = frozenset({("WISE", "wake")})
 
 DOC_OK = {
     "rows": [{"identity": "WISE", "kind": "hosted", "problem": "ok", "status": {"active": True}}],
@@ -582,3 +584,10 @@ class SeatToolsOwnerRulingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProductionOpenFindingsTests(unittest.TestCase):
+    def test_no_open_finding_is_listed_in_production(self):
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        self.assertEqual(fresh.OPEN_FINDINGS, frozenset())
