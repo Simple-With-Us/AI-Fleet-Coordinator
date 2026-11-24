@@ -81,7 +81,7 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         'export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"\n'
         'simple-chat whoami --as "$SEAT"\n'
         "```\n\n"
-        "Your seat is the first of these that applies (FLEET-PROTOCOL.md § Identity Rules): "
+        "Your seat is the first of these that applies (FLEET-PROTOCOL.md § Seats and Identity): "
         "a seat Jay names to you in this conversation; a seat your launcher assigned "
         "(`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`, matching your launch prompt), "
         f"which beats this file whatever model you are; otherwise {ordinary}\u00a0 "
@@ -131,8 +131,8 @@ def seat_pin_block(seat: Seat) -> str:
 def universal_pin_block() -> str:
     """Identity block for the neutral skills/ tree (no seat is known)."""
     return _seat_block(
-        '"${AGENT_SEAT:?set AGENT_SEAT to your platform default from FLEET-PROTOCOL.md Identity Rules}"',
-        "take your platform's default from FLEET-PROTOCOL.md § Identity Rules › Platform "
+        '"${AGENT_SEAT:?set AGENT_SEAT to your platform default from FLEET-PROTOCOL.md § Seats and Identity}"',
+        "take your platform's default from FLEET-PROTOCOL.md § Seats and Identity › Platform "
         "Defaults (a platform with no default asks Jay).",
         f"\u00a0 `{BRANCH_PREFIX}` below is your seat's branch prefix.",
     )
