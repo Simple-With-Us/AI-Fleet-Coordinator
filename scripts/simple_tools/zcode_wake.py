@@ -823,7 +823,9 @@ def _deliver_prompt(
 
             # The child's output is drained while it runs, into a rolling buffer that never
             # holds more than the tail the classifier reads.
-            tail, reader = _read_tail(getattr(child, "stdout", None), OUTPUT_SCAN_CAP)
+            # One sentinel byte records that the rolling tail was truncated. The
+            # classifier still scans at most OUTPUT_SCAN_CAP characters.
+            tail, reader = _read_tail(getattr(child, "stdout", None), OUTPUT_SCAN_CAP + 1)
             try:
                 child.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
@@ -895,6 +897,13 @@ def _failure_signature(output: object, *, include_cli_errors: bool = False) -> s
         if needle in window:
             return code
     if include_cli_errors:
+        # The bounded suffix may begin inside a quoted/prefixed line. The reader
+        # retains one extra byte so truncation is observable even before decoding.
+        # Drop that incomplete first line for new anchored categories only; keep
+        # the historical auth-signature scan above unchanged.
+        if len(output) > OUTPUT_SCAN_CAP or len(text) > OUTPUT_SCAN_CAP:
+            boundary = re.search(r"[\r\n]", window)
+            window = window[boundary.end():] if boundary else ""
         for pattern, code in CLI_EXIT_CATEGORIES:
             if re.search(pattern, window, re.MULTILINE):
                 return code

@@ -1,5 +1,6 @@
 """Static future-exit categories, never evidence or retry permission."""
 import dataclasses
+import io
 import unittest
 from simple_tools import zcode_wake as Z
 from simple_tools.tests.test_zc_store import Runner
@@ -31,6 +32,19 @@ class Categories(unittest.TestCase):
         self.assertEqual(Z._failure_signature(raw+b'x'*(Z.OUTPUT_SCAN_CAP*2),include_cli_errors=True),'')
         self.assertEqual(Z._failure_signature(b'x'*9000+b'\n'+raw,include_cli_errors=True),'cli-env-file-load')
         self.assertEqual(Z._failure_signature(object(),include_cli_errors=True),'')
+
+    def test_truncated_prefix_is_not_a_new_line(self):
+        raw = SAMPLES[0][0]
+        for prefix in (b'quoted ', b'x' * 9000, b'\xc3\xa9' * 5000):
+            output = prefix + raw + b'x' * (Z.OUTPUT_SCAN_CAP - len(raw))
+            self.assertEqual(Z._failure_signature(output, include_cli_errors=True), '')
+            self.assertEqual(Z._failure_signature(output + b'\n' + raw, include_cli_errors=True), 'cli-env-file-load')
+            tail, thread = Z._read_tail(io.BytesIO(output), Z.OUTPUT_SCAN_CAP + 1)
+            thread.join()
+            self.assertEqual(len(tail), Z.OUTPUT_SCAN_CAP + 1)
+            self.assertEqual(Z._failure_signature(bytes(tail), include_cli_errors=True), '')
+        # Historical substring authentication detection is not line-bound.
+        self.assertEqual(Z._failure_signature(b'x' * 9000 + b'project_token_login_failed'), 'model-auth-login-failed')
 
     def test_existing_auth_signature_priority_unchanged(self):
         self.assertEqual(Z._failure_signature(SAMPLES[0][0]+b'\nproject_token_login_failed',include_cli_errors=True),'model-auth-login-failed')
