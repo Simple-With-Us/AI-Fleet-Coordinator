@@ -4540,7 +4540,7 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
             raise exc
         try:
             return self.wf_merge_queue_entry(repo, {"repo": repo, "number": number})["entry"]
-        except (RelayGitHubError, PreReadUnavailable, Refused):
+        except (RelayGitHubError, PreReadUnavailable, Refused, ValueError):
             raise exc from None
 
     def wf_merge_queue_dequeue(self, repo, args):
