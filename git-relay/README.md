@@ -319,7 +319,7 @@ only the owner-approved AFC-797 source/output pair documented in
 [Reviewed Muster Vector Preservation](../docs/security/reviewed-muster-vector-preservation.md)
 plus the two owner-approved AFC-793 fixture test pairs documented in
 [Reviewed Fixture Pairs Preservation](../docs/security/reviewed-fixture-pairs-preservation.md):
-`scripts/fleet_rag/tests/test_recall.py` (`b78c76d6…` to `d9cd1d0a…`) and
+`scripts/fleet_rag/tests/test_recall.py` (renewed Nov 23, 2026: `8a6911c3…` to `de6b3090…`; the Nov 21 tuple is retired) and
 `scripts/fleet_rag/tests/test_ingest.py` (`e970e451…` to `1eaa804f…`).
 REVIEWED_SAME_PATH_SOURCES remains empty; this is independent of the existing
 _REVIEWED_FIXTURES registry.  The refreshed exact
