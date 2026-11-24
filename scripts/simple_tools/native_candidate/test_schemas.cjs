@@ -1,6 +1,6 @@
 'use strict';
 const assert=require('assert'),z=require('./offline_node_modules/zod'),{schemas}=require('./native_schemas.cjs');
-const s=schemas(z),key='app-control-echo-review-'+'a'.repeat(64),envelope={commandId:key,clientId:'echo-review-alerts',sessionId:'sess-fixture',type:'sendText',payload:{text:'fixture',requestedDelivery:'queue'},issuedAt:1};
+const s=schemas(z),key='app-control-review-alerts-'+'a'.repeat(64),envelope={commandId:key,clientId:'review-alerts-router',sessionId:'sess-fixture',type:'sendText',payload:{text:'fixture',requestedDelivery:'queue'},issuedAt:1};
 s.envelope.parse(envelope);
 for(const extra of ['modelSelection','modelExecution','guide','heldQueueDisposition','browserAmbientContext','attachments','config','startNow'])assert.throws(()=>s.envelope.parse({...envelope,payload:{...envelope.payload,[extra]:true}}));
 assert.throws(()=>s.envelope.parse({...envelope,clientId:'wrong'}));

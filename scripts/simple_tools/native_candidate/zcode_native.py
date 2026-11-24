@@ -194,7 +194,7 @@ class NativeDelivery:
             and r.get("command_id") == command_id
             and r.get("phase") in ("dispatching", "dispatched")
             and r.get("binding") == intent.get("binding")
-            and intent.get("client_id") == "echo-review-alerts"
+            and intent.get("client_id") == "review-alerts-router"
             and intent.get("requestedDelivery") == "queue"
             and isinstance(intent.get("text"), str)
             and bool(intent["text"])
@@ -202,7 +202,7 @@ class NativeDelivery:
             and r.get("payload_sha256")
             == digest({"text": intent["text"], "requestedDelivery": "queue"})
             and command_id
-            == "app-control-echo-review-" + digest({"wake_key": intent.get("wake_key")})
+            == "app-control-review-alerts-" + digest({"wake_key": intent.get("wake_key")})
         )
 
     def deliver(self, binding: dict, wake_key: str, text: str, *, fresh: bool) -> dict:
@@ -238,14 +238,14 @@ class NativeDelivery:
             "binding": binding,
             "wake_key": wake_key,
             "text": text,
-            "client_id": "echo-review-alerts",
+            "client_id": "review-alerts-router",
             "requestedDelivery": "queue",
         }
         identity = digest(fixed)
         # Key scoped to original logical wake, not text or mutable binding. Changing a
         # generation/workspace/payload cannot manufacture a second dispatch slot.
         name = digest({"wake_key": wake_key})
-        command_id = "app-control-echo-review-" + name
+        command_id = "app-control-review-alerts-" + name
         path = self.folder / (name + ".json")
         fd = os.open(
             name + ".lock",
@@ -285,7 +285,7 @@ class NativeDelivery:
                     "action": "query",
                     "binding": binding,
                     "command_id": command_id,
-                    "client_id": "echo-review-alerts",
+                    "client_id": "review-alerts-router",
                 }
                 try:
                     response = self.transport(action)
@@ -317,7 +317,7 @@ class NativeDelivery:
                         "action": "dispatch",
                         "binding": binding,
                         "command_id": command_id,
-                        "client_id": "echo-review-alerts",
+                        "client_id": "review-alerts-router",
                         "text": text,
                     }
                 )

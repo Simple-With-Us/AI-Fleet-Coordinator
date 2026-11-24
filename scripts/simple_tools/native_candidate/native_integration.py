@@ -47,7 +47,7 @@ class Driver:
                     result["evidence"] = reconcile(
                         Path(self.home) / ".zcode/cli/db/db.sqlite",
                         binding,
-                        "app-control-echo-review-" + digest({"wake_key": wake_key}),
+                        "app-control-review-alerts-" + digest({"wake_key": wake_key}),
                         text,
                         alert_id(self.state, wake_key),
                     )

@@ -59,7 +59,7 @@ class Consumer:
             self.after = name
             try:
                 original = read_private(folder / name)
-                command_id = "app-control-echo-review-" + name[:-5]
+                command_id = "app-control-review-alerts-" + name[:-5]
                 if not NativeDelivery._valid_record(original, command_id):
                     raise ValueError("consumer-journal-invalid")
                 binding = original["binding"]
@@ -88,7 +88,7 @@ class Consumer:
             except Exception:
                 reports.append(
                     {
-                        "command_id": "app-control-echo-review-" + name[:-5],
+                        "command_id": "app-control-review-alerts-" + name[:-5],
                         "reconciliation": "unverified",
                         "handling": "unverified",
                     }

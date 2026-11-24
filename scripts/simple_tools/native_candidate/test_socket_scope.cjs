@@ -9,7 +9,7 @@ async function one(mode){
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(__dirname+'/installed_connection_scope.js','utf8')+fs.readFileSync(__dirname+'/installed_socket_scope.js','utf8'),ctx);
  const services={getOptional:key=>key===agent?base:undefined,exposeOnChannelServer(server,overrides){captured=overrides.get('zcode-agent')}};
  ctx.expose({},services,'web-remote-replayable');const target={workspacePath:'/fixture',sessionId:'s'};
- await captured.helloConversationV4();await captured.initializeConversationV4({kind:'clientHello',protocolVersion:3,clientId:'echo-review-alerts',appVersion:'3.19.0'});
+ await captured.helloConversationV4();await captured.initializeConversationV4({kind:'clientHello',protocolVersion:3,clientId:'review-alerts-router',appVersion:'3.19.0'});
  captured.onDynamicConversationFrame(target)(()=>{});const p=captured.subscribeConversationV4(target);p.catch(()=>{});
  if(mode==='close-before-subscribe-ack'){close();await new Promise(r=>setImmediate(r));finish({ack:{subscriptionId:'own',mode:'snapshot',logEpoch:'epoch'}});await assert.rejects(p)}
  else {finish({ack:{subscriptionId:'own',mode:'snapshot',logEpoch:'epoch'}});await p;close()}

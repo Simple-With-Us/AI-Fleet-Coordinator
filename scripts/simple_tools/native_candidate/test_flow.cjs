@@ -51,7 +51,7 @@ let count=0;async function one(mode){
  }))});
  const rpc=rpcModule.connect({WebSocket,url:`ws://127.0.0.1:${wss.address().port}/ws`,token:'x',codec:c,frame,parser,timeoutMs:200});
  const action=['query','wrongquery'].includes(mode)?'query':'dispatch';
- const request={action,binding,command_id:'app-control-echo-review-'+'a'.repeat(64),client_id:mode==='badclient'?'wrong':'echo-review-alerts',text:'fixture'};
+ const request={action,binding,command_id:'app-control-review-alerts-'+'a'.repeat(64),client_id:mode==='badclient'?'wrong':'review-alerts-router',text:'fixture'};
  let error,checks=0;
  try{await flow.run(request,rpc,async()=>{checks++;
    if(['readyfailed','readyinitializing','readyinvalid','readyepoch','readyabsent','readynull','readymalformed','readyduplicate','readyregress'].includes(mode)&&checks===3){

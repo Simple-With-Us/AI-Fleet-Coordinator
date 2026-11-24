@@ -11,8 +11,8 @@ const wireSchema=createTopicWireFrameSchema(conversationTopicFrameSchema);
 function bindingParams(b){restricted.binding.parse(b);return {workspacePath:b.workspace,sessionId:b.session_id}}
 async function flow(request,rpc,verify){
  if(Object.keys(request).some(k=>!['action','binding','command_id','client_id','text'].includes(k)))throw Error('request-fields-refused');
- const b=request.binding,p=bindingParams(b),clientId='echo-review-alerts';
- if(request.client_id!==clientId||!/^app-control-echo-review-[a-f0-9]{64}$/.test(request.command_id))throw Error('command-key-invalid');
+ const b=request.binding,p=bindingParams(b),clientId='review-alerts-router';
+ if(request.client_id!==clientId||!/^app-control-review-alerts-[a-f0-9]{64}$/.test(request.command_id))throw Error('command-key-invalid');
  if(!await verify(b))throw Error('binding-changed');
  const hello=helloMessageSchema2.parse(await rpc.call('helloConversationV4',[]));
  if(hello?.kind!=='hello'||hello.protocolVersion!==3||hello.clientMode!=='web-remote-replayable')throw Error('hello-incompatible');

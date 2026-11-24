@@ -10,7 +10,7 @@ async function one(mode){
  let finish,reject;
  const base={onAgentRuntimeLifecycle:lifecycle.event,onDynamicConversationFrame:()=>upstream.event,setConnectionFlowStateV4:async p=>{flows.push(p.state);if(mode==='flow-fails'&&p.state==='saturated')throw Error('fixture-flow')},subscribeConversationV4:()=>new Promise((a,b)=>{finish=a;reject=b}),unsubscribeConversationV4:async p=>{unsubs.push(p.subscriptionId);if(mode==='unsubscribe-fails')throw Error('fixture-unsubscribe')},sendConversationCommandV4:async p=>{sent.push(p);return {}}};
  const scope=ctx.makeScope(base,{connectionId:'own-fixture-connection',clientMode:'web-remote-replayable'});
- await scope.service.helloConversationV4();await scope.service.initializeConversationV4({kind:'clientHello',protocolVersion:3,clientId:'echo-review-alerts',clientKind:'web',appVersion:'3.19.0'});
+ await scope.service.helloConversationV4();await scope.service.initializeConversationV4({kind:'clientHello',protocolVersion:3,clientId:'review-alerts-router',clientKind:'web',appVersion:'3.19.0'});
  const received=[];const listener=scope.service.onDynamicConversationFrame(target)(f=>received.push(f));
  if(mode==='flow-fails')await scope.setTransportFlowState('saturated');
  const pending=scope.service.subscribeConversationV4(target);pending.catch(()=>{});

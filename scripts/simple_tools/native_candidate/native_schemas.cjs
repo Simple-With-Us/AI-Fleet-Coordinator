@@ -2,7 +2,7 @@
 // Complete restricted schemas for this route only, not general app schemas.
 // Optional native features not used by the adapter are deliberately refused.
 function schemas(z){
- const id=z.string().min(1).max(512),command=z.string().regex(/^app-control-echo-review-[a-f0-9]{64}$/),client=z.literal('echo-review-alerts');
+ const id=z.string().min(1).max(512),command=z.string().regex(/^app-control-review-alerts-[a-f0-9]{64}$/),client=z.literal('review-alerts-router');
  const init=z.discriminatedUnion('status',[
   z.object({status:z.literal('initializing'),attemptId:id}).strict(),
   z.object({status:z.literal('ready'),attemptId:id}).strict(),
