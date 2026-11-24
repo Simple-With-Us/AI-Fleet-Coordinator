@@ -96,7 +96,7 @@ LAND EVERYTHING
   without the owner saying so in chat.
 
 SECRETS
-- Names only: fleet-secrets names.  One value: fleet-secrets get NAME (never echo it, no 2>&1).  Never cat,
+- Names only: the folder's own scoped Infisical read.  One value: a scoped Infisical read of NAME (never echo it, no 2>&1).  Never cat,
   read, or print a secrets file or a token; never grep one without -o.  Infisical is the runtime
   source of truth; never run bare infisical secrets.
 

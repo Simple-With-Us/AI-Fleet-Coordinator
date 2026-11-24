@@ -600,7 +600,7 @@ def merge_routine_env(seats, env, home, *, fetch=None):
     if not names:
         return []
     if fetch is None:
-        fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
+        fetch = lambda ns: Z._fetch_from_infisical(ns, env, home)
     try:
         got = dict(fetch(tuple(names)))
     except Z.CredentialError as exc:
@@ -638,6 +638,45 @@ def _inbox_row_key(row: Mapping[str, Any]) -> str:
     # still dedupes, because the flag is part of the row and so part of its key.
     edited = "edited" if row.get("edited") else ""
     return "%s:%s:%s:%s" % (row.get("id"), row.get("kind") or "", marker, edited)
+
+
+#: Notes that used to go to the owner as direct messages go here instead (owner ruling, Nov 18
+#: 2026:  anything that would be a DM belongs in Side-Chats;  the only DMs the Operator may send
+#: are wake-clarification questions to the sender or tagger).
+SIDE_CHATS_CHANNEL = "Side-Chats"
+SIDE_CHATS_ESCALATION_TOPIC = "Operator escalation notes"
+
+
+# Every state the status document gives the Operator's Zulip -> Linear living comments
+# (_linear_comments_status).  scripts/reduced_status.py keeps its own closed list and
+# passes a state on only when it is on that list, so a word added here without one there would
+# read as "other" on every panel:  a test holds the two equal.
+LINEAR_COMMENT_STATES = (
+    "off",
+    "module_missing",
+    "token_file_unusable",
+    "no_service_token",
+    "credential_refused",
+    "ledger_refused",
+    "build_error",
+    "unconfigured",
+    "running",
+    "stopped",
+)
+
+
+def _snake(name: str) -> str:
+    """An exception's class name as a reason code (`ValueError` is `value_error`, `URLError` is
+    `urlerror`):  what failed, in a shape the reduced status passes on, and nothing about
+    the host.  An underscore goes where a lower-case letter or a digit meets a capital, so a
+    run of capitals stays one word.  The status document carries the code;  the log keeps
+    the message."""
+    out: list[str] = []
+    for at, char in enumerate(name):
+        if char.isupper() and at and not name[at - 1].isupper():
+            out.append("_")
+        out.append(char.lower())
+    return "".join(out)
 
 
 class Daemon:
@@ -819,6 +858,19 @@ class Daemon:
         # Infisical service token for the Operator's Linear developer token resolves.
         self.linear_comments: Any | None = None
         self._linear_comments_spec: tuple[Any, ...] | None = None
+        # The living comments' health for the status document (AFC-833):  why there is no engine
+        # (a fixed word _configure_linear_comments sets, None once one is built), the time of the
+        # last tick that returned, the calls that raised (their count, and a code for the class
+        # of the last one), and when the engine was first seen stopped.  Never a message:  the
+        # log has those.  The lock covers the counters only, never a call into the engine.
+        self._linear_comments_state: str | None = "off"
+        self._linear_comments_lock = threading.Lock()
+        self._linear_comments_health: dict[str, Any] = {
+            "last_tick": None,
+            "errors": 0,
+            "last_error": None,
+            "stopped_at": None,
+        }
         # The Operator's session registry service (listener_registry.py), rebuilt on every
         # start and reload (_configure_listener_api calls _configure_registry first).  It
         # exists on the server instance only, whether or not the listener API is on;  the
@@ -1137,11 +1189,14 @@ class Daemon:
         return keys
 
     def notes_queue_principals(self) -> dict[str, tuple[str, frozenset[str]]]:
-        """The notes queue's three principals (AFC-486, notes_wire.KEY_NAMES):  each one's key from the environment
-        (Infisical /operator, loaded at start by server/infisical_env.py) and the seats it may act for
+        """The notes queue's three principals (AFC-486, notes_wire.KEY_NAMES):  each one's key from
+        Infisical, through this consumer's own scoped grant, and the seats it may act for
         ([notes_queue] worker_seats and server_seats;  the RUNNER acts for none).  Every key value is hidden from
         the log here, before anything can print it.  A missing or short key stays in the map as given:  NotesQueue
-        accepts only a key of NW.MIN_KEY_LEN characters or more."""
+        accepts only a key of NW.MIN_KEY_LEN characters or more.
+
+        The environment is not a source for a value:  a refusal names the account the Operator has to
+        provision, and the queue stays off until it is."""
         seats = {
             NW.WORKER: frozenset(self.config.notes_queue_worker_seats),
             NW.SERVER: frozenset(self.config.notes_queue_server_seats),
@@ -1149,11 +1204,37 @@ class Daemon:
         }
         principals: dict[str, tuple[str, frozenset[str]]] = {}
         for name in NW.PRINCIPALS:
-            value = Z._strip_quotes(self.env.get(NW.KEY_NAMES[name]) or "")
+            value = self._notes_principal_key(name)
             if value:
                 self.hide_values([value])
             principals[name] = (value, seats[name])
         return principals
+
+    def _notes_principal_key(self, principal: str) -> str:
+        """One principal's key, from Infisical through this consumer's own scoped grant.
+
+        The store is the authority:  the consumer's own account token comes from the host's approved
+        store, and the key resolves from there.  A refusal names the account and is logged as a
+        reason code, never a value."""
+        from . import notes_client as NC
+
+        project = (self.env.get("INFISICAL_PROJECT_ID") or "").strip()
+        try:
+            return NC.scoped_read(
+                NW.KEY_NAMES[principal],
+                NW.KEY_PATH,
+                self.env,
+                strict=True,
+                project=project or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the reason is a code and a closed message, never a value
+            self.log.write(
+                "notes-queue-key-refused",
+                principal=principal,
+                reason=getattr(exc, "code", type(exc).__name__),
+                detail=getattr(exc, "message", "")[:200],
+            )
+            return ""
 
     def _note_link_hook(self, seat: str, session_id: str, note_id: str) -> None:
         """Record a finished note's Apple Notes link on its session's registry row (OPS-1048).
@@ -1332,8 +1413,9 @@ class Daemon:
         """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
         off unless [linear_comments] enabled is true and the Operator's Linear credential
         loads — the owner's developer token in Infisical prod /linear, reached through
-        the scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN,
-        or the [linear_comments] infisical_token_file).  A reload that leaves the service
+        the scoped read-only Infisical service token (the [linear_comments]
+        infisical_token_file, the consumer's own store;  the environment is never a
+        source).  A reload that leaves the service
         token as it was keeps the same engine object, so its ledger lock and its
         (topic, issue) -> comment mapping survive — unless the engine has stopped (a
         refused Linear credential), in which case the reload rebuilds it, so a repaired
@@ -1347,33 +1429,40 @@ class Daemon:
         self.linear_comments = None
         self._linear_comments_spec = None
         if not getattr(self.config, "linear_comments_enabled", False):
+            self._linear_comments_state = "off"
             return
         try:
             # Imported here, not at module load, so a missing module never stops the daemon.
             from . import operator_linear as OPL
         except ImportError as exc:
             self.log.write("linear-comments-error", error=type(exc).__name__)
+            self._linear_comments_state = "module_missing"
             return
         token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
         try:
-            service = OPL.service_token(self.env, token_file)
+            # The consumer's own store (the configured token file) is the only source:
+            # the environment is never a source (owner ruling, November 22, 2026).
+            service = OPL.service_token(token_file)
         except OPL.CredentialRefused as exc:
             # The token file itself is unusable (its permissions):  the message names
             # the file and the mode, never a value.
             self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            self._linear_comments_state = "token_file_unusable"
             return
         if not service:
             self.log.write(
                 "linear-comments-off",
-                reason="no Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN "
-                "is not set and no usable infisical_token_file)",
+                reason="no Infisical service token (no usable [linear_comments] "
+                "infisical_token_file in the consumer's store)",
                 hint=ENV_RESTART_HINT,
             )
+            self._linear_comments_state = "no_service_token"
             return
         self.hide_values([service])
         if old is not None and old_spec == (service,) and getattr(old, "stopped", None) is None:
             self.linear_comments = old
             self._linear_comments_spec = old_spec
+            self._linear_comments_state = None
             return
         if old is not None:
             # The credential changed:  release the old engine's ledger lock before the
@@ -1395,14 +1484,17 @@ class Daemon:
             # The developer-token fetch was refused:  this feature fails
             # closed, the daemon does not.  The message names a stage and a status.
             self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            self._linear_comments_state = "credential_refused"
             return
         except SystemExit as exc:
             # The ledger refused to open (another holder, or unreadable state):  this
             # feature fails closed, the daemon does not.
             self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            self._linear_comments_state = "ledger_refused"
             return
         except Exception as exc:  # noqa: BLE001 - the engine must never stop the daemon
             self.log.write("linear-comments-error", error=type(exc).__name__)
+            self._linear_comments_state = "build_error"
             return
         if engine is None:
             self.log.write(
@@ -1410,7 +1502,12 @@ class Daemon:
                 reason="no Infisical service token",
                 hint=ENV_RESTART_HINT,
             )
+            self._linear_comments_state = "unconfigured"
             return
+        if old is not engine:
+            # A new engine (the first, or one built after a credential change) has not stopped.
+            self._linear_comments_health["stopped_at"] = None
+        self._linear_comments_state = None
         self.linear_comments = engine
         self._linear_comments_spec = (service,)
 
@@ -1425,11 +1522,7 @@ class Daemon:
         try:
             engine.feed_message(runner.client, message)
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _observe_linear_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
         """Feed one update_message event (a topic rename or a stream move) to the living
@@ -1441,11 +1534,7 @@ class Daemon:
         try:
             engine.feed_event(runner.client, event)
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _observe_linear_stream_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
         """A stream create, update or delete: the living comments forget the public-stream
@@ -1456,11 +1545,7 @@ class Daemon:
         try:
             engine.reload_streams(runner.client)
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _observe_linear_reconnect(self, runner: SeatRunner) -> None:
         """A seat's event queue registered again:  its backfill replays only part of what
@@ -1473,11 +1558,7 @@ class Daemon:
         try:
             engine.queue_registered()
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _stop_review_alerts(self) -> None:
         stop = getattr(self, "_review_alert_stop", None)
@@ -1491,6 +1572,29 @@ class Daemon:
         self._review_alert_thread = None
         self._review_alert_stop = None
 
+    def _review_alert_destination(self, origin):
+        from review_alerts.messages import side_chats_destination
+
+        from . import dm_policy
+
+        return side_chats_destination(
+            self.operator_voice.client(),
+            origin,
+            seat_tag_for,
+            dm_policy.SIDE_CHATS_STREAM_ID,
+            dm_policy.side_chats_topic,
+        )
+
+    def _review_alert_message_send(self, params):
+        from review_alerts.messages import MessageRetryable
+
+        try:
+            return self._operator_send(params)
+        except (OPV.OperatorUnavailable, OPV.OperatorRefused):
+            # These refusals are documented to happen before posting anything.
+            # API/network errors are deliberately NOT classified retry-safe.
+            raise MessageRetryable("operator-message-unavailable") from None
+
     def _configure_review_alerts(self) -> None:
         self._stop_review_alerts()
         if self.stop.is_set() or getattr(self.config, "instance", "mac") != "server":
@@ -1500,7 +1604,14 @@ class Daemon:
 
             stop = threading.Event()
             self._review_alert_stop = stop
-            self._review_alert_thread = start(self.env, self.registry_service, stop, self.log.write)
+            self._review_alert_thread = start(
+                self.env,
+                self.registry_service,
+                stop,
+                self.log.write,
+                operator_send=self._review_alert_message_send,
+                destination_for_origin=self._review_alert_destination,
+            )
         except Exception as exc:
             self.log.write("review-alert-start-error", reason=type(exc).__name__)
 
@@ -3486,8 +3597,17 @@ class Daemon:
 
         The sender's email is enough too, and the seat it maps to is not required:  a bot whose
         email maps to no seat of the fleet still used `@all`, and the audit has a "could not
-        check" reminder for exactly that case, so the audit is scheduled rather than dropped."""
+        check" reminder for exactly that case, so the audit is scheduled rather than dropped.
+
+        The Operator's own reminder is never audited:  its text quotes the `@all` it is reminding
+        about, so without this exclusion every reminder would schedule an audit of itself (Kody,
+        #2411)."""
         if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
+            return False
+        if (
+            self.config.operator_user_id > 0
+            and message.get("sender_id") == self.config.operator_user_id
+        ):
             return False
         if not c.broadcast_all or not self._sender_is_known_bot(message, runner):
             return False
@@ -4578,8 +4698,22 @@ class Daemon:
         # nothing proves the reminder did not reach the owner, so it is never sent twice.
         self._update_broadcast_effect_detail(mid, "audit", {"send_attempted_at": self.clock.time()})
         try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
-        except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
+            #  A reminder used to be a direct message;  the owner ruling of Nov 18, 2026 sends
+            #  anything DM-shaped to Side-Chats instead, mentioning the owner so it still lands.
+            #  Any live runner's realm-users map carries the owner's display name.
+            users = next(
+                (
+                    r.users
+                    for r in self.seats.values()
+                    if getattr(r, "users", None) and owner_id in r.users
+                ),
+                next(
+                    (r.users for r in self.seats.values() if getattr(r, "users", None)),
+                    None,
+                ),
+            )
+            result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
+        except Exception as exc:  # noqa: BLE001 - a failed reminder is logged and kept, never swallowed
             # The failure is classified:  a retryable one keeps the audit driving so the
             # reminder is not lost, a permanent one fails it with its reason, and a write
             # that may have reached the server is UNKNOWN and never sent twice.  An Operator
@@ -5246,7 +5380,9 @@ class Daemon:
         webhook).  The routine replies in Zulip itself; the daemon posts nothing for this seat.
         The body carries the seat's held-back wakes as `held_back` (heldback.wake_summary), and they
         count as surfaced only once the routine took the wake and, for the hosted MCP Worker, said
-        it delivered it (adapters.routine_surfaced)."""
+        it delivered it (adapters.routine_surfaced).  A wake the one router took has surfaced
+        nothing yet (AFC-841):  its 202 only stored the wake, so the items it listed wait for the
+        terminal receipt and surface with it when that ends delivered (_receipt_settle)."""
         target, why, detail = self.routine(runner)
         if target is None:
             self.log.write(
@@ -5361,6 +5497,14 @@ class Daemon:
                     "timeout": sent.timeout,
                     "origin": target.origin,
                 }
+                # The router's 202 only stored the wake (AFC-841):  nothing it carried is surfaced
+                # yet, so the items it listed, the wake's own triggers and the lost count wait on
+                # the terminal receipt.  They surface when that ends delivered (_receipt_settle,
+                # from the ids this row carries) and stay held back on any other ending, so a dead
+                # wake's items are listed for the next wake instead of lost.
+                worker["held_listed"] = sorted(set(pending.trigger_ids) | set(listed))
+                worker["held_lost"] = int(lost)
+                surfaced = False
             runner.ledger.append(
                 pending.row(
                     "done",
@@ -5517,17 +5661,18 @@ class Daemon:
         risk: str | None,
         history: Iterable[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """Send the owner a Zulip DM from the OPERATOR bot, tagged `[OPERATOR·note]` with the seat whose
-        wake wrote the note (owner ruling, Oct 30 2026: it used to go out as the seat's own bot, which
-        did not think or say it).  The owner is in the conversation, so the owner-in-the-conversation
-        guard (AFC-469) passes without any exemption.  It rides on a wake that already passed the
-        seat's budgets, so it is at most one DM per wake, and it never raises: a refusal or a
-        failure is logged and recorded in the ledger row, and the banner and owner queue still hold
-        the note.  With no Operator the DM is not sent (`operator-post-refused`, site `owner-dm`),
-        never sent as the seat.
+        """Post the escalated note to #Side-Chats from the OPERATOR bot, tagged `[OPERATOR·note]`
+        with the seat whose wake wrote the note (owner ruling, Oct 30 2026: it used to go out as
+        the seat's own bot, which did not think or say it; owner ruling, Nov 18 2026: anything that
+        would be a direct message goes to Side-Chats instead \u2014 the only DMs the Operator may send
+        are wake-clarification questions to the sender or tagger).  The post mentions the owner by
+        name so the note still reaches Jay, and it never raises: a refusal or a failure is logged
+        and recorded in the ledger row, and the banner and owner queue still hold the note.  With
+        no Operator the post is not sent (`operator-post-refused`, site `owner-dm`), never sent as
+        the seat.
 
         No production code calls it since the listener stopped starting models (owner ruling, Nov 10,
-        2026):  the note came from a headless wake's result.  The sender and its tests stay until the
+        2026):  the note came from a headless wake's result.  The sender and its tests stay until the
         owner rules on it, and the tests call it directly."""
         owner_id = self.config.owner_user_id
         if owner_id <= 0 or runner.fatal:
@@ -5565,7 +5710,19 @@ class Daemon:
                 )
                 return {"owner_dm": None, "owner_dm_error": withheld}
         try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
+            users = next(
+                (
+                    r.users
+                    for r in self.seats.values()
+                    if getattr(r, "users", None) and owner_id in r.users
+                ),
+                getattr(runner, "users", None)
+                or next(
+                    (r.users for r in self.seats.values() if getattr(r, "users", None)),
+                    None,
+                ),
+            )
+            result = self._operator_send(self._side_chats_post(owner_id, text, users=users))
         except OPV.OperatorUnavailable as exc:
             self._operator_refused("owner-dm", exc, seat=runner.seat, wake_id=pending.wake_id)
             return {
@@ -5585,6 +5742,23 @@ class Daemon:
         if withheld:
             sent["owner_dm_note_withheld"] = withheld
         return sent
+
+    def _side_chats_post(
+        self, owner_id: int, text: str, users: Mapping[int, Any] | None = None
+    ) -> dict[str, Any]:
+        """A Side-Chats stream post that mentions the owner by name, for a note that used to be a
+        direct message (owner ruling, Nov 18 2026).  The mention is the realm's own display name
+        for the pinned owner id, so the notification is real;  without a name the post still lands
+        in the followed topic and the owner queue."""
+        person = (users or {}).get(int(owner_id)) or {}
+        name = str(person.get("full_name") or "").strip()
+        body = ("@**%s**\n" % name) if name else ""
+        return {
+            "type": "stream",
+            "to": SIDE_CHATS_CHANNEL,
+            "topic": SIDE_CHATS_ESCALATION_TOPIC,
+            "content": body + text,
+        }
 
     # ---- held-back wakes ----------------------------------------------------------------------
     def held_tick(self, runner: SeatRunner, now: float) -> None:
@@ -6050,10 +6224,10 @@ class Daemon:
                 try:
                     engine.tick(client)
                 except Exception as exc:  # the comments must never stop the tick
-                    self.log.write(
-                        "linear-comments-error",
-                        error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-                    )
+                    self._linear_comments_failed(exc)
+                else:
+                    with self._linear_comments_lock:
+                        self._linear_comments_health["last_tick"] = now
         if now - self.last_tick["prune"] >= W.DAY:
             self.last_tick["prune"] = now
             for runner in self.seats.values():
@@ -6390,6 +6564,12 @@ class Daemon:
             # The one stale sweeper's last pass (AFC-721):  null where no sweeper runs (every
             # instance but the server) and before the first pass.
             "registry_sweep": self._registry_sweep_status(),
+            # The sweeper's schedule (AFC-833), beside its last pass:  a reader judges that pass
+            # against the real interval instead of guessing one.  None where no sweeper runs.
+            "registry_sweep_schedule": self._registry_sweep_schedule_status(),
+            # The Zulip -> Linear living comments' health (AFC-833):  what the daemon has seen of
+            # the engine it drives, in fixed words and numbers.
+            "linear_comments": self._linear_comments_status(),
             "drain": self._drain_status(),
             "seats": seats,
         }
@@ -6427,6 +6607,57 @@ class Daemon:
         if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
             return None
         return sweeper.last
+
+    def _registry_sweep_schedule_status(self) -> dict[str, Any] | None:
+        """The one stale sweeper's schedule (AFC-833, listener_registry.Sweeper.schedule), or
+        None where no sweeper runs:  every instance but the server, and before the service is
+        built."""
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return None
+        return sweeper.schedule()
+
+    def _linear_comments_failed(self, exc: BaseException, seat: str | None = None) -> None:
+        """One call into the living comments raised:  counted and classed for the status document
+        (AFC-833, the exception's class as a code, never its message), and logged as it always
+        was."""
+        with self._linear_comments_lock:
+            self._linear_comments_health["errors"] += 1
+            self._linear_comments_health["last_error"] = _snake(type(exc).__name__)
+        detail = {"error": self.scrub(type(exc).__name__ + ": " + str(exc))}
+        if seat is not None:
+            detail["seat"] = seat
+        self.log.write("linear-comments-error", **detail)
+
+    def _linear_comments_status(self) -> dict[str, Any]:
+        """The living comments' health for the status document (AFC-833), in fixed words.
+        `off` when [linear_comments] is switched off;  a word for an engine that could not be
+        built (module_missing, token_file_unusable, no_service_token, credential_refused,
+        ledger_refused, build_error, unconfigured);  `running` or `stopped` once one exists, with
+        when the last tick returned, how many calls raised since the daemon started, and the code
+        for the class of the last one (_snake).  The engine is read without its lock:  that lock
+        is held across Linear calls, and the status must never wait on one.  Nothing here is a
+        message from the engine;  the log has those."""
+        health = self._linear_comments_health
+        engine = getattr(self, "linear_comments", None)
+        if engine is None:
+            # A word the status does not know is not published as itself.
+            state = self._linear_comments_state or "unconfigured"
+            return {"state": state if state in LINEAR_COMMENT_STATES else "unconfigured"}
+        with self._linear_comments_lock:
+            row = dict(health)
+        seen = {
+            "last_tick": row["last_tick"],
+            "errors": row["errors"],
+            "last_error": row["last_error"],
+        }
+        if getattr(engine, "stopped", None) is None:
+            return {"state": "running", **seen}
+        if row["stopped_at"] is None:
+            row["stopped_at"] = self.clock.time()
+            with self._linear_comments_lock:
+                health["stopped_at"] = row["stopped_at"]
+        return {"state": "stopped", "since": row["stopped_at"], **seen}
 
     # ---- the wake router's receipts (AFC-824) ---------------------------------------------------
     def _await_receipt(
@@ -6715,7 +6946,9 @@ class Daemon:
         if failed is not None:
             self.log.write("wake-receipt-error", seat=runner.seat, wake_id=wake_id, error=failed)
             return 0
-        if state != W.DELIVERED:
+        if state == W.DELIVERED:
+            self._surface_from_receipt(runner, wake_id)
+        else:
             self.log.write(
                 "wake-outcome",
                 seat=runner.seat,
@@ -6726,6 +6959,65 @@ class Daemon:
                 receipt_last=fields.get("receipt_last"),
             )
         return 1
+
+    def _surface_from_receipt(self, runner: SeatRunner, wake_id: str) -> None:
+        """A router wake whose terminal receipt says delivered (AFC-841):  the held-back items it
+        listed, and its own triggers, surface now -- at accept time the router had only stored the
+        wake, so the `done` row recorded none (its `held_listed` and `held_lost` carry what the
+        wake took).  A wake whose row carries no list surfaces nothing extra:  a non-router wake
+        surfaced at accept time, and a `done` row from before the fix had already surfaced its
+        items there under the old rule.  A wake whose items a later wake already surfaced does
+        nothing at all -- the later wake cleared the lost count with its own report, and replaying
+        this one would pull down evictions recorded after it (Kody, PR 2446);  a wake that listed
+        no items still clears the lost count it carried.  Surfacing the rest is the same operation
+        (`HELD.surface`, whose decrement clamps at the store's own zero)."""
+        try:
+            view = runner.ledger.wakes().get(wake_id) or {}
+        except Exception:  # noqa: BLE001 - an unreadable ledger is nothing to surface
+            return
+        listed = view.get("held_listed")
+        if not isinstance(listed, list):
+            return
+        # The lost count the wake reported is read before anything else:  a wake that listed no
+        # items (everything had been evicted before it) still clears the count it carried (Kody,
+        # PR 2446), and HELD.surface clamps the decrement at the store's own zero.
+        lost = view.get("held_lost")
+        lost = int(lost) if isinstance(lost, int) and not isinstance(lost, bool) else 0
+        ids = sorted({i for i in listed if isinstance(i, int) and not isinstance(i, bool)})
+        if not ids:
+            if lost:
+                HELD.surface(runner.paths, message_ids=[], lost=lost)
+                self.log.write(
+                    "held-back-surfaced",
+                    seat=runner.seat,
+                    wake_id=wake_id,
+                    surfaced=0,
+                    lost=lost,
+                    by="receipt",
+                )
+            return
+        # A wake whose items a later wake already surfaced must not replay its lost snapshot:
+        # the later wake cleared the count with its own report, and the replay would pull down
+        # evictions recorded after it (Kody, PR 2446).  Only ids still held are surfaced, with
+        # the count the wake carried.
+        try:
+            data = HELD.load(runner.paths)
+        except Exception:  # noqa: BLE001 - an unreadable store is nothing to surface
+            return
+        still = {e.get("message_id") for e in data.get("records", []) + data.get("overflow", [])}
+        if not (still & set(ids)):
+            return
+        records = HELD.surface(runner.paths, message_ids=ids, lost=lost)
+        self._held_rows(runner, records, "surfaced", self.clock.time(), by=wake_id)
+        if records or lost:
+            self.log.write(
+                "held-back-surfaced",
+                seat=runner.seat,
+                wake_id=wake_id,
+                surfaced=len(records),
+                lost=lost,
+                by="receipt",
+            )
 
     @staticmethod
     def _outcome_written(runner: SeatRunner, wake_id: str) -> bool:

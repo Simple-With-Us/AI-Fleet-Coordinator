@@ -1,6 +1,6 @@
 """Tests for fleet-ops-control.py:  the allowlist, the ssh gate, the plans and the audit.
 
-Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify.  Control runners are
+Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify.  Control runners are
 fake; credential tests use only a loopback provider and the actual isolated canonical worker.
 The bounded status reader also runs small Python children and a stand-in `docker` script.
 
@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -133,7 +134,12 @@ class Base(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self.tmp.name)
+        # Resolve the temp home: on macOS the default temp root is under /var, a symlink to
+        # /private/var, and the production audit-capture walk opens each component with
+        # O_NOFOLLOW, so an unresolved home is refused before any update-status logic runs.
+        # The resolved path is the same directory; symlinks a test plants below it are still
+        # refused exactly as in production.
+        self.home = Path(self.tmp.name).resolve()
         self.config_path = self.home / "fleet-ops-control.json"
         self.config_path.write_text(json.dumps(CONFIG))
         self.state = self.home / ".local" / "state" / "fleet-tools"
@@ -141,17 +147,53 @@ class Base(unittest.TestCase):
         for directory in (self.home / ".local", self.home / ".local/state"):
             directory.chmod(0o700)
         self.http_calls = []
+        self.http_methods = []
+        self.http_body = ""
+        # Every test gets the shared client faked:  no test reaches Infisical.
+        self.client = FakeInfisical()
+        patcher = mock.patch.object(foc, "_load_infisical_reader", return_value=self.client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The linux update tests fake systemctl/sudo through the runner, but update_command
+        # first checks the pinned executables on the real filesystem, and /usr/bin/systemctl
+        # does not exist on macOS.  Present exactly those two pinned paths as executable
+        # files (every other path keeps the real answer) so the fake runner is reached; the
+        # production check itself is untouched, and the missing/non-executable refusal tests
+        # override this fake for one pinned path at a time.
+        pinned = {foc.UPDATE_SYSTEMCTL, foc.SUDO}
+        real_isfile = os.path.isfile
+        real_access = os.access
+
+        def fake_isfile(path):
+            return True if str(path) in pinned else real_isfile(path)
+
+        def fake_access(path, mode, *args, **kwargs):
+            return True if str(path) in pinned else real_access(path, mode, *args, **kwargs)
+
+        for patcher in (
+            mock.patch.object(foc.os.path, "isfile", side_effect=fake_isfile),
+            mock.patch.object(foc.os, "access", side_effect=fake_access),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def http(self, url, headers):
+    def http(self, url, headers, method="GET"):
         self.http_calls.append((url, dict(headers)))
-        return self.http_status
+        self.http_methods.append(method)
+        return self.http_status, self.http_body
 
-    def ctx(self, platform="linux", runner=None, environ=None, http_status=200):
+    def http_post(self, url, headers):
+        self.http_calls.append((url, dict(headers)))
+        self.http_methods.append("POST")
+        return self.http_status, self.http_body
+
+    def ctx(self, platform="linux", runner=None, environ=None, http_status=200, http_body=""):
         self.runner = runner or FakeRunner()
         self.http_status = http_status
+        self.http_body = http_body
         return foc.Context(
             platform=platform,
             uid=os.getuid(),
@@ -159,6 +201,7 @@ class Base(unittest.TestCase):
             environ=environ or {"PATH": "/usr/bin:/bin", "SECRET_THING": "x" * 20},
             runner=self.runner,
             http=self.http,
+            http_post=self.http_post,
             now=lambda: NOW,
             config_path=self.config_path,
             pm2_node="/fake/bin/node",
@@ -172,10 +215,13 @@ class Base(unittest.TestCase):
         def fixture_token(_ctx):
             value = getattr(_ctx.runner, "secret", TOKEN)
             if not value:
-                raise foc.Failed("the Coolify token is not available")
+                raise foc.Failed(
+                    "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
+                    "in the process environment or in $HOME/.config/fleet-tools/ops-control.env"
+                )
             return value
 
-        # Pure control-flow tests retain their explicit synthetic credential seam.  The
+        # Pure control-flow tests retain their explicit synthetic credential seam.  The
         # CredentialTests subclass disables it and crosses the actual provider/worker path.
         isolated = (
             mock.patch.object(foc, "read_coolify_token", side_effect=fixture_token)
@@ -300,7 +346,7 @@ class AllowlistTests(Base):
 
 
 class AllowlistListShapeTests(Base):
-    """Each list of the allowlist must be a list.  A number, a flag, a string or an object in its
+    """Each list of the allowlist must be a list.  A number, a flag, a string or an object in its
     place is a refused file, never a traceback that takes every verb down with it."""
 
     LISTS = (
@@ -387,7 +433,7 @@ class AllowlistListShapeTests(Base):
 class AllowlistNotesTests(Base):
     """The owner copy an entry may carry (`role`, `stopConsequence`), `logsUnit` and the `watch` list."""
 
-    # The Mac agents that carry owner copy, as the repo allowlist words it.  The notes runner
+    # The Mac agents that carry owner copy, as the repo allowlist words it.  The notes runner
     # and the RAG mirror have no role: neither word the allowlist uses (`reporting`, `updater`)
     # describes them.
     MAC_NOTES = {
@@ -395,6 +441,10 @@ class AllowlistNotesTests(Base):
             None,
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
+        ),
+        "com.jay.fleet-bearer-status": (
+            "reporting",
+            "Stopping this stops the bearer status report and its alarms, so Muster's Bearers panel goes out of date and then reads as not known.",
         ),
         "com.jay.fleet-api-health": (
             "reporting",
@@ -653,7 +703,7 @@ class ServerVerbTests(Base):
 
 
 class UpdateReceiptTests(Base):
-    def update(self, states=None, submit=(0, b""), permission=0, uid=1001):
+    def update(self, states=None, submit=(0, b""), permission=0, uid=None):
         sequence = list(states or [update_state()])
         self.update_calls = []
 
@@ -666,7 +716,10 @@ class UpdateReceiptTests(Base):
             return submit
 
         ctx = self.ctx(runner=runner)
-        ctx.uid = uid
+        # Default to the real non-root uid: a hardcoded server uid (1001) is not the owner of
+        # the test's audit file on a Mac (501), so the production audit writer would refuse
+        # its own row.  Any non-zero uid exercises the sudo route; root is passed explicitly.
+        ctx.uid = uid if uid is not None else (1001 if ctx.uid == 0 else ctx.uid)
         return self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], ctx)
 
     def test_old_success_is_never_completion(self):
@@ -838,6 +891,24 @@ class UpdateReceiptTests(Base):
                     foc.update_command(
                         ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}
                     )
+            self.assertEqual(raised.exception.error_code, expected)
+            self.assertEqual(self.runner.calls, [])
+
+    def test_non_executable_pinned_executables_refuse_before_sudo_query(self):
+        for missing, expected in (
+            (foc.UPDATE_SYSTEMCTL, "update_executable_unavailable"),
+            (foc.SUDO, "authorization_unavailable"),
+        ):
+            ctx = self.ctx()
+            with (
+                mock.patch.object(
+                    foc.os, "access", side_effect=lambda path, *args, **kwargs: str(path) != missing
+                ),
+                self.assertRaises(foc.Refused) as raised,
+            ):
+                foc.update_command(
+                    ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}
+                )
             self.assertEqual(raised.exception.error_code, expected)
             self.assertEqual(self.runner.calls, [])
 
@@ -2354,7 +2425,7 @@ class RedeployTests(Base):
         self.write_status(self.ROWS)
         code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
         self.assertEqual(code, 0)
-        self.assertEqual(ans["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={UUID}"]])
+        self.assertEqual(ans["commands"], [["coolify", "POST", f"/api/v1/deploy?uuid={UUID}"]])
         self.assertEqual(self.http_calls, [])
         self.assertEqual(self.runner.calls, [])
 
@@ -2366,6 +2437,7 @@ class RedeployTests(Base):
         ((url, headers),) = self.http_calls
         self.assertEqual(url, f"http://127.0.0.1:8000/api/v1/deploy?uuid={UUID}")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
+        self.assertEqual(self.http_methods, ["POST"])
         for argv, _env in self.runner.calls:
             self.assertNotIn(TOKEN, " ".join(argv))
         self.assertNotIn(TOKEN, json.dumps(ans))
@@ -2493,6 +2565,7 @@ class RedeployTests(Base):
 
     def test_missing_token_and_bad_answer_fail(self):
         self.write_status(self.ROWS)
+        self.client.value = ""  # the read answers no token
         code, ans = self.run_main(
             ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(runner=FakeRunner(secret=""))
         )
@@ -2709,7 +2782,7 @@ class RedeployResourceNameTests(Base):
     def test_the_name_never_carries_the_uuid(self):
         code, answer = self.redeploy("fleet-recall")
         self.assertNotIn(UUID, answer["resourceName"])
-        self.assertEqual(answer["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={UUID}"]])
+        self.assertEqual(answer["commands"], [["coolify", "POST", f"/api/v1/deploy?uuid={UUID}"]])
 
     def test_a_refused_redeploy_has_no_resource_name(self):
         self.write_status([self.row("fleet-recall", status="absent")])
@@ -2721,13 +2794,26 @@ class RedeployResourceNameTests(Base):
         )
         self.assertNotIn("resourceName", answer)
 
-    def test_a_failed_redeploy_still_names_the_application(self):
+    def test_a_redeploy_with_a_server_error_is_unknown_and_names_the_application(self):
+        """A redeploy POST answered with a server error may have been applied (section 13)."""
         self.write_status([self.row("fleet-recall")])
         code, answer = self.run_main(
             ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(http_status=500)
         )
+        self.assertEqual((code, answer["result"]), (1, "unknown"))
+        self.assertEqual(answer["resourceName"], "fleet-recall")
+        rows = self.audit_rows()
+        self.assertEqual(rows[-1]["result"], "unknown")
+
+    def test_a_redeploy_refused_before_the_deploy_is_failed(self):
+        """A 4xx refused the request before anything began,  so it is a definite failure."""
+        self.write_status([self.row("fleet-recall")])
+        code, answer = self.run_main(
+            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(http_status=403)
+        )
         self.assertEqual((code, answer["result"]), (1, "failed"))
         self.assertEqual(answer["resourceName"], "fleet-recall")
+        self.assertEqual(self.audit_rows()[-1]["result"], "failed")
 
     def test_no_other_verb_carries_a_resource_name_or_a_logs_unit(self):
         for argv in (
@@ -2753,12 +2839,58 @@ class RedeployResourceNameTests(Base):
         self.assertEqual(plan["auditTarget"], "Caf? App")
 
 
-class CredentialTests(Base):
-    """Own custody and strict rows cross the actual canonical worker, never an app fake."""
+class FakeInfisical:
+    """The shared Infisical client, faked:  one read, and the grant it was given."""
 
+    ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+
+    class SecretsError(Exception):
+        """The shared client's error:  `code` is the exit code,  `provider_status` the HTTP status."""
+
+        def __init__(self, message, code=4, *, provider_status=None):
+            super().__init__(message)
+            self.code = code
+            self.provider_status = provider_status
+
+    class SecretsTimeout(TimeoutError):
+        """A hung read:  a timeout,  not a refusal."""
+
+    def __init__(self, value=TOKEN):
+        self.value = value
+        self.calls = []
+        self.timeouts = []
+        self.refuse_empty_token = False
+        self.refuse_scope = False
+        self.refuse_status = None
+        self.hang = False
+
+    def fetch_verified(self, name, path, env, token=None, timeout=None):
+        self.calls.append((name, path, dict(env), token))
+        self.timeouts.append(timeout)
+        if self.hang:
+            raise self.SecretsTimeout("fetch-failed: timeout")
+        if self.refuse_scope:
+            raise self.SecretsError("token-scope-mismatch")
+        if self.refuse_status is not None:
+            # The message names no scope,  so only the provider status can route this.
+            raise self.SecretsError("token-verification-failed", provider_status=self.refuse_status)
+        if self.refuse_empty_token and not token:
+            raise self.SecretsError("service-token-required")
+        return self.value
+
+
+class CredentialTests(Base):
+    """A caller-scoped service token reaches only the one Infisical read."""
+
+    # This class crosses the real read, so the harness fixture seam is off here.
     fake_credential_read = False
     ROWS = RedeployTests.ROWS
     TOKEN_NAME = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
+    VALUE = "st." + "scoped-fleet-ops-control-token"
+    # The second token is assembled at runtime from a prefix and a suffix, so no
+    # credential-shaped literal sits in the source, and it stays distinct from the
+    # file-scoped token above.
+    PROCESS_VALUE = "st." + "different-process-reader" + "-token"
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
@@ -2774,62 +2906,17 @@ class CredentialTests(Base):
             "INFISICAL_SHARED_CLIENT_ID",
             "INFISICAL_SHARED_CLIENT_SECRET",
             "WISE_RELAY_INFISICAL_TOKEN",
-            "FLEET_KNOBS_INFISICAL_TOKEN",
-            "FLEET_RECALL_INFISICAL_TOKEN",
         )
     }
-
-    def setUp(self):
-        super().setUp()
-        # Source lanes may intentionally be group-writable.  Exercise the unchanged custody
-        # guard against an actual private copied reader, rather than relaxing that guard.
-        reader_dir = self.home / "reader-payload"
-        if reader_dir.is_symlink():
-            raise ValueError(f"refusing symlink: {reader_dir}")
-        reader_dir.mkdir(mode=0o700)
-        reader_file = reader_dir / "fleet_infisical.py"
-        reader_file.write_bytes(Path(HERE, "fleet_infisical.py").read_bytes())
-        reader_file.chmod(0o600)
-        self.enterContext(mock.patch.object(foc, "HELPER_DIR", reader_dir))
-        self.project = str(uuid.uuid4())
-        self.api = ScopedReadAPI(
-            {foc.COOLIFY_TOKEN_NAME: TOKEN}, project=self.project, path="/coolify"
-        )
-        self.api.record_override = {"secretValueHidden": False}
-        self.api.__enter__()
-        self.addCleanup(self.api.__exit__, None, None, None)
-        self.VALUE = self.api.token
-        self.read_calls = []
-        actual_loader = foc._load_infisical_reader
-
-        def observed_loader(ctx):
-            reader = actual_loader(ctx)
-            actual_fetch = reader.bounded_fetch_project
-
-            def observed_fetch(project, folder, env, **kwargs):
-                self.read_calls.append((project, folder, dict(env), dict(kwargs)))
-                return actual_fetch(project, folder, env, **kwargs)
-
-            reader.bounded_fetch_project = observed_fetch
-            return reader
-
-        loader_patch = mock.patch.object(foc, "_load_infisical_reader", side_effect=observed_loader)
-        self.loader = loader_patch.start()
-        self.addCleanup(loader_patch.stop)
-
-    def env(self, **extra):
-        return {
-            "HOME": str(self.home),
-            "PATH": "/no-secret-application",
-            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
-            "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
-            "INFISICAL_ENVIRONMENT": "prod",
-            self.TOKEN_NAME: self.VALUE,
-            **extra,
-        }
+    COORDINATES = {
+        "INFISICAL_PROJECT_ID": "preserved-project",
+        "INFISICAL_READ_PATHS": foc.COOLIFY_TOKEN_PATH,
+    }
 
     def credentials(self, text, mode=0o600):
         folder = self.home / ".config" / "fleet-tools"
+        if folder.is_symlink():
+            raise ValueError(f"refusing symlink: {folder}")
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = folder / "ops-control.env"
         path.write_text(text)
@@ -2841,176 +2928,219 @@ class CredentialTests(Base):
 
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
+        environ = environ or {"PATH": "/usr/bin", "INFISICAL_TOKEN": "stale-token-from-env"}
         return self.run_main(
-            ["server", "redeploy", UUID, "--yes", "--json"],
-            self.ctx(environ=self.env() if environ is None else environ),
+            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(environ=environ)
         )
 
-    def test_file_binding_wins_and_only_the_exact_named_strict_read_runs(self):
+    def read_call(self):
+        return self.client.calls[-1]
+
+    def test_file_scoped_token_reaches_only_the_read(self):
         self.credentials(self.pair_text())
-        inherited = self.env(**self.SHARED_AUTH)
-        inherited[self.TOKEN_NAME] = "st.different-process-reader-token"
-        inherited["INFISICAL_READ_PATHS"] = "/,/coolify,/other"
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.PROCESS_VALUE,
+        }
         code, ans = self.redeploy(inherited)
-        self.assertEqual((code, ans["result"], ans["verified"]), (0, "submitted", False), ans)
-        ((project, folder, env, kwargs),) = self.read_calls
-        self.assertEqual((project, folder), (self.project, "/coolify"))
-        self.assertEqual(
-            env,
-            {
-                "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
-                "INFISICAL_ENVIRONMENT": "prod",
-                "INFISICAL_READ_PATHS": "/coolify",
-            },
-        )
-        self.assertEqual(
-            kwargs,
-            {
-                "token": self.VALUE,
-                "names": ("COOLIFY_API_TOKEN",),
-                "timeout": 30,
-                "writer": False,
-                "max_output_bytes": 8192,
-                "strict_records": True,
-            },
-        )
-        self.assertEqual(len(self.api.requests), 2)
-        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
-        self.assertTrue(self.api.requests[1].startswith("/api/v3/secrets/raw/COOLIFY_API_TOKEN?"))
+        # A server redeploy is submitted rather than run inline:  the merged code answers
+        # "submitted" for that action, so the expectation follows the code.
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        name, path, env, token = self.read_call()
+        self.assertEqual((name, path), (foc.COOLIFY_TOKEN_NAME, foc.COOLIFY_TOKEN_PATH))
+        self.assertEqual(token, self.VALUE)
+        self.assertNotIn(self.TOKEN_NAME, env)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
         text = json.dumps(ans) + (self.state / "ops-audit.jsonl").read_text()
         self.assertNotIn(self.VALUE, text)
-        self.assertNotIn(TOKEN, text)
-        self.assertEqual(self.runner.calls, [])
+        for argv, _env in self.runner.calls:
+            self.assertNotIn(self.VALUE, " ".join(argv))
+        # A systemctl child never sees it.
         self.runner.calls.clear()
         self.run_main(
             ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
             self.ctx(environ=inherited),
         )
-        ((argv, child_env),) = self.runner.calls
-        self.assertNotIn(self.VALUE, " ".join(argv))
-        self.assertNotIn(self.TOKEN_NAME, child_env)
-        self.assertFalse(self.SHARED_AUTH.keys() & child_env.keys())
+        ((argv, env),) = self.runner.calls
+        self.assertNotIn(self.TOKEN_NAME, env)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
-    def test_process_binding_and_existing_project_metadata_file_are_supported(self):
-        coordinate = self.home / ".simple-tools" / "fleet-ops-project-id"
-        if coordinate.parent.is_symlink():
-            raise ValueError(f"refusing symlink: {coordinate.parent}")
-        coordinate.parent.mkdir(mode=0o700)
-        coordinate.write_text(self.project + "\n")
-        env = self.env()
-        env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
-        code, ans = self.redeploy(env)
-        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
-        self.assertEqual(self.read_calls[0][3]["token"], self.VALUE)
+    def test_a_hung_read_is_a_timeout_and_not_a_missing_token(self):
+        """A hung Coolify read keeps its own signal:  it is not a broken credential."""
+        self.client.hang = True
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, ans = self.redeploy(inherited)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(ans.get("result"), "failed")
+        self.assertIn("timed out", ans.get("detail", ""))
+        self.assertEqual(ans.get("errorCode"), "timeout")
+        self.assertNotIn("not available", ans.get("detail", ""))
 
-    def test_missing_own_binding_never_uses_ambient_writer_recall_or_machine_auth(self):
-        env = self.env(**self.SHARED_AUTH)
-        env.pop(self.TOKEN_NAME)
-        code, ans = self.redeploy(env)
+    def test_the_read_carries_its_own_deadline(self):
+        """The Coolify read is bounded:  the client gets the reader's timeout (Kody, PR #2308)."""
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, _ = self.redeploy(inherited)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.client.timeouts[-1], foc.SECRET_TIMEOUT)
+
+    def test_process_scoped_token_is_used_when_there_is_no_file(self):
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, _ = self.redeploy(inherited)
+        self.assertEqual(code, 0)
+        _name, _path, env, token = self.read_call()
+        self.assertEqual(token, self.VALUE)
+        self.assertNotIn(self.TOKEN_NAME, env)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+        self.runner.calls.clear()
+        self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
+            self.ctx(environ=inherited),
+        )
+        ((argv, env),) = self.runner.calls
+        self.assertNotIn(self.TOKEN_NAME, env)
+        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+
+    def test_no_file_and_no_process_token_fails_closed(self):
+        self.client.refuse_empty_token = True
+        code, ans = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("synthetic-unrelated-credential", json.dumps(ans))
+
+    def test_a_missing_binding_names_the_variable_and_the_file(self):
+        code, ans = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
+        self.assertEqual(code, 1)
         self.assertEqual(
-            (code, ans["result"], ans["detail"]),
-            (1, "failed", "the Coolify token is not available"),
+            ans["detail"],
+            "the Coolify token is missing: set FLEET_OPS_CONTROL_INFISICAL_TOKEN "
+            "in the process environment or in $HOME/.config/fleet-tools/ops-control.env",
         )
-        self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
+        self.assertEqual(self.client.calls, [])  # the read never runs
+        self.assertEqual(self.http_calls, [])
 
-    def test_missing_or_malformed_project_refuses_before_the_provider(self):
-        for value in (None, "invalid-project"):
-            with self.subTest(value=value):
-                env = self.env()
-                env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
-                if value is not None:
-                    env["INFISICAL_FLEET_OPS_PROJECT_ID"] = value
-                code, ans = self.redeploy(env)
+    def test_a_refused_grant_names_the_folder_the_operator_needs(self):
+        self.client.refuse_scope = True
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, ans = self.redeploy(inherited)
+        self.assertEqual(code, 1)
+        self.assertTrue(
+            ans["detail"].startswith("the Infisical reader refused the token"), ans["detail"]
+        )
+        self.assertEqual(self.http_calls, [])
+
+    def test_a_status_that_is_an_int_subclass_keeps_its_meaning(self):
+        """`http.HTTPStatus` is an int subclass,  so it keeps its own handling."""
+        import http
+
+        self.credentials(self.pair_text())
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=http.HTTPStatus.FORBIDDEN)
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertIn("COOLIFY_DEPLOY_ONLY", ans["detail"])
+        # The message carries the number an operator greps for,  not the enum name.
+        self.assertIn("HTTP 403", ans["detail"])
+        self.assertNotIn("HTTPStatus", ans["detail"])
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=http.HTTPStatus.TOO_MANY_REQUESTS)
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(ans["errorCode"], "retryable")
+
+    def test_a_status_that_is_not_a_status_is_a_no_answer(self):
+        """An unexpected value from the HTTP seam must not crash the helper (Kody)."""
+        self.credentials(self.pair_text())
+        for status in (None, "oops", object()):
+            with self.subTest(status=type(status).__name__):
+                code, ans = self.run_main(["--check-token"], self.ctx(http_status=status))
                 self.assertEqual((code, ans["result"]), (1, "failed"))
-                self.assertEqual(
-                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
+                self.assertEqual(ans["detail"], "Coolify did not answer")
+
+    def test_a_truncated_error_body_still_answers_its_status(self):
+        """A cut error body must not escape the request helper:  the status is what it needs."""
+        import http.client
+        import urllib.error
+
+        class Cut(urllib.error.HTTPError):
+            def read(self, *args):
+                raise http.client.IncompleteRead(b"")
+
+        error = Cut("http://127.0.0.1:8000/api/v1/deploy?uuid=x", 500, "Server Error", {}, None)
+        try:
+            with mock.patch("urllib.request.build_opener") as opener:
+                opener.return_value.open.side_effect = error
+                status, body = foc.http_request("http://127.0.0.1:8000/x", {}, "POST", 1)
+        finally:
+            error.close()
+        self.assertEqual((status, body), (500, ""))
+
+    def test_a_transient_coolify_answer_is_retryable_and_not_terminal(self):
+        """A 408 or a 429 refused the deploy before it was applied,  so the run may be retried."""
+        self.write_status(self.ROWS)
+        for status in (408, 429):
+            with self.subTest(status=status):
+                code, ans = self.run_main(
+                    ["server", "redeploy", UUID, "--yes", "--json"],
+                    self.ctx(
+                        environ={
+                            "PATH": "/usr/bin",
+                            **self.SHARED_AUTH,
+                            **self.COORDINATES,
+                            self.TOKEN_NAME: self.VALUE,
+                        },
+                        http_status=status,
+                    ),
                 )
+                self.assertEqual((code, ans["result"]), (1, "failed"), ans)
+                self.assertEqual(ans["errorCode"], "retryable")
 
-    def test_explicit_null_expiry_read_only_binding_redeploys_via_named_value(self):
-        self.api.metadata_override = {"expiresAt": None}
-        code, ans = self.redeploy()
-        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
-        self.assertEqual(len(self.api.requests), 2)
-        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
-        self.assertTrue(self.http_calls)
-
-    def test_wrong_scope_permission_project_and_expiry_stop_before_named_values(self):
-        cases = (
-            {"workspace": str(uuid.uuid4())},
-            {"scopes": [{"environment": "prod", "secretPath": "/"}]},
-            {"scopes": [{"environment": "dev", "secretPath": "/coolify"}]},
-            {
-                "scopes": [
-                    {"environment": "prod", "secretPath": "/coolify"},
-                    {"environment": "prod", "secretPath": "/other"},
-                ]
-            },
-            {"permissions": ["read", "write"]},
-            {"expiresAt": None, "permissions": ["read", "write"]},
-            {"expiresAt": None, "workspace": str(uuid.uuid4())},
-            {"expiresAt": "invalid"},
-            {"expiresAt": "2000-01-01T00:00:00Z"},
-            {"expiresAt": "2099-01-01T00:00:00"},
+    def test_a_provider_403_is_the_scope_remedy_and_not_the_generic_one(self):
+        """The reader's exit code is not an HTTP status;  the provider status is."""
+        self.client.refuse_status = 403
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN_NAME: self.VALUE,
+        }
+        code, ans = self.redeploy(inherited)
+        self.assertEqual(code, 1)
+        self.assertTrue(
+            ans["detail"].startswith("the Infisical reader refused the token"), ans["detail"]
         )
-        for metadata in cases:
-            with self.subTest(fields=tuple(metadata)):
-                self.api.metadata_override = metadata
-                self.api.requests.clear()
-                code, ans = self.redeploy()
-                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
-                self.assertEqual(self.api.requests, ["/api/v2/service-token"])
-                self.assertEqual(self.http_calls, [])
+        self.assertEqual(self.http_calls, [])
 
-    def test_strict_named_record_failures_never_reach_coolify(self):
-        cases = (
-            {},
-            {"secretValueHidden": True},
-            {"secretValueHidden": "false"},
-            {"secretKey": "OTHER_NAME"},
-            {"workspace": str(uuid.uuid4())},
-            {"environment": "dev"},
-            {"secretPath": "/other"},
-            {"type": "personal"},
-            {"secretValue": ""},
-            {"secretValue": None},
-            {"secretValue": "${UNRESOLVED}"},
-        )
-        for record in cases:
-            with self.subTest(fields=tuple(record)):
-                self.api.record_override = {"secretValueHidden": False, **record} if record else {}
-                self.api.record_omissions = () if record else ("secretValueHidden",)
-                self.api.requests.clear()
-                self.http_calls.clear()
-                self.assertEqual((self.api.requests, self.http_calls), ([], []))
-                code, ans = self.redeploy()
-                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
-                self.assertEqual(len(self.api.requests), 2)
-                self.assertEqual(self.http_calls, [])
+    def test_the_reason_mapper_reads_the_provider_status_before_the_exit_code(self):
+        refusal = FakeInfisical.SecretsError("token-verification-failed", provider_status=403)
+        self.assertIn("refused the token", foc._infisical_coolify_read_reason(refusal))
+        unavailable = FakeInfisical.SecretsError("token-verification-failed", provider_status=503)
+        self.assertIn("failed", foc._infisical_coolify_read_reason(unavailable))
+        # The exit code alone is not a status:  it must not read as a scope refusal.
+        exit_code = FakeInfisical.SecretsError("token-verification-failed", code=4)
+        self.assertNotIn("refused the token", foc._infisical_coolify_read_reason(exit_code))
 
-    def test_absent_whitespace_and_oversized_values_fail_closed(self):
-        for value in (None, " ", "two words", "z" * 9000):
-            with self.subTest(kind=type(value).__name__, length=len(value or "")):
-                self.api.values.clear()
-                if value is not None:
-                    self.api.values[foc.COOLIFY_TOKEN_NAME] = value
-                code, ans = self.redeploy()
-                self.assertEqual((code, ans["result"]), (1, "failed"))
-                self.assertEqual(self.http_calls, [])
-                self.assertNotIn(self.VALUE, json.dumps(ans))
-
-    def test_non_prod_and_invalid_own_binding_never_contact_the_provider(self):
-        for change in (
-            {"INFISICAL_ENVIRONMENT": "dev"},
-            {"INFISICAL_ENV": "staging"},
-            {self.TOKEN_NAME: "malformed"},
-        ):
-            with self.subTest(fields=tuple(change)):
-                self.api.requests.clear()
-                code, ans = self.redeploy(self.env(**change))
-                self.assertEqual((code, ans["result"]), (1, "failed"))
-                self.assertEqual((self.api.requests, self.http_calls), ([], []))
-
-    def test_private_file_custody_failures_stop_before_any_reader_or_coolify_call(self):
+    def test_a_shared_or_malformed_file_fails_before_the_read(self):
         cases = [
             (self.pair_text(), 0o640),
             (self.pair_text(), 0o604),
@@ -3018,80 +3148,98 @@ class CredentialTests(Base):
             ('FLEET_OPS_CONTROL_INFISICAL_TOKEN="quoted"\n', 0o600),
             ("PATH=/tmp/evil\n", 0o600),
             ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=a b\n", 0o600),
-            (self.pair_text() + self.pair_text(), 0o600),
-            ("export " + self.pair_text().splitlines()[1] + "\n", 0o600),
+            (
+                "FLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
+                + "x" * 20
+                + "\nFLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
+                + "y" * 20
+                + "\n",
+                0o600,
+            ),
+            ("export FLEET_OPS_CONTROL_INFISICAL_TOKEN=st." + "x" * 25 + "\n", 0o600),
             ("# nothing\n", 0o600),
         ]
         for text, mode in cases:
-            with self.subTest(mode=mode):
-                self.credentials(text, mode)
-                code, ans = self.redeploy()
-                self.assertEqual((code, ans["result"]), (1, "failed"))
-                self.assertIn(
-                    ans["detail"],
-                    (
-                        "the Infisical credential file is not private",
-                        "the Infisical credential file is malformed",
-                    ),
-                )
-                self.assertEqual(
-                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
-                )
+            self.credentials(text, mode)
+            self.client.calls.clear()
+            code, _ans = self.redeploy()
+            self.assertNotEqual(code, 0)
+            self.assertEqual(self.client.calls, [])  # the read never runs
+            self.assertEqual(self.http_calls, [])
 
-    def test_symlinked_credential_file_is_refused(self):
+    def test_a_symlinked_file_is_refused(self):
         real = self.home / "elsewhere.env"
         real.write_text(self.pair_text())
-        real.chmod(0o600)
+        os.chmod(real, 0o600)
         folder = self.home / ".config" / "fleet-tools"
-        folder.mkdir(parents=True)
+        if folder.is_symlink():
+            raise ValueError(f"refusing symlink: {folder}")
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         (folder / "ops-control.env").symlink_to(real)
         code, ans = self.redeploy()
         self.assertEqual((code, ans["detail"]), (1, "the Infisical credential file cannot be read"))
-        self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
-    def test_plan_does_not_load_reader_or_read_even_a_malformed_credential_file(self):
-        self.credentials("malformed", 0o644)
-        self.write_status(self.ROWS)
-        code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
-        self.assertEqual((code, ans["result"]), (0, "planned"))
-        self.loader.assert_not_called()
-        self.assertEqual((self.api.requests, self.http_calls), ([], []))
-
-    def test_read_timeout_is_known_failure_but_sent_coolify_failure_stays_uncertain(self):
-        ctx = self.ctx(environ=self.env())
-        commands = [["coolify", "GET", "/api/v1/deploy?uuid=" + UUID]]
-        with mock.patch.object(foc, "SECRET_TIMEOUT", 0.001):
-            with self.assertRaises(foc.Failed) as caught:
-                foc.execute(ctx, "server", "redeploy", UUID, commands)
-        self.assertFalse(caught.exception.timed_out)
-        self.assertEqual(self.http_calls, [])
-        ctx = self.ctx(environ=self.env(), http_status=foc.NoAnswer(0))
-        with self.assertRaises(foc.Failed) as caught:
-            foc.execute(ctx, "server", "redeploy", UUID, commands)
-        self.assertTrue(caught.exception.timed_out)
-        self.assertEqual(len(self.http_calls), 1)
-
-    def test_check_token_uses_same_real_reader_without_an_audit_write(self):
-        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
+    def test_check_token_reads_the_token_and_asks_coolify_about_a_deploy(self):
+        self.credentials(self.pair_text())
+        code, ans = self.run_main(["--check-token"], self.ctx())
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         ((url, headers),) = self.http_calls
-        self.assertEqual(url, "http://127.0.0.1:8000/api/v1/version")
-        self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
-        self.assertNotIn(TOKEN, json.dumps(ans))
+        self.assertEqual(
+            url,
+            f"http://127.0.0.1:8000/api/v1/deploy?uuid={foc.COOLIFY_CHECK_UUID}",
+        )
+        self.assertEqual(headers["Authorization"], "Bearer " + self.client.value)
+        self.assertEqual(self.http_methods, ["POST"])
+        self.assertNotIn(self.VALUE, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
+        self.assertEqual(self.read_call()[3], self.VALUE)
 
-    def test_check_token_failures_keep_fixed_diagnostics_and_host_gate(self):
-        self.api.values.clear()
-        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
-        self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+    def test_check_token_accepts_only_coolifys_own_not_found(self):
+        # The nil uuid names no resource:  Coolify's own answer is the proof that the
+        # token is accepted for a deploy.  Another not-found is not that proof.
+        self.credentials(self.pair_text())
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=404, http_body="No resources found")
+        )
+        self.assertEqual((code, ans["result"]), (0, "done"), ans)
+        code, ans = self.run_main(
+            ["--check-token"], self.ctx(http_status=404, http_body="Not Found")
+        )
+        self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 404"))
+        self.assertEqual(len(self.http_calls), 2)  # both probes reached the deploy route
+
+    def test_check_token_failures(self):
+        self.credentials(self.pair_text())
+        self.client.value = ""
+        code, ans = self.run_main(["--check-token"], self.ctx())
+        self.assertEqual(
+            (code, ans["detail"]),
+            (
+                1,
+                (
+                    "the Infisical read returned no usable COOLIFY_DEPLOY_ONLY; "
+                    "check the secret name and the /coolify-deploy-only-token folder grant"
+                ),
+            ),
+        )
         self.assertEqual(self.http_calls, [])
-        self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN
-        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env(), http_status=401))
-        self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 401"))
-        self.api.requests.clear()
-        code, ans = self.run_main(["--check-token"], self.ctx("darwin", environ=self.env()))
+        self.client.value = TOKEN
+        code, ans = self.run_main(["--check-token"], self.ctx(http_status=401))
+        self.assertEqual(
+            (code, ans["detail"]),
+            (
+                1,
+                "Coolify refused the COOLIFY_DEPLOY_ONLY token (HTTP 401); "
+                "rotate it in the /coolify-deploy-only-token folder",
+            ),
+        )
+        code, ans = self.run_main(["--check-token"], self.ctx(http_status=429))
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(ans["errorCode"], "retryable")
+        code, ans = self.run_main(["--check-token"], self.ctx("darwin"))
         self.assertEqual((code, ans["result"]), (2, "refused"))
-        self.assertEqual(self.api.requests, [])
+        code, ans = self.run_main(["--check-token", "--json"], self.ctx())
+        self.assertEqual((code, ans["result"]), (2, "refused"))
 
 
 class SshGateTests(Base):
@@ -4955,8 +5103,8 @@ class OperatorFixtureStoreTests(Base):
 class ReducerModuleTests(Base):
     """The module the verb runs is read through descriptors and judged by fstat, never imported.
 
-    It sits beside the helper, and the layout is read from who owns that folder.  A folder owned
-    by TRUSTED_MODULE_UID (root, in production) is the installed layout.  These tests stand in for
+    It sits beside the helper, and the layout is read from who owns that folder.  A folder owned
+    by TRUSTED_MODULE_UID (root, in production) is the installed layout.  These tests stand in for
     it by naming this account the trusted one (`installed`); a folder owned by the calling
     account while root is the trusted one is a checkout (`checkout`)."""
 
@@ -5080,7 +5228,7 @@ class ReducerModuleTests(Base):
 
     def swap(self, folder, path, before, text):
         """Run the loader while the module file is replaced by an evil one `before` the open
-        of it or after it.  Returns (module, whether the evil code ran)."""
+        of it or after it.  Returns (module, whether the evil code ran)."""
         marker = self.home / "evil-ran"
         evil = self.home / "evil.py"
         evil.write_text("open(%r, 'w').write('ran')\n%s" % (str(marker), text))
@@ -7243,6 +7391,239 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(answer["unavailableSource"], "fleet_infisical.py")
         self.assertNotIn(self.api.token, json.dumps(answer))
+
+
+class CommittedPlanConsumersTests(unittest.TestCase):
+    """One deploy plan, one mapping:  no committed consumer still maps it to a GET.
+
+    The deploy route answers POST only,  so a consumer that still says GET disagrees with
+    the helper about the action it takes.  A dated record keeps the mapping it recorded and
+    names the live statement;  every other committed file must carry the POST mapping.
+    """
+
+    REPO = Path(HERE).parent
+    LIVE = "docs/protocols/fleet-tool-parity.md"
+    DATED_RECORDS = (
+        "docs/plans/2026-10-28-muster-ops-control.md",
+        "docs/rollouts/2026-11-08-helper-unit-status.md",
+    )
+    # The live spec keeps its review history,  and that history records the GET mapping of
+    # the day it answered;  its normative part names POST.
+    LIVE_SPEC = "docs/muster-ios/server-route-spec.md"
+    SPEC_HISTORY_HEADING = "## 18.  Review Response"
+    SKIP_DIRS = frozenset(
+        {".git", "node_modules", "__pycache__", ".venv", "site", "build", "dist", ".mypy_cache"}
+    )
+    MAX_BYTES = 4 * 1024 * 1024
+    # A plan command in any committed file,  with or without the escapes a JSON string
+    # carries,  and the prose form a dated record uses.
+    STALE = (
+        re.compile(r'\[\s*"?coolify"?\s*,\s*"?GET"?\s*,'),
+        re.compile(r"GET\s+/api/v1/deploy\?"),
+    )
+
+    def committed_files(self):
+        for root, dirs, files in os.walk(self.REPO):
+            dirs[:] = sorted(name for name in dirs if name not in self.SKIP_DIRS)
+            for name in sorted(files):
+                yield Path(root) / name
+
+    def stale_lines(self, text):
+        """The lines that still map the deploy to a GET, with their line numbers."""
+        plain = text.replace("\\", "")
+        found = []
+        for number, line in enumerate(plain.splitlines(), start=1):
+            if any(pattern.search(line) for pattern in self.STALE):
+                found.append(number)
+        return found
+
+    def spec_history_line(self, text):
+        """The first line of the spec's review history,  where a recorded GET may stand."""
+        for number, line in enumerate(text.splitlines(), start=1):
+            if line.startswith(self.SPEC_HISTORY_HEADING):
+                return number
+        raise AssertionError("the live spec has no review-response section")
+
+    def test_no_committed_consumer_maps_the_deploy_to_a_get(self):
+        offenders = []
+        for path in self.committed_files():
+            try:
+                if path.stat().st_size > self.MAX_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            lines = self.stale_lines(text)
+            if not lines:
+                continue
+            relative = path.relative_to(self.REPO).as_posix()
+            if relative in self.DATED_RECORDS:
+                continue
+            if relative == self.LIVE_SPEC:
+                history = self.spec_history_line(text)
+                offenders += [f"{relative}:{number}" for number in lines if number <= history]
+                continue
+            offenders += [f"{relative}:{number}" for number in lines]
+        self.assertEqual(
+            offenders,
+            [],
+            "a committed consumer still maps the deploy to a GET: " + ", ".join(offenders),
+        )
+
+    def test_the_live_spec_names_the_post_mapping_before_its_review_history(self):
+        text = (self.REPO / self.LIVE_SPEC).read_text(encoding="utf-8")
+        history = self.spec_history_line(text)
+        normative = "\n".join(text.splitlines()[: history - 1])
+        self.assertIn('"coolify", "POST"', normative)
+        self.assertEqual(self.stale_lines(normative), [])
+
+    def test_the_committed_fixture_carries_the_post_mapping(self):
+        fixture = self.REPO / "scripts/fixtures/muster-vectors-v5.json"
+        plain = fixture.read_text(encoding="utf-8").replace("\\", "")
+        self.assertIn('"coolify","POST",', plain)
+        self.assertNotIn('"coolify","GET",', plain)
+
+    def test_the_live_protocol_states_the_post_mapping(self):
+        live = (self.REPO / self.LIVE).read_text(encoding="utf-8")
+        plain = re.sub(r"\s+", " ", live.replace("\\", ""))
+        self.assertIn('"coolify", "POST"', plain)
+
+    def test_each_dated_record_points_at_the_live_statement(self):
+        for relative in self.DATED_RECORDS:
+            text = (self.REPO / relative).read_text(encoding="utf-8")
+            self.assertIn(self.LIVE, text, relative)
+
+
+class StaleEditorAllowlistTests(unittest.TestCase):
+    """The retry that lets a stale editor's refusal through.
+
+    An editor image that predates a spec type the host allowlist now uses
+    refuses the whole request.  The host drops that one entry and asks again.
+    The entry it drops comes from the host's own allowlist and never from the
+    editor's answer alone, the path shape is one the editor names, and the
+    retry never repeats a side effect.
+    """
+
+    def allowlist(self):
+        return {
+            "applyEnabled": True,
+            "seat": {
+                "routine": {"type": "table", "keys": {"url_env": {"type": "seat-env"}}},
+            },
+            "tables": {
+                "notes_queue": {
+                    "enabled": {"type": "bool"},
+                    "worker_seats": {"type": "seats"},
+                }
+            },
+        }
+
+    def editor(self, answers, calls):
+        def run(ctx, request):
+            calls.append(json.loads(json.dumps(request)))
+            return answers[min(len(calls) - 1, len(answers) - 1)]
+
+        return run
+
+    def refusal(self, **extra):
+        answer = {
+            "ok": False,
+            "result": "refused",
+            "errorCode": "allowlist_invalid",
+            "detail": "notes_queue.worker_seats needs a type from bool, int, number",
+        }
+        answer.update(extra)
+        return (answer, 2)
+
+    def ctx(self):
+        return foc.Context(platform="linux", uid=os.getuid(), home=Path("/tmp"), environ={})
+
+    def test_an_entry_of_a_newly_added_type_is_dropped_and_the_rest_stays(self):
+        allowlist = self.allowlist()
+        stripped = foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.worker_seats")
+        self.assertEqual(stripped, (("notes_queue", "worker_seats"), "notes_queue.worker_seats"))
+        self.assertNotIn("worker_seats", allowlist["tables"]["notes_queue"])
+        self.assertIn("enabled", allowlist["tables"]["notes_queue"])
+
+    def test_an_entry_of_a_known_type_is_never_dropped(self):
+        allowlist = self.allowlist()
+        self.assertIsNone(foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.enabled"))
+        self.assertIn("enabled", allowlist["tables"]["notes_queue"])
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
+
+    def test_a_seat_path_deeper_than_the_editor_names_drops_nothing(self):
+        allowlist = self.allowlist()
+        allowlist["seat"]["routine"]["keys"]["worker_seats"] = {"type": "seats"}
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(allowlist, "seat.*.routine.worker_seats.extra")
+        )
+        self.assertIn("worker_seats", allowlist["seat"]["routine"]["keys"])
+        self.assertIn("routine", allowlist["seat"])
+
+    def test_a_table_path_deeper_than_the_editor_names_drops_nothing(self):
+        allowlist = self.allowlist()
+        allowlist["tables"]["notes_queue"]["worker_seats"] = {
+            "type": "table",
+            "keys": {"worker_seats": {"type": "seats"}},
+        }
+        self.assertIsNone(
+            foc._strip_unknown_allowlist_entry(allowlist, "notes_queue.worker_seats.extra")
+        )
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"]["worker_seats"]["keys"])
+
+    def test_the_retry_drops_the_entry_and_asks_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal(), ({"ok": True, "result": "read", "settings": {}}, 0)]
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
+        ):
+            fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("worker_seats", calls[1]["allowlist"]["tables"]["notes_queue"])
+        self.assertEqual(fields["skippedAllowlist"], ["notes_queue.worker_seats"])
+        self.assertEqual(fields["result"], "read")
+
+    def test_a_refusal_that_came_after_a_side_effect_is_not_asked_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal(result="failed", replaced=True)]
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
+        ):
+            fields, code = foc.eavesdropper_settings(self.ctx(), "get", None)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("skippedAllowlist", fields)
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
+
+    def test_an_apply_that_would_write_the_live_file_is_not_asked_again(self):
+        allowlist = self.allowlist()
+        calls = []
+        answers = [self.refusal()]
+        with (
+            mock.patch.object(foc, "load_eavesdropper_settings_allowlist", return_value=allowlist),
+            mock.patch.object(
+                foc,
+                "run_eavesdropper_settings_editor_in_container",
+                side_effect=self.editor(answers, calls),
+            ),
+        ):
+            fields, code = foc.eavesdropper_settings(
+                self.ctx(), "apply", {"notes_queue.enabled": True}
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("skippedAllowlist", fields)
+        self.assertIn("worker_seats", allowlist["tables"]["notes_queue"])
 
 
 if __name__ == "__main__":

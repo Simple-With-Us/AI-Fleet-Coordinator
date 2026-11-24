@@ -46,6 +46,14 @@ class ReviewedGenericTests(unittest.TestCase):
                 "82b53da38ce0a110a3f25b947fbcabcfcef031a8295795d72f46f48d55d79305",
             ),
         }))
+        muse = {
+            ("scripts/muse-code-usage-collector.mjs", "92618a94e0b5efd9dfcc2ed97b9f39797e1d90773cc5816bfcb25843991ce920", ("assigned secret", 8103, 8130, 8111, 8130)),
+            ("scripts/__tests__/muse-code-usage-collector.test.mjs", "aeb48889d7147e35f0059a7448be7c58916a075f6153b78303b20947ca7a6fe0", ("assigned secret", 8630, 8656, 8640, 8656)),
+        }
+        for path, digest, span in muse:
+            key = ("Simple-With-Us/Usage-Monitor", path, digest)
+            self.assertNotIn(key, secretscan._REVIEWED_GENERIC_FIXTURES)
+            self.assertEqual(secretscan._REVIEWED_GENERIC_MATCHES[key], frozenset({span}))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))
 
     def test_approved_path_does_not_approve_other_bytes_or_quoted_credentials(self):

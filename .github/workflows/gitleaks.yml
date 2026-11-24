@@ -16,6 +16,8 @@ env:
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
+    # Bound the job so a stalled scan cannot burn the 360-minute GitHub default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }

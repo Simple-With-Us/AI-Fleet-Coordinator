@@ -29,6 +29,7 @@ import sys
 
 MAX_PAYLOAD = 4 << 20  # bytes of a hook payload read for a quick answer (the library reads 1 MiB of characters)
 LATER_CALL_KEY = b'"invocationNum"'
+STOP_KEYS = (b'"executionNum"', b'"terminationReason"', b'"fullyIdle"')
 
 
 def later_model_call(raw):
@@ -37,6 +38,8 @@ def later_model_call(raw):
     what this saves), and only ever says True for a payload that platform_letter_antigravity.normalize() also
     turns away: the key must stand as a key (a quoted word in a value is skipped), and its value must start with a
     digit other than 0.  Anything else, a first call (0), no key, or a shape it does not know, goes to the library."""
+    if any(k in raw for k in STOP_KEYS):
+        return False
     at = raw.find(LATER_CALL_KEY)
     while at >= 0:
         after = at + len(LATER_CALL_KEY)

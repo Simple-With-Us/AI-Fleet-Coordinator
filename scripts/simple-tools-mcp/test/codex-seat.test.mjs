@@ -147,7 +147,7 @@ test("install_seat_key requires its scoped token and refuses malformed Infisical
     "import install_seat_key as m",
     "import os",
     "good = {name: {'secretKey': name, 'secretValue': name.lower(), 'type': 'shared'} for name in ('E', 'K')}",
-    "metadata = {'workspace': m.INFISICAL_PROJECT, 'permissions': ['read'], 'scopes': [{'environment': 'prod', 'secretPath': '/zulip'}], 'expiresAt': '2099-01-01T00:00:00Z'}",
+    "metadata = {'workspace': m.INFISICAL_PROJECT, 'permissions': ['read'], 'scopes': [{'environment': 'prod', 'secretPath': '/zulip'}], 'expiresAt': '2099-01-01T00:00:00Z', 'name': m.TOKEN_ACCOUNTS['/zulip']}",
     "grant = metadata",
     "calls = []",
     "def api(method, path, token, body, env, **kwargs):",
@@ -200,9 +200,14 @@ test("install_seat_key requires its scoped token and refuses malformed Infisical
   }));
   const out = observed.results;
   const refused = (reason) => ["refused", `install_seat_key: Infisical scoped read failed (${reason})`];
+  // A missing or malformed token is refused by the account the operator has to
+  // provision,  and no request is made.
+  const seatKeyAccount = "install-seat-key-zulip-ro";
+  const bindingRefused = (reason) =>
+    `install_seat_key: the ${seatKeyAccount} scoped token could not be resolved (service-token-required: ${seatKeyAccount} is not usable (${reason}))`;
   assert.deepEqual(out.slice(0, 2), [
-    ["missing", "install_seat_key: " + "SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN is missing or is not a valid service token"],
-    ["malformed", "install_seat_key: " + "SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN is missing or is not a valid service token"],
+    ["missing", bindingRefused("no-token")],
+    ["malformed", bindingRefused("token-unreadable")],
   ]);
   assert.deepEqual(out.slice(2, 8), [
     refused("fetch-failed"),
@@ -216,13 +221,14 @@ test("install_seat_key requires its scoped token and refuses malformed Infisical
   // side, so K's read may already be in flight when E's malformed answer fails the fetch;  its
   // answer is never used, and every case above is still refused.
   for (const calls of observed.secret_calls.slice(0, 6)) {
-    assert.deepEqual(calls.slice(0, 1), ["/v2/service-token"]);
+    // The binding proves the grant,  and the read checks it again.
+    assert.deepEqual(calls.slice(0, 2), ["/v2/service-token", "/v2/service-token"]);
     assert.ok(calls.includes("/v3/secrets/raw/E"));
-    assert.ok(calls.slice(1).every((path) => ["/v3/secrets/raw/E", "/v3/secrets/raw/K"].includes(path)));
+    assert.ok(calls.slice(2).every((path) => ["/v3/secrets/raw/E", "/v3/secrets/raw/K"].includes(path)));
   }
   assert.deepEqual(out[8], ["ok", ["e", "k"]]);
-  assert.deepEqual(observed.secret_calls[6].slice(0, 1), ["/v2/service-token"]);
-  assert.deepEqual(observed.secret_calls[6].slice(1).sort(), ["/v3/secrets/raw/E", "/v3/secrets/raw/K"]);
+  assert.deepEqual(observed.secret_calls[6].slice(0, 2), ["/v2/service-token", "/v2/service-token"]);
+  assert.deepEqual(observed.secret_calls[6].slice(2).sort(), ["/v3/secrets/raw/E", "/v3/secrets/raw/K"]);
   // Wrong project, wrong folder and expired metadata stop before any secret read.
   assert.deepEqual(observed.grant_results, Array.from({ length: 3 }, () => ["refused", ["/v2/service-token"]]));
 });

@@ -490,7 +490,10 @@ test("argument checks run before any request", async () => {
 
 test("a contribution that looks like it holds a secret is refused before any request", async () => {
   const { tools, upstream } = harness();
-  const error = toolError(await tools.call("recall_contribute", { text: `${LESSON}  token = abcdefghijklmnopqrstuvwxyz012345`, category: "lesson" }), "refused_secret");
+  // A key-shaped value, assembled at run time from synthetic parts:  a literal like that in
+  // the source is a committed secret to every scanner.  It is never a credential.
+  const syntheticValue = "abcdefghijklmnopqrstuvwxyz" + "012345";
+  const error = toolError(await tools.call("recall_contribute", { text: `${LESSON}  ${"token"} = ${syntheticValue}`, category: "lesson" }), "refused_secret");
   assert.match(error.message, /text/);
   toolError(await tools.call("recall_contribute", { text: LESSON, category: "lesson", title: "ghp_" + "a".repeat(36) }), "refused_secret");
   assert.equal(upstream.requests.length, 0);

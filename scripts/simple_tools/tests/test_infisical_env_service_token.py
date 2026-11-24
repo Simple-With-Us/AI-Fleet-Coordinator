@@ -210,16 +210,18 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
 
     def _projection_build(self, value, container="container-sentinel", zulip_value=None):
         key = MODULE.REVIEW_ORIGIN_READ_KEY
+        secondary = str(UUID(int=43))
         env = dict(self.env(), EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN=TOKEN,
+                   INFISICAL_LISTENER_READ_PROJECT_ID=secondary,
+                   INFISICAL_LISTENER_READ_TOKEN="st." + secrets.token_urlsafe(32),
                    **{key: container})
         calls = []
         def fetch(source, **kwargs):
             calls.append(kwargs)
+            if source["INFISICAL_PROJECT_ID"] == secondary:
+                return {key: value} if value is not None else {}
             if kwargs["path"] == MODULE.OPERATOR_PATH:
-                out = {"OPERATOR_ZULIP_USER_ID": "1", "OPERATOR_ZULIP_EMAIL": "op@example.test"}
-                if value is not None:
-                    out[key] = value
-                return out
+                return {"OPERATOR_ZULIP_USER_ID": "1", "OPERATOR_ZULIP_EMAIL": "op@example.test"}
             if kwargs["path"] == MODULE.WAKE_ROUTER_PATH:
                 return {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "r" * 40, "WAKE_ROUTER_KEY": "w" * 40}
             return {key: zulip_value} if zulip_value else {}
@@ -227,7 +229,7 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
             out, line = MODULE.build_env(env)
         self.assertNotIn(container, line)
         self.assertEqual(out["OPERATOR_REGISTRY_KEY"], "r" * 40)
-        self.assertEqual([call["path"] for call in calls], ["/zulip", "/operator", "/wake-router"])
+        self.assertEqual([call["path"] for call in calls], ["/zulip", "/operator", "/wake-router", "/zulip"])
         self.assertIn(key, calls[1]["keep"])
         return out, line
 
@@ -239,11 +241,11 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         self.assertNotIn(good, line)
         for value in (None, "", "short", "${REFERENCE}", " " + good, "r" * 40, "w" * 40, "op@example.test", "x" * 513):
             with self.subTest(value=value):
-                out, line = self._projection_build(value, zulip_value=good)
+                out, line = self._projection_build(value)
                 self.assertNotIn(key, out)
                 self.assertIn("optional capability held", line)
         self.assertNotIn(key, MODULE.infisical_only_names())
-        self.assertEqual(MODULE.OPTIONAL_OPERATOR_NAMES, frozenset({key}))
+        self.assertEqual(MODULE.OPTIONAL_PROJECTION_NAMES, frozenset({key}))
 
     def test_fetch_optional_projection_unavailable_value_does_not_break_other_names(self):
         key = MODULE.REVIEW_ORIGIN_READ_KEY
@@ -252,8 +254,8 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
             def request(stage, url, **kwargs):
                 return metadata() if url.endswith("/v2/service-token") else {"secrets": [row, {"secretKey": "OPERATOR_ZULIP_USER_ID", "secretValue": "1", "type": "shared"}]}
             with patch.object(MODULE, "_request", side_effect=request):
-                result = MODULE.fetch(self.env(), path="/operator", expected_paths=("/zulip", "/operator"), keep=MODULE.OPTIONAL_OPERATOR_NAMES | frozenset({"OPERATOR_ZULIP_USER_ID"}))
-            self.assertEqual(result, {"OPERATOR_ZULIP_USER_ID": "1"})
+                result = MODULE.fetch(self.env(), path="/operator", expected_paths=("/zulip", "/operator"), keep=MODULE.OPTIONAL_PROJECTION_NAMES | frozenset({"OPERATOR_ZULIP_USER_ID"}))
+            self.assertEqual(result, {"OPERATOR_ZULIP_USER_ID": "1", key: ""})
 
     def test_infisical_only_is_one_table_with_one_source_a_row_and_no_seat(self):
         read = {MODULE.ZULIP_PATH, MODULE.OPERATOR_PATH, MODULE.WAKE_ROUTER_PATH}
@@ -276,7 +278,7 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
 
     def test_the_loader_sources_own_disjoint_names(self):
         exports = {row[0] for row in MODULE.INFISICAL_ONLY}
-        groups = [exports, set(MODULE.OPTIONAL_OPERATOR_NAMES), set(MODULE.OPERATOR_NAMES), set(MODULE.OPERATOR_VOICE_NAMES),
+        groups = [exports, set(MODULE.OPTIONAL_PROJECTION_NAMES), set(MODULE.OPERATOR_NAMES), set(MODULE.OPERATOR_VOICE_NAMES),
                   MODULE.allowed_names(MODULE.server_codes(MODULE.PARTITION_DEFAULT))]
         for i, a in enumerate(groups):
             for b in groups[i + 1:]:
@@ -342,7 +344,7 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
                 )
 
     def test_standalone_auth_inventory_matches_shared_helper(self):
-        from fleet_secrets import core
+        import fleet_infisical as core
 
         self.assertEqual(
             MODULE.AUTH_ENV_VARS,

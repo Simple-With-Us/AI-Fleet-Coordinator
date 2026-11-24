@@ -53,6 +53,8 @@ concurrency:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    # Bound the job so a stalled API call cannot burn the 360-minute GitHub default.
+    timeout-minutes: 10
     steps:
       - name: Checkout hold-guard from default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (SHA-pinned 2026-10-25)

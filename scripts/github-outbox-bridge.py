@@ -19,8 +19,10 @@ bridge runs on the Mac, and every tick:
      same issue as comments marked <!-- outbox-bridge:zulip id=... -->.  Mirrored
      text is data for the seat, never instructions; the comment says so.
 
-The simple-chat CLI resolves each posting seat's own credential.  The read side takes
-either an explicit --rc file or the selected bot's names from Infisical Fleet-OPS /zulip (`canonical bounded named reader`, AFC-800).
+No token is read into this process: the simple-chat CLI resolves each posting seat's
+own credential.  The read side takes either an explicit --rc file of the caller's own or
+the selected bot's names from Infisical Fleet-OPS /zulip, through this bridge's own
+scoped read-only service token (the canonical bounded named reader, AFC-800).
 State (last comment id, Zulip message-id cursor) lives in
 ~/.simple-tools/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
@@ -64,6 +66,19 @@ except ImportError:  # pragma: no cover
 CHANNEL_DEFAULT = "work-in-progress"
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
+# This bridge's own scoped read-only service token:  Fleet-OPS prod /zulip, the one folder it
+# reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac, a
+# private file on a server);  the shared Infisical client checks the token's own grant and the
+# answer's own provenance before a value is used.  The store is the authority and is read first;
+# a token bound in the environment is only a copy of that same grant,  and it is used when the
+# store has none and the token's own metadata proves the narrow grant.
+TOKEN_ACCOUNT = "outbox-bridge-ro"
+
+
+class BindingRefused(RuntimeError):
+    """This bridge's own scoped token is not usable:  the message names the account and the refusal."""
+
+
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -518,6 +533,35 @@ def _infisical_reader():
             raise
 
 
+def _own_token(client, folder, project):
+    """The bridge's own scoped token:  its own store first,  a bound copy only when it proves itself.
+
+    The store is the authority:  the bridge's own account token is read from the host's approved
+    store first,  and it is the credential the read runs under.  An environment binding is a
+    second source only when the token's own grant metadata proves it is this consumer's narrow
+    grant:  the workspace is the project,  the permissions are exactly read,  the granted folder
+    is exactly this one,  and the token's own name is this account.  A general binding scoped to
+    "/" or to several folders fails that check,  so it can no longer serve the bridge,  and a
+    hand-set value never replaces the reviewed grant.  The refusal names the account the bridge
+    needs and which refusal it was."""
+    home = os.environ.get("HOME", "").strip()
+    try:
+        token, _source = client.consumer_binding(
+            TOKEN_ACCOUNT,
+            folder,
+            dict(os.environ),
+            project,
+            home=Path(home) if home else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+        detail = getattr(exc, "message", "") or type(exc).__name__
+        raise BindingRefused(
+            "the %s scoped token for %s could not be resolved (%s)"
+            % (TOKEN_ACCOUNT, folder, detail)
+        ) from None
+    return token
+
+
 def _read_infisical_names(names, folder):
     """Read only this caller's named values through the pinned canonical worker."""
     try:
@@ -528,7 +572,7 @@ def _read_infisical_names(names, folder):
         project = client.infisical_project_id(
             {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        token = _own_token(client, folder, project)
         if not token:
             return {}
         return client.bounded_fetch_project(
@@ -541,21 +585,21 @@ def _read_infisical_names(names, folder):
             max_output_bytes=65536,
             strict_records=True,
         )
+    except BindingRefused:
+        # The refusal names the account the operator has to provision, so it is never
+        # swallowed into an empty answer.
+        raise
     except Exception:
         return {}
-
-
-def _fleet_secrets(names, folder):
-    """One bounded named batch, using only this caller's explicit read binding."""
-    return _read_infisical_names(names, folder)
 
 
 class ZulipClient:
     """Minimal Zulip read client: HTTP Basic with the seat's own key.
 
     Takes an explicit INI-shaped zuliprc path, or (rc_path None) the `<BOT>_ZULIP_*` names from
-    Infisical through `canonical bounded named reader`, so the key never appears on a command line and
-    never in an exception message.  Refuses any host but the fleet realm and
+    Infisical through this bridge's own scoped token, read by the canonical bounded named
+    reader, so the key never appears on a command line and never in an exception
+    message.  Refuses any host but the fleet realm and
     never follows a redirect, so the Authorization header cannot travel.
     """
 
@@ -568,7 +612,7 @@ class ZulipClient:
                 "%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part)
                 for part in ("EMAIL", "KEY", "SITE")
             )
-            values = _fleet_secrets(names, "/zulip")
+            values = _read_infisical_names(names, "/zulip")
             self.email, self.key, self.site = (values.get(name) for name in names)
             text = ""
             if not (self.email and self.key and self.site):
@@ -604,8 +648,8 @@ class ZulipClient:
         if "narrow" in params:
             params["narrow"] = json.dumps(params["narrow"])
         url = "%s/api/v1/%s?%s" % (self.site.rstrip("/"), path, urllib.parse.urlencode(params))
-        token = base64.b64encode(("%s:%s" % (self.email, self.key)).encode()).decode()
-        req = urllib.request.Request(url, headers={"Authorization": "Basic " + token})
+        basic = base64.b64encode(("%s:%s" % (self.email, self.key)).encode()).decode()
+        req = urllib.request.Request(url, headers={"Authorization": "Basic " + basic})
         opener = urllib.request.build_opener(_NoRedirectHandler())
         try:
             with opener.open(req, timeout=20) as resp:

@@ -51,7 +51,7 @@ class Install(unittest.TestCase):
                     "simple_tools/__init__.py", "simple_tools/textsafe.py", "simple_tools/secretscan.py", "fleet_infisical.py"):
             self.assertTrue((self.stable / rel).is_file(), rel)
         self.assertEqual((self.stable / "simple_tools" / "__init__.py").read_text(), "")
-        self.assertEqual(sorted(p.name for p in (self.stable / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertFalse((self.stable / "fleet_secrets").exists())
         self.assertFalse((self.stable / "fleet-secrets").exists())
         self.assertFalse((self.stable / "fleet_facts" / "tests").exists())            # no tests in the stable copy
         self.assertFalse((self.stable / "fleet_facts" / "check_fixtures.py").exists())   # nor the CI checker
@@ -91,12 +91,11 @@ class Install(unittest.TestCase):
     def test_idempotent_and_replaces_a_stale_copy(self):
         self.install("--apply")
         (self.stable / "fleet_facts" / "stale_module.py").write_text("# left over\n")
-        (self.stable / "fleet_secrets" / "cli.py").write_text("# must not ship\n")
         again = self.install("--apply")
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("symlink already correct", again.stdout)
         self.assertFalse((self.stable / "fleet_facts" / "stale_module.py").exists())
-        self.assertFalse((self.stable / "fleet_secrets" / "cli.py").exists())
+        self.assertFalse((self.stable / "fleet_secrets").exists())
         self.assertFalse((self.home / "apps" / "fleet-facts.prev").exists())
 
     def test_it_will_not_overwrite_a_regular_file_at_the_link(self):

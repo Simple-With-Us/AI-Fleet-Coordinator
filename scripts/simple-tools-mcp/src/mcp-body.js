@@ -18,7 +18,7 @@ export async function boundedMcpRequest(request) {
     catch { return new Response('Payload Too Large',{status:413}); }
     const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
     if (!object(body) || body.jsonrpc !== '2.0' || body.method !== 'tools/call' ||
-        !object(body.params) || !['gr_wf_file_put','gr_wf_files_put'].includes(body.params.name) ||
+        !object(body.params) || !['gr_wf_file_put','gr_wf_files_put','gr_wf_git_blob_create','gr_wf_git_tree_create'].includes(body.params.name) ||
         !object(body.params.arguments) ||
         Object.keys(body).some(k=>!['jsonrpc','id','method','params'].includes(k)) ||
         Object.keys(body.params).some(k=>!['name','arguments','_meta'].includes(k)))

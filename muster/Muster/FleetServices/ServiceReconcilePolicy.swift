@@ -116,6 +116,7 @@ public enum ServicePolicyTable {
     private static let agents: [(String, String)] = [
         ("com.jay.botfleet-server", handReason),
         ("com.jay.fleet-api-health", scheduledReason),
+        ("com.jay.fleet-bearer-status", scheduledReason),
         ("com.jay.fleet-gdrive-backup", scheduledReason),
         ("com.jay.fleet-mac-services", scheduledReason),
         ("com.jay.fleet-rag-mirror", scheduledReason),

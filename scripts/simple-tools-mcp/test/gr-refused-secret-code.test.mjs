@@ -8,9 +8,13 @@
 // Two transports, two real relay phrasings (git-relay/git_relay):
 //  - seven-action path:  the pre-dispatch scanner's SecretInputError becomes
 //    400 {"error": "args.body looks like it contains a credential (github_token); refusing to relay it"}
-//  - workflow verbs:  file_put/files_put raise Refused("credential-shaped content refused"),
-//    which callWorkflow collapses to workflow_request_refused with a
-//    machine-readable reason:"credential_scan" marker.
+//  - workflow verbs:  the file-content scan raises the same anchored shape
+//    naming the field and the matched category ("args.files[2].content_b64
+//    looks like it contains a credential (aws_access_key_id); refusing to
+//    relay it"), which callWorkflow collapses to workflow_request_refused
+//    with a machine-readable reason:"credential_scan" marker and the
+//    validated scan_category.  Other workflow credential refusals keep the
+//    fixed "credential-shaped ..." strings and carry no category.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -172,6 +176,70 @@ test("ambiguous and post-write refusals stay relay_refused through the workflow"
     assert.equal(out.isError, true);
     assert.equal(codeOf(out), "relay_refused", error);
   }
+});
+
+const payloadOf = (out) => JSON.parse(out.content[0].text);
+
+const FILES_PUT_ARGS = {
+  repo: "a/b",
+  branch: "jet/x",
+  message: "m",
+  expected_head_sha: "a".repeat(40),
+  files: [{ path: "x.txt", content_b64: "eA==" }],
+};
+
+test("a workflow scan refusal surfaces its category end to end", async () => {
+  const tools = grHarness(
+    clientWith({ error: "args.files[2].content_b64 looks like it contains a credential (aws_access_key_id); refusing to relay it" }, 400),
+    { ...config, grWorkflowEnabled: true },
+  );
+  const out = await tools.call("gr_wf_files_put", FILES_PUT_ARGS);
+  assert.equal(out.isError, true);
+  const p = payloadOf(out);
+  assert.equal(p.code, "refused_secret");
+  assert.equal(p.scan_category, "aws_access_key_id");
+  assert.match(p.message, /\(aws_access_key_id\)/);
+  assert.match(p.message, /Nothing was written/);
+});
+
+test("a seven-action scan refusal surfaces its category too", async () => {
+  const tools = grHarness(clientWith({ error: "args.body looks like it contains a credential (jwt); refusing to relay it" }, 400));
+  const out = await tools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "x" });
+  assert.equal(out.isError, true);
+  const p = payloadOf(out);
+  assert.equal(p.code, "refused_secret");
+  assert.equal(p.scan_category, "jwt");
+  assert.match(p.message, /\(jwt\)/);
+});
+
+test("an unvouched category is never surfaced, on either path", async () => {
+  const error = "args.files[0].content_b64 looks like it contains a credential (made_up_category); refusing to relay it";
+  const wf = grHarness(clientWith({ error }, 400), { ...config, grWorkflowEnabled: true });
+  const wfOut = await wf.call("gr_wf_files_put", FILES_PUT_ARGS);
+  const seven = grHarness(clientWith({ error }, 400));
+  const sevenOut = await seven.call("gr_comment_pr", { repo: "a/b", number: 1, body: "x" });
+  for (const out of [wfOut, sevenOut]) {
+    assert.equal(out.isError, true);
+    const p = payloadOf(out);
+    // The anchored shape still proves a credential verdict...
+    assert.equal(p.code, "refused_secret");
+    // ...but the invented category reaches neither the field nor the text.
+    assert.equal(p.scan_category, undefined);
+    assert.ok(!out.content[0].text.includes("made_up_category"));
+  }
+});
+
+test("a scan refusal without a category keeps the exact old answer", async () => {
+  const tools = grHarness(
+    clientWith({ error: "credential-shaped content refused" }, 400),
+    { ...config, grWorkflowEnabled: true },
+  );
+  const out = await tools.call("gr_wf_files_put", FILES_PUT_ARGS);
+  assert.equal(out.isError, true);
+  const p = payloadOf(out);
+  assert.equal(p.code, "refused_secret");
+  assert.equal(p.scan_category, undefined);
+  assert.ok(p.message.startsWith("git-relay refused the write:  the content looks like it contains a credential.  Remove"));
 });
 
 test("other workflow 4xx verdicts keep the generic relay_refused code", async () => {

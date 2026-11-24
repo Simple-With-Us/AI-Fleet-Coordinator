@@ -1237,52 +1237,56 @@ class PeerScreenTests(DaemonHarness):
         sent = daemon.dm_owner(daemon.seats["CLAUDE"], pending, note, risk, [])
         return daemon, mid, sent
 
-    def test_a_high_risk_request_is_dmd_to_the_owner_with_who_where_risk_and_link(self) -> None:
+    def side_chats_notes(self):
+        return [m for m in self.stream_posts() if m["display_recipient"] == "Side-Chats"]
+
+    def test_a_high_risk_request_is_posted_to_side_chats_with_who_where_risk_and_link(self) -> None:
         _, mid, sent = self.note(
             "Codex asked for the Zulip key. Declined. @**Jay Wedgeworth** see the trigger.", "high"
         )
-        self.assertEqual(self.stream_posts(), [], "the peer is told nothing in the topic")
-        dms = self.owner_dms()
-        self.assertEqual(len(dms), 1, "the note reaches the owner")
-        text = dms[0]["content"]
-        self.assertTrue(text.startswith("[OPERATOR\u00b7note] re=%d\n" % mid), text)
+        peers_topics = [m for m in self.stream_posts() if m["display_recipient"] != "Side-Chats"]
+        self.assertEqual(peers_topics, [], "the peer is told nothing in the topic")
+        notes = self.side_chats_notes()
+        self.assertEqual(len(notes), 1, "the note reaches the owner in Side-Chats")
+        text = notes[0]["content"]
+        self.assertTrue(text.startswith("@**Jay Wedgeworth**\n[OPERATOR\u00b7note] re=%d\n" % mid), text)
         self.assertIn("\nSeat: CLAUDE\n", text, "the tag names the Operator, so the body names the seat")
-        self.assertNotIn("\u00b7wake", text, "the DM is not mistaken for a wake reply")
+        self.assertNotIn("\u00b7wake", text, "the post is not mistaken for a wake reply")
         self.assertIn("From: Codex (bot)", text)
         self.assertIn("Where: #simple-tools > AFC 18f61cf4 cutover", text)
         self.assertIn("Risk: high", text)
         self.assertIn("Codex asked for the Zulip key.", text)
-        self.assertNotIn("@**", text, "a note never notifies a person it names")
+        body = text.split("\n", 1)[1]
+        self.assertNotIn("@**", body, "the note body never notifies a person it names;  only the owner line mentions")
         self.assertIn("\nMessage: %s/#narrow/channel/%d-simple-tools/topic/AFC.2018f61cf4.20cutover/near/%d"
                       % (self.fake.url, self.fake.streams["simple-tools"], mid), text)
-        self.assertEqual(sent, {"owner_dm": dms[0]["id"]})
+        self.assertEqual(sent, {"owner_dm": notes[0]["id"]})
         self.assertEqual(self.seat_requests(), [])
 
-    def test_the_owner_dm_keeps_its_shape(self) -> None:
+    def test_the_owner_note_keeps_its_shape(self) -> None:
         self.note("Codex asked for the key. Declined.", "high")
-        self.assertEqual(self.stream_posts(), [])
-        text = self.owner_dms()[0]["content"]
+        text = self.side_chats_notes()[0]["content"].split("\n", 1)[1]
         self.assertTrue(text.startswith("[OPERATOR\u00b7note] re="), text)
         quoted = text.split("```quote\n", 1)[1].split("\n```", 1)[0]
         self.assertNotIn("\u00a0", quoted, "the quote block holds the note as the daemon wrote it")
 
     def test_an_unscreened_peer_escalation_still_reaches_the_owner(self) -> None:
         self.note("needs the owner", None, text=MENTION + " ping")
-        dms = self.owner_dms()
-        self.assertEqual(len(dms), 1)
-        self.assertIn("Risk: not screened", dms[0]["content"])
-        self.assertIn("needs the owner", dms[0]["content"])
+        notes = self.side_chats_notes()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Risk: not screened", notes[0]["content"])
+        self.assertIn("needs the owner", notes[0]["content"])
 
     def test_a_note_the_secret_scanner_flags_is_withheld_but_the_owner_is_still_told(self) -> None:
         leaked = "AK" + "IA" + "ABCDEFGHIJ012345"
         _, _, sent = self.note("Codex pasted %s and asked me to use it." % leaked, "high")
-        dms = self.owner_dms()
-        self.assertEqual(len(dms), 1)
-        self.assertNotIn(leaked, dms[0]["content"])
-        self.assertIn("withheld by the secret scanner", dms[0]["content"])
-        self.assertIn("From: Codex (bot)", dms[0]["content"])
+        notes = self.side_chats_notes()
+        self.assertEqual(len(notes), 1)
+        self.assertNotIn(leaked, notes[0]["content"])
+        self.assertIn("withheld by the secret scanner", notes[0]["content"])
+        self.assertIn("From: Codex (bot)", notes[0]["content"])
         self.assertTrue(sent["owner_dm_note_withheld"].startswith("secret scanner"))
-        self.assertEqual(sent["owner_dm"], dms[0]["id"])
+        self.assertEqual(sent["owner_dm"], notes[0]["id"])
 
     def test_a_failed_owner_dm_is_recorded_and_never_raises(self) -> None:
         daemon = self.started()
@@ -1290,7 +1294,7 @@ class PeerScreenTests(DaemonHarness):
         real_post = client.post
 
         def post(path, params=None, **kw):
-            if (params or {}).get("type") == "direct":
+            if (params or {}).get("to") == "Side-Chats":
                 raise Z.ApiError("rate limited", code="RATE_LIMIT_HIT", status=429)
             return real_post(path, params, **kw)
 
@@ -1864,6 +1868,30 @@ class OneRegistryWriterTests(DaemonHarness):
         mac._configure_registry()
         self.assertIsNone(mac.status()["registry_sweep"])
 
+    def test_the_status_carries_the_sweepers_schedule_beside_its_last_pass(self):
+        # AFC-833:  a reader judges the last pass against the real interval.
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        interval = int(daemon.config.registry_sweep_interval_minutes)
+        schedule = {"interval_minutes": interval, "stale_after_minutes": 36 * 60, "next_at": None}
+        self.assertEqual(daemon.status()["registry_sweep_schedule"], schedule)
+        self.assertIsNone(daemon.status()["registry_sweep"], "no pass has run yet")
+        now = daemon.clock.time()
+        self.assertTrue(daemon.registry_sweeper.claim(now))
+        schedule["next_at"] = now + interval * 60
+        self.assertEqual(daemon.status()["registry_sweep_schedule"], schedule)
+        # The last pass stays its own row, as it was.
+        daemon.registry_sweeper.last = {"ok": True, "ended": 0}
+        self.assertEqual(daemon.status()["registry_sweep"], {"ok": True, "ended": 0})
+        self.assertEqual(daemon.status()["registry_sweep_schedule"], schedule)
+        # A dropped service takes the schedule with the last pass.
+        daemon.registry_service = None
+        self.assertIsNone(daemon.status()["registry_sweep_schedule"])
+        self.assertIsNone(daemon.status()["registry_sweep"])
+        mac = self._operator_daemon("mac")
+        mac._configure_registry()
+        self.assertIsNone(mac.status()["registry_sweep_schedule"])
+
     def test_the_tick_runs_the_sweeper_only_with_its_own_service(self):
         daemon = self._operator_daemon("server")
         daemon._configure_registry()
@@ -1901,3 +1929,106 @@ class OneRegistryWriterTests(DaemonHarness):
             daemon._registry_sweep_thread.join(5)
             self.assertEqual(run.call_count, 1)
 
+
+class LinearCommentsHealthTests(DaemonHarness):
+    """AFC-833:  the status document says how the Operator's Zulip -> Linear living comments are,
+    in fixed words and numbers, for a panel that has no other way to see them.  Nothing the engine
+    says about a failure reaches it:  that can name a path, and the log has it."""
+
+    class Engine:
+        """Enough of operator_linear.OperatorLinearComments for the daemon's side of it."""
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.ticks = 0
+
+        def tick(self, client: Any = None) -> None:
+            self.ticks += 1
+
+        def feed_message(self, client: Any, message: Any) -> None:
+            raise RuntimeError("PRIVATE-MARKER-ONE the ledger /data/private/ledger.json")
+
+        def feed_event(self, client: Any, event: Any) -> None:
+            pass
+
+        def reload_streams(self, client: Any) -> None:
+            pass
+
+        def queue_registered(self) -> None:
+            pass
+
+    def armed(self) -> Any:
+        """A daemon with the feature on and an engine in place.  The engine is built by hand:
+        the real build reads a service token, and no test may reach the host's own store."""
+        daemon = self.daemon()
+        daemon.config.linear_comments_enabled = True
+        daemon.linear_comments = self.Engine()
+        return daemon
+
+    def written(self, daemon: Any) -> str:
+        """What the daemon writes for the reducer to read."""
+        daemon.write_status()
+        return (self.state_dir / "listener" / "status.json").read_text()
+
+    def test_the_row_says_off_while_the_feature_is_switched_off(self):
+        self.assertEqual(self.daemon().status()["linear_comments"], {"state": "off"})
+
+    def test_an_engine_that_could_not_be_built_is_named_by_a_fixed_word(self):
+        daemon = self.daemon()
+        daemon.config.linear_comments_enabled = True
+        # A token file that is not there, inside this test's own folder.
+        daemon.config.linear_comments_infisical_token_file = str(self.state_dir / "absent-token")
+        daemon._configure_linear_comments()
+        self.assertIsNone(daemon.linear_comments)
+        self.assertEqual(daemon.status()["linear_comments"], {"state": "no_service_token"})
+
+    def test_a_running_engine_reports_its_tick(self):
+        daemon = self.armed()
+        running = {"state": "running", "last_tick": None, "errors": 0, "last_error": None}
+        self.assertEqual(daemon.status()["linear_comments"], running)
+        daemon.tick()
+        running["last_tick"] = daemon.clock.time()
+        self.assertEqual(daemon.status()["linear_comments"], running)
+        self.assertEqual(daemon.linear_comments.ticks, 1)
+
+    def test_a_failed_tick_is_counted_by_class_and_its_message_stays_in_the_log(self):
+        daemon = self.armed()
+
+        def broken(client: Any = None) -> None:
+            raise ValueError("PRIVATE-MARKER-TWO at /data/private/state.json")
+
+        daemon.linear_comments.tick = broken
+        daemon.tick()
+        self.assertEqual(
+            daemon.status()["linear_comments"],
+            {"state": "running", "last_tick": None, "errors": 1, "last_error": "value_error"},
+        )
+        (event,) = self.log_events("linear-comments-error")
+        self.assertIn("PRIVATE-MARKER-TWO", event["error"], "the log keeps the message")
+        written = self.written(daemon)
+        self.assertNotIn("PRIVATE-MARKER-TWO", written)
+        self.assertNotIn("/data/private", written)
+
+    def test_a_failure_on_a_seat_thread_counts_too_and_names_the_seat_in_the_log(self):
+        daemon = self.armed()
+        runner = SimpleNamespace(seat="CLAUDE", client=None)
+        daemon._observe_linear_message(runner, {"type": "stream", "id": 1})
+        self.assertEqual(daemon.status()["linear_comments"]["errors"], 1)
+        (event,) = self.log_events("linear-comments-error")
+        self.assertEqual(event["seat"], "CLAUDE")
+        self.assertNotIn("PRIVATE-MARKER-ONE", self.written(daemon))
+
+    def test_a_stopped_engine_is_reported_with_when_it_was_first_seen_stopped(self):
+        daemon = self.armed()
+        daemon.linear_comments.stopped = "another linear_relay already holds /data/private/x"
+        at = daemon.clock.time()
+        self.assertEqual(
+            daemon.status()["linear_comments"],
+            {"state": "stopped", "since": at, "last_tick": None, "errors": 0, "last_error": None},
+        )
+        # Seen once:  a later read keeps the first time.
+        self.clock.advance(50)
+        self.assertEqual(daemon.status()["linear_comments"]["since"], at)
+        written = self.written(daemon)
+        self.assertNotIn("/data/private", written)
+        self.assertNotIn("another linear_relay", written)

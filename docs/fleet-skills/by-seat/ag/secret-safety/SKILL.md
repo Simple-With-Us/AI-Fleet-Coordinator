@@ -54,22 +54,25 @@ The above pattern is written from one platform's own experience of getting this 
 
 The pattern is identical everywhere: extract the one value you actually need, programmatically, and never let the raw value pass through your own visible output on its way there.
 
-**Infisical through `fleet-secrets` (the shared Fleet-OPS reader; the old `~/.secrets` flat files are retired, AFC-359).**  A consumer that reads one folder on its own uses its own scoped service token instead, and never the shared Automation identity: see `service-tokens`.  Fetch the one value you need into a variable, or hand a command only the names it needs, and never let the value pass through your own visible output:
+**Infisical through the consumer's own scoped service token (the old `~/.secrets` flat files are retired, AFC-359).**  There is no shared reader any more:  every consumer holds its own scoped, read-only service token, scoped to one project, environment `prod` and one folder, and never the shared Automation identity: see `service-tokens`.  The store is the authority for that token:  the environment is never a source for it, the consumer's own store is the only source, the one bootstrap binding a host keeps to reach Infisical is a reader and not a copy of a value, and a hand-set environment value must never replace the reviewed, scope-limited grant;  the read's own scope check still decides whether any token may read a folder at all.  Fetch the one value you need into a variable, or hand a command only the names it needs, and never let the value pass through your own visible output:
 ```bash
-KEY="$(fleet-secrets get SOME_KEY)"          # exit 3 means the key is absent
-fleet-secrets run --only A,B -- some-command  # A and B appear in that command's environment only
-```
-The two commands above are the shared reader, and it authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`).  A consumer that reads one folder reads it through its own scoped service token (`service-tokens`) instead.
+# one value, into a variable, never printed;  the status says why it failed
+KEY="$(python3 -c 'import sys; sys.path.insert(0,"scripts"); from fleet_infisical import fetch_scoped; v,s=fetch_scoped("SOME_KEY","/","consumer-ro"); sys.exit("consumer-ro scoped read unavailable or refused: "+s) if s!="ok" else sys.stdout.write(v)')" || exit $?
 
-A key that was stored with quote-wrapping elsewhere comes back without quotes from `fleet-secrets get`.  A file the owner hands you at some other path (a `chmod 600` file) gets the same treatment: never `cat` it, `grep` it loosely, or open it with any whole-file-view tool (see above).
+# the value reaches that command's environment only, never its command line
+SOME_KEY="$KEY" some-command
+```
+The command above is the consumer's own scoped read, through `scripts/fleet_infisical.py`;  a missing or refused token fails closed and says which refusal it was (`no-token`, `keychain-locked`, `token-unreadable`, `forbidden`, `absent`).  An operator reading one value by hand may use the read-only Infisical CLI session, never for automation.
+
+A key that was stored with quote-wrapping elsewhere comes back without quotes from the scoped read.  A file the owner hands you at some other path (a `chmod 600` file) gets the same treatment: never `cat` it, `grep` it loosely, or open it with any whole-file-view tool (see above).
 
 Listing just the key NAMES is fine — that's metadata, not a value — but **only** if
 the command cannot emit a value.  Use `-o` so the match is the name only.  The names come from
-the shared `fleet-secrets` reader, which authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`); a consumer that
-reads one folder uses its own scoped service token (`service-tokens`) instead.
+the consumer's own scoped service token, read from its own store through `scripts/fleet_infisical.py` (`token_from_store` and `fetch_scoped`); a missing or refused token fails
+closed and says which refusal it was.
 
 ```bash
-fleet-secrets names | sort -u
+python3 -c 'import os,sys; sys.path.insert(0,"scripts"); from fleet_infisical import token_from_store, list_project_names; t,s=token_from_store("consumer-ro"); sys.exit("consumer-ro service-token store unavailable or refused: "+s) if s!="ok" else print("\n".join(sorted(list_project_names("fleet-ops","/",os.environ,token=t))))'
 ```
 
 **Forbidden (2026-08-14 Grok incident):** `grep '^[A-Z0-9_]+=' file`, `grep '^ADMIN' file`,

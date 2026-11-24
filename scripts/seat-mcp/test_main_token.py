@@ -1,4 +1,4 @@
-"""A missing SEAT_MCP_TOKEN ends the process with one stderr line and exit 2, not a traceback."""
+"""A missing SEAT_MCP_TOKEN ends the process with one stderr line and exit 2, not a traceback.  No real reader."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from seat_mcp import auth
 class MissingTokenTests(unittest.TestCase):
     def test_exit_2_with_a_one_line_message_that_names_the_folder(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "SEAT_MCP_TOKEN"}
+        env["INFISICAL_SCOPED_READER"] = "/nonexistent/infisical-scoped.py"
         err = io.StringIO()
         with (
             mock.patch.dict(os.environ, env, clear=True),
@@ -29,11 +30,35 @@ class MissingTokenTests(unittest.TestCase):
         lines = err.getvalue().strip().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertIn("SEAT_MCP_TOKEN missing in Infisical /seat-mcp", lines[0])
+        self.assertIn("seat-mcp-ro", lines[0])
+        # The reader runs under the isolated interpreter with an explicit,
+        # bounded argument list:  the token is never in argv.
         argv = reader.call_args.args[0]
-        self.assertEqual(argv[:3], [auth.sys.executable, "-I", str(auth.FLEET_INFISICAL_CLI)])
+        self.assertEqual(argv[:2], [auth.sys.executable, "-I"])
+        self.assertEqual(argv[2], env["INFISICAL_SCOPED_READER"])
         self.assertEqual(
-            argv[3:], ["get", "SEAT_MCP_TOKEN", "--project", "fleet-ops", "--path", "/seat-mcp"]
+            argv[3:],
+            [
+                "get",
+                "SEAT_MCP_TOKEN",
+                "--folder",
+                "/seat-mcp",
+                "--project",
+                "fleet-ops",
+                "--account",
+                "seat-mcp-ro",
+            ],
         )
+
+    def test_an_empty_value_is_the_absent_case_and_carries_its_exit_code(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "SEAT_MCP_TOKEN"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(auth, "_read_through_scoped_reader", return_value=""),
+        ):
+            with self.assertRaises(auth.ScopedReaderError) as caught:
+                auth.load_token()
+        self.assertEqual(caught.exception.exit_code, 3)
 
     def test_token_in_the_environment_starts_the_server(self) -> None:
         with (

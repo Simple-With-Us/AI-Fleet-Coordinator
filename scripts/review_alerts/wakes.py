@@ -113,6 +113,8 @@ class WakeClient:
         require_pr: str,
         topic: str,
         link: str,
+        *,
+        message_id: int = 0,
     ) -> dict:
         """One alert wake for exactly the claimed origin session.  The excerpt
         deliberately carries no session-shaped token:  fragment picking stays
@@ -131,8 +133,11 @@ class WakeClient:
             raise WakeError("require_generation must be a positive integer")
         if not PR_RE.fullmatch(require_pr or ""):
             raise WakeError("require_pr is not a repo#number shape")
+        if type(message_id) is not int or not 0 <= message_id <= 2**63 - 1:
+            raise WakeError("bad message_id")
         payload = {
             "contract": CONTRACT,
+            "message_id": message_id,
             "seat": seat,
             "wake_id": wake_id,
             "require_session": require_session,

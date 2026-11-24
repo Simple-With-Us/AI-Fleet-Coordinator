@@ -39,6 +39,7 @@ import {
   GATE_LOG_NAME,
   PROPS_PHASE,
   SEAT_SECRETS,
+  OPERATOR_NOTES_SECRET,
   SEAT_LABELS,
   WAKE_SECRETS,
   LISTENER_KEY_SECRET_NAMES,
@@ -64,14 +65,17 @@ import {
   sameOriginPost,
   safeEqual,
 } from "./policy.js";
-import { verifyAccessJwt } from "./access.js";
+import { verifyAccessJwt, parseServiceClientIds } from "./access.js";
+import { serveMcpConfig } from "./mcp-config.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
-import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } from "./bearer-identities.js";
+import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
+import { bearerStatusRows, adminBearerAction, diagnosticSummaryRows } from "./admin-api.js";
+import { seatToolStates, settle, isUnavailable, listenerNameFor } from "./seat-tools-status.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
-import { resolveGrSecrets, grClientFromResolved, grUnavailableWhenNoClient } from "./gr-tools.js";
+import { resolveGrSecrets, grClientFromResolved, grUnavailableWhenNoClient, grUpstreamUrl } from "./gr-tools.js";
 
 function wireGrFront({ grSecrets, env, grClient, relayAuthAvailable }) {
   if (grClient) return { gr: grClient, grUnavailableReason: null, grMissingEnv: [] };
@@ -87,7 +91,7 @@ import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
 import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
-import { listenerClientFromEnv, listenerSecretName } from "./eavesdropper.js";
+import { listenerClientFromEnv, listenerSecretName, listenerBaseUrl } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
@@ -102,6 +106,7 @@ import { IdentityCache, bearerCacheMs } from "./identity-cache.js";
 import { answerLifecycle, serveRoutedMcp } from "./mcp-lifecycle.js";
 import { BudgetExceeded, guardOff, guardOffResponse } from "./budget-guard.mjs";
 import { countedFetch, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "./invocation.js";
+import { DiagnosticCoalescer } from "./diagnostic-coalesce.js";
 
 export { SeatGate };
 
@@ -333,10 +338,50 @@ async function checkTokenExchange(env, { grantType, props, userId, grantId }) {
 
 // Persist only fixed reason codes for pre-tool failures.  This must never
 // change the response if diagnostics storage itself is unavailable.
+// Answers whether the row was written (false when the isolate's budget was spent or the
+// log failed);  callers other than recordGrRefusal ignore it.
 async function recordDiagnostic(env, entry) {
-  if (!diagnosticRowAllowed()) return;
-  try { await gate(env, GATE_LOG_NAME).recordDiagnostic(entry); }
-  catch { console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: entry.kind })); }
+  if (!diagnosticRowAllowed()) return false;
+  try {
+    await gate(env, GATE_LOG_NAME).recordDiagnostic(entry);
+    return true;
+  } catch {
+    console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: entry.kind }));
+    return false;
+  }
+}
+
+// The relay check routes' refusal rows (AFC-844):  each kind+reason+seat writes at
+// most once a minute per isolate, carrying the occurrences it stood for
+// (src/diagnostic-coalesce.js), so a refusal loop cannot use up the shared
+// diagnosticRow budget.  The write goes to waitUntil, so a slow log never delays
+// the answer the relay is waiting for.
+const GR_REFUSALS = new DiagnosticCoalescer();
+
+function recordGrRefusal(env, ctx, entry) {
+  const count = GR_REFUSALS.take(entry);
+  if (count === 0) return undefined;
+  // A write that does not land hands its occurrences back (Sentry, PR 2331), and the next
+  // write of that cause carries them;  the window stays closed, so a log outage cannot
+  // turn every refusal into another spent budget unit (Kody, PR 2331).  A rejected write
+  // (`gate()` throws, no `waitUntil`) hands back on the rejection side and names the failure
+  // once, so it is surfaced rather than swallowed (Kody, PR 2331) and the floated promise
+  // never stays unhandled (Kody, PR 2331).  The final catch only guards the give-back itself
+  // throwing, and names that too.
+  const write = recordDiagnostic(env, { ...entry, count }).then(
+    (written) => {
+      if (!written) GR_REFUSALS.giveBack(entry, count);
+    },
+    () => {
+      GR_REFUSALS.giveBack(entry, count);
+      console.log(JSON.stringify({ event: "diagnostic_write_failed", kind: entry.kind }));
+    },
+  ).catch(() => {
+    console.log(JSON.stringify({ event: "diagnostic_giveback_failed", kind: entry.kind }));
+  });
+  // Never awaited by the route:  a refusal answer must not wait on the log (Kody, PR 2331).
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(write);
+  return undefined;
 }
 
 // ---------------------------------------------------------------- /mcp
@@ -1008,6 +1053,9 @@ async function serveApp(request, env, _ctx) {
   if (route === "gr_assert_verify") return serveGrAssertVerify(request, env, gate, {
     hostedSeats: config.hostedSeats,
     eventsOnlySeats: config.eventsOnlySeats,
+    // Each refusal is an aggregated diagnostics row (kind gr_assert, AFC-844), so a
+    // bearer_rejected the Worker caused has a readable cause in worker_diagnostics.
+    recordRefusal: (entry) => recordGrRefusal(env, _ctx, entry),
     // The signed grant_ref must name a grant that still exists for the
     // seat:  listUserGrants is the provider's own view (the same one the
     // admin revoke and consent replacement paths maintain), filtered to
@@ -1034,7 +1082,8 @@ async function serveApp(request, env, _ctx) {
 
   if (route !== "authorize" && route !== "admin") return notFound();
 
-  const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access);
+  const adminApiPath = route === "admin" && new URL(request.url).pathname.startsWith("/admin/api/");
+  const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access, { allowService: adminApiPath, serviceClientIds: [...parseServiceClientIds(env.ADMIN_API_SERVICE_CLIENT_IDS), ...parseServiceClientIds(env.BF_ADMIN_API_SERVICE_CLIENT_IDS)] });
   if (!who.ok) {
     // Name the variable, never its value:  an unprovisioned AUD or team domain
     // is an operator fix, and saying which one turns a mystery 403 into a
@@ -1058,7 +1107,10 @@ async function serveApp(request, env, _ctx) {
     if (request.method === "POST") return authorizePost(request, env, config, oauth, who.email);
     return textResponse("Method Not Allowed", 405, { Allow: "GET, POST" });
   }
-  return serveAdmin(request, env, config, oauth, who.email);
+  // A service principal has no email:  the actor recorded on its changes names the token, never a secret.
+  // A token listed only in BF_ADMIN_API_SERVICE_CLIENT_IDS is limited to BF-* seats and the MCP list routes (checked in serveAdmin).
+  const bfOnly = Boolean(who.service) && !parseServiceClientIds(env.ADMIN_API_SERVICE_CLIENT_IDS).includes(who.serviceTokenId);
+  return serveAdmin(request, env, config, oauth, who.service ? `service-token:${who.serviceTokenId}` : who.email, bfOnly ? "bf" : "owner");
 }
 
 async function authorizeGet(request, env, config, oauth, email) {
@@ -1301,8 +1353,97 @@ const DONE_NOTICES = {
   revoke_gb_bearer: "Bearer revoked.",
 };
 
-async function serveAdmin(request, env, config, oauth, email) {
+async function serveAdmin(request, env, config, oauth, email, scope = "owner") {
   const path = new URL(request.url).pathname;
+  if (scope === "bf" && path !== "/admin/api/mcp-config") {
+    return new Response(JSON.stringify({ ok: false, error: "scope_refused" }), { status: 403, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+  }
+  if (path === "/admin/api/mcp-config") {
+    return serveMcpConfig(request, {
+      issuer: config.issuer, actor: email, scope, seats: [...BEARER_SEATS],
+      kv: { get: (k) => env.OAUTH_KV.get(k), put: (k, v) => env.OAUTH_KV.put(k, v) },
+      audit: (e) => gate(env, GATE_LOG_NAME).audit(e),
+    });
+  }
+  if (path === "/admin/api/bearers" && request.method === "GET") {
+    // Read-only owner status for Muster (same Access owner check as /admin; no secret in the body).
+    await Promise.all(["/zulip", "/linear", "/tools"].map((p) => prefetchFolder(env, p))).catch(() => {});
+    const rows = await bearerStatusRows({
+      gateFor: (identity) => gate(env, identity),
+      resolveCredentials: (identity) => resolveBearerSeatCredentials(env, config, identity),
+      config,
+    });
+    let diagnostics = null;
+    try { diagnostics = diagnosticSummaryRows(await gate(env, GATE_LOG_NAME).diagnosticTail(50)); } catch { /* Reported as null, never as an empty list. */ }
+    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows, diagnostics }), {
+      status: 200,
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
+  if (path === "/admin/api/seat-tools" && request.method === "GET") {
+    // Read-only per-seat, per-tool readiness for Muster (names and states only; each read mirrors the seat wiring).
+    await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools", "/gr-front"].map((p) => prefetchFolder(env, p))).catch(() => {});
+    const [fleetlinkSecret, recallSecrets, relaySecrets] = await Promise.all([
+      settle(async () => (await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true })).trim()),
+      settle(() => resolveRecallSecrets(env)),
+      settle(() => resolveGrSecrets(env)),
+    ]);
+    // One read for every hosted seat, not one per seat on each poll.
+    // Resolve once for every seat; if that one read throws, retry per seat so a single seat's failure
+    // marks only that seat unavailable.
+    let fleetlinkBySeat = null;
+    const all = await settle(() => resolveFleetlinkSeatTokens(env, config.hostedSeats));
+    if (isUnavailable(all)) {
+      fleetlinkBySeat = new Map(await Promise.all(config.hostedSeats.map(async (seat) => [seat, await settle(() => resolveFleetlinkSeatTokens(env, [seat]))])));
+    }
+    const listenerUrlOk = listenerBaseUrl(env?.LISTENER_API_URL) !== null;
+    const notesRaw = env?.[OPERATOR_NOTES_SECRET];
+    const rows = await Promise.all(config.hostedSeats.map(async (seat) => {
+      const names = SEAT_SECRETS[seat];
+      const tag = seatTagForSeat(seat);
+      const listener = listenerNameFor(seat);
+      const tokens = fleetlinkBySeat ? fleetlinkBySeat.get(seat) : all;
+      const [zulipKey, linearPair, wakeKey] = await Promise.all([
+        settle(async () => names ? (await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true })).trim() : ""),
+        settle(() => resolveLinearPair(env, tag)),
+        listener ? settle(async () => (await resolveSecret(env, { name: listener, path: "/wake", envName: listener, optional: true })).trim()) : Promise.resolve(""),
+      ]);
+      const ok = tokens && typeof tokens === "object" && tokens.seatTokens instanceof Map;
+      return seatToolStates(seat, {
+        zulipKey, zulipEmail: config.botEmails[seat],
+        linearEnabled: LINEAR_SEATS.includes(tag), linearPair,
+        wakeKey, fleetlinkSecret,
+        fleetlinkSeatToken: ok ? tokens.seatTokens.has(seat) : tokens,
+        fleetlinkDenied: ok ? tokens.deniedSeats.has(seat) : false,
+        recallConfigured: recallSecrets && typeof recallSecrets === "object" ? recallClientFromResolved(recallSecrets, env) !== null : recallSecrets,
+        relaySecrets, relayUpstream: grUpstreamUrl(env?.GR_UPSTREAM_URL) !== null, listenerUrlOk,
+        eventsOnly: config.eventsOnlySeats.includes(seat),
+        notesKey: typeof notesRaw === "string" ? notesRaw : "",
+      });
+    }));
+    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows }), {
+      status: 200,
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
+  if (path === "/admin/api/bearers/action") {
+    // Owner JSON actions for Muster (mint, rotate, revoke), behind the same Access owner check as /admin.
+    return adminBearerAction(request, {
+      issuer: config.issuer,
+      email,
+      identities: { bot: GB_IDENTITIES, seat: BEARER_SEATS },
+      gateFor: (identity) => gate(env, identity),
+      evict: (identity) => IDENTITY_CACHE.evictSeat(identity),
+      newBotBearer: newGbBearer,
+      newSeatBearer,
+      sha256Hex,
+      ttlMs: GB_BEARER_TTL_MS,
+      prepare: (kind) => Promise.all((kind === "bot" ? ["/zulip", "/linear"] : ["/zulip"]).map((p) => prefetchFolder(env, p))),
+      botCredentialsLoaded: async (identity) => (await resolveDelegatedCredentials(env)).roles.has(identity),
+      seatCredentials: (identity) => resolveBearerSeatCredentials(env, config, identity),
+      missingRecords: (identity) => (BEARER_SEATS.includes(identity) ? seatCredentialRecordNames(identity, config) : null),
+    });
+  }
   if (path === "/admin" && request.method === "GET") {
     const csrf = newCsrf();
     // One idempotency key per rendered page for the bearer mint forms:  an
@@ -1408,7 +1549,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         let credentialsUnavailable = false;
         try { credentials = await resolveBearerSeatCredentials(env, config, identity); }
         catch { credentialsUnavailable = true; }
-        return { identity, kind: "seat", credentials: Boolean(credentials), credentialsUnavailable, status, mismatches, mismatchesUnavailable };
+        return { identity, kind: "seat", credentials: Boolean(credentials), credentialsUnavailable, missingRecords: credentials || credentialsUnavailable ? null : seatCredentialRecordNames(identity, config), status, mismatches, mismatchesUnavailable };
       }),
     ]);
     // Observability for the Infisical transition (kody 4365623014):  the mode
@@ -1731,7 +1872,8 @@ async function serveRequest(request, env, ctx) {
       return response;
     }
     // Neither verify route is rate limited:  the relay reads any non-200 as a refusal.
-    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: config.grVerifyCacheMs });
+    // Each refusal is an aggregated diagnostics row (kind gr_bearer, AFC-844).
+    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: config.grVerifyCacheMs, recordRefusal: (entry) => recordGrRefusal(env, ctx, entry) });
     // Enter through the provider so its request-local OAuth helpers exist.
     if (route === "gr_assert_verify") return fetchProvider(request, env, ctx);
     const credential = route === "mcp" ? await credentialHash(request) : null;

@@ -71,7 +71,9 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
 # the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
-MAX_FILES = 190
+# MiniMax catalog observation adds the 191st shipped file. Keep the matching
+# sender/receiver count budget bounded, with room for small additive modules.
+MAX_FILES = 200
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -104,7 +106,6 @@ RECALL_MODULES = (
 # `simple-notes` reads the OPERATOR_API_URL knob through these fleet_knobs modules (stdlib only;  the package's
 # tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
-SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
@@ -155,7 +156,6 @@ EXACT = frozenset(
         *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
         "scripts/fleet_lanes/placement-exceptions.json",
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
@@ -203,6 +203,9 @@ REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # Pinned one-shot host diagnostic, explicitly installed only after review.
+        # No fleet CLI imports or runs this launcher.
+        "scripts/simple_tools/minimax_supervised_exec.mjs",
         # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
         # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
         "scripts/simple_tools/thread_registry_export.test.mjs",
@@ -262,7 +265,6 @@ TOOL_REQUIRED = frozenset(
         # Shared protected-custody helper for declared readers and interactive launchers.
         "scripts/fleet_infisical_bootstrap.py",
         # The direct command's writer requires the same retained intent ledger.
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/simple_tools/mcp/fleetlink-tools.json",

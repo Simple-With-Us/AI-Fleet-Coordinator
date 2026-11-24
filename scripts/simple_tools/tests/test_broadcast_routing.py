@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -678,6 +679,37 @@ class PeerBroadcastDaemonTests(DaemonHarness):
             "the retry carries its new due time",
         )
 
+    def test_the_operators_own_reminder_is_never_audited(self) -> None:
+        """The Operator's Side-Chats reminder quotes the `@all` it is reminding about;  without
+        the sender exclusion every reminder would schedule an audit of itself (Kody, #2411)."""
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        op_id = daemon.config.operator_user_id = OPERATOR_USER_ID
+        self.assertGreater(op_id, 0)
+        gate_message = {"id": 500, "sender_id": op_id, "sender_email": "operator-bot@zulip.test"}
+        gate = lambda: daemon._peer_broadcast_audit(
+            gate_message,
+            types.SimpleNamespace(
+                no_wake=False, dm=False, stale=False, owner=False, owner_topic=False,
+                broadcast_all=True,
+            ),
+            runner,
+        )
+        self.assertFalse(gate(), "the Operator's own reminder is never audited")
+        peer_message = dict(gate_message, sender_id=12345)
+        runner.users[12345] = {"user_id": 12345, "is_bot": True}
+        self.assertTrue(
+            daemon._peer_broadcast_audit(
+                peer_message,
+                types.SimpleNamespace(
+                    no_wake=False, dm=False, stale=False, owner=False, owner_topic=False,
+                    broadcast_all=True,
+                ),
+                runner,
+            ),
+            "a peer bot's shaped post still schedules the audit",
+        )
+
     def test_the_audit_reminds_the_owner_when_nothing_explained_the_broadcast(self) -> None:
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])
@@ -701,8 +733,10 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         self.assertEqual(effect.get("state"), "done", "the reminded audit is terminal, never re-due")
 
     def test_the_reminder_is_the_operators_dm_tagged_operator_note(self) -> None:
-        """The reminder is the daemon's own text, so the Operator sends it, tagged as the Operator's
-        note, and no seat's bot does (owner ruling, Oct 30 2026)."""
+        """The reminder is the daemon's own text, so the Operator sends it to Side-Chats tagged as
+        the Operator's note, and no seat's bot does (owner ruling, Oct 30 2026;  Nov 18 2026:  it
+        is a Side-Chats post, never a direct message).  This scenario has no live runner, so the
+        mention line is absent \u2014 the post still lands where the owner reads."""
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])
         message_id = self.peer_all()
@@ -713,12 +747,17 @@ class PeerBroadcastDaemonTests(DaemonHarness):
             daemon,
             lambda: any(row.get("event") == "peer-broadcast-all" for row in self.log_rows(daemon)),
         )
-        reminders = [m for m in self.operator_posts() if m["type"] == "private"]
+        reminders = [
+            m
+            for m in self.operator_posts()
+            if m.get("type") == "stream" and m.get("display_recipient") == "Side-Chats"
+        ]
         self.assertEqual(len(reminders), 1)
-        self.assertEqual(
-            sorted(r["id"] for r in reminders[0]["display_recipient"]), [OWNER, OPERATOR_USER_ID]
+        self.assertEqual(reminders[0].get("subject"), "Operator escalation notes")
+        self.assertTrue(
+            reminders[0]["content"].startswith("@**Jay Wedgeworth**\n[OPERATOR·note] "),
+            reminders[0]["content"],
         )
-        self.assertTrue(reminders[0]["content"].startswith("[OPERATOR·note] "), reminders[0]["content"])
         self.assertEqual(self.seat_requests(), [], "no seat's bot sent it")
         rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
         self.assertEqual((rows[-1].get("outcome"), rows[-1].get("posted_by")), ("reminded", "OPERATOR"))

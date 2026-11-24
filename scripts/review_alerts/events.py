@@ -36,14 +36,24 @@ EVENT_FIELDS = (
     "status",
     "wake_id",
     "reason",
+    "message_id",
+    "link",
 )
 
-KINDS = ("review_submitted", "review_completed", "findings_added")
+KINDS = (
+    "review_submitted",
+    "review_completed",
+    "findings_added",
+    "merge_conflict",
+    "changes_requested",
+    "check_failure",
+)
 TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
 #: outcome is not settled (transport failure or a possibly-lost answer) and is
 #: retried or reconciled by receipt, never re-detected.
-NONTERMINAL = ("submitted", "submit-pending")
+MESSAGE_PENDING = ("message-pending", "message-posting", "message-posted")
+NONTERMINAL = ("submitted", "submit-pending") + MESSAGE_PENDING
 
 
 def _utcnow() -> str:
@@ -195,6 +205,10 @@ class EventStore:
                     comments = int(parts[1])
                 if len(parts) >= 3 and parts[2].isdigit():
                     checks = int(parts[2])
+            # The first-sight baselines, before any event-derived maximum:
+            # detection passes that must not assume numeric completion order
+            # filter on these and leave repeats to the event store.
+            review_seed, check_seed = reviews, checks
             for (r, n, kind, event_id), row in self._by_key.items():
                 if r != repo or n != int(number):
                     continue
@@ -214,6 +228,8 @@ class EventStore:
             "review_id": reviews,
             "comment_id": comments,
             "check_id": checks,
+            "review_seed": review_seed,
+            "check_seed": check_seed,
             "completed_heads": sorted(completed_heads),
         }
 

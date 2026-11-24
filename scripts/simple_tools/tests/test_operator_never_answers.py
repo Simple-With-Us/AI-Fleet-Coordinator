@@ -159,8 +159,14 @@ class OperatorStillSendsTests(DaemonHarness):
         pending.add({"id": mid, "ts": now}, False)
         sent = daemon.dm_owner(daemon.seats["CLAUDE"], pending, "Codex asked for the key.", "high", [])
         (note,) = self.operator_posts()
-        self.assertEqual(note["type"], "private")
-        self.assertTrue(note["content"].startswith("[OPERATOR·note] re=%d\n" % mid), note["content"])
+        self.assertEqual(note["type"], "stream")
+        self.assertEqual(
+            (note["display_recipient"], note["subject"]), ("Side-Chats", "Operator escalation notes")
+        )
+        self.assertTrue(
+            note["content"].startswith("@**Jay Wedgeworth**\n[OPERATOR·note] re=%d\n" % mid),
+            note["content"],
+        )
         self.assertIn("Codex asked for the key.", note["content"])
         self.assertEqual(sent, {"owner_dm": note["id"]})
         self.assertEqual(self.seat_requests(), [])
@@ -253,7 +259,13 @@ class StructureTests(unittest.TestCase):
             callers.found,
             {
                 # The owner's DM notes and alerts, which are the Operator's own and answer nothing.
-                "_operator_send": {"dm_owner", "_run_broadcast_audit_body", "_held_alert"},
+                "_operator_send": {
+                    "dm_owner",
+                    "_run_broadcast_audit_body",
+                    "_held_alert",
+                    # Protected PR-review event notice, not a wake's answer or model output.
+                    "_review_alert_message_send",
+                },
                 "_operator_edit": {"_held_alert_edit"},
                 # Nothing else:  the Operator asks nobody (see OperatorAsksNobodyTests).
             },

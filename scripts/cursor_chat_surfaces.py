@@ -184,8 +184,8 @@ def agent_web_url(agent_id: str) -> str:
 
 
 def _basic_auth_header(api_key: str) -> str:
-    token = base64.b64encode(f"{api_key}:".encode()).decode("ascii")
-    return f"Basic {token}"
+    basic = base64.b64encode(f"{api_key}:".encode()).decode("ascii")
+    return f"Basic {basic}"
 
 
 def api_request(

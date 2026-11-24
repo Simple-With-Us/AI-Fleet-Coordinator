@@ -54,7 +54,7 @@ Services reads every two minutes app-wide;  the engine runs at launch, on watche
 | `simple-chat muster-service users` and `last-post`, as the Operator bot | Local command;  each run fetches the Operator credential from Infisical `/zulip_operator`, then sends `users/me` and one read | The Mac | Seats (last post) |
 | `simple-chat daemon status --json`, `pause`, `resume`, `reload`, `check-config`, `test-wake` | Local command, no plan mode | The Mac | Wake & Listener |
 | `python3 -m fleet_knobs status --json --values`, `set`, `unset` | Local command, reaches Infisical at `/`.  Muster passes neither `FLEET_KNOBS_WRITE_TOKEN` nor `FLEET_KNOBS_INFISICAL_TOKEN` (`EngineRunner.swift:150-162`), so from Muster a status read resolves to the last-known-good copy and a write refuses | The Mac | Controls |
-| `fleet-secrets names`, `doctor --json`, `get NAME` | Local command, reaches Infisical | The Mac | Controls, Recall Settings, a BotFleet host token |
+| a scoped Infisical read (`fleet_infisical`), names only | Local client, reaches Infisical | The Mac | Controls, Recall Settings, a BotFleet host token |
 | `node` (pm2), `/bin/launchctl list/print` | Local command | The Mac | Services, menu |
 | `python3 scripts/fleet-ops-control.py mac|pm2 ...` | Local command | The Mac | Services, Background Agents, menu |
 | `python3 scripts/fleet_seat_inventory.py` | Local command | The Mac | Seat Setup |
@@ -168,7 +168,7 @@ The two server agents, `muster_spool.py` and the shared `muster_trust_files.py` 
 - The command line is four words, `SCOPE VERB TARGET MODE`;  everything else comes on standard input (at most 4,096 bytes, or 65,536 for a trust-list chain, which a sender splits).
 - **Every request that parses is rate-limited** (requests refused while parsing are not counted, and reach no lock, signature check or action).  Plans, status reads and chains are counted as they arrive, since they carry no device signature.  A run is counted only after its approval has verified, passed its window and the ledger check, under `ops-control.lock` and just before its nonce is spent (spec section 12, step Y8b), so junk or a replayed approval can never use up the runs budget and make the owner's real approval `rate_limited`;  a run refused `rate_limited` keeps its nonce unspent and may be retried inside its window.  Limits:  plans one per verb and target in 5 seconds;  runs one per verb and target in 2 seconds;  trust-list chains one in 10 seconds;  trust-list status one in 2 seconds;  and, per class across every verb and target, at most 120 plans, 60 runs, 30 chains and 600 status reads in any sliding hour (spec section 12).
 - **Audit rows cannot be flooded by replays.**  An approval gets a row only once its nonce is spent, so at most one row per approval, ever, and replaying an approval (expired or not) adds none.  A chain gets a row only when accepted;  rows for refused chains are part of the OPEN recovery machinery (spec section 17A, item A2).
-- **Plans are exactly what `plan_request` on `main` returns** (spec section 4):  `systemctl` for start, stop and restart and `journalctl -u UNIT -n 200 --no-pager` for logs, each with `--user` only for a user-scope unit;  `sudo -n /usr/bin/systemctl start --no-block fleet-cli-git-update.service` for the one system update;  a `["coolify","GET",…]` entry for redeploy, which the helper sends as an HTTP request and never runs;  and `fleet-resource-plan/1` for resource policy.  `argv[0]` is resolved on the server, so the phone signs the plan hash the server's own `--plan` returned, never one it computed.  The planner refuses an allowlist miss, a stale server report, a busy update, missing sudo rights, an update route that changed, an update receipt that does not match or cannot be read, or a resource policy that changed since it was read (`revision_stale`) with `plan_refused`, its reason one word from a closed list (spec section 4).  In the plan, a redeploy's `auditTarget` has every character outside printable ASCII replaced by `?` (spec section 4).
+- **Plans are exactly what `plan_request` on `main` returns** (spec section 4):  `systemctl` for start, stop and restart and `journalctl -u UNIT -n 200 --no-pager` for logs, each with `--user` only for a user-scope unit;  `sudo -n /usr/bin/systemctl start --no-block fleet-cli-git-update.service` for the one system update;  a `["coolify","POST",…]` entry for redeploy, which the helper sends as an HTTP request and never runs;  and `fleet-resource-plan/1` for resource policy.  `argv[0]` is resolved on the server, so the phone signs the plan hash the server's own `--plan` returned, never one it computed.  The planner refuses an allowlist miss, a stale server report, a busy update, missing sudo rights, an update route that changed, an update receipt that does not match or cannot be read, or a resource policy that changed since it was read (`revision_stale`) with `plan_refused`, its reason one word from a closed list (spec section 4).  In the plan, a redeploy's `auditTarget` has every character outside printable ASCII replaced by `?` (spec section 4).
 - **The trust-list chain verb is not built yet** (spec section 4):  until its slice lands, `muster trust-list chain --yes` answers `bad_command`, so the helper holds no list and every approval answers `no_trust_list`.
 - **Fails closed on time and faults:**  an approval is refused `clock_unsynced` when a read-only `adjtimex` call fails or reports the clock unsynchronised or more than 1 second uncertain (spec section 7;  chrony keeps this server synchronised today, as BB measured on November 7);  a fault before the nonce is spent is `internal_error`, and after it a signed result with outcome `unknown` when the action had begun or may have, and `failed` only when it provably never began or ended in a definite failure.
 - **Plans without an approval** for every allowlisted verb, from the one function the run path hashes, signed by the helper.
@@ -252,7 +252,7 @@ The phone asks the Mac to read again with a read request:  device-signed with th
 | Milestone | Read Verbs |
 | --- | --- |
 | 1 | `refresh-seats`, `refresh-cheap` (services, listener files, place summary) |
-| 3 | `refresh-fleet-view`, `refresh-controls` (`fleet_knobs status`, `fleet-secrets names` and `doctor`), `refresh-recall` |
+| 3 | `refresh-fleet-view`, `refresh-controls` (`fleet_knobs status` and a names-only scoped Infisical read), `refresh-recall` |
 
 Only such an explicit request counts as the owner asking:  not the phone's ETag poll, a widget refresh, Background App Refresh, or anything the hub reports.  The server gets no requests before Milestone 5.
 
@@ -264,7 +264,7 @@ Only such an explicit request counts as the owner asking:  not the phone's ETag 
 | Apps & Work (`fleet-view`, M3) | On open and on Refresh | On `refresh-fleet-view`, through `FleetViewStore.refreshIfOlder`, with the bridge's own ten-minute floor counted from the last attempt.  PR 1466 (merged) clears `lastSuccessAt` after a failed read and adds `lastFailureAt` with a 60-second `failureRetryAfter` floor;  the bridge's floor does not depend on either.  |
 | Listener files | While the panel is open, `daemon status` each minute | Files every 5 minutes while the bridge is on;  `daemon status` only on `refresh-cheap` |
 | `fleet_knobs status` (M3) | On open | On `refresh-controls` only, because each run rewrites the last-known-good copy and a 60-second failure marker |
-| `fleet-secrets names`, `doctor` (M3) | On open | Hourly and on `refresh-controls` |
+| a names-only scoped Infisical read (M3) | On open | Hourly and on `refresh-controls` |
 | Recall settings (M3) | On open, fetching the admin token | On `refresh-recall` only |
 | Services, engine, file sources | As today | As today |
 
@@ -355,7 +355,7 @@ The phone then asks for the job's result again;  a helper-signed result for that
 
 **Canonical plan objects.**  Spec section 13:  `fleet-ops-plan/1` for the helper's verbs, `fleet-resource-plan/1` for resource policy (with `old` and `new` from `fleet_resource_control`'s `before` and `after`), `fleet-knobs-plan/1` for knobs if Question 6.3 says yes, and `muster-listener-plan/1` built and compared in Swift.
 
-**Knob writes, if the owner wants them.**  Muster would read the write token and a read token by key name through `fleet-secrets get` for the one run and pass them in the child environment.  `fleet_knobs set` would take a local lock, call `verify_writer`, re-read the live value and refuse unless the read has `source == "infisical"`, is not stale and equals the plan's `old`;  write;  then read back live and report "unverified" if that read is not live (never through `refresh_lkg`).  The race covers every other writer at `/`, on any host.
+**Knob writes, if the owner wants them.**  Muster would read the write token and a read token by key name through a scoped Infisical read for the one run and pass them in the child environment.  `fleet_knobs set` would take a local lock, call `verify_writer`, re-read the live value and refuse unless the read has `source == "infisical"`, is not stale and equals the plan's `old`;  write;  then read back live and report "unverified" if that read is not live (never through `refresh_lkg`).  The race covers every other writer at `/`, on any host.
 
 ### Caching, Offline And Refresh
 
@@ -611,7 +611,7 @@ Not filed.  Team AFC assumed.
 
 6.2 **Which Mac actions stay Mac-only.**  Resume and raising `usdPerDay` can both raise spending;  under your November 7 ruling a seat wake runs no model, so the only model spend left is the Operator's own occasional runs (what `usdPerDay` bounds after the ruling is BB's open item).  Should either stay Mac-only?
 
-6.3 **Knob writes.**  Muster cannot write a knob today, because it passes `fleet_knobs` no token.  Should Muster read the knob write token and a read token by name through `fleet-secrets get` for each write, so the Mac and the phone can change knobs with a live compare-and-set, or should knob writes stay off Muster?
+6.3 **Knob writes.**  Muster cannot write a knob today, because it passes `fleet_knobs` no token.  Should Muster read the knob write token and a read token by name through a scoped Infisical read for each write, so the Mac and the phone can change knobs with a live compare-and-set, or should knob writes stay off Muster?
 
 Changed in revision 9:  1.6 says a closed list cannot be reopened before Milestone 5;  5.4 names spec version 5;  6.2 reflects the wake ruling.  No question was added or dropped.
 

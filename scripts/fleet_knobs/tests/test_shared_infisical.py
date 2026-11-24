@@ -190,11 +190,31 @@ else:
             (server / "Dockerfile.dockerignore").read_text().splitlines(),
         )
 
-    def test_legacy_import_is_an_alias_to_one_client(self):
-        from fleet_secrets import core
-
-        self.assertIs(core, fleet_infisical)
-        self.assertIs(core.SecretsError, fleet_infisical.SecretsError)
+    def test_there_is_one_client_and_no_legacy_alias_package(self):
+        scripts = Path(__file__).resolve().parents[2]
+        # The shared reader has one implementation and one name.  The legacy alias package is gone,
+        # so no consumer can reach a second copy of the client.
+        # A leftover gitignored __pycache__-only directory is not the legacy package: only
+        # an importable module under fleet_secrets would let a consumer reach a second
+        # copy.  Compiled modules count: a .pyc/.pyo beside its (missing) source, or a
+        # .so/.pyd extension module, imports with zero .py files present; a .pyc inside
+        # __pycache__ without its source does not (PEP 3147), so those stay excluded.
+        legacy = scripts / "fleet_secrets"
+        importable = ("*.py", "*.pyc", "*.pyo", "*.so", "*.pyd")
+        legacy_sources = (
+            sorted(
+                str(path.relative_to(scripts))
+                for pattern in importable
+                for path in legacy.rglob(pattern)
+                if "__pycache__" not in path.parts
+            )
+            if legacy.is_dir()
+            else []
+        )
+        self.assertEqual(legacy_sources, [])
+        self.assertTrue((scripts / "fleet_infisical.py").is_file())
+        self.assertTrue(hasattr(fleet_infisical, "fetch_verified"))
+        self.assertTrue(hasattr(fleet_infisical, "SecretsError"))
 
     def test_real_scoped_read_runs_without_legacy_application_or_executable(self):
         scripts = str(Path(__file__).resolve().parents[2])
