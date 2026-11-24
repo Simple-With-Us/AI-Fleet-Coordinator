@@ -1661,6 +1661,15 @@ class Daemon:
                     reason="invalid-or-reused-read-key",
                 )
                 review_origin_key = ""
+        from .review_origin_projection import ZC_KEY_ENV
+        review_origin_zc_key = Z._strip_quotes(self.env.get(ZC_KEY_ENV) or "")
+        if review_origin_zc_key:
+            self.hide_values([review_origin_zc_key])
+            if (not re.fullmatch(r"[!-~]{32,512}", review_origin_zc_key)
+                    or "${" in review_origin_zc_key or review_origin_zc_key in keys.values()
+                    or review_origin_zc_key == review_origin_key):
+                self.log.write("review-origin-projection-held", key_env=ZC_KEY_ENV, reason="invalid-or-reused-read-key")
+                review_origin_zc_key = ""
         # The service is built on the server whether or not any principal has a usable key, and
         # whether or not the API is on or bound:  the note-link hook and the sweeper run in
         # process and need no key.  The keys decide only whether the API serves /registry/v1/.
@@ -1673,6 +1682,7 @@ class Daemon:
             window,
             tuple(sorted((name, key) for name, key in keys.items())),
             review_origin_key,
+            review_origin_zc_key,
         )
         if old is not None and old_spec == spec:
             service = old
@@ -1681,6 +1691,7 @@ class Daemon:
                 db_path,
                 keys,
                 review_origin_read_key=review_origin_key,
+                review_origin_zc_read_key=review_origin_zc_key,
                 clock=self.clock.time,
                 log=self.log.write,
                 gone_report_max_share=share,

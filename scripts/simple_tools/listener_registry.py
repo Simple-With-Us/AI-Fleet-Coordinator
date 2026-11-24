@@ -246,6 +246,7 @@ class RegistryService:
         keys: Mapping[str, str],
         *,
         review_origin_read_key: str = "",
+        review_origin_zc_read_key: str = "",
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
         gone_report_max_share: float = DEFAULT_GONE_REPORT_MAX_SHARE,
@@ -256,7 +257,10 @@ class RegistryService:
         self.review_origin = ReviewOriginProjection(
             str(db_path), review_origin_read_key, clock=clock
         )
-        self.has_review_origin_key = (
+        self.review_origin_zc = ReviewOriginProjection(str(db_path), review_origin_zc_read_key, clock=clock, platform="zcode")
+        if review_origin_zc_read_key and (review_origin_zc_read_key == review_origin_read_key or review_origin_zc_read_key in keys.values()):
+            raise ValueError("ZC review origin key must be dedicated")
+        self.has_review_origin_key = (isinstance(review_origin_zc_read_key, str) and len(review_origin_zc_read_key) >= 32) or (
             isinstance(review_origin_read_key, str) and len(review_origin_read_key) >= 32
         )
         self.db_path = str(db_path)
@@ -310,6 +314,8 @@ class RegistryService:
             return _error(404, "not_found", "not found")
         if path == PREFIX + "review-origin":
             return self.review_origin.handle(method, raw_path, headers, body)
+        if path == PREFIX + "review-origin-zcode":
+            return self.review_origin_zc.handle(method, raw_path, headers, body)
         op = path[len(PREFIX) :]
         if op not in _METHODS or "/" in op:
             return _error(404, "not_found", "not found")
