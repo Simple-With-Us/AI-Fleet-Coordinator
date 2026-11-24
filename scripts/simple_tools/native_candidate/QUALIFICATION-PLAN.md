@@ -1,6 +1,6 @@
 # One new genuine Linux alert, qualification proposal only
 
-Exact existing owning session: sess_7e170443-7fad-4343-acfe-95a4c34377be, workspace /mnt/fleet-extra/Code/BotFleet, registry letter II/generation2 at last routing check. Host runtime generation3 is a different counter and must not replace registry generation. Revalidate live registry/session identity immediately before any eventual effect.
+Exact existing owning session: sess_7e170443-7fad-4343-acfe-95a4c34377be, workspace <deployment-owning-workspace>, registry letter II/generation2 at last routing check. Host runtime generation3 is a different counter and must not replace registry generation. Revalidate live registry/session identity immediately before any eventual effect.
 
 Prerequisites: source packaging/custody adjustment independent acceptance, ready source PR through normal checks/reviews, exact published artifact hashes and actual original-source regeneration, current no-browser standalone server construction, authority recovered for this exact native endpoint/credential read/normal initialization and genuine alert input. This document grants none. No diagnostic prompt and no old unknown/persisted wake.
 
