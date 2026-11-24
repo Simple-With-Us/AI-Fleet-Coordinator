@@ -4739,7 +4739,10 @@ def report_gone(
     # The notes an earlier retire path left behind are retired here, and no report is made for them:  the assigner
     # freed those letters when it closed the rows.  A title write that failed is tried again.  Both run on every
     # sweep, so a freed letter is released at once and a stale prefix does not wait for the report to be due.
-    for row in list(already.values()) + list(owed.values()):
+    # The batch is bounded:  a sweep retires a bounded number of them, a title that owes its letter first, and the
+    # rest wait for the next sweep, so a backlog never holds the hook path.
+    batch = list(owed.values()) + list(already.values())
+    for row in batch[:GONE_REPORT_IDS]:
         chat = Chat(spec, env, where, row["session_id"], now=now, transport=transport, seat=seat)
         note = chat.read()
         # The note has to be the one the scan saw:  a chat that ran since then is in use, not gone.

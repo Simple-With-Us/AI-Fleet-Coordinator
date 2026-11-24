@@ -413,5 +413,29 @@ class RetireTests(Base):
         self.assertEqual(self.title_of("m-0020"), "%s: Fix Login" % note["label"])
 
 
+    def test_the_retire_batch_of_a_sweep_is_bounded(self) -> None:
+        # A sweep retires a bounded number of the notes an earlier path left behind, and the rest wait for the next
+        # sweep, so a backlog never holds the hook path.
+        for sid in ("m-0021", "m-0022"):
+            self.add(sid, title="Fix Login")
+            self.start(sid)
+        # Both notes are marked after both chats have started, because a start makes a sweep of its own.
+        for sid in ("m-0021", "m-0022"):
+            path = PL.note_path(self.env(), PM.SEAT, sid)
+            with open(path, encoding="utf-8") as fh:
+                note = json.load(fh)
+            note["gone_at"] = self.now
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(note, fh)
+
+        with mock.patch.object(PL, "GONE_REPORT_IDS", 1):
+            done = self.report()
+            self.assertEqual(len(done["retired"]), 1)  # one of the two is retired in this sweep
+            done = self.report()
+            self.assertEqual(len(done["retired"]), 1)  # and the other waits for the next one
+        self.assertFalse(PL.lettered(self.note("m-0021")))
+        self.assertFalse(PL.lettered(self.note("m-0022")))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
