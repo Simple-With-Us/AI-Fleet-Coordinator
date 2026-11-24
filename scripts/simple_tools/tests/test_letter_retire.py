@@ -278,5 +278,70 @@ class RetireTests(Base):
         self.assertFalse(PL.lettered(self.note("m-0011")))
         self.assertFalse(PL.lettered(self.note("m-0012")))
 
+    def test_a_chat_that_runs_after_the_scan_is_not_retired(self) -> None:
+        # The note the old retire path left behind is only retired when it is still the note the scan saw:  a chat
+        # that ran in between is in use, not gone.
+        self.add("m-0013", title="Fix Login")
+        self.start("m-0013")
+        path = PL.note_path(self.env(), PM.SEAT, "m-0013")
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        note["gone_at"] = self.now
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+        real = PL._lettered_chats
+
+        def scan_then_use(env, seat, platform, where, now, **kwargs):
+            rows = real(env, seat, platform, where, now, **kwargs)
+            self.start("m-0013", at=self.now + 1)  # the chat runs between the scan and the read
+            return rows
+
+        with mock.patch.object(PL, "_lettered_chats", scan_then_use):
+            done = self.report()
+        self.assertNotIn("m-0013", done["retired"])  # so it is not retired
+        self.assertTrue(PL.lettered(self.note("m-0013")))  # and it keeps its letter
+
+    def test_a_title_a_person_chose_leaves_no_pending_title(self) -> None:
+        # The writer refuses a title a person chose for ever, so nothing is left pending:  the mark would ask for a
+        # write that can never succeed.
+        self.add("m-0014", title="Fix Login")
+        self.start("m-0014")
+        self.name("m-0014", "My Own Name")
+        self.archive("m-0014")
+
+        self.report()
+        note = self.note("m-0014")
+        self.assertFalse(PL.lettered(note))
+        self.assertNotIn("title_pending", note)
+
+    def test_the_retired_list_is_answered_on_the_stamp_failure_path(self) -> None:
+        self.add("m-0015", title="Fix Login")
+        self.start("m-0015")
+        with mock.patch.object(PL, "_save_json", lambda path, data: False):  # the stamp cannot be written
+            done = self.report()
+        self.assertIn("retired", done)
+        self.assertEqual(done["retired"], [])
+
+    def test_the_notes_are_scanned_once_and_the_adapter_call_is_bounded(self) -> None:
+        self.add("m-0016", title="Fix Login")
+        self.start("m-0016")
+        self.add("m-0017", title="Fix Signup")
+        self.start("m-0017")
+        self.archive("m-0016")
+        self.archive("m-0017")
+
+        calls = []
+        real = PL._lettered_chats
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(PL, "_lettered_chats", counting), mock.patch.object(PL, "GONE_REPORT_IDS", 1):
+            done = self.report()
+        self.assertEqual(len(calls), 1)  # one scan for the whole sweep
+        self.assertEqual(len(done["gone"]), 1)  # and the adapter is asked about a bounded number of chats
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
