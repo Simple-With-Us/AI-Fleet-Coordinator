@@ -6373,13 +6373,18 @@ class Daemon:
             # window rule `listener_records.wakes_view` gives the listener API's view (a wake is in
             # the window while its newest row is), computed from the ledger this seat already holds
             # in memory.
-            recent = [
-                v
-                for v in views.values()
-                if isinstance(v.get("ts"), (int, float)) and now - v["ts"] < W.DAY
-            ]
-            outcomes = W.outcome_counts(recent)
-            outcomes["awaiting"] = W.outcome_counts(views.values())["awaiting"]
+            # One pass over the seat's merged views:  the windowed outcome counts and the
+            # awaiting count together (Kody, PR 2511), instead of scanning the ledger twice.
+            outcomes = {state: 0 for state in W.OUTCOME_STATES}
+            outcomes["awaiting"] = 0
+            for view in views.values():
+                state = view.get("state")
+                if state in W.OUTCOME_STATES:
+                    ts = view.get("ts")
+                    if isinstance(ts, (int, float)) and now - ts < W.DAY:
+                        outcomes[state] += 1
+                elif state == "done" and view.get("receipt_awaited") is True:
+                    outcomes["awaiting"] += 1
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
