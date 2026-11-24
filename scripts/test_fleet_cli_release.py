@@ -1338,8 +1338,9 @@ class ShippedDataFilesTests(unittest.TestCase):
         for path in paths:
             self.assertFalse(release.allowed_path(path), path)
             self.assertFalse(release.shipped_path(path), path)
-        self.assertFalse(release.allowed_path(prefix + "unreviewed.json"))
-        self.assertFalse(release.shipped_path(prefix + "unreviewed.py"))
+        for unknown in ("unreviewed.json", "unreviewed.py"):
+            self.assertFalse(release.allowed_path(prefix + unknown))
+            self.assertFalse(release.shipped_path(prefix + unknown))
 
     def test_minimax_supervised_launcher_stays_explicit_host_only(self):
         path = "scripts/simple_tools/minimax_supervised_exec.mjs"
