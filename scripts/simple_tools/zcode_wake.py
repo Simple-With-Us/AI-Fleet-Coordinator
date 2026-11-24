@@ -492,7 +492,8 @@ def _prompt_evidence(
     try:
         try:
             parts = conn.execute(
-                "SELECT message_id, data FROM part WHERE session_id = ? AND " + clauses
+                "SELECT message_id, data FROM part WHERE session_id = ? AND "
+                + clauses
                 + " ORDER BY time_created DESC, id DESC LIMIT %d" % EVIDENCE_CANDIDATES,
                 tuple(args),
             ).fetchall()
