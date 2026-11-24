@@ -586,7 +586,7 @@ and platform.  Product UI stays the viewer's timezone.  A market bell stays as
 
 - **GitHub App credentials are the relay's, never yours.**  The fleet's GitHub relay (`git-relay`) is the only path that mints per-bot GitHub App tokens, and it keeps them server-side; a seat never handles an App id, a private key, or a token expiry, and never reads App keys out of Infisical itself.  A seat reaches the relay's tools with its own bearer token — never print it, and never ask the owner for an App key.  See "The fleet's GitHub tools" above.
 
-Canonical: `~/apps/FLEET-PROTOCOL.md` the repository `AGENTS.md` Infisical rules and the `secret-handoff` and `secret-safety` skills.
+Canonical: the repository `AGENTS.md` Infisical rules and the `secret-handoff` and `secret-safety` skills.
 
 `simple-chat` is for Zulip messaging tools, including message reads, not a required Operator session-letter route.  Reading messages does not imply event subscription.  Operator is separate; use only its separately verified entry point.  Ordinary Operator clarification DMs remain ordinary messages, not a tool integration or required letter route.
 
