@@ -1088,7 +1088,7 @@ class Tests(unittest.TestCase):
                 # Decisive guard: without request detection the cache stays
                 # None and reviewed() would pass identically via the
                 # requested-is-None branch, so assert the boundary populated.
-                self.assertIsNotNone(m._review_request_cache["1710"])
+                self.assertIsNotNone(m._review_request_cache[("1710", None)])
         # A request AFTER the review invalidates it: recognition makes the
         # review stale and reviewed() rejects the head, while broken
         # recognition would leave the older review valid and not raise.
@@ -1506,7 +1506,7 @@ class Tests(unittest.TestCase):
             m._check_run_cache.clear()
             m._review_request_cache.clear()
             m.reviewed("a" * 40)
-            self.assertIsNone(m._review_request_cache["1710"])
+            self.assertIsNone(m._review_request_cache[("1710", None)])
 
     def test_release_review_paths_exclude_receipt_only(self):
         self.assertNotIn("docs/releases/alert-credentials-qualified.json", m.RELEASE_REVIEW_PATHS)
@@ -1927,6 +1927,78 @@ jobs:
             m._review_request_cache.clear()
             with self.assertRaises(RuntimeError):
                 m.reviewed("a" * 40)
+
+    def test_post_merge_request_does_not_discard_a_pre_merge_request(self):
+        # Kody's finding on PR #2515:  with a pre-merge request at 01:30 and a
+        # post-merge request at 19:30, clearing on the MAX would drop the
+        # 01:30 request too and let a receipt from 01:00 (stale against it)
+        # qualify.  Freshness must use the newest request at or before the
+        # merge, so this stays refused.
+        head = "b" * 40
+        receipt_run = {
+            "name": "Kody Code Review",
+            "app": {"id": m.KODY_APP_ID, "slug": m.KODY_APP_SLUG},
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": head,
+            "started_at": "2026-11-22T01:00:00Z",
+            "completed_at": "2026-11-22T01:10:00Z",
+            "output": {"title": "Code Review Complete", "summary": "Review finished successfully"},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [self._merged_pr(head)],
+                    [],
+                    # kody_check_receipt reads check-runs first, then comments.
+                    {"check_runs": [receipt_run]},
+                    [
+                        {"body": "@kody start-review", "created_at": "2026-11-22T01:30:00Z"},
+                        {"body": "@kody start-review", "created_at": "2026-11-23T19:30:00Z"},
+                    ],
+                ],
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            with self.assertRaises(RuntimeError):
+                m.reviewed("a" * 40)
+
+
+    def test_receipt_after_a_pre_merge_request_still_qualifies(self):
+        head = "b" * 40
+        receipt_run = {
+            "name": "Kody Code Review",
+            "app": {"id": m.KODY_APP_ID, "slug": m.KODY_APP_SLUG},
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": head,
+            "started_at": "2026-11-22T01:45:00Z",
+            "completed_at": "2026-11-22T01:55:00Z",
+            "output": {"title": "Code Review Complete", "summary": "Review finished successfully"},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [self._merged_pr(head)],
+                    [],
+                    {"check_runs": [receipt_run]},
+                    [{"body": "@kody start-review", "created_at": "2026-11-22T01:30:00Z"}],
+                ],
+            ),
+            patch.object(m, "request_json", return_value=self._thread_evidence()),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # The pre-merge request at 01:30 still counts:  the receipt from
+            # 01:45 is at or after it, so qualification passes.
+            m.reviewed("a" * 40)
 
 
 if __name__ == "__main__":
