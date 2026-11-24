@@ -40,7 +40,7 @@ EVENT_FIELDS = (
     "link",
 )
 
-KINDS = ("review_submitted", "review_completed", "findings_added")
+KINDS = ("review_submitted", "review_completed", "findings_added", "merge_conflict")
 TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
 #: outcome is not settled (transport failure or a possibly-lost answer) and is

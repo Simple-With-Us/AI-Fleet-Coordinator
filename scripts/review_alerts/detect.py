@@ -17,6 +17,8 @@ current-head completion.
 
 from __future__ import annotations
 
+import re
+
 KODY_LOGIN = "kody-ai[bot]"
 SENTRY_LOGIN = "sentry[bot]"
 KODY_APP_ID = 413034
@@ -37,6 +39,38 @@ def _kody_check(run: dict) -> bool:
         and isinstance(app, dict)
         and (app.get("id") == KODY_APP_ID or str(app.get("slug") or "") == "kody-ai")
     )
+
+
+def merge_conflict(repo: str, number: int, pr: dict) -> list[dict]:
+    """A confirmed conflicting commit pair, never an unknown/protection hold.
+
+    Identity includes both commits, so a base-branch advance is a new conflict
+    even when the PR head stays fixed. The event store dedupes the same pair
+    across cycles and restarts. Existing conflicts alert on first observation:
+    they remain actionable, unlike historical review activity.
+    """
+    if pr.get("state") != "open" or pr.get("mergeable") is not False:
+        return []
+    if pr.get("mergeable_state") != "dirty":
+        return []
+    head_row, base_row = pr.get("head"), pr.get("base")
+    if not isinstance(head_row, dict) or not isinstance(base_row, dict):
+        return []
+    head, base = head_row.get("sha"), base_row.get("sha")
+    if any(not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)
+           for sha in (head, base)):
+        return []
+    return [{
+        "repo": repo,
+        "number": number,
+        "kind": "merge_conflict",
+        "event_id": head + ":" + base,
+        "actor": "github",
+        "head": head,
+        "current_head": head,
+        "head_matches": True,
+        "summary": "merge conflict: update the PR against its base branch",
+    }]
 
 
 def derive(

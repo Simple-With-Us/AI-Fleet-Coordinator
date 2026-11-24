@@ -19,6 +19,7 @@ TOKEN = token_hex(24)
 NATIVE_TOKEN = token_hex(24)
 INSTALLATION_TOKEN = token_hex(24)
 SHA = "a" * 40
+BASE_SHA = "b" * 40
 CLAIMS = dict(
     origin_session_claim="session-fixture-1234", origin_letter_claim="AB", origin_generation_claim=3
 )
@@ -146,6 +147,9 @@ class Reads(unittest.TestCase):
             number=7,
             state="open",
             head={"sha": SHA},
+            base={"sha": BASE_SHA},
+            mergeable=False,
+            mergeable_state="dirty",
             html_url="https://github.com/%s/pull/7" % REPO,
             title="private title",
             body="private review body",
@@ -153,6 +157,9 @@ class Reads(unittest.TestCase):
         status, result = self.read("pull", number=7)
         self.assertEqual(status, 200, result)
         self.assertEqual(result["body"]["head"]["sha"], SHA)
+        self.assertEqual(result["body"]["base"], {"sha": BASE_SHA})
+        self.assertIs(result["body"]["mergeable"], False)
+        self.assertEqual(result["body"]["mergeable_state"], "dirty")
         self.assertNotIn("private", json.dumps(result))
         self.assertNotIn(INSTALLATION_TOKEN, json.dumps(result))
         self.assertEqual(
@@ -164,6 +171,67 @@ class Reads(unittest.TestCase):
             [("swu-operator", REPO, {"pull_requests": "read", "metadata": "read"})],
         )
         self.assertEqual(self.relay.outcomes._rows, {})
+
+    def test_pull_projects_absent_or_null_merge_state_as_unknown(self):
+        for extra in (
+            {},
+            {"mergeable": None},
+            {"mergeable_state": None},
+            {"mergeable": None, "mergeable_state": None},
+            {"mergeable": None, "mergeable_state": "unknown"},
+        ):
+            with self.subTest(extra=extra):
+                self.client.value = dict(
+                    number=7, state="open", head={"sha": SHA}, base={"sha": BASE_SHA}, **extra
+                )
+                status, result = self.read("pull", number=7)
+                self.assertEqual(status, 200, result)
+                self.assertEqual(result["body"]["mergeable"], extra.get("mergeable"))
+                self.assertEqual(result["body"]["mergeable_state"], extra.get("mergeable_state"))
+                self.assertNotIn("html_url", result["body"])
+
+    def test_pull_projects_each_documented_mergeable_state(self):
+        for state in ("behind", "blocked", "clean", "dirty", "draft", "has_hooks", "unknown", "unstable"):
+            with self.subTest(state=state):
+                self.client.value = dict(
+                    number=7,
+                    state="open",
+                    head={"sha": SHA},
+                    base={"sha": BASE_SHA},
+                    mergeable=True,
+                    mergeable_state=state,
+                )
+                status, result = self.read("pull", number=7)
+                self.assertEqual(status, 200, result)
+                self.assertIs(result["body"]["mergeable"], True)
+                self.assertEqual(result["body"]["mergeable_state"], state)
+
+    def test_pull_rejects_unverifiable_merge_metadata(self):
+        good = dict(
+            number=7,
+            state="open",
+            head={"sha": SHA},
+            base={"sha": BASE_SHA},
+            mergeable=False,
+            mergeable_state="dirty",
+        )
+        cases = [
+            dict(good, mergeable="false"),
+            dict(good, mergeable=0),
+            dict(good, mergeable=["false"]),
+            dict(good, mergeable={"value": False}),
+            dict(good, mergeable_state="conflict"),
+            dict(good, mergeable_state=""),
+            dict(good, mergeable_state=["dirty"]),
+            dict(good, mergeable_state={"state": "dirty"}),
+            {k: v for k, v in good.items() if k != "base"},
+            dict(good, base={"sha": "bad"}),
+            dict(good, base=None),
+        ]
+        for value in cases:
+            with self.subTest(value=value):
+                self.client.value = value
+                self.assertEqual(self.read("pull", number=7)[0], 502)
 
     def test_review_and_inline_comment_metadata_preserve_actor_time_and_head(self):
         self.client.value = [
@@ -317,8 +385,19 @@ class Reads(unittest.TestCase):
             reader = reader_module.ServiceReadClient(
                 "http://127.0.0.1:%d" % server.server_port, lambda: TOKEN
             )
-            self.client.value = dict(number=7, state="open", head={"sha": SHA})
-            self.assertEqual(reader.pull(REPO, 7)["head"]["sha"], SHA)
+            self.client.value = dict(
+                number=7,
+                state="open",
+                head={"sha": SHA},
+                base={"sha": BASE_SHA},
+                mergeable=False,
+                mergeable_state="dirty",
+            )
+            pull = reader.pull(REPO, 7)
+            self.assertEqual(pull["head"]["sha"], SHA)
+            self.assertEqual(pull["base"]["sha"], BASE_SHA)
+            self.assertIs(pull["mergeable"], False)
+            self.assertEqual(pull["mergeable_state"], "dirty")
             self.client.value = []
             self.assertEqual(reader.reviews(REPO, 7), [])
             self.assertEqual(reader.review_comments(REPO, 7), [])
