@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 import unittest
 from pathlib import Path
@@ -125,14 +126,38 @@ class ParseOnTriggersTests(unittest.TestCase):
             "name: R\non:\n  workflow_call:\njobs:\n  caller: {}\n"
         )
         self.assertEqual(triggers, {"workflow_call"})
-        self.assertTrue(triggers.isdisjoint(scanner.REPORTABLE_TRIGGERS))
+        self.assertTrue(triggers.issubset(scanner.PHANTOM_ONLY_TRIGGERS))
 
     def test_pull_request_only_is_phantom_shape(self) -> None:
         triggers = scanner.parse_on_triggers(
             "on:\n  pull_request_target:\n    types: [labeled]\njobs: {}\n"
         )
         self.assertEqual(triggers, {"pull_request_target"})
-        self.assertTrue(triggers.isdisjoint(scanner.REPORTABLE_TRIGGERS))
+        self.assertTrue(triggers.issubset(scanner.PHANTOM_ONLY_TRIGGERS))
+
+    def test_quoted_trigger_keys_are_unquoted(self) -> None:
+        content = 'on:\n  "push":\n    branches: [main]\n  workflow_call:\njobs: {}\n'
+        self.assertEqual(scanner.parse_on_triggers(content), {"push", "workflow_call"})
+
+    def test_bare_scalar_on_form(self) -> None:
+        self.assertEqual(
+            scanner.parse_on_triggers("on: workflow_call\njobs: {}\n"), {"workflow_call"}
+        )
+        self.assertEqual(scanner.parse_on_triggers("on: push\njobs: {}\n"), {"push"})
+
+    def test_unknown_and_merge_group_triggers_are_not_phantom_shape(self) -> None:
+        # Denylist semantics: a trigger this module does not know (merge_group
+        # today, a future event tomorrow) keeps its red row visible.
+        self.assertFalse(
+            scanner.parse_on_triggers("on:\n  merge_group:\njobs: {}\n").issubset(
+                scanner.PHANTOM_ONLY_TRIGGERS
+            )
+        )
+        self.assertFalse(
+            scanner.parse_on_triggers("on:\n  some_future_event:\njobs: {}\n").issubset(
+                scanner.PHANTOM_ONLY_TRIGGERS
+            )
+        )
 
     def test_nested_keys_are_not_triggers(self) -> None:
         content = "on:\n  push:\n    branches:\n      - main\n  pull_request:\njobs: {}\n"
@@ -144,6 +169,22 @@ class ParseOnTriggersTests(unittest.TestCase):
 
     def test_missing_on_block_yields_empty_set(self) -> None:
         self.assertEqual(scanner.parse_on_triggers("name: X\njobs:\n  a: {}\n"), set())
+
+
+class GetTextFileTests(unittest.TestCase):
+    def test_path_segments_are_percent_encoded(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_request(method: str, url: str, headers: dict) -> tuple[bytes, dict]:
+            captured["url"] = url
+            body = base64.b64encode(b"name: X\non:\n  push:\njobs: {}\n").decode()
+            payload = '{"content": "%s", "encoding": "base64"}' % body
+            return payload.encode(), {"X-RateLimit-Remaining": "99"}
+
+        client = github.GitHubClient("t", request_fn=fake_request)
+        text = client.get_text_file("/repos/o/r", "my dir/my file.yml", ref="main")
+        self.assertIn("/contents/my%20dir/my%20file.yml?", captured["url"])
+        self.assertTrue(text.startswith("name: X"))
 
 
 class PhantomWorkflowTests(unittest.TestCase):
