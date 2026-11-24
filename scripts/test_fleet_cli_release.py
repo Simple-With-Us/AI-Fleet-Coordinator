@@ -1329,6 +1329,18 @@ class ShippedDataFilesTests(unittest.TestCase):
         self.assertFalse(release.allowed_path("scripts/simple_tools/mcp/fixtures.jsonl"))
         self.assertFalse(release.shipped_path("scripts/simple_tools/mcp/fixtures.jsonl"))
 
+    def test_native_candidate_stays_explicit_host_only(self):
+        prefix = "scripts/simple_tools/native_candidate/"
+        paths = [path for path in release.REPO_ONLY if path.startswith(prefix)]
+        self.assertEqual(len(paths), 68)
+        self.assertIn(prefix + "native_qualification_launch.py", paths)
+        self.assertIn(prefix + "candidate-dependencies.tar.gz", paths)
+        for path in paths:
+            self.assertFalse(release.allowed_path(path), path)
+            self.assertFalse(release.shipped_path(path), path)
+        self.assertFalse(release.allowed_path(prefix + "unreviewed.json"))
+        self.assertFalse(release.shipped_path(prefix + "unreviewed.py"))
+
     def test_minimax_supervised_launcher_stays_explicit_host_only(self):
         path = "scripts/simple_tools/minimax_supervised_exec.mjs"
         self.assertIn(path, release.REPO_ONLY)
