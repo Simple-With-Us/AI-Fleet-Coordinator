@@ -2464,11 +2464,7 @@ class Router:
         head or ride:  its attested constraints were verified at its pick and are re-verified
         here against `answer`, the registry read the head's check before delivery just made."""
         target = pick.target
-        if (
-            not certain(pick)
-            or not message_id_ok(entry["wake"]["message_id"])
-            or self._stopping
-        ):
+        if not certain(pick) or not message_id_ok(entry["wake"]["message_id"]) or self._stopping:
             return []
         if target is None:  # certain() has said so already;  this only tells a type checker
             return []

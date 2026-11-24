@@ -921,9 +921,7 @@ def make_deliver_turn(
         target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str
     ) -> WR.Turn:
         if target.host == local_host:
-            return deliver_turn_local(
-                env, config, target, head, riders, turn_id, runner=runner
-            )
+            return deliver_turn_local(env, config, target, head, riders, turn_id, runner=runner)
         if target.host == "mac":
             from . import claude_wake as CW
 
