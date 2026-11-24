@@ -4514,15 +4514,50 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
         number, sha = _int(args, "number"), _sha(args, "expected_sha")
         node = self._queue_pr_node(repo, number, sha)
         query = "mutation($id:ID!,$sha:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$sha,jump:false}){mergeQueueEntry{id pullRequest{id}}}}"
-        result = self._fixed_graph(query, {"id": node, "sha": sha}, "enqueuePullRequest")
+        try:
+            result = self._fixed_graph(query, {"id": node, "sha": sha}, "enqueuePullRequest")
+        except RelayGitHubError as exc:
+            entry = self._queue_readback_after_definite_error(repo, number, exc)
+            if entry is not None:
+                return {"entry": {"id": entry["id"], "pull_request_id": node}}
+            raise Refused("GitHub declined the enqueue and the PR is not queued") from None
         return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
+
+    # GraphQL error types GitHub uses for a definite refusal.  The error is kept only when every error in the
+    # answer has the same one of these types (see _fixed_graph), never as provider text.
+    _QUEUE_DEFINITE_CODES = frozenset(
+        {"graphql_forbidden", "graphql_not_found", "graphql_unprocessable"}
+    )
+
+    def _queue_readback_after_definite_error(self, repo, number, exc):
+        """The PR's queue entry (or None) read back after a typed GraphQL refusal of a queue mutation.
+
+        A queue entry is per PR, so a repeated enqueue or dequeue cannot duplicate anything, and a typed GitHub
+        refusal plus a read that shows the state is a settled outcome, not an unknown one.  Anything else (a 5xx,
+        a timeout, an untyped or mixed error, an unreadable read-back) re-raises the original error, which keeps
+        the idempotency key held as unknown."""
+        if getattr(exc, "code", None) not in self._QUEUE_DEFINITE_CODES:
+            raise exc
+        try:
+            return self.wf_merge_queue_entry(repo, {"repo": repo, "number": number})["entry"]
+        except (RelayGitHubError, PreReadUnavailable, Refused, ValueError):
+            raise exc from None
 
     def wf_merge_queue_dequeue(self, repo, args):
         _only(args, ("repo", "number", "expected_sha"))
         number, sha = _int(args, "number"), _sha(args, "expected_sha")
         node = self._queue_pr_node(repo, number, sha)
         query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){mergeQueueEntry{id pullRequest{id}}}}"
-        result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
+        try:
+            result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
+        except RelayGitHubError as exc:
+            entry = self._queue_readback_after_definite_error(repo, number, exc)
+            # Either way GitHub declined and the read-back settles it: the PR is still queued, or it was not queued.
+            raise Refused(
+                "GitHub declined the dequeue and the PR is still queued"
+                if entry is not None
+                else "GitHub declined the dequeue and the PR is not queued"
+            ) from None
         return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
 
     def _pr_read(self, repo, number):
