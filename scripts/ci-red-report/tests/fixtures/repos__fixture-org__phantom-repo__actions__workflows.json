@@ -1,0 +1,17 @@
+{
+  "total_count": 2,
+  "workflows": [
+    {
+      "id": 9101,
+      "name": "Reusable only",
+      "path": ".github/workflows/reusable.yml",
+      "state": "active"
+    },
+    {
+      "id": 9102,
+      "name": "Push CI",
+      "path": ".github/workflows/push-ci.yml",
+      "state": "active"
+    }
+  ]
+}
