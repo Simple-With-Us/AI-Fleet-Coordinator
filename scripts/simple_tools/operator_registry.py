@@ -3203,11 +3203,17 @@ def trim_export_rows(db_path: str, *, keep_seconds: int = EXPORT_KEEP_SECONDS) -
     keep = int(keep_seconds)
     if keep <= 0:
         raise ValueError("keep_seconds must be positive")
-    cutoff = (
-        (datetime.now(UTC) - timedelta(seconds=keep))
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    try:
+        cutoff = (
+            (datetime.now(UTC) - timedelta(seconds=keep))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+    except OverflowError as exc:
+        # Argparse accepts integers far beyond timedelta's range; a caller
+        # passing one gets the same refusal as a non-positive window, not a
+        # traceback out of the housekeeping verb (Kody, PR 2474).
+        raise ValueError("keep_seconds is out of range") from exc
     conn = sqlite3.connect(str(db_path))
     try:
         with conn:

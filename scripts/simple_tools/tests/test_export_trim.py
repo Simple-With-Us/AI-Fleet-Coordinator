@@ -131,6 +131,14 @@ class TrimTest(unittest.TestCase):
                     OR.trim_export_rows(self.db, keep_seconds=keep)
         self.assertEqual(self.store(), {"outbox": 0, "attempts": 0, "pending": 0, "lost": 0})
 
+    def test_a_window_beyond_timedeltas_range_is_refused_not_a_crash(self) -> None:
+        # Argparse accepts integers far beyond timedelta's range; the refusal is a
+        # ValueError the verb maps to registry_error, never an OverflowError
+        # traceback out of the housekeeping call (Kody, PR 2474 round 2).
+        with self.assertRaises(ValueError):
+            OR.trim_export_rows(self.db, keep_seconds=10**30)
+        self.assertEqual(self.store(), {"outbox": 0, "attempts": 0, "pending": 0, "lost": 0})
+
     def test_the_vacuum_runs_only_when_the_free_list_is_worth_a_rewrite(self) -> None:
         # A small trim leaves the freed pages to SQLite's reuse:  the gate is the module's
         # constant, and patching it to zero forces the rewrite path, patching it huge skips it.
