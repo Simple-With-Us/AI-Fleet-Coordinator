@@ -7,14 +7,22 @@ failure-class conclusion.  The check and conclusion are named;  whether branch
 protection requires the check is not claimed, because the check-runs read does
 not say.
 """
+
 import tempfile
 import unittest
 
-from review_alerts import detect, events
-from review_alerts.tests.test_review_alerts import (
-    REPO, HEAD, SESSION, FakeRead, FakeRouter, claimed_owner, kody_review, kody_check,
-)
+from review_alerts import events
 from review_alerts.tests import test_review_alerts as fixtures
+from review_alerts.tests.test_review_alerts import (
+    HEAD,
+    REPO,
+    SESSION,
+    FakeRead,
+    FakeRouter,
+    claimed_owner,
+    kody_check,
+    kody_review,
+)
 
 OTHER = "c" * 40
 
@@ -29,7 +37,9 @@ def human_review(rid, state="CHANGES_REQUESTED", commit=HEAD, login="octocat"):
     }
 
 
-def ci_check(rid, head=HEAD, status="completed", conclusion="failure", name="ci", slug="github-actions"):
+def ci_check(
+    rid, head=HEAD, status="completed", conclusion="failure", name="ci", slug="github-actions"
+):
     return {
         "id": rid,
         "head_sha": head,
@@ -47,7 +57,9 @@ class ChangesRequested(unittest.TestCase):
     def test_non_bot_changes_requested_alerts_exact_owner_once_across_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
-            svc = self.make_service(directory, [claimed_owner()], FakeRead(reviews=[human_review(61)]), router)
+            svc = self.make_service(
+                directory, [claimed_owner()], FakeRead(reviews=[human_review(61)]), router
+            )
             self.assertEqual(svc.cycle()["submitted"], 1)
             self.assertEqual(router.submitted[0]["session"], SESSION)
             self.assertEqual(router.submitted[0]["letter"], "AB")
@@ -63,7 +75,9 @@ class ChangesRequested(unittest.TestCase):
     def test_review_bot_changes_requested_does_not_double_alert(self):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
-            svc = self.make_service(directory, [claimed_owner()], FakeRead(reviews=[kody_review(11)]), router)
+            svc = self.make_service(
+                directory, [claimed_owner()], FakeRead(reviews=[kody_review(11)]), router
+            )
             self.assertEqual(svc.cycle()["submitted"], 1)
             self.assertIsNotNone(svc.store.get(REPO, 7, "review_submitted", "11"))
             self.assertIsNone(svc.store.get(REPO, 7, "changes_requested", "11"))
@@ -73,7 +87,10 @@ class ChangesRequested(unittest.TestCase):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
                 router = FakeRouter()
                 svc = self.make_service(
-                    directory, [claimed_owner()], FakeRead(reviews=[human_review(61, state=state)]), router
+                    directory,
+                    [claimed_owner()],
+                    FakeRead(reviews=[human_review(61, state=state)]),
+                    router,
                 )
                 self.assertEqual(svc.cycle()["events"], 0)
                 self.assertEqual(router.submitted, [])
@@ -82,7 +99,10 @@ class ChangesRequested(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(reviews=[human_review(61, commit=OTHER)]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(reviews=[human_review(61, commit=OTHER)]),
+                router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
             row = svc.store.get(REPO, 7, "changes_requested", "61")
@@ -157,7 +177,9 @@ class ChangesRequested(unittest.TestCase):
     def test_approval_after_alerted_request_emits_nothing_new(self):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
-            svc = self.make_service(directory, [claimed_owner()], FakeRead(reviews=[human_review(61)]), router)
+            svc = self.make_service(
+                directory, [claimed_owner()], FakeRead(reviews=[human_review(61)]), router
+            )
             self.assertEqual(svc.cycle()["submitted"], 1)
             svc.gh._reviews = [human_review(61), human_review(62, state="APPROVED")]
             self.assertEqual(svc.cycle()["submitted"], 0)
@@ -170,7 +192,9 @@ class CheckFailure(unittest.TestCase):
     def test_ci_failure_on_current_head_alerts_once_across_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
-            svc = self.make_service(directory, [claimed_owner()], FakeRead(checks=[ci_check(51)]), router)
+            svc = self.make_service(
+                directory, [claimed_owner()], FakeRead(checks=[ci_check(51)]), router
+            )
             self.assertEqual(svc.cycle()["submitted"], 1)
             svc.cycle()
             svc.store = events.EventStore(svc.store._path)
@@ -185,7 +209,10 @@ class CheckFailure(unittest.TestCase):
             with self.subTest(conclusion=conclusion), tempfile.TemporaryDirectory() as directory:
                 router = FakeRouter()
                 svc = self.make_service(
-                    directory, [claimed_owner()], FakeRead(checks=[ci_check(51, conclusion=conclusion)]), router
+                    directory,
+                    [claimed_owner()],
+                    FakeRead(checks=[ci_check(51, conclusion=conclusion)]),
+                    router,
                 )
                 self.assertEqual(svc.cycle()["events"], 0)
         with tempfile.TemporaryDirectory() as directory:
@@ -213,7 +240,10 @@ class CheckFailure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(checks=[kody_check(51, conclusion="failure")]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(checks=[kody_check(51, conclusion="failure")]),
+                router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
             self.assertIsNotNone(svc.store.get(REPO, 7, "review_completed", "51"))
@@ -225,7 +255,12 @@ class CheckFailure(unittest.TestCase):
             svc = self.make_service(
                 directory,
                 [claimed_owner()],
-                FakeRead(checks=[ci_check(51, name="ci"), ci_check(52, name="lint", conclusion="timed_out")]),
+                FakeRead(
+                    checks=[
+                        ci_check(51, name="ci"),
+                        ci_check(52, name="lint", conclusion="timed_out"),
+                    ]
+                ),
                 router,
             )
             self.assertEqual(svc.cycle()["submitted"], 2)
@@ -239,7 +274,10 @@ class CheckFailure(unittest.TestCase):
                 directory,
                 [claimed_owner()],
                 FakeRead(
-                    checks=[ci_check(51, status="in_progress", conclusion=None), ci_check(52, name="lint")]
+                    checks=[
+                        ci_check(51, status="in_progress", conclusion=None),
+                        ci_check(52, name="lint"),
+                    ]
                 ),
                 router,
             )
