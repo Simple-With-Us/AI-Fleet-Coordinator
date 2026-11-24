@@ -926,6 +926,19 @@ class OneWriterTest(RegistryApiTest):
         settings.update(overrides)
         return RG.Sweeper(self.service, **settings)
 
+    def test_the_schedule_says_how_often_a_pass_is_due_and_when_the_next_one_is(self) -> None:
+        # AFC-833:  for the status document, so a reader judges the last pass against the real
+        # interval instead of guessing one.
+        sweeper = self.sweeper(interval_minutes=5, stale_after_hours=36)
+        self.assertEqual(
+            sweeper.schedule(),
+            {"interval_minutes": 5, "stale_after_minutes": 36 * 60, "next_at": None},
+        )
+        self.assertTrue(sweeper.claim(1000.0))
+        self.assertEqual(sweeper.schedule()["next_at"], 1000.0 + 5 * 60)
+        # An interval under a minute is a minute:  the schedule says what the sweeper does.
+        self.assertEqual(self.sweeper(interval_minutes=0).schedule()["interval_minutes"], 1)
+
     def test_the_sweeper_ends_stale_replaced_letters_on_every_platform(self) -> None:
         self.create_store()
         self.register("CLAUDE", "old-1")
