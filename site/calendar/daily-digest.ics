@@ -10,12 +10,72 @@ X-WR-TIMEZONE:America/Chicago
 REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
+UID:fleet-daily-2026-11-24@AI-Fleet-Coordinator
+DTSTAMP:20261124T110814Z
+DTSTART;VALUE=DATE:20261124
+DTEND;VALUE=DATE:20261125
+SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
+DESCRIPTION:35 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#2474] (zcode) Operator Registry: Exported Row
+ s And Their Audit Attempts Age Out (AFC-822)\n- [AI-Fleet-Coordinator#2489
+ ] (zcode) Docs audit: re-point dead handbook section references across 15 
+ docs\n- [AI-Fleet-Coordinator#2502] (minimax) Retire A Chat's Letter And T
+ itle When The Assigner Closes Its Row\n- [AI-Fleet-Coordinator#2503] (zcod
+ e) Wake Router: Health Says Whether The Mac Route Is Configured\, Never Wh
+ ere (AFC-836)\n- [AI-Fleet-Coordinator#2508] chore: record com.socratictra
+ de.ios 0.1.0 in the fleet iOS manifest\n- [AI-Fleet-Coordinator#2510] (zco
+ de) Review alerts: failed CI and any merge blocker wake the PR chat\n- [AI
+ -Fleet-Coordinator#2512] (instinct) Repair merged ZC index and evidence te
+ st integration\n- [AI-Fleet-Coordinator#2513] (zcode) Renew The Recall Fix
+ ture Pair To The Post-OPS-1102 Base\n- [AI-Fleet-Coordinator#2514] (zcode)
+  ci-red-report: skip phantom workflow_call-only red streaks\n- [AI-Fleet-C
+ oordinator#2515] (zcode) alert-workers gate: ignore review requests posted
+  after the merge\n- [AI-Fleet-Coordinator#2516] (zcode) Widen the unmasked
+  visual allowance above the observed runner drift\n- [AI-Fleet-Coordinator
+ #2517] (zcode) Listener: The Status Carries Each Seat's Wake Outcome Count
+ s (AFC-835)\n- [AI-Fleet-Coordinator#2518] (instinct) Preserve safe native
+  CLI failure categories\n- [BotFleet#2196] (zcode) Docs audit: sync engine
+  table with registry\, drop stale Windows/Ubuntu claim\n- [BotFleet#2198] 
+ (zcode) Add MCP Servers For A Bot Or For The Whole Fleet\, And Mount Them 
+ (Refs BF-2699)\n- [BotFleet#2199] (ag) Add MacExecutionContext\, CostLedge
+ rService\, FaultBanner And Plugin/Recall Hosts (Refs BF-2689)\n- [BotFleet
+ #2202] (minimax) Prove A Placement Decision Survives A Process Boundary (R
+ efs BF-2559)\n- [BotFleet#2205] (zcode) Give BotFleetMac The Server Status
+ \, The VM Controls And The Startup Policy (Refs BF-2688)\n- [Clutch#315] (
+ minimax) Take The gh Fallback Out Of The C-137 Ground Rules\n- [Clutch#319
+ ] (minimax) Make A Permission Acknowledgment Clear Only The Card It Names 
+ (Refs C-137)\n- [Congress.Trade#3198] Update non-major dependencies\n- [Co
+ ngress.Trade#3200] (zcode) Ship Congress.Trade from the 1.1.3 train\n- [Ho
+ gHunter#386] (muse) Disk overhaul: HOGHUNTER-5 hang copies\, fleet-extra m
+ aintenance\, bounded locks\n- [HogHunter#391] (ag\, muse-assist) Tighten h
+ oghunter-clean pruning for agent caches\, — .next\, and pressure Xcode s
+ cratch\n- [HogHunter#392] (zcode) Surface large /private/tmp trees at ever
+ y band (tmp-large-trees\, report only)\n- [HogHunter#394] (zcode) Capture 
+ app screenshots: realistic deadline plus one bounded retry\n- [Personal-Si
+ te#298] chore: update static mirror of live site 2026-11-22\n- [Socratic-T
+ rade#5443] (muse) ST-4658: SSE tenant allowlist\, webhook flood limit\, wr
+ ite-route bounds\n- [Socratic-Trade#5445] (ag) Fix Home proposal evidence 
+ cross-contamination\, replace live auto-fire with TypedConfirm\, and add R
+ eject (ST-4648)\n- [Socratic-Trade#5446] (muse) ST-4654: policy rationale 
+ notes append once across re-evaluation\n- [Socratic-Trade#5459] (zcode) Do
+ cs audit: remove dead webhook var\, refresh stale test counts\n- [Socratic
+ -Trade#5463] (instinct) Ops snapshot: last vs-SPY benchmark state per acco
+ unt\n- [Usage-Monitor#2088] (zcode) Docs audit: fix retired paths\, rename
+ d relay provider\, signing source\n- [codecaps#547] Update non-major depen
+ dencies to v9.35.0\n- [codecaps#549] (zcode) Per-platform dashboard displa
+ y toggles
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-24
+CATEGORIES:fleet-daily,agent-activity
+STATUS:CONFIRMED
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VEVENT
 UID:fleet-daily-2026-11-23@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261123
 DTEND;VALUE=DATE:20261124
-SUMMARY:Fleet: 52 merged · 0 opened · 0 closed
-DESCRIPTION:52 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 89 merged · 0 opened · 0 closed
+DESCRIPTION:89 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#2466] (instinct\, minimax) Observe — catalo
  g readiness before bounded native exec\n- [AI-Fleet-Coordinator#2469] (ins
  tinct) Worker owner status API for Muster: read-only bearer readiness\n- [
@@ -48,29 +108,36 @@ DESCRIPTION:52 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  491] (instinct) Muster and the bearer poll use the muster-admin-api Access
   service token from a user-only file\n- [AI-Fleet-Coordinator#2492] (insti
  nct) Lane retire reads live branches through the relay before ssh ls-remot
- e\n- [BotFleet#2184] (minimax) Infisical Is The Only Source For BotFleet's
-  Credential Consumers (Refs OPS-1102)\n- [BotFleet#2185] (muse) Skip redun
- dant ACP version probes at the dispatch gate (BF-2468)\n- [BotFleet#2186] 
- Update non-major dependencies\n- [BotFleet#2189] (zcode) Wire the native O
- pen on Mac action into the companion listener (Refs BF-2690)\n- [BotFleet#
- 2190] (zcode) Add the Linux companion bridge listener\, unit\, policy and 
- docs (Refs BF-2691)\n- [BotFleet#2191] Update non-major dependencies\n- [B
- otFleet#2192] (zcode) Give the last three decommission receipts producers 
- (Refs BF-2692)\n- [BotFleet#2193] (zcode) Map the Electron stack by what s
- till depends on it (Refs BF-2485)\n- [BotFleet#2194] (zcode) Write the sig
- ned native route acceptance checklist (Refs BF-2498)\n- [Clutch#306] (mini
- max) Make the macOS UI test reach the Mac surface and land\n- [Clutch#308]
-  Update non-major dependencies\n- [Clutch#309] (minimax) Give The Mac Thre
- ad A Readable Transcript And A Real Window\n- [Clutch#310] (minimax) Carry
-  The Approval Evidence To The Client\n- [Clutch#311] (minimax) Record What
-  Pass 2 And The First Pass 3 Slice Landed\n- [Clutch#312] (minimax) Put Th
- e Owner's Face In Front Of An Allow On The Phone\n- [Clutch#314] (minimax)
-  Record What Pass 3's Second Slice Landed\n- [Clutch#316] (minimax) Give T
- he Approval Notification A Deny And A Deep Link\n- [ContactLogo#346] Updat
- e non-major dependencies\n- [HogHunter#387] Fix the reclaim engine scan li
- velock: remember where a truncated scan stopped\n- [HogHunter#388] Report 
- the bytes a reclaim freed when the tick's budget stopped it\n  … +12 mor
- e
+ e\n- [AI-Fleet-Coordinator#2493] (instinct) Relay: settle a typed GitHub r
+ efusal of a merge-queue mutation by reading the queue back\n- [AI-Fleet-Co
+ ordinator#2494] (instinct\, muse) scanner: admit reviewed Usage-Monitor 
+ — collector and test exact bytes (generic assignments)\n- [AI-Fleet-Coor
+ dinator#2495] (instinct) bearer alarm: hosted OAuth seats are not faulted 
+ for no bearer\; wrong-secret alarms on growth only\n- [AI-Fleet-Coordinato
+ r#2496] (instinct) Worker: /admin/api/seat-tools per-seat per-tool readine
+ ss\n- [AI-Fleet-Coordinator#2497] (minimax) Add The Wake-Count Cap Fixture
+  And Its Interval Counter Test\n- [AI-Fleet-Coordinator#2498] (instinct) A
+ lert exact owning chats to confirmed merge conflicts\n- [AI-Fleet-Coordina
+ tor#2499] (instinct) Muster alarms: poll /admin/api/seat-tools\, alarm on 
+ a missing seat tool\n- [AI-Fleet-Coordinator#2500] (instinct) Point ZC wak
+ es at the native Mac tasks index\n- [AI-Fleet-Coordinator#2501] (instinct)
+  Qualify exact-origin ZC queued turns without false delivery claims\n- [AI
+ -Fleet-Coordinator#2504] (zcode) Refresh The Preservation Transaction Prep
+  To The Current Engine\n- [AI-Fleet-Coordinator#2505] (zcode) Listener: Th
+ e Status Carries The Sweeper's Schedule And The Linear Mirror's Health (AF
+ C-833)\n- [AI-Fleet-Coordinator#2506] (instinct) Muster: Bearers panel sho
+ ws each seat tool state\, findings and poll error\n- [AI-Fleet-Coordinator
+ #2507] (instinct\, app-bf) ST-MCP: admin MCP list config route with — Ac
+ cess token (AFC-890 C2)\n- [AI-Fleet-Coordinator#2509] (instinct) Bearer p
+ oll: WISE wake is no longer an open finding\n- [BotFleet#2184] (minimax) I
+ nfisical Is The Only Source For BotFleet's Credential Consumers (Refs OPS-
+ 1102)\n- [BotFleet#2185] (muse) Skip redundant ACP version probes at the d
+ ispatch gate (BF-2468)\n- [BotFleet#2186] Update non-major dependencies\n-
+  [BotFleet#2187] (minimax) Make The Controls That Do Nothing Say So Instea
+ d (Refs BF-2694)\n- [BotFleet#2188] (minimax) Native Client UI Pass: The i
+ OS Companion And The Rewritten macOS App (BF-2694)\n- [BotFleet#2189] (zco
+ de) Wire the native Open on Mac action into the companion listener (Refs B
+ F-2690)\n  … +49 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-23
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -78,7 +145,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-22@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261122
 DTEND;VALUE=DATE:20261123
 SUMMARY:Fleet: 72 merged · 0 opened · 0 closed
@@ -147,7 +214,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-21@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261121
 DTEND;VALUE=DATE:20261122
 SUMMARY:Fleet: 114 merged · 0 opened · 0 closed
@@ -210,7 +277,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-20@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261121
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -274,7 +341,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
 SUMMARY:Fleet: 58 merged · 0 opened · 0 closed
@@ -340,7 +407,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -411,7 +478,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -453,7 +520,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -510,7 +577,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -571,7 +638,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -632,7 +699,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -690,7 +757,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -754,7 +821,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -822,7 +889,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -886,7 +953,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -948,66 +1015,53 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
-SUMMARY:Fleet: 82 merged · 0 opened · 0 closed
-DESCRIPTION:82 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#1502] Propose inactive exact-object and revie
- wed fixture preservation gates\n- [AI-Fleet-Coordinator#1509] Retire the b
- anned component name everywhere: simple_tools and simple-tools-mcp\n- [AI-
- Fleet-Coordinator#1510] git-relay: tested migration of a file-backed relay
-  unit onto the seat-policy credential input\n- [AI-Fleet-Coordinator#1511]
-  fix: distinguish provider keys from ordinary filename substrings\n- [AI-F
- leet-Coordinator#1512] Preserve FleetLink read status and retained-own met
- adata contracts\n- [AI-Fleet-Coordinator#1517] Kody limit: a failed attemp
- t is permission to retry (owner\, Nov 8)\n- [AI-Fleet-Coordinator#1518] Wa
- ke Docs: The Owner's Nov 7 Ruling\, What Runs Today\, And What Phase 2 Lea
- ves Pending\n- [AI-Fleet-Coordinator#1520] (ag) feat(agent-sync): complete
-  — and cross-platform Operator parity on Mac and server\n- [AI-Fleet-Coo
- rdinator#1521] Mirror the handbook (Fleet-OPS 1e1905e19f9e)\n- [AI-Fleet-C
- oordinator#1522] Preserve executable modes in same-path provenance patches
-  with atomic ref fencing\n- [AI-Fleet-Coordinator#1523] (cursor) Cloud Swe
- ep: A 30 Second API Timeout\, And Only Agents Updated In The Last 36 Hours
- \n- [AI-Fleet-Coordinator#1526] bridge: name a fixed code for an invalid c
- onsult decision\n- [AI-Fleet-Coordinator#1527] CI: Muster approval tests i
- n their own step\, and on Python 3.14 (needs the owner's merge\, AFC-654)\
- n- [AI-Fleet-Coordinator#1528] Docs: scoped per-Worker deploy token route 
- (versions upload/deploy) + 2026-11-08 ops record\n- [AI-Fleet-Coordinator#
- 1529] chore: record the fleet iOS versions in the manifest\n- [AI-Fleet-Co
- ordinator#1530] Review bounded provider filename runtime transaction\n- [A
- I-Fleet-Coordinator#1531] Read bounded inline review thread reply pages\n-
-  [AI-Fleet-Coordinator#1532] Relay: read paged GitHub lists up to 8 MiB\, 
- not 1 MiB\n- [AI-Fleet-Coordinator#1533] Muster Reads A Server Unit's Live
-  State After An Action\, Names The Logs Unit\, Checks The Redeploy Name\n-
-  [AI-Fleet-Coordinator#1534] Helper: unit-status\, logsUnit for timers\, r
- esourceName\, Mac agent stop copy (AFC-654)\n- [AI-Fleet-Coordinator#1535]
-  lane retire: ask the relay for the repo in the registry's spelling\n- [AI
- -Fleet-Coordinator#1536] Muster Spec 5.3: Trust-List Chain Gaps Closed For
-  The Builder\n- [AI-Fleet-Coordinator#1537] chore: record com.socratictrad
- e.ios 0.1.0 in the fleet iOS manifest\n- [AI-Fleet-Coordinator#1538] chore
- : record the fleet iOS versions in the manifest\n- [AI-Fleet-Coordinator#1
- 539] simple-git: add the reviewed pattern of gr_wf_review_thread_comments\
- , and test every listed pattern\n- [AI-Fleet-Coordinator#1540] Muster READ
- ME: What The Action Sheet Shows After PR 1533\n- [AI-Fleet-Coordinator#154
- 1] (claude) PR Sweep: The — Adapter Runs From Its Own Lane\n- [AI-Fleet-
- Coordinator#1542] Muster Spec 5.4: The Chain Slice's Strict Parsing And Re
- fusal Shapes Written Down\n- [AI-Fleet-Coordinator#1543] Muster Route: The
-  Trust-List Chain Verb\, Rule C (Reopen) Not Built\n- [AI-Fleet-Coordinato
- r#1544] Rollout Notes: The Unit-Status And Trust-List Chain Deploys Record
- ed\n- [AI-Fleet-Coordinator#1545] Muster Spec 5.5: The Temporary-File Swee
- p And The Size Guard Written Down\n- [AI-Fleet-Coordinator#1546] Seat Mani
- fest: An Optional runsOn And copyOf For Each Seat\n- [AI-Fleet-Coordinator
- #1547] chore: record the fleet iOS versions in the manifest\n- [AI-Fleet-C
- oordinator#1548] Muster Grid: Where Each Seat Runs\, Read From runsOn (GRI
- D-4\, GRID-5)\n- [AI-Fleet-Coordinator#1549] git-relay: elevate to workflo
- ws:write for PR merge/update-branch touching .github/workflows\n- [AI-Flee
- t-Coordinator#1550] chore: com.simplewithus.codecaps.ios 0.1.0\n- [AI-Flee
- t-Coordinator#1551] Review pinned one-file workflow elevation runtime tran
- saction\n- [AI-Fleet-Coordinator#1552] chore: com.simplewithus.codecaps.io
- s 0.1.0\n- [AI-Fleet-Coordinator#1553] chore: com.simplewithus.codecaps.io
- s 0.1.0\n- [AI-Fleet-Coordinator#1554] chore: com.simplewithus.codecaps.io
- s 0.1.0\n  … +42 more
+SUMMARY:Fleet: 54 merged · 0 opened · 0 closed
+DESCRIPTION:54 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#1537] chore: record com.socratictrade.ios 0.1
+ .0 in the fleet iOS manifest\n- [AI-Fleet-Coordinator#1544] Rollout Notes:
+  The Unit-Status And Trust-List Chain Deploys Recorded\n- [AI-Fleet-Coordi
+ nator#1545] Muster Spec 5.5: The Temporary-File Sweep And The Size Guard W
+ ritten Down\n- [AI-Fleet-Coordinator#1546] Seat Manifest: An Optional runs
+ On And copyOf For Each Seat\n- [AI-Fleet-Coordinator#1547] chore: record t
+ he fleet iOS versions in the manifest\n- [AI-Fleet-Coordinator#1548] Muste
+ r Grid: Where Each Seat Runs\, Read From runsOn (GRID-4\, GRID-5)\n- [AI-F
+ leet-Coordinator#1549] git-relay: elevate to workflows:write for PR merge/
+ update-branch touching .github/workflows\n- [AI-Fleet-Coordinator#1550] ch
+ ore: com.simplewithus.codecaps.ios 0.1.0\n- [AI-Fleet-Coordinator#1551] Re
+ view pinned one-file workflow elevation runtime transaction\n- [AI-Fleet-C
+ oordinator#1552] chore: com.simplewithus.codecaps.ios 0.1.0\n- [AI-Fleet-C
+ oordinator#1553] chore: com.simplewithus.codecaps.ios 0.1.0\n- [AI-Fleet-C
+ oordinator#1554] chore: com.simplewithus.codecaps.ios 0.1.0\n- [BotFleet#1
+ 555] Verify Canonical Native Updates And Final Archive Signatures\n- [BotF
+ leet#1594] Package The Native Headless Host With Verified Mach-O Identity\
+ n- [BotFleet#1604] feat(engines): let local OpenAI-compatible servers wait
+  longer for a reply\n- [BotFleet#1610] Wire TV-Face One-File Packs And Shi
+ p Color Shells\n- [BotFleet#1621] Update dependency undici to v8.12.2 [SEC
+ URITY]\n- [BotFleet#1622] Update non-major dependencies\n- [BotFleet#1623]
+  Update dependency Sparkle to v2.10.1\n- [BotFleet#1624] Update non-major 
+ dependencies\n- [BotFleet#1625] Update non-major dependencies\n- [BotFleet
+ #1626] Update dependency next to v16.4.5\n- [BotFleet#1627] Update depende
+ ncy electron to v45.2.2\n- [Congress.Trade#2936] Update non-major dependen
+ cies\n- [Congress.Trade#2951] fix(senate-html): split eFD Company:/Descrip
+ tion: detail out of assetName\n- [Congress.Trade#2952] test(admin): pin th
+ e clock in the Senate intake heartbeat test\n- [Congress.Trade#2953] Peer-
+ price catch-up: roll the run budget on the ET day so weekend tails keep dr
+ aining\n- [Congress.Trade#2954] Update non-major dependencies\n- [ContactL
+ ogo#304] chore(deps): bump minimatch and @sentry/vite-plugin in /apps/web\
+ n- [FleetLink#173] Add bounded retained own-share metadata reads\n- [HogHu
+ nter#274] HH-219 Teach The Reclaim Engine Disk Upkeep\n- [HogHunter#277] h
+ h-agent: automatic root-disk cleanup (autoclean)\n- [HogHunter#279] hh-age
+ nt autoclean: Kody review fixes from #277 (re-land)\n- [HogHunter#327] Set
+ tings: say timing instead of lookback in the iPhone edit description\n- [H
+ ogHunter#328] hh-agent autoclean: compute disk use on the df basis so the 
+ trigger fires\n- [Personal-Site#268] chore(deps): bump glob and @sentry/vi
+ te-plugin in /site\n- [Socratic-Trade#4997] Add Mobile Control Brief Summa
+ ry\n- [Socratic-Trade#5017] fix(deps): update observability\n- [Socratic-T
+ rade#5018] chore(deps): update observability\n- [Socratic-Trade#5019] chor
+ e(deps): update dependency eslint-config-next to v16.4.5\n  … +14 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-08
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1015,7 +1069,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 55 merged · 0 opened · 0 closed
@@ -1068,7 +1122,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 48 merged · 0 opened · 0 closed
@@ -1123,7 +1177,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
@@ -1173,7 +1227,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -1228,7 +1282,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
+DTSTAMP:20261124T110814Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 121 merged · 0 opened · 0 closed
@@ -1280,69 +1334,6 @@ DESCRIPTION:121 PRs merged · 0 issues opened · 0 issues closed\n\nMerged
  eting Markdown As Documentation-Only\n- [BotFleet#1564] Keep BotFleet CI F
  ull-History Proofs Fast With Blobless Fetch\n  … +81 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-03
-CATEGORIES:fleet-daily,agent-activity
-STATUS:CONFIRMED
-TRANSP:TRANSPARENT
-END:VEVENT
-BEGIN:VEVENT
-UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261124T010136Z
-DTSTART;VALUE=DATE:20261102
-DTEND;VALUE=DATE:20261103
-SUMMARY:Fleet: 91 merged · 0 opened · 0 closed
-DESCRIPTION:91 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#1239] Muster fleet overhaul sweep: control br
- eadth\, performance and hosted parity\n- [AI-Fleet-Coordinator#1243] fix(l
- etter): the scopes are enumerated once\, not remembered\n- [AI-Fleet-Coord
- inator#1249] Fix secret names\, Settings theme and Fleet filter label (AFC
- -592)\n- [BotFleet#1457] Harness vault token file for the Linux server\, p
- lus a Zulip folder-unreadable warn\n- [BotFleet#1466] fix(ui): explain a d
- isabled Self-hosted VPS option in plain words\n- [BotFleet#1468] fix(serve
- r): stop boot from hydrating whole threads\n- [BotFleet#1474] (grok-bot) S
- upport multiple Infisical read service tokens and split Zulip credential s
- ources\n- [BotFleet#1475] feat(jobs): unset-by-default headroom admission 
- knobs (P-BF-6 B7)\n- [BotFleet#1476] feat(native): own-file approval port 
- (#3791) and upstream re-scan past v0.1.134\n- [BotFleet#1477] feat(ios): d
- urable device credentials\, Origin rejection\, and the LAN opt-in (BF-2511
- )\n- [BotFleet#1478] feat(ios): opt-in reversible installer for the native
-  headless host (code + tests only)\n- [BotFleet#1479] feat(ios): productio
- n local MCP mount provider for native turns (P-BF-6 B8)\n- [BotFleet#1481]
-  Browse non-active threads while a bot works (Slice 0 web)\n- [BotFleet#14
- 82] chore(deps): update dependency lucide-react to v1.63.0\n- [BotFleet#14
- 83] Settings Resources: show host readings with saved-vs-applied admission
-  thresholds\n- [BotFleet#1484] Placement queue and lease routes (Slice 8a\
- , server half)\n- [BotFleet#1485] iOS: view a non-active thread while the 
- bot works (Slice 0 iOS)\n- [BotFleet#1486] Native Mac release carries the 
- shared version and build (BF-2588)\n- [BotFleet#1487] Fleet naming complet
- ion: retire agent-sync naming (env/listener cutover held)\n- [BotFleet#148
- 8] E2E: cover the Settings Resources tab with a stubbed host report\n- [Bo
- tFleet#1489] chore(deps): update dependency posthog-js to v1.441.0\n- [Bot
- Fleet#1490] Electron release carries the shared version and build (BF-2588
- )\n- [BotFleet#1491] chore(deps): update non-major dependencies\n- [BotFle
- et#1492] feat(ios): ack-gated saved-vs-applied placement composition (P-BF
- -6 Slice 5 remainder)\n- [BotFleet#1493] fix(ios): wire groupMessageRuns i
- nto ChatView and polish browse thread copy\n- [BotFleet#1494] Port shared/
- redact.ts to Swift with XCTest coverage\n- [BotFleet#1495] feat(macos): re
- nder MacMascotExpression and MacStatusPillKind on native Mac surface (BF-2
- 558)\n- [BotFleet#1496] feat(macos): port Mac-only capability table and na
- tive Resources settings (BF-2559)\n- [BotFleet#1497] Add GitLab deploy/run
- ner and Slack xapp- token shapes to redaction\n- [BotFleet#1498] Stop the 
- bots gracefully\, then shut the server down (BF-2536)\n- [BotFleet#1499] f
- ix(redact): mask past the depth cap\, redact the log tee before it cuts\n-
-  [BotFleet#1500] feat(server): explicit per-context send route (Slice 0 it
- em 5)\n- [BotFleet#1501] fix(deps): update non-major dependencies\n- [BotF
- leet#1502] fix(server): discount the queued routine runs with the filter t
- he count uses (BF-2536)\n- [BotFleet#1503] feat(macos): add native Antigra
- vityStreamRunner and 20-turn agy replay corpus (BF-2504)\n- [BotFleet#1504
- ] feat(placement): complete slice 8b dispatch\, stop\, release-controller\
- , and takeover (BF-2559)\n- [BotFleet#1505] feat(macos): wire native engin
- e turn counts into Mac session state and quit-time drain\n- [BotFleet#1506
- ] feat(resources): editable headroom thresholds with PUT write-through (BF
- -2559 slice 7a)\n- [BotFleet#1507] (sentry) fix : reconcile routine check-
- in closes and verify delivery (BF-2569)\n- [BotFleet#1508] feat(resources)
- : native headroom editing with null-clear write-through (BF-2559 slice 7b)
- \n  … +51 more
-URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-02
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
