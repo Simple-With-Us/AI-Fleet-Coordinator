@@ -429,7 +429,9 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
     if st_url and doc is not None:
         # An unreadable poll keeps the last good view, so the output never contradicts the alarms it carries.
         last = state.get("seatToolsLast") if isinstance(state.get("seatToolsLast"), dict) else {}
-        out["seatTools"] = seat_tool_rows(seat_doc) if seat_doc is not None else last.get("seatTools", [])
+        out["seatTools"] = (
+            seat_tool_rows(seat_doc) if seat_doc is not None else last.get("seatTools", [])
+        )
         out["findings"] = findings if seat_doc is not None else last.get("findings", [])
         if seat_error:
             out["seatToolsError"] = seat_error

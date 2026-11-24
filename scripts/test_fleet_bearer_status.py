@@ -480,21 +480,42 @@ class SeatToolsRobustnessTests(unittest.TestCase):
         )
 
     def test_odd_shapes_do_not_abort(self):
-        for bad in ({"rows": None}, {"rows": [None, 3, {"seat": "A", "tools": None}]}, {"rows": [{"seat": "A", "tools": [None]}]}):
+        for bad in (
+            {"rows": None},
+            {"rows": [None, 3, {"seat": "A", "tools": None}]},
+            {"rows": [{"seat": "A", "tools": [None]}]},
+        ):
             a, f, u = fbs.seat_tool_alarms(bad, "junk")
             self.assertEqual((a, f, u), ({}, [], []))
-            self.assertEqual(fbs.seat_tool_rows(bad), [{"seat": "A", "problem": None, "tools": {}}] if bad["rows"] and any(isinstance(x, dict) for x in bad["rows"]) else [])
+            self.assertEqual(
+                fbs.seat_tool_rows(bad),
+                [{"seat": "A", "problem": None, "tools": {}}]
+                if bad["rows"] and any(isinstance(x, dict) for x in bad["rows"])
+                else [],
+            )
 
     def test_bearers_api_down_keeps_seat_tool_alarms_and_unreadable_keeps_view(self):
         with tempfile.TemporaryDirectory() as d:
             args = self._args(d)
             good = {"u": DOC_OK, "s": SeatToolsTests.DOC}
-            fbs.run(args, now=1000, token_fn=lambda: ("a", "b"), fetch_fn=lambda url, t: good[url], notify_fn=lambda *x: None)
+            fbs.run(
+                args,
+                now=1000,
+                token_fn=lambda: ("a", "b"),
+                fetch_fn=lambda url, t: good[url],
+                notify_fn=lambda *x: None,
+            )
 
             def down(url, t):
                 raise OSError("down")
 
-            out = fbs.run(args, now=2000, token_fn=lambda: ("a", "b"), fetch_fn=down, notify_fn=lambda *x: None)
+            out = fbs.run(
+                args,
+                now=2000,
+                token_fn=lambda: ("a", "b"),
+                fetch_fn=down,
+                notify_fn=lambda *x: None,
+            )
             self.assertIn("seat-tool:ECHO:linear:missing", [x["key"] for x in out["alarms"]])
             self.assertEqual(out["recovered"], [])
 
@@ -502,7 +523,13 @@ class SeatToolsRobustnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             args = self._args(d)
             docs = {"u": DOC_OK, "s": SeatToolsTests.DOC}
-            run = lambda now: fbs.run(args, now=now, token_fn=lambda: ("a", "b"), fetch_fn=fetch, notify_fn=lambda *x: None)
+            run = lambda now: fbs.run(
+                args,
+                now=now,
+                token_fn=lambda: ("a", "b"),
+                fetch_fn=fetch,
+                notify_fn=lambda *x: None,
+            )
 
             def fetch(url, t):
                 if url == "s" and docs.get("down"):
