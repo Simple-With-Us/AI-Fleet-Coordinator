@@ -494,7 +494,10 @@ def _prompt_persisted(env: Mapping[str, str], session_id: str, wake_id: str) -> 
 
 
 def exclude_non_interactive(
-    env: Mapping[str, str], local_host: str, workspace: str = "", tasks_index: str = ""
+    env: Mapping[str, str],
+    local_host: str,
+    workspace: str = "",
+    config: Mapping[str, Any] | None = None,
 ) -> Callable[[list[WR.Target]], set[str]]:
     """Return session ids of local targets that cannot take a wake.
 
@@ -502,9 +505,9 @@ def exclude_non_interactive(
     its recorded workspace is gone, and when its recorded workspace is not the workspace this
     seat delivers into:  a wake into another project's directory is the wrong-chat delivery
     this platform exists to refuse, so it is never picked in the first place.  The index is
-    the one the delivery itself reads:  the deployment's `tasks_index` fact, the env
-    override, or the default under HOME, in the same order as the session lookup."""
-    index_config = {"tasks_index": tasks_index}
+    the one the delivery itself reads:  `config` is the seat's live settings mapping, read on
+    every call like the delivery reads it, so a settings refresh can never leave the
+    exclusion reading one index while the delivery reads another."""
 
     def exclude(targets: list[WR.Target]) -> set[str]:
         local_ids = [t.session_id for t in targets if t.host == local_host]
@@ -514,7 +517,7 @@ def exclude_non_interactive(
         status, subagents = _subagent_ids(env, local_ids)
         if status == "ok":
             excluded |= subagents
-        db = tasks_index_path(env, index_config)
+        db = tasks_index_path(env, config)
         placeholders = ",".join("?" * len(local_ids))
         try:
             conn = sqlite3.connect(
@@ -860,7 +863,7 @@ def router_platform(
             env,
             str(config.get("local_host", "server")),
             str(config.get("workspace") or ""),
-            str(config.get("tasks_index") or ""),
+            config,
         ),
     )
 

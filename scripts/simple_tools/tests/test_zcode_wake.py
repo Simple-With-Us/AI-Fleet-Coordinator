@@ -915,9 +915,9 @@ class TasksIndexConfigTests(Base):
     copy under HOME is stale.  The env override cannot reach the forced ssh handler, so the
     config file is where the deployment names the real one."""
 
-    def _other_index(self, session_ids=(SID,)):
+    def _other_index(self, session_ids=(SID,), name="external"):
         """A second tasks index, standing in for the one the app actually writes."""
-        other = self.tmp / "external" / ".zcode" / "v2" / "tasks-index.sqlite"
+        other = self.tmp / name / ".zcode" / "v2" / "tasks-index.sqlite"
         private_dir(other.parent)
         con = sqlite3.connect(other)
         con.execute(
@@ -966,11 +966,39 @@ class TasksIndexConfigTests(Base):
         self._drop_from_home_index()
         targets = [zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3)]
         configured = zcode_wake.exclude_non_interactive(
-            self.env, "server", str(self.workspace), str(other)
+            self.env, "server", str(self.workspace), {"tasks_index": str(other)}
         )
         self.assertEqual(configured(targets), set())
         plain = zcode_wake.exclude_non_interactive(self.env, "server", str(self.workspace))
         self.assertEqual(plain(targets), {SID})
+
+    def test_exclusion_follows_a_refreshed_config_like_delivery_does(self):
+        # The router lives for weeks:  the platform is built once on the seat's live settings
+        # mapping, and a refresh changes what that mapping holds.  The exclusion must read
+        # the index the delivery would read NOW, not the one in force when the seat was
+        # built, or a refresh splits the two readers.
+        first = self._other_index()
+        refreshed = self._other_index(session_ids=(), name="refreshed")
+        config = {
+            "workspace": str(self.workspace),
+            "local_host": "server",
+            "tasks_index": str(first),
+        }
+        platform = zcode_wake.router_platform(self.env, config, runner=self._runner(0))
+        target = zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3)
+        wake = zcode_wake.WR.Wake(wake_id="w5-abcdef", message_id=1)
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
+        ):
+            self.assertEqual(platform.exclude([target]), set())
+            self.assertEqual(platform.deliver(target, wake).outcome, "sent")
+            # The refresh:  the same mapping now names the index the app moved on to, and the
+            # session is not in it.  Exclusion and delivery move together.
+            config["tasks_index"] = str(refreshed)
+            self.assertEqual(platform.exclude([target]), {SID})
+            delivery = platform.deliver(target, wake)
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-not-found")
 
     def test_router_platform_threads_the_configured_index_to_exclusion(self):
         other = self._other_index()
