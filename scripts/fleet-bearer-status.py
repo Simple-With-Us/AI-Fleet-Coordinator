@@ -248,7 +248,9 @@ def seat_tool_rows(doc):
                     "seat": r["seat"],
                     "problem": r.get("problem"),
                     "tools": {
-                        t.get("tool"): t.get("state") if t.get("state") in SEAT_TOOL_STATES else "unknown"
+                        t.get("tool"): t.get("state")
+                        if t.get("state") in SEAT_TOOL_STATES
+                        else "unknown"
                         for t in r.get("tools") or []
                         if isinstance(t.get("tool"), str)
                     },
@@ -364,9 +366,13 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
         try:
             seat_doc = fetch_fn(st_url, token)
         except (OSError, ValueError) as e:
-            seat_error = f"http_{e.code}" if isinstance(e, urllib.error.HTTPError) else "unreachable"
+            seat_error = (
+                f"http_{e.code}" if isinstance(e, urllib.error.HTTPError) else "unreachable"
+            )
         if seat_doc is not None:
-            found, findings, unavailable = seat_tool_alarms(seat_doc, state.get("seatToolsUnavailable"))
+            found, findings, unavailable = seat_tool_alarms(
+                seat_doc, state.get("seatToolsUnavailable")
+            )
             alarms.update(found)
             state["seatToolsUnavailable"] = unavailable
         else:

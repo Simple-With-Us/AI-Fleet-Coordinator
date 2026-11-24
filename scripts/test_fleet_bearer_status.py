@@ -365,8 +365,22 @@ class ServiceTokenFileTests(unittest.TestCase):
 class SeatToolsTests(unittest.TestCase):
     DOC = {
         "rows": [
-            {"seat": "JET", "problem": "ok", "tools": [{"tool": "zulip", "state": "ok"}, {"tool": "relay", "state": "not_applicable"}]},
-            {"seat": "ECHO", "problem": "x", "tools": [{"tool": "linear", "state": "missing"}, {"tool": "recall", "state": "unavailable"}]},
+            {
+                "seat": "JET",
+                "problem": "ok",
+                "tools": [
+                    {"tool": "zulip", "state": "ok"},
+                    {"tool": "relay", "state": "not_applicable"},
+                ],
+            },
+            {
+                "seat": "ECHO",
+                "problem": "x",
+                "tools": [
+                    {"tool": "linear", "state": "missing"},
+                    {"tool": "recall", "state": "unavailable"},
+                ],
+            },
             {"seat": "WISE", "problem": "x", "tools": [{"tool": "wake", "state": "missing"}]},
         ]
     }
@@ -382,22 +396,50 @@ class SeatToolsTests(unittest.TestCase):
     def test_run_writes_seat_tools_and_recovers(self):
         with tempfile.TemporaryDirectory() as d:
             args = types.SimpleNamespace(
-                url="u", seat_tools_url="s", write=os.path.join(d, "o.json"), state=os.path.join(d, "st.json"), no_notify=True, dry_run=False
+                url="u",
+                seat_tools_url="s",
+                write=os.path.join(d, "o.json"),
+                state=os.path.join(d, "st.json"),
+                no_notify=True,
+                dry_run=False,
             )
             docs = {"u": DOC_OK, "s": self.DOC}
-            out = fbs.run(args, now=1000, token_fn=lambda: ("a", "b"), fetch_fn=lambda url, t: docs[url], notify_fn=lambda *x: None)
+            out = fbs.run(
+                args,
+                now=1000,
+                token_fn=lambda: ("a", "b"),
+                fetch_fn=lambda url, t: docs[url],
+                notify_fn=lambda *x: None,
+            )
             self.assertIn("seat-tool:ECHO:linear:missing", [x["key"] for x in out["alarms"]])
             self.assertEqual(out["findings"][0]["seat"], "WISE")
             self.assertEqual(out["seatTools"][0]["tools"]["relay"], "not_applicable")
-            docs["s"] = {"rows": [{"seat": "ECHO", "problem": "ok", "tools": [{"tool": "linear", "state": "ok"}]}]}
-            out = fbs.run(args, now=2000, token_fn=lambda: ("a", "b"), fetch_fn=lambda url, t: docs[url], notify_fn=lambda *x: None)
+            docs["s"] = {
+                "rows": [
+                    {"seat": "ECHO", "problem": "ok", "tools": [{"tool": "linear", "state": "ok"}]}
+                ]
+            }
+            out = fbs.run(
+                args,
+                now=2000,
+                token_fn=lambda: ("a", "b"),
+                fetch_fn=lambda url, t: docs[url],
+                notify_fn=lambda *x: None,
+            )
             self.assertEqual(out["alarms"], [])
-            self.assertEqual([r["key"] for r in out["recovered"]], ["seat-tool:ECHO:linear:missing"])
+            self.assertEqual(
+                [r["key"] for r in out["recovered"]], ["seat-tool:ECHO:linear:missing"]
+            )
 
     def test_unreadable_seat_tools_keeps_alarms(self):
         with tempfile.TemporaryDirectory() as d:
             args = types.SimpleNamespace(
-                url="u", seat_tools_url="s", write=os.path.join(d, "o.json"), state=os.path.join(d, "st.json"), no_notify=True, dry_run=False
+                url="u",
+                seat_tools_url="s",
+                write=os.path.join(d, "o.json"),
+                state=os.path.join(d, "st.json"),
+                no_notify=True,
+                dry_run=False,
             )
             ok = {"u": DOC_OK, "s": self.DOC}
 
@@ -407,9 +449,21 @@ class SeatToolsTests(unittest.TestCase):
                 return ok[url]
 
             fetch.down = False
-            fbs.run(args, now=1000, token_fn=lambda: ("a", "b"), fetch_fn=fetch, notify_fn=lambda *x: None)
+            fbs.run(
+                args,
+                now=1000,
+                token_fn=lambda: ("a", "b"),
+                fetch_fn=fetch,
+                notify_fn=lambda *x: None,
+            )
             fetch.down = True
-            out = fbs.run(args, now=2000, token_fn=lambda: ("a", "b"), fetch_fn=fetch, notify_fn=lambda *x: None)
+            out = fbs.run(
+                args,
+                now=2000,
+                token_fn=lambda: ("a", "b"),
+                fetch_fn=fetch,
+                notify_fn=lambda *x: None,
+            )
             self.assertIn("seat-tool:ECHO:linear:missing", [x["key"] for x in out["alarms"]])
             self.assertEqual(out["seatToolsError"], "unreachable")
 
