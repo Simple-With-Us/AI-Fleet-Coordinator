@@ -116,15 +116,21 @@ class ParseOnTriggersTests(unittest.TestCase):
         )
 
     def test_inline_list_triggers(self) -> None:
-        self.assertEqual(scanner.parse_on_triggers("on: [push, schedule]\njobs: {}\n"), {"push", "schedule"})
+        self.assertEqual(
+            scanner.parse_on_triggers("on: [push, schedule]\njobs: {}\n"), {"push", "schedule"}
+        )
 
     def test_workflow_call_only_is_phantom_shape(self) -> None:
-        triggers = scanner.parse_on_triggers("name: R\non:\n  workflow_call:\njobs:\n  caller: {}\n")
+        triggers = scanner.parse_on_triggers(
+            "name: R\non:\n  workflow_call:\njobs:\n  caller: {}\n"
+        )
         self.assertEqual(triggers, {"workflow_call"})
         self.assertTrue(triggers.isdisjoint(scanner.REPORTABLE_TRIGGERS))
 
     def test_pull_request_only_is_phantom_shape(self) -> None:
-        triggers = scanner.parse_on_triggers('on:\n  pull_request_target:\n    types: [labeled]\njobs: {}\n')
+        triggers = scanner.parse_on_triggers(
+            "on:\n  pull_request_target:\n    types: [labeled]\njobs: {}\n"
+        )
         self.assertEqual(triggers, {"pull_request_target"})
         self.assertTrue(triggers.isdisjoint(scanner.REPORTABLE_TRIGGERS))
 
