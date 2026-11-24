@@ -98,7 +98,7 @@ def parse_on_triggers(content: str) -> set[str]:
     """Return the top-level trigger keys of a workflow file's `on:` block.
 
     Deliberately a narrow subset of YAML: workflows are hand-maintained with
-    the house style (block or inline-list `on: at column 0, trigger keys at
+    the house style (block or inline-list `on:` at column 0, trigger keys at
     exactly two spaces), and any file this parser cannot read yields an empty
     set, which callers treat as "unknown" and keep scanning.
     """
@@ -129,7 +129,7 @@ def parse_on_triggers(content: str) -> set[str]:
         indent = len(line) - len(line.lstrip(" "))
         if indent == 2:
             # Optional quotes: YAML allows `"push":` beside `push:`.
-            key = re.match(r"""(['"]?)(([A-Za-z][A-Za-z0-9_-]*)\1:""", stripped)
+            key = re.match(r"""(['"]?)([A-Za-z][A-Za-z0-9_-]*)\1:""", stripped)
             if key:
                 triggers.add(key.group(2))
                 continue
@@ -185,7 +185,7 @@ def scan_repo(
     errors: list[str],
 ) -> tuple[list[RedWorkflow], int]:
     """Return red workflows for one repo and the number of workflows scanned."""
-    repo_path = f"/repos{owner}/{repo}"
+    repo_path = f"/repos/{owner}/{repo}"
     try:
         meta = client.get_json(repo_path)
     except github.GitHubError as exc:
