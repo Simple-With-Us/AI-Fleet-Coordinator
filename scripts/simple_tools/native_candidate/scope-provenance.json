@@ -1,0 +1,160 @@
+{
+  "source_sha256": "ab42d8c5fb2085a1539876a5c40da54e67e2abd71a222ed5bd31b622898984c0",
+  "offset_units": "JavaScript UTF16 code units",
+  "outputs": {
+    "installed_connection_scope.js": {
+      "generated_sha256": "7e30d787328de17a9dfafcb34dea036b0815e464ba72c78b7a75f043265605bb",
+      "declarations": [
+        {
+          "names": [
+            "TRUSTED_CONNECTION_FIELD"
+          ],
+          "start": 1273011,
+          "end": 1273071,
+          "sha256": "929c1fe81920e603537b71b1a14506e28bf14a40915cac1501e9d75341f8c775"
+        },
+        {
+          "names": [
+            "TRUSTED_UNSUBSCRIBE_ROUTE_FIELD"
+          ],
+          "start": 1273072,
+          "end": 1273145,
+          "sha256": "f7ea1cfebdd2fe1097accae5a83e8f1d1db4785a4bdfd0dab31b934546157326"
+        },
+        {
+          "names": [
+            "readTrustedZCodeAgentV4UnsubscribeRoute"
+          ],
+          "start": 1273146,
+          "end": 1273459,
+          "sha256": "dd2d74f15e5d131b99f33dd6ed9b826857c78516d62ec4aab4336143978a6be3"
+        },
+        {
+          "names": [
+            "readTrustedZCodeAgentV4Connection"
+          ],
+          "start": 1273460,
+          "end": 1274193,
+          "sha256": "5c72591253f682a675b1b0ad6a06bb2cb5c78fb7643f02585c7f0f852fa58d8a"
+        },
+        {
+          "names": [
+            "withTrustedConnection"
+          ],
+          "start": 1274194,
+          "end": 1274667,
+          "sha256": "8a49464a61febeb0addecf304af4b3e28c86845daa87719f6d3ffd5424511fa9"
+        },
+        {
+          "names": [
+            "withTrustedUnsubscribeRoute"
+          ],
+          "start": 1274668,
+          "end": 1274891,
+          "sha256": "883e3800c7d4035a1a9111d3a1ddb5e795ed6b5a624a76addfa3f81b4c1b5d44"
+        },
+        {
+          "names": [
+            "carriesExtensionInputSource"
+          ],
+          "start": 1274892,
+          "end": 1275249,
+          "sha256": "76c30f252d694b36929eaa297bf2a3e41f0e29da1a1f924b1a541fe6e8970ce7"
+        },
+        {
+          "names": [
+            "workspaceKey"
+          ],
+          "start": 1275250,
+          "end": 1275353,
+          "sha256": "85bc05de5099068c1c94b2c017ec08bc40f7af88d41313754c8819a11c855aa0"
+        },
+        {
+          "names": [
+            "workspaceTarget"
+          ],
+          "start": 1275354,
+          "end": 1275538,
+          "sha256": "66292d6e37e1dbc40fa483c2f893cf33175c2b115046b80ef01f45300d846ddd"
+        },
+        {
+          "names": [
+            "MAX_PENDING_OWNERSHIP_FRAMES"
+          ],
+          "start": 1275539,
+          "end": 1275579,
+          "sha256": "6b99a682bf7c7ca7d593df023944d1a3355de4813692218b3bba16eca5d733fa"
+        },
+        {
+          "names": [
+            "MAX_PENDING_OWNERSHIP_BYTES"
+          ],
+          "start": 1275580,
+          "end": 1275631,
+          "sha256": "0e06f5333610955fc953729c763019e8deaca2c970c1349dfbae37963666a6f4"
+        },
+        {
+          "names": [
+            "MAX_DOWNSTREAM_CONNECTION_ID_LENGTH"
+          ],
+          "start": 1275632,
+          "end": 1275678,
+          "sha256": "4abbd34b834d76cb7494c6e782aa7ddfaccf27286a795097ec11ff651d57f291"
+        },
+        {
+          "names": [
+            "assertConnectionId"
+          ],
+          "start": 1275679,
+          "end": 1275892,
+          "sha256": "25361591869e17c4bb84c92dfeb5e29132f0173f9394c9a87bc8ef7790827e96"
+        },
+        {
+          "names": [
+            "namespaceRelayConnectionId"
+          ],
+          "start": 1275893,
+          "end": 1276109,
+          "sha256": "0f7ba5f32c352a1b47de39ab619309239ac22a094d2792ac84f02ff266c59e06"
+        },
+        {
+          "names": [
+            "frameBytes"
+          ],
+          "start": 1276110,
+          "end": 1276209,
+          "sha256": "0916df54b271ea6eec798f9959a980280e34bc137cd91c8875fcfee353d0aa40"
+        },
+        {
+          "names": [
+            "deliveryProfileFor"
+          ],
+          "start": 1276210,
+          "end": 1276329,
+          "sha256": "211dc0bb271985a2180736ed98acfc494a821ae41b922d28791c09b02f7bcd80"
+        },
+        {
+          "names": [
+            "createZCodeAgentConnectionScope"
+          ],
+          "start": 1277358,
+          "end": 1305555,
+          "sha256": "0e8ed9420122dc8474e5b99664f0b7115c2a70ffa491d903733b5eeed9a389b6"
+        }
+      ]
+    },
+    "installed_socket_scope.js": {
+      "generated_sha256": "8722963a3c4b7b9dead6c74d21b0408044e5a0a4c464b23858d73a0ce67d70a8",
+      "declarations": [
+        {
+          "names": [
+            "exposeWebSocket"
+          ],
+          "start": 5227315,
+          "end": 5230028,
+          "sha256": "e3f308d51d600d02063ec0bb8d5ed7d60adef8e03515481a6c15bb590e4bd36a"
+        }
+      ]
+    }
+  }
+}

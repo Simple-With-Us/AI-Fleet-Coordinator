@@ -1,0 +1,14 @@
+'use strict';
+const assert=require('assert'),z=require('./offline_node_modules/zod'),{schemas}=require('./native_schemas.cjs');
+const s=schemas(z),key='app-control-review-alerts-'+'a'.repeat(64),envelope={commandId:key,clientId:'review-alerts-router',sessionId:'sess-fixture',type:'sendText',payload:{text:'fixture',requestedDelivery:'queue'},issuedAt:1};
+s.envelope.parse(envelope);
+for(const extra of ['modelSelection','modelExecution','guide','heldQueueDisposition','browserAmbientContext','attachments','config','startNow'])assert.throws(()=>s.envelope.parse({...envelope,payload:{...envelope.payload,[extra]:true}}));
+assert.throws(()=>s.envelope.parse({...envelope,clientId:'wrong'}));
+assert.throws(()=>s.envelope.parse({...envelope,payload:{...envelope.payload,requestedDelivery:'startNow'}}));
+const ack={commandId:key,status:'accepted',revisionAtDecision:1,result:{type:'inputAccepted',inputId:key,delivery:'queue'}};s.ack.parse(ack);
+assert.throws(()=>s.ack.parse({...ack,reasonCode:'not a static reason'}));
+assert.throws(()=>s.ack.parse({...ack,message:'x'.repeat(4097)}));
+s.query.parse({results:[{key:{sessionId:'sess-fixture',commandId:key},result:ack}]});
+assert.throws(()=>s.query.parse({results:[]}));
+s.initialization.parse({status:'ready',attemptId:'fixture'});assert.throws(()=>s.initialization.parse({status:'ready'}));
+console.log('PASS restricted schema allowlist, envelope/ACK/query/readiness, forbidden effect fields. Wired into flow.');
