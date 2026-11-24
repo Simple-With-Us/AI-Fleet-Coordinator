@@ -80,3 +80,46 @@ final class BearerActionsTests: XCTestCase {
         XCTAssertTrue(down.summary.contains("could not be reached"))
     }
 }
+
+final class AccessServiceTokenTests: XCTestCase {
+    private func write(_ text: String, mode: Int) throws -> String {
+        let dir = NSTemporaryDirectory() + "svc-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/muster-admin-api.json"
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: path)
+        return path
+    }
+
+    func testLoadsAUserOnlyFileAndRoundTrips() throws {
+        let path = try write(#"{"clientId":"abc.access","clientSecret":"s3cret"}"#, mode: 0o600)
+        let token = AccessServiceToken.load(path: path)
+        XCTAssertEqual(token, AccessServiceToken(clientId: "abc.access", clientSecret: "s3cret"))
+        XCTAssertEqual(AccessServiceToken.decode(token!.encoded), token)
+    }
+
+    func testIgnoresASymlinkAndHeaderSplittingValues() throws {
+        let real = try write(#"{"clientId":"a","clientSecret":"b"}"#, mode: 0o600)
+        let link = real + ".link"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
+        XCTAssertNil(AccessServiceToken.load(path: link))
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a\r\nX: y","clientSecret":"b"}"#, mode: 0o600)))
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a","clientSecret":"b c"}"#, mode: 0o600)))
+    }
+
+    func testIgnoresAClientIdThatCannotRoundTrip() throws {
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a:b","clientSecret":"c"}"#, mode: 0o600)))
+    }
+
+    func testIgnoresALooseMissingOrIncompleteFile() throws {
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a","clientSecret":"b"}"#, mode: 0o644)))
+        XCTAssertNil(AccessServiceToken.load(path: NSTemporaryDirectory() + "no-such-file.json"))
+        XCTAssertNil(AccessServiceToken.load(path: try write(#"{"clientId":"a"}"#, mode: 0o600)))
+    }
+
+    func testDecodeRejectsAJwtAndAnEmptyHalf() {
+        XCTAssertNil(AccessServiceToken.decode("aaa.bbb.ccc"))
+        XCTAssertNil(AccessServiceToken.decode("svc::x"))
+        XCTAssertNil(AccessServiceToken.decode("svc:x:"))
+    }
+}

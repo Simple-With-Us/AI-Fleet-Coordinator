@@ -124,14 +124,60 @@ struct BearerActionRunner {
     }
 }
 
-/// The real route:  `cloudflared access token` for the owner's JWT, then one HTTPS POST.
+/// The Cloudflare Access service token "muster-admin-api", read from a user-only file.  The Worker accepts it on
+/// /admin/api/* only.  Values are held in memory for one call and never logged.
+struct AccessServiceToken: Equatable {
+    let clientId: String
+    let clientSecret: String
+
+    static var defaultPath: String { NSHomeDirectory() + "/.config/fleet-tools/muster-admin-api.json" }
+
+    /// Nil unless the file is a regular file owned by this user with no group or other permission bits and holds
+    /// both values:  a loose file is ignored, never trusted.
+    static func load(path: String? = nil) -> AccessServiceToken? {
+        let file = path ?? defaultPath
+        // Open without following a symlink, then check the open descriptor, so the file that is validated
+        // is the file that is read.
+        let fd = open(file, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_mode & 0o077 == 0,
+              info.st_uid == getuid(),
+              let data = try? handle.readToEnd(),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let id = object["clientId"] as? String, Self.headerSafe(id), !id.contains(":"),
+              let secret = object["clientSecret"] as? String, Self.headerSafe(secret) else { return nil }
+        return AccessServiceToken(clientId: id, clientSecret: secret)
+    }
+
+    /// Printable ASCII with no spaces, non-empty: a value from the file can never split or inject an HTTP header.
+    static func headerSafe(_ value: String) -> Bool {
+        !value.isEmpty && value.unicodeScalars.allSatisfy { $0.value >= 0x21 && $0.value <= 0x7E }
+    }
+
+    /// The transport carries credentials as one string:  "svc:<id>:<secret>" for this token, a JWT otherwise.
+    var encoded: String { "svc:" + clientId + ":" + clientSecret }
+
+    static func decode(_ text: String) -> AccessServiceToken? {
+        guard text.hasPrefix("svc:") else { return nil }
+        let parts = text.dropFirst(4).split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        return AccessServiceToken(clientId: String(parts[0]), clientSecret: String(parts[1]))
+    }
+}
+
+/// The real route:  the service token file when present, else `cloudflared access token` for the owner's JWT, then one HTTPS POST.
 struct LiveBearerActionTransport: BearerActionTransport {
     static let app = "https://agents.simplewithus.com/admin"
     static let endpoint = URL(string: "https://agents.simplewithus.com/admin/api/bearers/action")!
     static let cloudflared = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"]
 
     func accessToken() async -> String? {
-        await Task.detached { () -> String? in
+        if let service = AccessServiceToken.load() { return service.encoded }
+        return await Task.detached { () -> String? in
             for path in Self.cloudflared where FileManager.default.isExecutableFile(atPath: path) {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: path)
@@ -159,7 +205,12 @@ struct LiveBearerActionTransport: BearerActionTransport {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("1", forHTTPHeaderField: "X-Admin-Api")
-        request.setValue(accessToken, forHTTPHeaderField: "cf-access-token")
+        if let service = AccessServiceToken.decode(accessToken) {
+            request.setValue(service.clientId, forHTTPHeaderField: "CF-Access-Client-Id")
+            request.setValue(service.clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
+        } else {
+            request.setValue(accessToken, forHTTPHeaderField: "cf-access-token")
+        }
         request.setValue("Muster", forHTTPHeaderField: "User-Agent")
         let session = URLSession(configuration: .ephemeral, delegate: NoRedirect(), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
