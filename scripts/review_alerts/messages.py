@@ -98,6 +98,9 @@ class OperatorMessages:
             "review_submitted": "review completed",
             "review_completed": "review check completed",
             "findings_added": "new review findings",
+            "merge_conflict": "merge conflict",
+            "changes_requested": "changes requested",
+            "check_failure": "check failed",
         }.get(event.get("kind"))
         if summary is None:
             raise MessageDestinationUnresolved()

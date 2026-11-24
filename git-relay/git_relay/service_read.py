@@ -17,6 +17,11 @@ CLAIMS = ("origin_session_claim", "origin_letter_claim", "origin_generation_clai
 SHA = re.compile(r"[0-9a-f]{40}")
 SESSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{3,127}")
 LOGIN = re.compile(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?")
+#: GitHub's documented mergeable_state values.  Anything else fails closed:
+#: an unverifiable merge signal is never projected as fact.
+MERGEABLE_STATES = frozenset(
+    ("behind", "blocked", "clean", "dirty", "draft", "has_hooks", "unknown", "unstable")
+)
 
 
 def origin_claims(args):
@@ -131,12 +136,29 @@ def dispatch(relay, seat, args):
             or value["number"] != args["number"]
             or value.get("state") not in ("open", "closed")
             or not isinstance(value.get("head"), dict)
+            or not isinstance(value.get("base"), dict)
+        ):
+            _bad()
+        # Absent or null merge signal stays null:  GitHub may still be
+        # computing, the consumer treats null as unknown (never a conflict),
+        # and the review/finding fields of this read remain available.  A
+        # PRESENT but unverifiable value refuses the whole read instead of
+        # being projected as invented merge state.
+        mergeable = value.get("mergeable")
+        if mergeable is not None and type(mergeable) is not bool:
+            _bad()
+        mergeable_state = value.get("mergeable_state")
+        if mergeable_state is not None and (
+            not isinstance(mergeable_state, str) or mergeable_state not in MERGEABLE_STATES
         ):
             _bad()
         result = {
             "number": value["number"],
             "state": value["state"],
             "head": {"sha": _sha(value["head"].get("sha"))},
+            "base": {"sha": _sha(value["base"].get("sha"))},
+            "mergeable": mergeable,
+            "mergeable_state": mergeable_state,
         }
         url = value.get("html_url")
         if url == "https://github.com/%s/pull/%d" % (repo, args["number"]):
