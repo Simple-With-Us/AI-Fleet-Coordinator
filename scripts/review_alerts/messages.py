@@ -94,13 +94,14 @@ class OperatorMessages:
             raise MessageDestinationUnresolved()
         # Only bounded factual status, never review bodies, titles or other
         # source-controlled prose. The existing exact native wake carries ID.
+        # A failed check's NAME is workflow prose, so the CI line stays generic here and the
+        # wake's own topic is where the runs are named.
         summary = {
             "review_submitted": "review completed",
             "review_completed": "review check completed",
             "findings_added": "new review findings",
-            "merge_conflict": "merge conflict",
-            "changes_requested": "changes requested",
-            "check_failure": "check failed",
+            "ci_failed": "CI checks failed on the current head",
+            "merge_blocked": "the PR is blocked from merging",
         }.get(event.get("kind"))
         if summary is None:
             raise MessageDestinationUnresolved()
