@@ -95,7 +95,9 @@ SESSION_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 BAD_REQUEST = "bad-request"
 SECRET_FIELD = "secret-field"
-TARGET_FIELDS = frozenset({"session_id", "letter", "host", "generation", "title", "thread_link"})
+TARGET_FIELDS = frozenset(
+    {"session_id", "letter", "host", "generation", "title", "thread_link"}
+)
 #: The fields a wake request carries:  the router's own Wake, and nothing else.
 WAKE_FIELDS = frozenset(WR.Wake.__dataclass_fields__)
 #: A Zulip link is longer than a name.
@@ -127,9 +129,15 @@ FAILURE_SIGNATURES = (("project_token_login_failed", "model-auth-login-failed"),
 CLI_EXIT_CATEGORIES = (
     (r"^Error: Failed to load environment file: [^\r\n]+$", "cli-env-file-load"),
     (r"^Error: ZCode app factory is unavailable\.$", "cli-app-factory-unavailable"),
-    (r"^Error: Provider Registry runtime is unavailable\.$", "cli-provider-runtime-unavailable"),
+    (
+        r"^Error: Provider Registry runtime is unavailable\.$",
+        "cli-provider-runtime-unavailable",
+    ),
     (r"^Error: Session not found: [^\r\n]+$", "cli-session-not-found"),
-    (r"^Error: Session is not active and not persisted: [^\r\n]+$", "cli-session-not-persisted"),
+    (
+        r"^Error: Session is not active and not persisted: [^\r\n]+$",
+        "cli-session-not-persisted",
+    ),
     (
         r"^\[zcode\] process error kind=(?:uncaughtException|unhandledRejection) "
         r"origin=(?:uncaughtException|unhandledRejection)$",
@@ -312,7 +320,9 @@ def state_dir(env: Mapping[str, str]) -> Path:
     explicit = env.get("ZC_ROUTER_STATE")
     if explicit:
         return Path(explicit)
-    base = os.path.join(str(env.get("HOME") or os.path.expanduser("~")), ".local", "state")
+    base = os.path.join(
+        str(env.get("HOME") or os.path.expanduser("~")), ".local", "state"
+    )
     return Path(base) / "wake-router" / "zc"
 
 
@@ -344,7 +354,9 @@ def _private_dir(folder: Path) -> None:
     WR.private_dir(folder)
 
 
-def tasks_index_path(env: Mapping[str, str], config: Mapping[str, Any] | None = None) -> Path:
+def tasks_index_path(
+    env: Mapping[str, str], config: Mapping[str, Any] | None = None
+) -> Path:
     """The tasks index the deployment uses, or the default under HOME.
 
     The env override keeps its existing precedence.  When it is not set, the ZC-only config
@@ -419,7 +431,9 @@ def _tasks_row(
     return "ok", {"task_id": row[0], "task_status": row[1]}
 
 
-def _session_binding(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, Any] | None]:
+def _session_binding(
+    env: Mapping[str, str], session_id: str
+) -> tuple[str, dict[str, Any] | None]:
     """(`ok`|`missing`|`error`, row) for one session from zcode's own session store.
 
     This is the session's own record:  its `id` is the session it is, and its `directory` is
@@ -508,7 +522,9 @@ def _prompt_evidence(
         return None
     try:
         conn = sqlite3.connect(
-            "file:" + urllib.parse.quote(str(cli_db_path(env))) + "?mode=ro", uri=True, timeout=2.0
+            "file:" + urllib.parse.quote(str(cli_db_path(env))) + "?mode=ro",
+            uri=True,
+            timeout=2.0,
         )
     except (OSError, sqlite3.Error):
         return None
@@ -516,7 +532,9 @@ def _prompt_evidence(
     # common word or one old quoted id never fills the candidate window.  Without the
     # caller's identities they are read off the prompt.
     ids = tuple(dict.fromkeys(i for i in identities if i)) or tuple(
-        dict.fromkeys(re.findall(r"\bt-[0-9a-f]{16}\b|\b[A-Za-z0-9][A-Za-z0-9._:-]{7,}\b", prompt))
+        dict.fromkeys(
+            re.findall(r"\bt-[0-9a-f]{16}\b|\b[A-Za-z0-9][A-Za-z0-9._:-]{7,}\b", prompt)
+        )
     )
     if not ids:
         return None
@@ -592,7 +610,9 @@ def exclude_non_interactive(
         placeholders = ",".join("?" * len(local_ids))
         try:
             conn = sqlite3.connect(
-                "file:" + urllib.parse.quote(str(db)) + "?mode=ro", uri=True, timeout=2.0
+                "file:" + urllib.parse.quote(str(db)) + "?mode=ro",
+                uri=True,
+                timeout=2.0,
             )
         except sqlite3.Error:
             return excluded
@@ -723,7 +743,9 @@ def _deliver_prompt(
 
     folder = state_dir(env) / "locks"
     _private_dir(folder)
-    fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
+    fd = os.open(
+        folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600
+    )
     with os.fdopen(fd, "w") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -741,7 +763,9 @@ def _deliver_prompt(
         if legacy_dir.is_dir():
             try:
                 l_fd = os.open(
-                    legacy_dir / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600
+                    legacy_dir / ("session-%s.lock" % session_id),
+                    os.O_CREAT | os.O_RDWR,
+                    0o600,
                 )
                 legacy_lock = os.fdopen(l_fd, "w")
                 fcntl.flock(legacy_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -767,7 +791,10 @@ def _deliver_prompt(
                 return WR.Delivery("failed", "resume", code="store-tasks-index")
             if status == "missing":
                 return WR.Delivery("refused", "resume", code="session-not-found")
-            if not config.get("native_delivery_review_only", False) and (row.get("task_status") or "") == "running":
+            if (
+                not config.get("native_delivery_review_only", False)
+                and (row.get("task_status") or "") == "running"
+            ):
                 return WR.Delivery("busy", "resume", code="session-busy")
             # The binding comes from the session's own store row:  the exact session id and
             # the directory that session reports, compared with the requested session and the
@@ -807,22 +834,51 @@ def _deliver_prompt(
                 # Caller must prove this is a NEW never-attempted genuine wake.
                 if native_driver is None or target is None or not evidence_ids:
                     return WR.Delivery("refused", "resume", code="native-not-qualified")
-                if target.host != "server" or config.get("local_host", "server") != "server":
-                    return WR.Delivery("refused", "resume", code="native-local-server-only")
-                exact = {"host": target.host, "local": True, "session_id": session_id,
-                         "workspace": recorded, "generation": target.generation}
+                if (
+                    target.host != "server"
+                    or config.get("local_host", "server") != "server"
+                ):
+                    return WR.Delivery(
+                        "refused", "resume", code="native-local-server-only"
+                    )
+                exact = {
+                    "host": target.host,
+                    "local": True,
+                    "session_id": session_id,
+                    "workspace": recorded,
+                    "generation": target.generation,
+                }
+
                 def verify(expected):
                     if expected != exact or _recheck(env, target) is not None:
                         return False
                     st, current = _session_binding(env, session_id)
                     sub_st, subs = _subagent_ids(env, [session_id])
-                    return st == "ok" and current.get("id") == session_id and current.get("directory") == recorded and sub_st == "ok" and session_id not in subs
+                    return (
+                        st == "ok"
+                        and current.get("id") == session_id
+                        and current.get("directory") == recorded
+                        and sub_st == "ok"
+                        and session_id not in subs
+                    )
+
                 if not verify(exact):
-                    return WR.Delivery("refused", "resume", code="native-binding-changed")
+                    return WR.Delivery(
+                        "refused", "resume", code="native-binding-changed"
+                    )
                 try:
-                    reply = native_driver(exact, evidence_ids[0], prompt, fresh=native_fresh, verify=verify, target=target)
+                    reply = native_driver(
+                        exact,
+                        evidence_ids[0],
+                        prompt,
+                        fresh=native_fresh,
+                        verify=verify,
+                        target=target,
+                    )
                 except Exception:
-                    return WR.Delivery("unknown", "resume", code="native-driver-uncertain")
+                    return WR.Delivery(
+                        "unknown", "resume", code="native-driver-uncertain"
+                    )
                 # Admission is not a native-message or owning-alert handling receipt.
                 # A callback result cannot prove no effect. Once invoked, uncertainty
                 # is terminal regardless of claimed retryable outcome or arbitrary code.
@@ -851,15 +907,21 @@ def _deliver_prompt(
                 _register(child)
             except OSError as exc:
                 # The turn never started:  the binary is missing or is not executable.
-                return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
+                return WR.Delivery(
+                    "failed", "resume", code="resume-%s" % type(exc).__name__
+                )
             except Exception as exc:  # noqa: BLE001 - the child may have started
-                return WR.Delivery("unknown", "resume", code="resume-error-%s" % type(exc).__name__)
+                return WR.Delivery(
+                    "unknown", "resume", code="resume-error-%s" % type(exc).__name__
+                )
 
             # The child's output is drained while it runs, into a rolling buffer that never
             # holds more than the tail the classifier reads.
             # One sentinel byte records that the rolling tail was truncated. The
             # classifier still scans at most OUTPUT_SCAN_CAP characters.
-            tail, reader = _read_tail(getattr(child, "stdout", None), OUTPUT_SCAN_CAP + 1)
+            tail, reader = _read_tail(
+                getattr(child, "stdout", None), OUTPUT_SCAN_CAP + 1
+            )
             try:
                 child.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
@@ -867,7 +929,9 @@ def _deliver_prompt(
                 # retried either.
                 return WR.Delivery("unknown", "resume", code="resume-timeout")
             except Exception as exc:  # noqa: BLE001 - the child started, so its outcome is unknown
-                return WR.Delivery("unknown", "resume", code="resume-error-%s" % type(exc).__name__)
+                return WR.Delivery(
+                    "unknown", "resume", code="resume-error-%s" % type(exc).__name__
+                )
             else:
                 # The child is gone, so its stream is at its end:  the reader drains what is
                 # left before the tail is read, so the last words are never missed.
@@ -897,7 +961,10 @@ def _deliver_prompt(
                 # Nothing proves the chat acted on it, so this is never a confirmed delivery,
                 # and it is never repeated:  a second prompt would be a second turn.
                 return WR.Delivery(
-                    "sent", "resume", ack="unknown", note="zcode-prompt-persisted:" + code
+                    "sent",
+                    "resume",
+                    ack="unknown",
+                    note="zcode-prompt-persisted:" + code,
                 )
             # No exact evidence, which is not evidence of absence.  The child started, so the
             # prompt may have reached the session whatever its output said, and an output
@@ -973,7 +1040,9 @@ def make_deliver(
                 recheck_registry=False,
                 runner=runner,
                 native_driver=native_driver,
-                native_fresh=bool(native_is_fresh and native_is_fresh(target,wake.wake_id)),
+                native_fresh=bool(
+                    native_is_fresh and native_is_fresh(target, wake.wake_id)
+                ),
             )
         if target.host == "mac":
             from . import claude_wake as CW
@@ -1046,7 +1115,19 @@ def make_deliver_turn(
         target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str
     ) -> WR.Turn:
         if target.host == local_host:
-            return deliver_turn_local(env, config, target, head, riders, turn_id, runner=runner, native_driver=native_driver, native_fresh=bool(native_is_fresh and native_is_fresh(target,head.wake_id)))
+            return deliver_turn_local(
+                env,
+                config,
+                target,
+                head,
+                riders,
+                turn_id,
+                runner=runner,
+                native_driver=native_driver,
+                native_fresh=bool(
+                    native_is_fresh and native_is_fresh(target, head.wake_id)
+                ),
+            )
         if target.host == "mac":
             from . import claude_wake as CW
 
@@ -1057,7 +1138,9 @@ def make_deliver_turn(
                 # The head went alone by the existing remote path:  a readable empty carry
                 # sends every rider back with nothing used, never a claim it did not earn.
                 return WR.Turn(delivery, carried=(), confirmed=())
-            return WR.Turn(delivery, unreadable=delivery.outcome in ("refused", "unknown"))
+            return WR.Turn(
+                delivery, unreadable=delivery.outcome in ("refused", "unknown")
+            )
         return WR.Turn(WR.Delivery("refused", code="unknown-host"))
 
     return deliver_turn
@@ -1076,25 +1159,44 @@ def router_platform(
     if config.get("native_delivery_review_only", False):
         # Still default-off. Source-only candidate; activation requires separate review.
         from .native_integration import Driver, freshness
+
         activation = config.get("native_activation_epoch", 0)
         if type(activation) not in (int, float) or activation <= 0:
             raise ValueError("native-activation-boundary-required")
         node = "/home/jay/.zcode/server/releases/3.19.0-linux-x64-60f71efd6a01/runtime/node"
-        native_driver = Driver(state_dir(env), activation, node, str(env.get("HOME") or ""))
-        native_is_fresh = lambda target, key: freshness(state_dir(env), target, key, activation)
+        native_driver = Driver(
+            state_dir(env), activation, node, str(env.get("HOME") or "")
+        )
+        native_is_fresh = lambda target, key: freshness(
+            state_dir(env), target, key, activation
+        )
     return WR.Platform(
         seat=SEAT,
         platform=PLATFORM,
         mention=MENTION,
         target_re=SESSION_RE,
-        deliver=make_deliver(env, config, runner=runner, remote_runner=remote_runner, native_driver=native_driver, native_is_fresh=native_is_fresh),
+        deliver=make_deliver(
+            env,
+            config,
+            runner=runner,
+            remote_runner=remote_runner,
+            native_driver=native_driver,
+            native_is_fresh=native_is_fresh,
+        ),
         exclude=exclude_non_interactive(
             env,
             str(config.get("local_host", "server")),
             str(config.get("workspace") or ""),
             config,
         ),
-        deliver_turn=make_deliver_turn(env, config, runner=runner, remote_runner=remote_runner, native_driver=native_driver, native_is_fresh=native_is_fresh),
+        deliver_turn=make_deliver_turn(
+            env,
+            config,
+            runner=runner,
+            remote_runner=remote_runner,
+            native_driver=native_driver,
+            native_is_fresh=native_is_fresh,
+        ),
     )
 
 
@@ -1182,7 +1284,11 @@ def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
     if not isinstance(wake_id, str) or not WR.WAKE_ID_RE.fullmatch(wake_id):
         raise ValueError("bad wake id")
     message_id = data.get("message_id", 0)
-    if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id < 0:
+    if (
+        not isinstance(message_id, int)
+        or isinstance(message_id, bool)
+        or message_id < 0
+    ):
         raise ValueError("bad message id")
     dm = data.get("dm", False)
     if not isinstance(dm, bool):
@@ -1250,7 +1356,9 @@ def deliver_request(
     except SecretField as exc:
         # The field is named and the value is not:  a refusal says which field, never what it
         # carried.
-        return _answer(request, WR.Delivery("refused", code=SECRET_FIELD, note=exc.field))
+        return _answer(
+            request, WR.Delivery("refused", code=SECRET_FIELD, note=exc.field)
+        )
     except (ValueError, KeyError, TypeError, AttributeError):
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))
 
@@ -1261,7 +1369,9 @@ def deliver_request(
     except (Exception, SystemExit):
         # The code names the source that could not be read, so a receipt can say which
         # configuration file is missing or unreadable.
-        return _answer(request, WR.Delivery("failed", code="settings-config.json-unavailable"))
+        return _answer(
+            request, WR.Delivery("failed", code="settings-config.json-unavailable")
+        )
 
     # The Mac-side handler requires target to belong to this execution host ("mac")
     if target.host != "mac":
