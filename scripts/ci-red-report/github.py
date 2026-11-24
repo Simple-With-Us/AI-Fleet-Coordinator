@@ -106,8 +106,8 @@ class GitHubClient:
                 body = response.read(2_000_001)
                 if len(body) > 2_000_000:
                     raise GitHubError("response too large")
-                    hdrs = {k: v for k, v in response.headers.items()}
-                    return body, hdrs
+                hdrs = {k: v for k, v in response.headers.items()}
+                return body, hdrs
         except urllib.error.HTTPError as exc:
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
             err = GitHubError(
