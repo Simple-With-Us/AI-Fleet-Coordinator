@@ -9,7 +9,6 @@ by every test and every process, so one test's cleanup could fail another's asse
 from __future__ import annotations
 
 import io
-import json
 import os
 import sqlite3
 import subprocess
@@ -182,51 +181,14 @@ class Base(unittest.TestCase):
 
         return call
 
-    def _transcript_tables(self, *tables: str) -> None:
-        """The tables a resumed chat's prompt is written to, with zcode's own columns.  With no
-        names, both;  a test names one to show what a runtime without the other answers."""
-        con = sqlite3.connect(self.cli)
-        if not tables or "input_history" in tables:
-            con.execute(
-                "CREATE TABLE input_history (id INTEGER PRIMARY KEY, project_id TEXT,"
-                " session_id TEXT, text TEXT, kind TEXT, time_created INTEGER, attachments TEXT)"
-            )
-        if not tables or "message" in tables:
-            con.execute(
-                "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,"
-                " time_updated INTEGER, data TEXT, sequence INTEGER)"
-            )
-        con.commit()
-        con.close()
-
-    def _persist(self, session_id: str, wake_id: str = "w1-abcdef", table: str = "input_history"):
-        """The child has written one wake's prompt into a session's transcript."""
-        text = "[ZC wake] You were tagged in Zulip (wake id %s). Read the message." % wake_id
-        con = sqlite3.connect(self.cli)
-        if table == "input_history":
-            con.execute(
-                "INSERT INTO input_history (project_id, session_id, text, kind, time_created)"
-                " VALUES ('p', ?, ?, 'prompt', 1)",
-                (session_id, text),
-            )
-        else:
-            con.execute(
-                "INSERT INTO message (id, session_id, time_created, time_updated, data, sequence)"
-                " VALUES ('m1', ?, 1, 1, ?, 1)",
-                (session_id, '{"role":"user","text":%s}' % json.dumps(text)),
-            )
-        con.commit()
-        con.close()
-
     def _deliver_local(self, session_id=SID, wake=None, config=None, recheck=False,
-                       exit_code=0, registry_rows=None, output=b"", timeout=False, child=None,
-                       runner=None):
+                       exit_code=0, registry_rows=None, output=b"", timeout=False, child=None):
         holding = _holding_row(session_id)
         rows = registry_rows or [holding]
         target = zcode_wake.WR.Target(
             session_id=session_id, letter="BB", host="server", generation=3
         )
-        wake = wake or zcode_wake.WR.Wake(
+        wake = zcode_wake.WR.Wake(
             wake_id="w1-abcdef",
             seat="ZC",
             message_id=639428919,
@@ -254,7 +216,7 @@ class Base(unittest.TestCase):
                 wake,
                 target=target if recheck else None,
                 recheck_registry=recheck,
-                runner=runner if runner is not None else self._runner(exit_code, output, timeout, child),
+                runner=self._runner(exit_code, output, timeout, child),
             )
         return delivery
 
@@ -452,8 +414,9 @@ class DeliverLocalTests(Base):
         self.assertIn("unknown", WR.OUTCOMES)
 
     def test_a_turn_that_failed_before_any_model_response_is_not_sent(self):
+        # After launch the output is not proof the prompt never arrived:  never retried.
         delivery = self._deliver_local(exit_code=0, output=FAILED_TURN)
-        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "model-auth-login-failed")
 
     def test_the_child_output_never_reaches_a_receipt(self):
@@ -573,7 +536,7 @@ class DeliverLocalTests(Base):
     def test_a_failure_signature_in_the_output_tail_is_found(self):
         output = b"x" * 16 + FAILED_TURN
         delivery = self._deliver_local(exit_code=0, output=output)
-        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "model-auth-login-failed")
 
     def test_a_stale_signature_outside_the_output_tail_is_not_a_failure(self):
@@ -583,128 +546,6 @@ class DeliverLocalTests(Base):
         output = FAILED_TURN + b"x" * (zcode_wake.OUTPUT_SCAN_CAP * 2)
         delivery = self._deliver_local(exit_code=0, output=output)
         self.assertEqual(delivery.outcome, "sent")
-
-    def _runner_that(self, returncode: int, output: bytes, **persist):
-        """A child that writes the wake into the transcript (as `persist` says) and then ends
-        the way a resume ends:  with the exit code and output given."""
-
-        def runner(argv, **kwargs):
-            if persist:
-                self._persist(persist.pop("session_id", SID), **persist)
-            return FakeChild(argv, returncode, output, False)
-
-        return runner
-
-    def test_a_prompt_in_the_chat_transcript_is_a_hand_over_however_the_child_ended(self):
-        # A resume does not run the turn:  it writes the wake into the chat's own transcript and
-        # the open chat runs it from there.  The server's own receipts showed every such wake as
-        # `dead` with `resume-exit-1` while the chat took it, because the child exits 1 when its
-        # own headless turn cannot reach the model.
-        self._transcript_tables()
-        delivery = self._deliver_local(
-            runner=self._runner_that(1, FAILED_TURN, session_id=SID)
-        )
-        self.assertEqual(delivery.outcome, "sent")
-        self.assertEqual(delivery.route, "resume")
-        self.assertEqual(delivery.ack, "unknown", "nothing proves the chat acted on it")
-        self.assertEqual(delivery.code, "")
-        self.assertEqual(
-            delivery.note, "zcode-prompt-persisted:model-auth-login-failed",
-            "the note keeps why the child did not end well",
-        )
-
-    def test_a_hand_over_is_sent_for_any_exit_code_once_the_prompt_is_in_the_transcript(self):
-        self._transcript_tables()
-        delivery = self._deliver_local(runner=self._runner_that(3, b"", session_id=SID))
-        self.assertEqual(delivery.outcome, "sent")
-        self.assertEqual(delivery.note, "zcode-prompt-persisted:resume-exit-3")
-
-    def test_a_signed_failure_at_exit_0_is_a_hand_over_when_the_prompt_is_in_the_transcript(self):
-        # Read alone, the signature said "nothing ran, repeat it".  With the prompt in the
-        # transcript a repeat would be a second turn in the chat, so it is a hand-over instead.
-        self._transcript_tables()
-        delivery = self._deliver_local(
-            runner=self._runner_that(0, FAILED_TURN, session_id=SID)
-        )
-        self.assertEqual(delivery.outcome, "sent")
-
-    def test_a_prompt_in_the_messages_table_alone_is_a_hand_over(self):
-        self._transcript_tables()
-        delivery = self._deliver_local(
-            runner=self._runner_that(1, b"", session_id=SID, table="message")
-        )
-        self.assertEqual(delivery.outcome, "sent")
-
-    def test_a_wake_that_never_reached_the_transcript_is_failed_and_may_be_repeated(self):
-        # The child ended without writing the prompt anywhere:  no turn started from it, so
-        # the router's bounded retry may run it again.  The server's receipts showed this case
-        # as a final `dead` with nothing recorded for the sender to see.
-        self._transcript_tables()
-        delivery = self._deliver_local(
-            runner=self._runner_that(1, FAILED_TURN)
-        )
-        self.assertEqual(delivery.outcome, "failed")
-        self.assertEqual(delivery.code, "model-auth-login-failed")
-
-    def test_an_unsigned_exit_without_a_prompt_in_the_transcript_is_failed(self):
-        self._transcript_tables()
-        delivery = self._deliver_local(runner=self._runner_that(3, b""))
-        self.assertEqual(delivery.outcome, "failed")
-        self.assertEqual(delivery.code, "resume-exit-3")
-
-    def test_a_clean_exit_without_a_prompt_in_the_transcript_is_failed(self):
-        # A clean exit is not the outcome either:  the transcript decides, so a wake the
-        # store says is in neither table ran nothing and the try may be repeated.
-        self._transcript_tables()
-        delivery = self._deliver_local(runner=self._runner_that(0, b""))
-        self.assertEqual(delivery.outcome, "failed")
-        self.assertEqual(delivery.code, "resume-exit-0")
-
-    def test_a_clean_exit_with_a_prompt_in_the_transcript_is_sent(self):
-        self._transcript_tables()
-        delivery = self._deliver_local(
-            runner=self._runner_that(0, b"", session_id=SID)
-        )
-        self.assertEqual(delivery.outcome, "sent")
-        self.assertEqual(delivery.note, "zcode-exit-0")
-
-    def test_another_chat_transcript_does_not_count_for_this_one(self):
-        self._transcript_tables()
-        delivery = self._deliver_local(
-            runner=self._runner_that(1, b"", session_id=SID_OTHER)
-        )
-        self.assertEqual(delivery.outcome, "failed", "the same wake id in another chat is not here")
-
-    def test_a_wake_id_is_matched_as_the_literal_string_it_is(self):
-        # `_` and `%` are wildcards to LIKE;  one wake must never answer for another.
-        self._transcript_tables()
-        wake = zcode_wake.WR.Wake(
-            wake_id="w1-ab_def", seat="ZC", message_id=1, channel="Work-In-Progress",
-            topic="OPS-1048", zulip_link="https://zulip.example.test/narrow/topic/1",
-            sender="Claude", dm=False, letter="", picked="", reason="", link_note="",
-        )
-
-        def runner(argv, **kwargs):
-            self._persist(SID, wake_id="w1-abXdef")  # matches the pattern only as a wildcard
-            return FakeChild(argv, 1, b"", False)
-
-        delivery = self._deliver_local(wake=wake, runner=runner)
-        self.assertEqual(delivery.outcome, "failed")
-
-    def test_a_runtime_with_only_one_transcript_table_still_answers(self):
-        self._transcript_tables("input_history")
-        delivery = self._deliver_local(
-            runner=self._runner_that(1, b"", session_id=SID)
-        )
-        self.assertEqual(delivery.outcome, "sent")
-
-    def test_a_runtime_with_only_one_transcript_table_cannot_say_the_prompt_is_absent(self):
-        # The other table may be where this runtime writes prompts, so its absence is no
-        # answer:  the exit code decides, as it did before the store was asked.
-        self._transcript_tables("input_history")
-        delivery = self._deliver_local(runner=self._runner_that(3, b""))
-        self.assertEqual(delivery.outcome, "refused")
-        self.assertEqual(delivery.code, "resume-exit-3")
 
     def test_the_lock_folder_and_every_level_of_it_are_private(self):
         self._deliver_local()
@@ -906,6 +747,133 @@ class RouterPlatformTests(Base):
         self.assertTrue(remote_calls)
         self.assertEqual(len(local_calls), 1)
         self.assertIn("ssh", remote_calls[0][0])
+
+
+class TasksIndexConfigTests(Base):
+    """The ZC-only `tasks_index` fact:  one configured index for lookup and exclusion.
+
+    The app's own index may live outside HOME (the deployment's external volume), while the
+    copy under HOME is stale.  The env override cannot reach the forced ssh handler, so the
+    config file is where the deployment names the real one."""
+
+    def _other_index(self, session_ids=(SID,), name="external"):
+        """A second tasks index, standing in for the one the app actually writes."""
+        other = self.tmp / name / ".zcode" / "v2" / "tasks-index.sqlite"
+        private_dir(other.parent)
+        con = sqlite3.connect(other)
+        con.execute(
+            "CREATE TABLE tasks (workspace_key TEXT, workspace_path TEXT, task_id TEXT,"
+            " task_status TEXT)"
+        )
+        for sid in session_ids:
+            con.execute(
+                "INSERT INTO tasks VALUES (?, ?, ?, ?)",
+                (str(self.workspace), str(self.workspace), sid, "completed"),
+            )
+        con.commit()
+        con.close()
+        return other
+
+    def _drop_from_home_index(self, session_id=SID):
+        con = sqlite3.connect(self.index)
+        con.execute("DELETE FROM tasks WHERE task_id = ?", (session_id,))
+        con.commit()
+        con.close()
+
+    def test_the_configured_index_reaches_the_session_lookup(self):
+        other = self._other_index()
+        self._drop_from_home_index()
+        delivery = self._deliver_local(config={"tasks_index": str(other)})
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_without_the_fact_the_stale_home_index_still_rules(self):
+        # The default is unchanged:  with no env override and no config fact, the index under
+        # HOME is the one read, and a session only the real app index knows is not found.
+        self._other_index()
+        self._drop_from_home_index()
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-not-found")
+
+    def test_the_env_override_still_wins_over_the_config_fact(self):
+        empty = self._other_index(session_ids=())
+        self.env["ZC_WAKE_TASKS_INDEX"] = str(empty)
+        delivery = self._deliver_local(config={"tasks_index": str(self.index)})
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-not-found")
+
+    def test_exclusion_reads_the_same_configured_index(self):
+        other = self._other_index()
+        self._drop_from_home_index()
+        targets = [zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3)]
+        configured = zcode_wake.exclude_non_interactive(
+            self.env, "server", str(self.workspace), {"tasks_index": str(other)}
+        )
+        self.assertEqual(configured(targets), set())
+        plain = zcode_wake.exclude_non_interactive(self.env, "server", str(self.workspace))
+        self.assertEqual(plain(targets), {SID})
+
+    def test_exclusion_follows_a_refreshed_config_like_delivery_does(self):
+        # The router lives for weeks:  the platform is built once on the seat's live settings
+        # mapping, and a refresh changes what that mapping holds.  The exclusion must read
+        # the index the delivery would read NOW, not the one in force when the seat was
+        # built, or a refresh splits the two readers.
+        first = self._other_index()
+        refreshed = self._other_index(session_ids=(), name="refreshed")
+        config = {
+            "workspace": str(self.workspace),
+            "local_host": "server",
+            "tasks_index": str(first),
+        }
+        platform = zcode_wake.router_platform(self.env, config, runner=self._runner(0))
+        target = zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3)
+        wake = zcode_wake.WR.Wake(wake_id="w5-abcdef", message_id=1)
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
+        ):
+            self.assertEqual(platform.exclude([target]), set())
+            self.assertEqual(platform.deliver(target, wake).outcome, "sent")
+            # The refresh:  the same mapping now names the index the app moved on to, and the
+            # session is not in it.  Exclusion and delivery move together.
+            config["tasks_index"] = str(refreshed)
+            self.assertEqual(platform.exclude([target]), {SID})
+            delivery = platform.deliver(target, wake)
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-not-found")
+
+    def test_router_platform_threads_the_configured_index_to_exclusion(self):
+        other = self._other_index()
+        self._drop_from_home_index()
+        targets = [zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3)]
+        platform = zcode_wake.router_platform(
+            self.env,
+            {
+                "workspace": str(self.workspace),
+                "local_host": "server",
+                "tasks_index": str(other),
+            },
+            runner=self._runner(0),
+        )
+        self.assertEqual(platform.exclude(targets), set())
+
+    def test_the_forced_handler_reads_the_index_fact_from_its_own_config_file(self):
+        # The Mac side of the ssh route:  the server's environment never reaches it, so the
+        # ZC-only config file it reads on its own host is where the real index is named.
+        other = self._other_index()
+        self._drop_from_home_index()
+        state = zcode_wake.state_dir(self.env)
+        private_dir(state)
+        (state / "config.json").write_text(
+            json.dumps({"workspace": str(self.workspace), "tasks_index": str(other)}),
+            encoding="utf-8",
+        )
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
+        ):
+            answer = zcode_wake.deliver_request(
+                self._request(), env=self.env, runner=self._runner(0)
+            )
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
 
 
 if __name__ == "__main__":
