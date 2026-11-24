@@ -151,8 +151,29 @@ def desired_alarms(doc, last_counts):
     poll:  it only records the baseline, so history never alarms.  A count below the stored one (the row was evicted
     and began again) counts in full.  Relay refusals are the git relay's own check rows (kinds gr_bearer, gr_assert)."""
     alarms = {}
+    counts = {}
     for r in doc.get("rows", []):
         p = r.get("problem")
+        ident = r.get("identity")
+        if p == "wrong_secret_attempts":
+            # The count is a lifetime total with no reset, so a standing alarm could never clear.  Alarm on growth
+            # only; a seat with no earlier baseline just records one.
+            mm = (r.get("mismatches") or {}).get("count")
+            if isinstance(mm, int) and not isinstance(mm, bool) and mm >= 0:
+                key = f"mismatch|{ident}"
+                counts[key] = mm
+                if last_counts is not None and key in last_counts:
+                    prev = last_counts[key]
+                    grew = mm - prev if mm >= prev else mm
+                    if grew:
+                        alarms[f"delta:wrong_secret:{ident}"] = (
+                            f"{ident}: {grew} new wrong-secret attempts since the last poll"
+                        )
+                continue
+            # No usable count:  fall through to the generic alarm so the fault signal never disappears.
+        if p == "no_bearer" and r.get("kind") == "hosted":
+            # A hosted seat connects through its OAuth client; a bearer is optional for it, so none is not a fault.
+            continue
         if p and p != "ok":
             miss = (
                 (r.get("missingRecords") or {}).get("names")
@@ -161,7 +182,6 @@ def desired_alarms(doc, last_counts):
             )
             extra = f" (missing {', '.join(miss)})" if miss else ""
             alarms[f"problem:{r.get('identity')}:{p}"] = f"{r.get('identity')}: {p}{extra}"
-    counts = {}
     n401 = nref = 0
     for d in doc.get("diagnostics") or []:
         c = d.get("count")
@@ -289,7 +309,7 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
     if doc is not None:
         found, counts = desired_alarms(doc, state.get("diagCounts"))
         alarms.update(found)
-        if doc.get("diagnostics") is not None:
+        if doc.get("diagnostics") is not None or counts:
             # Merge, never overwrite:  a row that drops out of the API's tail for one poll keeps its baseline,
             # so its lifetime count is not read as growth when it returns.
             merged = dict(state.get("diagCounts") or {})

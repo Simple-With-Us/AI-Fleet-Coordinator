@@ -38,6 +38,40 @@ DIAG0 = [
 ]
 
 
+def _row(ident, kind, problem, count=None):
+    r = {"identity": ident, "kind": kind, "problem": problem, "status": {}}
+    if count is not None:
+        r["mismatches"] = {"count": count}
+    return r
+
+
+class OAuthSeatTests(unittest.TestCase):
+    def test_a_hosted_seat_without_a_bearer_is_not_an_alarm_but_a_bearer_only_one_is(self):
+        doc = {
+            "rows": [
+                _row("GROK-WEB", "hosted", "no_bearer"),
+                _row("BF-FIXER", "bearer_only", "no_bearer"),
+            ],
+            "diagnostics": [],
+        }
+        alarms, _ = fbs.desired_alarms(doc, None)
+        self.assertEqual(sorted(alarms), ["problem:BF-FIXER:no_bearer"])
+
+    def test_wrong_secret_alarms_on_growth_only(self):
+        doc = {"rows": [_row("ECHO", "hosted", "wrong_secret_attempts", 4)], "diagnostics": []}
+        alarms, counts = fbs.desired_alarms(doc, None)
+        self.assertEqual(alarms, {})
+        self.assertEqual(counts, {"mismatch|ECHO": 4})
+        alarms, _ = fbs.desired_alarms(doc, {"mismatch|ECHO": 4})
+        self.assertEqual(alarms, {})
+        alarms, _ = fbs.desired_alarms(doc, {})
+        self.assertEqual(alarms, {})
+        doc["rows"][0]["mismatches"]["count"] = 6
+        alarms, _ = fbs.desired_alarms(doc, {"mismatch|ECHO": 4})
+        self.assertEqual(list(alarms), ["delta:wrong_secret:ECHO"])
+        self.assertIn("2 new", alarms["delta:wrong_secret:ECHO"])
+
+
 class T(unittest.TestCase):
     def setUp(self):
         d = tempfile.mkdtemp()
@@ -231,6 +265,39 @@ class ReviewRound2Tests(unittest.TestCase):
         self.assertIsNone(
             handler.redirect_request(None, None, 302, "Found", {}, "https://other.invalid/")
         )
+
+
+class ReviewRound3Tests(ReviewRound2Tests):
+    def test_an_unusable_wrong_secret_count_still_alarms(self):
+        for bad in (None, "x", -1, True):
+            r = _row("ECHO", "hosted", "wrong_secret_attempts")
+            if bad is not None:
+                r["mismatches"] = {"count": bad}
+            alarms, _ = fbs.desired_alarms({"rows": [r], "diagnostics": []}, {})
+            self.assertEqual(list(alarms), ["problem:ECHO:wrong_secret_attempts"], bad)
+
+    def test_mismatch_baseline_is_kept_when_diagnostics_is_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self._args(d)
+            docs = iter(
+                [
+                    {"rows": [_row("ECHO", "hosted", "wrong_secret_attempts", 4)]},
+                    {"rows": [_row("ECHO", "hosted", "wrong_secret_attempts", 4)]},
+                    {"rows": [_row("ECHO", "hosted", "wrong_secret_attempts", 6)]},
+                ]
+            )
+            outs = [
+                fbs.run(
+                    a,
+                    now=t,
+                    token_fn=lambda: "a.b.c",
+                    fetch_fn=lambda u, tk: next(docs),
+                    notify_fn=lambda *x: None,
+                )
+                for t in (1000, 1300, 1600)
+            ]
+            self.assertEqual(outs[1]["alarms"], [])
+            self.assertEqual(len(outs[2]["alarms"]), 1)
 
 
 class ServiceTokenFileTests(unittest.TestCase):
