@@ -2,9 +2,10 @@
 
 This standalone file is the durable complete review record for the registry
 admissions in git-relay/git_relay/patch_secretscan.py and its byte-identical copy
-scripts/simple_tools/secretscan.py (the `_REVIEWED_GENERIC_FIXTURES` entries for
+scripts/simple_tools/secretscan.py (the match-pinned `_REVIEWED_GENERIC_MATCHES` entries for
 two paths in `Simple-With-Us/Usage-Monitor`). It is linked from the admission PR.
-The entries waive generic assignment findings only. Dedicated provider shapes,
+Each entry pins the one reviewed generic assignment span (decoded character offsets: label, match start and end, value start and end) next to the file digest, so any additional generic match in these files still fails the scan. File 1 span: assigned secret 8103, 8130, 8111, 8130. File 2 span: assigned secret 8630, 8656, 8640, 8656. Values are not stored.
+The entries waive only that pinned generic assignment finding. Dedicated provider shapes,
 bearer headers, Zulip-shaped keys and every loaded credential stay absolute, and a
 byte change to either file is a new review.
 

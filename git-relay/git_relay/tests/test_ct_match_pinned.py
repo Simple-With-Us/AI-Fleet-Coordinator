@@ -110,7 +110,7 @@ class MatchPinnedReview(unittest.TestCase):
     def test_actual_registry_and_preserved_admissions(self):
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 5)
         self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 4)
-        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 5)
+        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 7)
         server_key = (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "git-relay/git_relay/server.py",
