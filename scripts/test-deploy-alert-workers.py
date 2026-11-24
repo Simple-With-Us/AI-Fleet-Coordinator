@@ -1967,7 +1967,6 @@ jobs:
             with self.assertRaises(RuntimeError):
                 m.reviewed("a" * 40)
 
-
     def test_receipt_after_a_pre_merge_request_still_qualifies(self):
         head = "b" * 40
         receipt_run = {
