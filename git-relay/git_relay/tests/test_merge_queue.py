@@ -130,7 +130,7 @@ class Queue(unittest.TestCase):
             self._typed(),
             self._readback(None),
         )
-        with self.assertRaises(RelayGitHubError):
+        with self.assertRaises(Refused):
             self.handle(c, "wf_merge_queue_dequeue").run(
                 "wf_merge_queue_dequeue", {"repo": REPO, "number": 1, "expected_sha": SHA}
             )

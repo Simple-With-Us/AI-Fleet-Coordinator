@@ -4551,9 +4551,13 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
         try:
             result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
         except RelayGitHubError as exc:
-            if self._queue_readback_after_definite_error(repo, number, exc) is not None:
-                raise Refused("GitHub declined the dequeue and the PR is still queued") from None
-            raise
+            entry = self._queue_readback_after_definite_error(repo, number, exc)
+            # Either way GitHub declined and the read-back settles it: the PR is still queued, or it was not queued.
+            raise Refused(
+                "GitHub declined the dequeue and the PR is still queued"
+                if entry is not None
+                else "GitHub declined the dequeue and the PR is not queued"
+            ) from None
         return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
 
     def _pr_read(self, repo, number):
