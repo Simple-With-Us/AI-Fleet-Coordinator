@@ -604,12 +604,12 @@ class SeatToolsOwnerRulingTests(unittest.TestCase):
             self.assertNotIn("seat-tool:WISE:recall:unavailable", [x["key"] for x in out["alarms"]])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ProductionOpenFindingsTests(unittest.TestCase):
     def test_no_open_finding_is_listed_in_production(self):
         fresh = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fresh)
         self.assertEqual(fresh.OPEN_FINDINGS, frozenset())
+
+
+if __name__ == "__main__":
+    unittest.main()
