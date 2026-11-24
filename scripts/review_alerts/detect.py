@@ -25,6 +25,12 @@ KODY_APP_ID = 413034
 KODY_CHECK_NAME = "Kody Code Review"
 
 REVIEW_STATES = ("APPROVED", "CHANGES_REQUESTED", "COMMENTED")
+#: Completed-check conclusions reported as check_failure events.  The event
+#: states the factual outcome (check name and conclusion on the current
+#: head);  it does not assert the check is required or merge-blocking, which
+#: the check-runs read cannot establish.  Success, neutral, skipped, stale
+#: and cancelled conclusions are not reported.
+CHECK_FAILURES = ("failure", "timed_out", "action_required", "startup_failure")
 
 
 def _login(item: dict) -> str:
@@ -188,6 +194,88 @@ def derive(
                     "" if len(new_comments) == 1 else "s",
                     ", ".join("%s: %d" % kv for kv in sorted(actors.items())),
                 ),
+            }
+        )
+
+    # 4. A reviewer's latest decisive review is CHANGES_REQUESTED.  Decisive
+    #    states are APPROVED, CHANGES_REQUESTED and DISMISSED;  COMMENTED and
+    #    PENDING never supersede.  A request already superseded by the same
+    #    reviewer's approval or dismissal is history and emits nothing.  The
+    #    review bot is excluded:  its reviews already alert above.  Repeats
+    #    are suppressed by the event store, not the numeric watermark:  review
+    #    ids are not assumed to arrive in visibility order.  The event reports
+    #    the factual review status;  it asserts no branch-protection rule.
+    latest_decisive: dict[str, dict] = {}
+    for review in reviews:
+        rid = review.get("id")
+        if not isinstance(rid, int):
+            continue
+        actor = _login(review)
+        if not actor or str(review.get("state") or "") not in (
+            "APPROVED",
+            "CHANGES_REQUESTED",
+            "DISMISSED",
+        ):
+            continue
+        current = latest_decisive.get(actor)
+        if current is None or rid > int(current.get("id") or 0):
+            latest_decisive[actor] = review
+    for actor, review in latest_decisive.items():
+        rid = review["id"]
+        if actor == review_actor or str(review.get("state")) != "CHANGES_REQUESTED":
+            continue
+        if rid <= int(cursor.get("review_seed") or 0):
+            continue
+        commit = str(review.get("commit_id") or "")
+        events.append(
+            {
+                "repo": repo,
+                "number": number,
+                "kind": "changes_requested",
+                "event_id": str(rid),
+                "actor": actor,
+                "head": commit,
+                "current_head": current_head,
+                "head_matches": bool(commit) and commit == current_head,
+                "summary": "changes requested by %s" % actor,
+            }
+        )
+
+    # 5. A completed check run on the CURRENT head with a failure-class
+    #    conclusion, other than the review bot's own check (already alerted
+    #    above).  Repeats are suppressed by the event store, not the numeric
+    #    watermark:  run ids are not completion-ordered, so a higher-id
+    #    terminal run must not hide a lower-id run still in progress.  The
+    #    summary names the check and conclusion for the wake topic;  the
+    #    Operator message body carries only the fixed generic status.  Whether
+    #    the check is required is not claimed:  the read does not say.
+    for run in check_runs:
+        rid = run.get("id")
+        if not isinstance(rid, int) or rid <= int(cursor.get("check_seed") or 0):
+            continue
+        if _kody_check(run):
+            continue
+        if str(run.get("status") or "") != "completed":
+            continue
+        head = str(run.get("head_sha") or "")
+        if not head or head != current_head:
+            continue
+        conclusion = str(run.get("conclusion") or "")
+        if conclusion not in CHECK_FAILURES:
+            continue
+        app = run.get("app")
+        events.append(
+            {
+                "repo": repo,
+                "number": number,
+                "kind": "check_failure",
+                "event_id": str(rid),
+                "actor": str(app.get("slug") or "github") if isinstance(app, dict) else "github",
+                "head": head,
+                "current_head": current_head,
+                "head_matches": True,
+                "summary": "check failed: %s (%s)"
+                % (str(run.get("name") or "unnamed"), conclusion),
             }
         )
     return events
