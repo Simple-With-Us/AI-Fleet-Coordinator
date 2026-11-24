@@ -181,7 +181,7 @@ None of these is in the repo, so the PR cannot change them.  Edit each by hand,
      BotFleet bot on the opencode engine keeps its `BF-<ROLE>` seat.  Your bot is `opencode-bot@`, your tag
      `[OPENCODE]`, your branches `opencode/<slug>`, your lanes `~/apps/lanes/<Repo>/opencode-<slug>`.";
    - the seat-detection shell block's last branch, `else SEAT="${AGENT_SEAT:?set AGENT_SEAT to your platform default
-     from FLEET-PROTOCOL Identity Rules}"; fi`, becomes `else SEAT="${AGENT_SEAT:-OPENCODE}"; fi`, as in
+     from FLEET-PROTOCOL Seats and Identity}"; fi`, becomes `else SEAT="${AGENT_SEAT:-OPENCODE}"; fi`, as in
      `~/.claude/CLAUDE.md`.  There is no `[ -t 0 ]` gate on purpose: an agent's shell tool normally has no TTY on
      stdin, so the gate would send every ordinary session to the error branch.  The headless and Conductor cases are
      covered by the preface text above and by step 0 of the prompt.

@@ -1,6 +1,6 @@
 """Seat precedence and the bot check, shared by every simple-chat entry point.
 
-FLEET-PROTOCOL § Identity Rules (owner 2026-10-09) says a session's seat is the first of:
+FLEET-PROTOCOL § Seats and Identity (owner 2026-10-09) says a session's seat is the first of:
 
     1. the owner names it                        (in a launched session, through the launcher)
     2. a trusted launcher assigns it              AGENT_LAUNCH_SEAT, set with AGENT_LAUNCHER
@@ -48,7 +48,7 @@ ENV_LAUNCH_SEAT = "AGENT_LAUNCH_SEAT"
 ENV_ATTACH = "SIMPLE_TOOLS_ATTACH"
 ENV_PARTITION = "SIMPLE_TOOLS_PARTITION"
 ENV_INSTANCE = "SIMPLE_TOOLS_INSTANCE"
-# The launchers the fleet runs (FLEET-PROTOCOL § Identity Rules › Launcher Contract).  Any non-empty
+# The launchers the fleet runs (FLEET-PROTOCOL § Seats and Identity).  Any non-empty
 # AGENT_LAUNCHER counts as a launcher; these are the documented values.
 LAUNCHERS = ("botfleet", "grok-bot", "simple-tools-wake")
 WAKE_LAUNCHER = "simple-tools-wake"
