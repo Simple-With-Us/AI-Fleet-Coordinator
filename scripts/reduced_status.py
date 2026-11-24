@@ -48,7 +48,7 @@ The document:
                         "fallback" | "other",
                 "paused": bool | null, "wakes_24h": int | null, "held_back": int | null,
                 "wake_outcomes_24h": {"delivered": int | null, "undelivered": int | null,
-                                      "unknown": int | null, "awaiting": int | null} | null,
+                                      "unknown": int | null, "awaiting": int | null},
                 "jobs": int | null, "last_event": ISO | null,
                 "quota": {"known": bool, "exhausted": bool | null, "remaining": int | null,
                           "reset_at": ISO | null, "used": null, "cap_day": null,
