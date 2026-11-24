@@ -1,6 +1,6 @@
 'use strict';
 // Source-only executable driver candidate. NOT invoked against a real host in tests.
-const fs=require('fs'),path=require('path'),crypto=require('crypto'),readline=require('readline');
+const fs=require('fs'),path=require('path'),crypto=require('crypto'),readline=require('readline'),childProcess=require('child_process');
 const {connect}=require('./native_rpc.cjs'),{run}=require('./native_flow.cjs'),codecModule=require('./native_codec.cjs');
 const ROOT=codecModule.ROOT,HASH='ab42d8c5fb2085a1539876a5c40da54e67e2abd71a222ed5bd31b622898984c0';
 function privateRead(file,max,secret=false){
@@ -20,8 +20,10 @@ function hostSnapshot(home){
  const paths=new Set();
  for(const leaf of [dir,ROOT+'/node',ROOT+'/server-core.js']){let item=leaf;while(true){paths.add(item);const parent=path.dirname(item);if(parent===item)break;item=parent}}
  for(const item of paths){
-  const st=fs.lstatSync(item);if(st.isSymbolicLink()||(st.uid!==process.getuid()&&st.uid!==0)||(st.mode&0o022))throw Error('host-path-custody');
+  const st=fs.lstatSync(item);if(st.isSymbolicLink()||(st.uid!==process.getuid()&&st.uid!==0)||(st.mode&0o002))throw Error('host-path-custody');
  }
+ const custody=JSON.parse(childProcess.execFileSync('/usr/bin/python3',['-I',path.join(__dirname,'native_path_custody.py')],{input:JSON.stringify({paths:[...paths],uid:process.getuid()}),encoding:'utf8',timeout:10000,maxBuffer:65536}));
+ if(custody.ok!==true)throw Error('host-path-custody');
  const core=fs.readFileSync(ROOT+'/server-core.js');
  if(crypto.createHash('sha256').update(core).digest('hex')!==HASH)throw Error('host-source-mismatch');
  // Pinning exact source pins standalone-server absent browser executor wiring.

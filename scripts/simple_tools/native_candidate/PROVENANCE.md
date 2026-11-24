@@ -25,6 +25,6 @@ Portable extraction entry points:
     node extract_scope.cjs SOURCE OUTPUT_DIRECTORY
     python extract_assembler.py
 
-schema-provenance.json records243 named declaration entries with source offsets and hashes. scope-provenance.json records exact connection-scope/helper/socket function offsets, hashes and generated hashes. Source offsets are JavaScript UTF16 code units, not UTF8 bytes. Extractor imports are limited to bundled Zod for generated schemas. Acorn is used to locate declarations, not execute the full application bundle. The declaration closure is a static extraction, not a vendor-supported schema export.
+The locally generated schema-provenance.json records243 named declaration entries with source offsets and hashes. scope-provenance.json records exact connection-scope/helper/socket function offsets, hashes and generated hashes. Source offsets are JavaScript UTF16 code units, not UTF8 bytes. Extractor imports are limited to bundled Zod for generated schemas. Acorn is used to locate declarations, not execute the full application bundle. The declaration closure is a static extraction, not a vendor-supported schema export.
 
 extract_assembler.py rebuilds native_assembler.cjs from bundled captured source JSON, preserving exact assembler and helper implementations with the stated import removal. Earlier capture JSON records source offsets. Its exact assembler containment was independently checked in review1103.

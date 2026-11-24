@@ -1,6 +1,6 @@
 {
-  "PROVENANCE.md": "e55c777ef0707cce9c78dd254f210a140c7c5cf6b92bcd01dcf8f1c873742faa",
-  "README.md": "514fd94929ee14a7b7bb77bf22e747547e98703023cda8cbcfd489e2a3163d49",
+  "PROVENANCE.md": "1ecef69d4169d3a5f2cc3432afbd4f778c4a9da9f800bbab5bd115ff2153bb83",
+  "README.md": "d1e7de3358bad56ed72ae39eb5bdef661cd5c31e0d770808d37e7f10e4019f87",
   "REVISION1113.md": "26b569f5f8affa2231214dd88b9b5802b88662eb47a5a7568cf905dfab5cba17",
   "__init__.py": "e6d0006032d38b66029fde33e43bbc9354961b63b8584356dd8af0ef72b0dcae",
   "base-zcode_wake.py": "6b21e7847a31791dd120b6fab582eaffc4c2afd24567e512faf5f8fade23c439",
@@ -18,7 +18,7 @@
   "native_codec.cjs": "72d254d15e1a1b2616785d4f84967ce17fb7c3205dff5400d25b8063a7e5b3eb",
   "native_consumer.py": "f38808a03bab70ed2a0b8a15c953b3c2609a8ccfcd9e14389b6370d219d00018",
   "native_custody.py": "e361f5b457e023b51b1a9e60d4d785124cbb52b004dcbc560e7184fe6ccb9aad",
-  "native_driver.cjs": "e5697d1a95c150fd40b5ed305f32b798394ddd35df4403d0c580c14c99c68ff2",
+  "native_driver.cjs": "6b3161382db96331e502eb3fdacf2221a0367734006e1caf94fe05d798ba514d",
   "native_evidence.py": "d624d42d892e2d154cbaafe579a3764de25189fe91d2099a296e32d241484732",
   "native_flow.cjs": "99981364c0a1874e79863c76fe20fb559d430f386e5350eb49f1677bdf84ab9d",
   "native_integration.py": "eb6a46ec2543156c6331414110f1a45dc8574870eaae6154465b14787ed255dd",
@@ -27,7 +27,7 @@
   "native_schemas.cjs": "3f34a16b5bcec382698ef353469115f5fbb412ce6536605678215607512ebaa5",
   "native_store.py": "22196ec372622ed0bab0e1f5c6efb042673d208f377b6d8739f7c309d68a4144",
   "offline_source.json": "7c519c635f3a0b483740a0733925015943e66fbf9f054ad202da7bc88ec94e31",
-  "prepare_dependencies.py": "78ed6b98ee546a07496b2a814787655d503adf1e4f9918f54862970ce17f653c",
+  "prepare_dependencies.py": "8942a63c6bb9e11f834fa5a494527ab6f848ac4a6959675d3ee1a4509a4761f5",
   "schema-full1056.json": "4d46c1a5f03db8470edfb773b951c80f1d038810adbc470bd2a434bf8cceb6c3",
   "scope-callers1104.json": "26204889160a4f61ca33272425f0f4f58dcca4ab8b6d02699c21643ab8004c64",
   "scope-provenance.json": "323caa2b99556da0857aaf0cb34ae9f9024011ab3241bbfd226555ab33141ab0",
@@ -38,7 +38,7 @@
   "test_custody_store.py": "9fd4b20f8c437167fbc941f1f6a55f1742546dc3ae302e9dd53866234289aa2b",
   "test_failures.py": "cbcad59d5ff41cbf493cc4bc573d309c570a5e1eee800ef4683994fba9fca11a",
   "test_flow.cjs": "99134dc34077640ebb66f26a9e363a65c077fd9fa3e6d7f28567062c2015f05e",
-  "test_host.cjs": "6b9c721c08366ca06876449a157acdfc6d9f6e0ce1490feea6ecad0fb8ddbd0f",
+  "test_host.cjs": "cff58846b02bbb664863099c26a2baff01aa81bb1bc2223fb95206c605643d14",
   "test_integration.py": "d70c1b7a276919fea3a490fd901fd477bdcd459dfdbc0950f25c24d0b569b874",
   "test_native.py": "f36c89b0d5a30b0eff577b37035596bc3d5acb89c02afad09a8fc493adedc29a",
   "test_receipts.py": "94dd60f923d6c9b25fdb12b1dd01bdb1af87fdd4eeecce6278f3618e10d8092e",
@@ -53,5 +53,11 @@
   "wire-dependencies1046.json": "04004cadcea3c2f4d2f919c289ac16ca43425ecb2146f80799dc781d11b1bb39",
   "wire-helpers1046.json": "a0d9e2dfeaa392e41d27cf1403fb4ba123fe72d043b6ddb8352450346d269b5b",
   "zcode_native.py": "3287e4b580cc800d952729050aaf57121794eddb3d17ee43b251715943ad6693",
-  "prepare_candidate.cjs": "6432fa2364664be0a4858758324066050ceea560fb5ae1460f324b568b3c9484"
+  "prepare_candidate.cjs": "6432fa2364664be0a4858758324066050ceea560fb5ae1460f324b568b3c9484",
+  "native_path_custody.py": "96af2d8af024b1d2859c32727d902bc7daccaf9a173a0d0f0b9b07bb8e8d48a9",
+  "test_path_custody.py": "01961a3801fed962068f0a703887e235a1ce5b8e9697260bba8fdf22ca4b1b68",
+  "test_packaging.cjs": "5be57048b914d5732075660b726f9b16bc38b76a1a3038086ed2a674743c101c",
+  "REVISION1122.md": "3eaae36da2fe265da095181086b0d7a8a98a0a0e54d9a8eedcb9d5de03ea57e4",
+  "QUALIFICATION-PLAN.md": "8e271a5c17b4ec6dcefb6f3fa9bf9b7ebd3304bf3dbdbbf2e5180af03be99762",
+  "REVISION1126.md": "0f4aec4819abe01220756dd3001d1309fa498e7ddc1ae381b9121c741036c370"
 }
