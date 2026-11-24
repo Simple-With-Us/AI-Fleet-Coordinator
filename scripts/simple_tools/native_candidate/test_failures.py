@@ -14,9 +14,8 @@ class Failures(unittest.TestCase):
   with patch('zcode_native.os.fsync',side_effect=OSError('fsync')):
    with self.assertRaises(OSError):self.send()
   self.assertEqual(self.calls,[])
-  # A surviving temp is not permission to replace and send.
-  with self.assertRaises(FileExistsError):self.send()
-  self.assertEqual(self.calls,[])
+  self.assertEqual(list(self.folder.glob("*.tmp")),[])
+  self.send();self.assertEqual(self.calls,["dispatch"])
  def test_directory_fsync_failure_query_after_restart(self):
   actual=os.fsync
   def fail_directory(fd):
@@ -47,4 +46,26 @@ class Failures(unittest.TestCase):
    d.deliver(B,'new','fixture',fresh=True)
   p=multiprocessing.get_context('fork').Process(target=child);p.start();p.join(5);self.assertEqual(p.exitcode,23)
   self.send();self.assertEqual(self.calls,['query'])
+ def test_orphan_temp_never_blocks_existing_intent_query(self):
+  self.send();self.assertEqual(self.calls,['dispatch'])
+  orphan=self.folder/(digest({'wake_key':'new'})+'.orphan.tmp');orphan.write_text('incomplete')
+  self.send();self.assertEqual(self.calls,['dispatch','query']);self.assertTrue(orphan.exists())
+ def test_replace_failure_cleaned_then_safe_first_dispatch(self):
+  with patch('zcode_native.os.replace',side_effect=OSError('replace')):
+   with self.assertRaises(OSError):self.send()
+  self.assertEqual(list(self.folder.glob('*.tmp')),[])
+  self.send();self.assertEqual(self.calls,['dispatch'])
+ def test_temp_symlink_not_touched(self):
+  target=self.folder/'keep';target.write_text('keep')
+  orphan=self.folder/(digest({'wake_key':'new'})+'.tmp');orphan.symlink_to(target)
+  self.send();self.assertEqual(self.calls,['dispatch']);self.assertTrue(orphan.is_symlink());self.assertEqual(target.read_text(),'keep')
+ def test_crash_before_replace_orphan_does_not_authorize_replay(self):
+  import multiprocessing
+  def child():
+   d=NativeDelivery(self.folder,lambda _:os._exit(99),lambda _:True)
+   with patch('zcode_native.os.replace',side_effect=lambda *a,**kw:os._exit(24)):
+    d.deliver(B,'new','fixture',fresh=True)
+  p=multiprocessing.get_context('fork').Process(target=child);p.start();p.join(5);self.assertEqual(p.exitcode,24)
+  self.assertTrue(list(self.folder.glob('*.tmp')))
+  self.send();self.send();self.assertEqual(self.calls,['dispatch','query'])
 if __name__=='__main__':unittest.main()

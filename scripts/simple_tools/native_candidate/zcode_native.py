@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import stat
+import uuid
 from pathlib import Path
 from typing import Callable, Mapping, Any
 
@@ -42,12 +43,20 @@ def _load(path: Path, dirfd: int) -> dict | None:
 def _save(path: Path, value: dict, dirfd: int) -> None:
     # Atomic durable state transition. A failed/uncertain transition is never permission
     # to send. The dispatching record is fsynced before the transport can run.
-    temp = path.with_suffix(".tmp")
-    fd = os.open(temp.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dirfd)
-    with os.fdopen(fd, "w") as f:
-        f.write(canonical(value)); f.flush(); os.fsync(f.fileno())
-    os.replace(temp.name, path.name, src_dir_fd=dirfd, dst_dir_fd=dirfd)
-    os.fsync(dirfd)
+    # Unique names leave crash debris harmless. Never delete a preexisting sibling,
+    # and never infer whether dispatch happened from temporary-file presence.
+    temp = path.name + "." + uuid.uuid4().hex + ".tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dirfd)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(canonical(value)); f.flush(); os.fsync(f.fileno())
+        os.replace(temp, path.name, src_dir_fd=dirfd, dst_dir_fd=dirfd)
+        os.fsync(dirfd)
+    finally:
+        try:
+            os.unlink(temp, dir_fd=dirfd)
+        except FileNotFoundError:
+            pass
 
 def outcome(record: Mapping[str, Any], reply: Mapping[str, Any] | None) -> dict:
     """ACK is admission only. No ACK or failed ACK proves a safe retry."""
