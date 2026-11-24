@@ -261,9 +261,7 @@ def _check_runs_for(head_sha):
             if not isinstance(body, dict):
                 raise RuntimeError("check-runs evidence is not an object")
             batch = body.get("check_runs")
-            if not isinstance(batch, list) or not all(
-                isinstance(run, dict) for run in batch
-            ):
+            if not isinstance(batch, list) or not all(isinstance(run, dict) for run in batch):
                 raise RuntimeError("check-runs evidence is not shaped entries")
             runs.extend(batch)
             if len(batch) < 100:
@@ -430,7 +428,11 @@ def reviewed(sha):
             # reviews submitted at or after it qualify, matching the
             # freshness rule in the check-run receipt branch.
             requested = _newest_review_request(number)
-            if requested is not None and merged_at_epoch is not None and requested > merged_at_epoch:
+            if (
+                requested is not None
+                and merged_at_epoch is not None
+                and requested > merged_at_epoch
+            ):
                 requested = None
             fresh = [
                 r
