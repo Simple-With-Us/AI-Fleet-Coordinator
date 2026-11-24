@@ -27,9 +27,7 @@ def status_holds_foreign_group(data, gid, uid):
         or len(fields["Gid"]) != 4
     ):
         raise ValueError("custody-status-incomplete")
-    return gid in fields["Gid"] + fields["Groups"] and any(
-        v not in (0, uid) for v in fields["Uid"]
-    )
+    return gid in fields["Gid"] + fields["Groups"] and any(v not in (0, uid) for v in fields["Uid"])
 
 
 def local_nss_complete(text):
@@ -115,14 +113,11 @@ def validate_paths(
         # Reject all extended/default ACL entries, including read-only additions.
         text = acl(path)
         entries = [
-            line.strip()
-            for line in text.splitlines()
-            if line.strip() and not line.startswith("#")
+            line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")
         ]
         if (
             len(entries) != 3
-            or sorted(line.split("::", 1)[0] for line in entries)
-            != ["group", "other", "user"]
+            or sorted(line.split("::", 1)[0] for line in entries) != ["group", "other", "user"]
             or any(
                 "::" not in line
                 or len(line.split("::", 1)[1]) != 3
@@ -138,16 +133,10 @@ def validate_paths(
                 users = accounts()
                 byname = {u.pw_name: u for u in users}
                 g = group(st.st_gid)
-                if any(
-                    name not in byname or byname[name].pw_uid != uid
-                    for name in g.gr_mem
-                ):
+                if any(name not in byname or byname[name].pw_uid != uid for name in g.gr_mem):
                     raise ValueError("custody-group-supplementary")
                 for user in users:
-                    if (
-                        st.st_gid in groups(user.pw_name, user.pw_gid)
-                        and user.pw_uid != uid
-                    ):
+                    if st.st_gid in groups(user.pw_name, user.pw_gid) and user.pw_uid != uid:
                         raise ValueError("custody-group-member")
                 if holders(st.st_gid):
                     raise ValueError("custody-group-process")

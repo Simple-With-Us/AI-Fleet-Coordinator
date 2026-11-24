@@ -106,22 +106,16 @@ class Builder:
 #: Every platform, keyed by seat:  the only platform table, on both hosts.
 BUILDERS: dict[str, Builder] = {
     "AG": Builder("antigravity", "simple_tools.antigravity_wake"),
-    "CLAUDE": Builder(
-        "claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude"
-    ),
+    "CLAUDE": Builder("claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude"),
     "CODEX": Builder("codex", "simple_tools.codex_wake"),
     "MC": Builder("muse", "simple_tools.muse_wake"),
-    "MM": Builder(
-        "minimax", "simple_tools.minimax_wake", session_re=r"^mvs_[0-9a-f]{32}$"
-    ),
+    "MM": Builder("minimax", "simple_tools.minimax_wake", session_re=r"^mvs_[0-9a-f]{32}$"),
     # An OpenCode session id:  "ses_" and 26 letters and digits, the shape the runtime's own
     # store holds.
     "OPENCODE": Builder(
         "opencode", "simple_tools.opencode_wake", session_re=r"^ses_[0-9A-Za-z]{26}$"
     ),
-    "ZC": Builder(
-        "zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"
-    ),
+    "ZC": Builder("zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"),
     # A live Grok TUI session id is a UUID, so the pattern is UUID_SESSION.
     "GROK": Builder("grok-leader", "simple_tools.grok_wake", session_re=UUID_SESSION),
 }
@@ -229,9 +223,7 @@ def default_state(env: Mapping[str, str], seat: str) -> Path:
 
 def _defaults(module: ModuleType) -> Mapping[str, Any]:
     defaults = getattr(module, "DEFAULTS", WR.ROUTER_DEFAULTS)
-    if not isinstance(defaults, Mapping) or not set(WR.ROUTER_DEFAULTS) <= set(
-        defaults
-    ):
+    if not isinstance(defaults, Mapping) or not set(WR.ROUTER_DEFAULTS) <= set(defaults):
         raise SeatDown("bad-defaults")
     return defaults
 
@@ -296,9 +288,7 @@ def build_seat(
 ) -> tuple[WR.Router, WS.WakeSettings]:
     """One seat's router and settings, or SeatDown with why."""
     seat, builder = ready.seat, ready.builder
-    settings = WS.WakeSettings(
-        seat, ready.defaults, local_path, file_defaults=file_defaults
-    )
+    settings = WS.WakeSettings(seat, ready.defaults, local_path, file_defaults=file_defaults)
     try:
         settings.load()
     except SystemExit as exc:  # the local file, named on stderr

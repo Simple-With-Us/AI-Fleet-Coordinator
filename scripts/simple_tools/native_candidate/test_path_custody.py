@@ -106,20 +106,14 @@ class ProcessGroups(unittest.TestCase):
         for i in range(4):
             gids = ["1002"] * 4
             gids[i] = "1001"
-            self.assertTrue(
-                status_holds_foreign_group(self.status(" ".join(gids)), 1001, 1001)
-            )
+            self.assertTrue(status_holds_foreign_group(self.status(" ".join(gids)), 1001, 1001))
 
     def test_supplementary_only(self):
-        self.assertTrue(
-            status_holds_foreign_group(self.status("1002 " * 4, "1001"), 1001, 1001)
-        )
+        self.assertTrue(status_holds_foreign_group(self.status("1002 " * 4, "1001"), 1001, 1001))
 
     def test_owner_allowed(self):
         self.assertFalse(
-            status_holds_foreign_group(
-                self.status("1001 " * 4, "", "1001 " * 4), 1001, 1001
-            )
+            status_holds_foreign_group(self.status("1001 " * 4, "", "1001 " * 4), 1001, 1001)
         )
 
     def test_malformed_missing_duplicate(self):
@@ -131,9 +125,7 @@ class ProcessGroups(unittest.TestCase):
             self.assertRaises(ValueError, status_holds_foreign_group, data, 1001, 1001)
 
     def test_qualified_nss(self):
-        self.assertTrue(
-            local_nss_complete("passwd: files systemd\ngroup: files systemd")
-        )
+        self.assertTrue(local_nss_complete("passwd: files systemd\ngroup: files systemd"))
 
     def test_unqualified_nss(self):
         for text in [
