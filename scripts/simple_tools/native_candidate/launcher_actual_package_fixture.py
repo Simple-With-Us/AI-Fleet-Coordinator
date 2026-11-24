@@ -1,4 +1,7 @@
-import sys, json, pathlib, importlib, dataclasses
+import importlib
+import json
+import pathlib
+import sys
 from unittest.mock import patch
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -38,7 +41,7 @@ def service(args):
     )
     for seat, b in before.items():
         if seat != "ZC":
-            assert b == before[seat]
+            assert b == b
     seen.append(args)
     return 37
 
