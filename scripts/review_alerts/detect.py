@@ -57,20 +57,23 @@ def merge_conflict(repo: str, number: int, pr: dict) -> list[dict]:
     if not isinstance(head_row, dict) or not isinstance(base_row, dict):
         return []
     head, base = head_row.get("sha"), base_row.get("sha")
-    if any(not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)
-           for sha in (head, base)):
+    if any(
+        not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, base)
+    ):
         return []
-    return [{
-        "repo": repo,
-        "number": number,
-        "kind": "merge_conflict",
-        "event_id": head + ":" + base,
-        "actor": "github",
-        "head": head,
-        "current_head": head,
-        "head_matches": True,
-        "summary": "merge conflict: update the PR against its base branch",
-    }]
+    return [
+        {
+            "repo": repo,
+            "number": number,
+            "kind": "merge_conflict",
+            "event_id": head + ":" + base,
+            "actor": "github",
+            "head": head,
+            "current_head": head,
+            "head_matches": True,
+            "summary": "merge conflict: update the PR against its base branch",
+        }
+    ]
 
 
 def derive(

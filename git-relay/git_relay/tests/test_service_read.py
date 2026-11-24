@@ -191,7 +191,16 @@ class Reads(unittest.TestCase):
                 self.assertNotIn("html_url", result["body"])
 
     def test_pull_projects_each_documented_mergeable_state(self):
-        for state in ("behind", "blocked", "clean", "dirty", "draft", "has_hooks", "unknown", "unstable"):
+        for state in (
+            "behind",
+            "blocked",
+            "clean",
+            "dirty",
+            "draft",
+            "has_hooks",
+            "unknown",
+            "unstable",
+        ):
             with self.subTest(state=state):
                 self.client.value = dict(
                     number=7,

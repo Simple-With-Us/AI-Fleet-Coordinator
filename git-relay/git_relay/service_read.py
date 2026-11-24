@@ -149,8 +149,7 @@ def dispatch(relay, seat, args):
             _bad()
         mergeable_state = value.get("mergeable_state")
         if mergeable_state is not None and (
-            not isinstance(mergeable_state, str)
-            or mergeable_state not in MERGEABLE_STATES
+            not isinstance(mergeable_state, str) or mergeable_state not in MERGEABLE_STATES
         ):
             _bad()
         result = {
