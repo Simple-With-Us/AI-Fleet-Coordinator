@@ -903,7 +903,7 @@ def _failure_signature(output: object, *, include_cli_errors: bool = False) -> s
         # the historical auth-signature scan above unchanged.
         if len(output) > OUTPUT_SCAN_CAP or len(text) > OUTPUT_SCAN_CAP:
             boundary = re.search(r"[\r\n]", window)
-            window = window[boundary.end():] if boundary else ""
+            window = window[boundary.end() :] if boundary else ""
         for pattern, code in CLI_EXIT_CATEGORIES:
             if re.search(pattern, window, re.MULTILINE):
                 return code
