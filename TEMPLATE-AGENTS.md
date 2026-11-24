@@ -649,7 +649,7 @@ https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).
   owner's (owner 2026-11-11).
 - **Same bar at every tier:** full gates, receipts, and Linear discipline apply no matter
   which model did the work.
-- Canonical reference: `~/apps/FLEET-PROTOCOL.md` — "Delegation & model economics".
+- Canonical reference: this section; the Fleet-OPS handbook rewrite moved the old `FLEET-PROTOCOL.md` policy prose into the repository rules files.
 
 ## Cross-file consistency traps (cheap to check, expensive to miss)
 
