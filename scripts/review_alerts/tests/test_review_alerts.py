@@ -174,9 +174,7 @@ def kinds(found):
 
 class DetectCiTests(unittest.TestCase):
     def test_a_failed_check_on_the_current_head_alerts_and_names_itself(self):
-        found = detect.derive(
-            REPO, 7, HEAD, [], [], [ci_run(55, "Muster macOS build")], dict(CURSOR0)
-        )
+        found = detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, "Muster macOS build")], dict(CURSOR0))
         self.assertEqual(kinds(found), ["ci_failed"])
         event = found[0]
         self.assertEqual(event["event_id"], "ci55")
@@ -194,9 +192,7 @@ class DetectCiTests(unittest.TestCase):
     def test_many_failures_name_three_and_count_the_rest(self):
         runs = [ci_run(n, "job %d" % n) for n in (51, 52, 53, 54, 55)]
         found = detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0))
-        self.assertEqual(
-            found[0]["summary"], "CI failed on the current head: job 51, job 52 (+3 more)"
-        )
+        self.assertEqual(found[0]["summary"], "CI failed on the current head: job 51, job 52 (+3 more)")
 
     def test_a_run_already_named_is_never_named_again(self):
         cursor = dict(CURSOR0, ci_ids=[55])
@@ -206,24 +202,14 @@ class DetectCiTests(unittest.TestCase):
         # A high-water mark would sit at 100 and lose 99 for good.
         first = detect.derive(REPO, 7, HEAD, [], [], [ci_run(100, "fast")], dict(CURSOR0))
         self.assertEqual(first[0]["event_id"], "ci100")
-        later = detect.derive(
-            REPO,
-            7,
-            HEAD,
-            [],
-            [],
-            [ci_run(99, "slow"), ci_run(100, "fast")],
-            dict(CURSOR0, ci_ids=[100]),
-        )
+        later = detect.derive(REPO, 7, HEAD, [], [], [ci_run(99, "slow"), ci_run(100, "fast")], dict(CURSOR0, ci_ids=[100]))
         self.assertEqual([e["event_id"] for e in later], ["ci99"])
 
     def test_a_rerun_that_fails_again_is_a_new_event_and_one_that_passes_is_none(self):
         cursor = dict(CURSOR0, ci_ids=[55])
         again = detect.derive(REPO, 7, HEAD, [], [], [ci_run(55), ci_run(56)], cursor)
         self.assertEqual([e["event_id"] for e in again], ["ci56"])
-        passed = detect.derive(
-            REPO, 7, HEAD, [], [], [ci_run(55), ci_run(56, conclusion="success")], cursor
-        )
+        passed = detect.derive(REPO, 7, HEAD, [], [], [ci_run(55), ci_run(56, conclusion="success")], cursor)
         self.assertEqual(passed, [])
 
     def test_only_a_completed_failure_is_a_failure(self):
@@ -237,15 +223,11 @@ class DetectCiTests(unittest.TestCase):
         ]
         self.assertEqual(detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0)), [])
         for conclusion in ("failure", "timed_out", "startup_failure"):
-            found = detect.derive(
-                REPO, 7, HEAD, [], [], [ci_run(61, conclusion=conclusion)], dict(CURSOR0)
-            )
+            found = detect.derive(REPO, 7, HEAD, [], [], [ci_run(61, conclusion=conclusion)], dict(CURSOR0))
             self.assertEqual(kinds(found), ["ci_failed"], conclusion)
 
     def test_a_failure_on_an_old_head_is_not_a_failure_of_the_code_proposed(self):
-        self.assertEqual(
-            detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, head="0" * 40)], dict(CURSOR0)), []
-        )
+        self.assertEqual(detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, head="0" * 40)], dict(CURSOR0)), [])
 
     def test_a_run_at_or_below_the_seed_floor_is_history(self):
         cursor = dict(CURSOR0, ci_floor=55)
@@ -258,9 +240,7 @@ class DetectCiTests(unittest.TestCase):
         self.assertEqual(kinds(found), ["merge_blocked"])
 
     def test_the_review_check_is_the_review_signal_and_not_a_failed_test(self):
-        found = detect.derive(
-            REPO, 7, HEAD, [], [], [kody_check(55, conclusion="failure")], dict(CURSOR0)
-        )
+        found = detect.derive(REPO, 7, HEAD, [], [], [kody_check(55, conclusion="failure")], dict(CURSOR0))
         self.assertEqual(kinds(found), ["review_completed"])
         # The same name from another app is no test either:  a name is never a failure signal.
         forged = ci_run(56, "Kody Code Review")
@@ -272,9 +252,7 @@ class DetectCiTests(unittest.TestCase):
         summary = found[0]["summary"]
         self.assertNotIn("\n", summary)
         self.assertNotIn("\u2028", summary)
-        self.assertLessEqual(
-            len(summary), len("CI failed on the current head: ") + detect.CHECK_NAME_CHARS
-        )
+        self.assertLessEqual(len(summary), len("CI failed on the current head: ") + detect.CHECK_NAME_CHARS)
 
     def test_a_nameless_check_is_still_named_by_its_id(self):
         found = detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, name="")], dict(CURSOR0))
@@ -293,13 +271,8 @@ class DetectCiTests(unittest.TestCase):
 
 
 def review(rid, login, state, commit=HEAD):
-    return {
-        "id": rid,
-        "state": state,
-        "commit_id": commit,
-        "submitted_at": "2026-11-21T01:00:00Z",
-        "user": {"login": login},
-    }
+    return {"id": rid, "state": state, "commit_id": commit, "submitted_at": "2026-11-21T01:00:00Z",
+            "user": {"login": login}}
 
 
 HUMAN = "jaywedgeworth22"
@@ -311,114 +284,59 @@ def blocked(found):
 
 class DetectMergeBlockedTests(unittest.TestCase):
     def test_a_conflicting_head_is_blocked_once_for_that_head(self):
-        found = blocked(
-            detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty"))
-        )
+        found = blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty")))
         self.assertEqual(len(found), 1)
         event = found[0]
         self.assertEqual(event["event_id"], "mb%s:conflicts" % HEAD, "one head is one conflict")
         self.assertIs(event["head_matches"], True)
-        self.assertEqual(
-            event["summary"], "blocked from merging: merge conflicts with the base branch"
-        )
+        self.assertEqual(event["summary"], "blocked from merging: merge conflicts with the base branch")
 
     def test_mergeable_alone_is_enough_when_the_state_is_absent(self):
-        self.assertEqual(
-            len(blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False)))),
-            1,
-        )
-        self.assertEqual(
-            blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(True))), []
-        )
+        self.assertEqual(len(blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False)))), 1)
+        self.assertEqual(blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(True))), [])
 
     def test_a_pr_that_is_merely_behind_blocked_or_unstable_is_not_in_conflict(self):
         # The branch rules do not require an up-to-date branch and no approval:  behind is not
         # a merge blocker here, and alerting it would wake every open PR each time main moved.
         for state in ("clean", "blocked", "behind", "unstable", "has_hooks", "draft"):
             self.assertEqual(
-                blocked(
-                    detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, state))
-                ),
-                [],
+                blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, state))), [],
                 state,
             )
 
     def test_a_dirty_state_is_a_conflict_whatever_mergeable_reads(self):
-        self.assertEqual(
-            len(
-                blocked(
-                    detect.derive(
-                        REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(True, "dirty")
-                    )
-                )
-            ),
-            1,
-        )
+        self.assertEqual(len(blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(True, "dirty")))), 1)
 
     def test_github_not_computing_yet_is_not_a_conflict_and_not_a_pass(self):
         for body in (pull(None, "unknown"), pull(None), {"state": "open"}, {}):
-            self.assertEqual(
-                blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=body)), []
-            )
+            self.assertEqual(blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=body)), [])
 
     def test_no_pr_body_derives_no_conflict(self):
         self.assertEqual(blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0))), [])
 
     def test_a_blocker_needs_a_head(self):
-        self.assertEqual(
-            detect.derive(
-                REPO,
-                7,
-                "",
-                [],
-                [review(11, HUMAN, "CHANGES_REQUESTED")],
-                [],
-                dict(CURSOR0),
-                pull=pull(False, "dirty"),
-            ),
-            [],
-        )
+        self.assertEqual(detect.derive(REPO, 7, "", [], [review(11, HUMAN, "CHANGES_REQUESTED")], [], dict(CURSOR0), pull=pull(False, "dirty")), [])
 
     def test_failed_checks_alone_are_the_ci_event_and_never_a_second_one(self):
-        found = detect.derive(
-            REPO, 7, HEAD, [], [], [ci_run(56)], dict(CURSOR0), pull=pull(True, "blocked")
-        )
+        found = detect.derive(REPO, 7, HEAD, [], [], [ci_run(56)], dict(CURSOR0), pull=pull(True, "blocked"))
         self.assertEqual(kinds(found), ["ci_failed"])
 
     def test_failed_checks_ride_beside_another_blocker(self):
-        found = blocked(
-            detect.derive(
-                REPO, 7, HEAD, [], [], [ci_run(56)], dict(CURSOR0), pull=pull(False, "dirty")
-            )
-        )
+        found = blocked(detect.derive(REPO, 7, HEAD, [], [], [ci_run(56)], dict(CURSOR0), pull=pull(False, "dirty")))
         self.assertEqual(found[0]["event_id"], "mb%s:checks_failed+conflicts" % HEAD)
-        self.assertEqual(
-            found[0]["summary"],
-            "blocked from merging: checks failed, merge conflicts with the base branch",
-        )
+        self.assertEqual(found[0]["summary"], "blocked from merging: checks failed, merge conflicts with the base branch")
 
     def test_a_closed_merge_gate_blocks(self):
         # The fleet's guard fails this check while a merge hold is active or when it cannot
         # vouch for the PR;  it is a blocker and not a failed test.
-        found = detect.derive(
-            REPO,
-            7,
-            HEAD,
-            [],
-            [],
-            [ci_run(55, "merge-gate")],
-            dict(CURSOR0),
-            pull=pull(True, "clean"),
-        )
+        found = detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, "merge-gate")], dict(CURSOR0), pull=pull(True, "clean"))
         self.assertEqual(kinds(found), ["merge_blocked"])
         self.assertEqual(found[0]["event_id"], "mb%s:merge_gate" % HEAD)
         self.assertEqual(found[0]["summary"], "blocked from merging: the merge gate is closed")
 
     def test_a_gate_that_failed_and_then_passed_has_passed(self):
         runs = [ci_run(55, "merge-gate"), ci_run(56, "merge-gate", conclusion="success")]
-        self.assertEqual(
-            detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0), pull=pull(True, "clean")), []
-        )
+        self.assertEqual(detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0), pull=pull(True, "clean")), [])
 
     def test_a_check_that_failed_and_then_passed_has_passed(self):
         # The rerun that passed is the check's verdict;  only the conflict remains.
@@ -433,16 +351,9 @@ class DetectMergeBlockedTests(unittest.TestCase):
         # Their decision stands across a push:  stale reviews are not dismissed on one.
         later_head = "b" * 40
         reviews.append(review(12, HUMAN, "APPROVED", commit="0" * 40))
+        self.assertEqual(blocked(detect.derive(REPO, 7, later_head, reviews, [], [], dict(CURSOR0))), [])
         self.assertEqual(
-            blocked(detect.derive(REPO, 7, later_head, reviews, [], [], dict(CURSOR0))), []
-        )
-        self.assertEqual(
-            [
-                e["event_id"]
-                for e in blocked(
-                    detect.derive(REPO, 7, later_head, reviews[:1], [], [], dict(CURSOR0))
-                )
-            ],
+            [e["event_id"] for e in blocked(detect.derive(REPO, 7, later_head, reviews[:1], [], [], dict(CURSOR0)))],
             ["mb%s:changes_requested" % later_head],
         )
 
@@ -453,30 +364,36 @@ class DetectMergeBlockedTests(unittest.TestCase):
             review(13, HUMAN, "PENDING"),
             review(14, "swu-zc[bot]", "COMMENTED"),
         ]
-        self.assertEqual(
-            len(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0)))), 1
-        )
+        self.assertEqual(len(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0)))), 1)
 
     def test_a_review_bot_s_changes_requested_is_its_review_event_and_never_a_second_one(self):
-        found = detect.derive(
-            REPO, 7, HEAD, [kody_review(11, state="CHANGES_REQUESTED")], [], [], dict(CURSOR0)
-        )
+        found = detect.derive(REPO, 7, HEAD, [kody_review(11, state="CHANGES_REQUESTED")], [], [], dict(CURSOR0))
         self.assertEqual(kinds(found), ["review_submitted"])
         self.assertIn("changes requested", found[0]["summary"])
 
     def test_the_blockers_still_answer_without_a_pr_body(self):
         # The relay's reduced read carries no mergeability:  a conflict is neither found nor
         # ruled out, and the rest is still said.
-        found = detect.derive(
-            REPO,
-            7,
-            HEAD,
-            [review(11, HUMAN, "CHANGES_REQUESTED")],
-            [],
-            [ci_run(55, "merge-gate")],
-            dict(CURSOR0),
-        )
+        found = detect.derive(REPO, 7, HEAD, [review(11, HUMAN, "CHANGES_REQUESTED")], [], [ci_run(55, "merge-gate")], dict(CURSOR0))
         self.assertEqual(found[0]["event_id"], "mb%s:changes_requested+merge_gate" % HEAD)
+
+    def test_a_review_bot_s_own_changes_requested_that_is_not_the_completion_bot_still_blocks(self):
+        # Sentry's decision is not the completion event (that is Kody's alone), so it
+        # would be silent everywhere without blocking here.
+        found = detect.derive(REPO, 7, HEAD, [review(11, "sentry[bot]", "CHANGES_REQUESTED")], [], [], dict(CURSOR0))
+        self.assertEqual([e["summary"] for e in found], ["blocked from merging: changes requested"])
+
+    def test_an_explicit_dismissal_clears_a_standing_changes_requested(self):
+        reviews = [review(11, HUMAN, "CHANGES_REQUESTED"), review(12, HUMAN, "DISMISSED")]
+        self.assertEqual(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0))), [])
+
+    def test_a_comment_after_a_dismissal_does_not_restore_the_request(self):
+        reviews = [
+            review(11, HUMAN, "CHANGES_REQUESTED"),
+            review(12, HUMAN, "DISMISSED"),
+            review(13, HUMAN, "COMMENTED"),
+        ]
+        self.assertEqual(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0))), [])
 
     def test_review_activity_and_pr_states_coexist_in_one_cycle(self):
         found = detect.derive(
@@ -489,9 +406,7 @@ class DetectMergeBlockedTests(unittest.TestCase):
             dict(CURSOR0),
             pull=pull(False, "dirty"),
         )
-        self.assertEqual(
-            kinds(found), ["review_submitted", "findings_added", "ci_failed", "merge_blocked"]
-        )
+        self.assertEqual(kinds(found), ["review_submitted", "findings_added", "ci_failed", "merge_blocked"])
 
 
 class EventStoreTests(unittest.TestCase):
@@ -649,13 +564,7 @@ class EventStoreTests(unittest.TestCase):
             cursor = store.cursor(REPO, 7)
             self.assertEqual(cursor["ci_floor"], 300, "runs that predate registration are history")
             self.assertEqual(cursor["ci_ids"], [])
-            row = {
-                "repo": REPO,
-                "number": 7,
-                "kind": "ci_failed",
-                "event_id": "ci320+315",
-                "status": "held",
-            }
+            row = {"repo": REPO, "number": 7, "kind": "ci_failed", "event_id": "ci320+315", "status": "held"}
             store.append(row)
             # The review check's own watermark is not the CI floor:  a review that ran later
             # never silences a test that failed before it.
@@ -1024,8 +933,7 @@ class ServiceCycleTests(unittest.TestCase):
                 topics,
                 [
                     "%s#7: CI failed on the current head: Muster macOS build" % REPO,
-                    "%s#7: blocked from merging: checks failed, merge conflicts with the base branch"
-                    % REPO,
+                    "%s#7: blocked from merging: checks failed, merge conflicts with the base branch" % REPO,
                 ],
             )
             for sent in router.submitted:
@@ -1051,10 +959,7 @@ class ServiceCycleTests(unittest.TestCase):
             self.assertEqual(len(router.submitted), 2)
             self.assertEqual(
                 self._kinds(svc),
-                [
-                    ("merge_blocked", "mb%s:conflicts" % HEAD),
-                    ("merge_blocked", "mb%s:conflicts" % next_head),
-                ],
+                [("merge_blocked", "mb%s:conflicts" % HEAD), ("merge_blocked", "mb%s:conflicts" % next_head)],
             )
 
     def test_a_conflict_is_heard_when_it_appears_on_an_unchanged_head(self):

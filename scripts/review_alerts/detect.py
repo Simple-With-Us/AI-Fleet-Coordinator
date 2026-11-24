@@ -20,9 +20,11 @@ hears what blocks it without polling:
                  clear:  conflicting files, a closed merge gate (the fleet's
                  guard fails its `merge-gate` check while a merge hold is
                  active or when it cannot vouch for the PR), or changes
-                 requested by someone who is not a review bot (a review bot's
-                 own changes requested is its review event, never a second
-                 one).  Failed checks are named beside those and never alone:
+                 requested that still stand by anyone but the completion bot:
+                 Kody's own changes requested is already its review-completed
+                 event, while another review bot's (Sentry's) is otherwise
+                 silent and blocks like a person's.  Failed checks are named
+                 beside those and never alone:
                  a failed check is the CI event.  Keyed by the head and the
                  blockers, so one head alerts once per blocker set, and a
                  conflict is only ever resolved by a new commit.
@@ -75,9 +77,10 @@ BLOCKER_LABELS = {
     "conflicts": "merge conflicts with the base branch",
     "merge_gate": "the merge gate is closed",
 }
-#: A reviewer's standing decision is the newest of these;  a comment, a dismissal or a pending
-#: review never changes it (the branch rules do not dismiss stale reviews on a push).
-_DECISION_STATES = ("APPROVED", "CHANGES_REQUESTED")
+#: A reviewer's standing decision is the newest of these;  a comment or a pending review
+#: never changes it (the branch rules do not dismiss stale reviews on a push, but an
+#: explicit DISMISSED review is the reviewer taking the request back).
+_DECISION_STATES = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
 
 
 def _login(item: dict) -> str:
@@ -155,12 +158,15 @@ def failed_checks(check_runs: list, current_head: str) -> list[dict]:
     return failed
 
 
-def changes_requested(reviews: list, *, exclude=REVIEW_BOTS) -> bool:
-    """Whether someone who is not a review bot has changes requested that still stand.
+def changes_requested(reviews: list, *, exclude=(KODY_LOGIN,)) -> bool:
+    """Whether changes requested still stand from anyone but the completion bot.
 
-    A reviewer's standing decision is their newest approving or changes-requested review,
-    on any head:  the branch rules do not dismiss stale reviews on a push.  A review bot's
-    changes requested is left out here because its review is already an event."""
+    A reviewer's standing decision is their newest approving, changes-requested or
+    dismissed review, on any head:  the branch rules do not dismiss stale reviews on a
+    push, but an EXPLICIT dismissal is the reviewer taking the request back.  Only
+    Kody is excluded here:  its decision is already the review-completed event, while
+    another review bot's (Sentry's) would otherwise be silent and blocks like a
+    person's."""
     standing: dict[str, tuple[int, str]] = {}
     for review in reviews:
         rid = review.get("id")
@@ -177,9 +183,7 @@ def changes_requested(reviews: list, *, exclude=REVIEW_BOTS) -> bool:
     )
 
 
-def merge_blockers(
-    pull: dict | None, reviews: list, check_runs: list, current_head: str
-) -> list[str]:
+def merge_blockers(pull: dict | None, reviews: list, check_runs: list, current_head: str) -> list[str]:
     """What keeps the PR's current head from merging, named in a fixed order;  empty when
     nothing does.  Mergeability is read from the PR body:  without it a conflict is neither
     found nor ruled out, and the other blockers are still answered."""

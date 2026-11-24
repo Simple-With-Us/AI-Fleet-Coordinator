@@ -221,7 +221,9 @@ class EventStore:
                         comments = max(comments, int(tail))
                 elif kind == "ci_failed" and str(event_id).startswith("ci"):
                     ci_ids.update(
-                        int(token) for token in str(event_id)[2:].split("+") if token.isdigit()
+                        int(token)
+                        for token in str(event_id)[2:].split("+")
+                        if token.isdigit()
                     )
                 if kind in ("review_submitted", "review_completed"):
                     head = str(row.get("head") or "")

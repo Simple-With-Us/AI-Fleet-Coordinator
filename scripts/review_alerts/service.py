@@ -8,6 +8,13 @@ origin session;  then settle pending receipts.  Every event lands in the
 store exactly once;  anything that cannot be delivered is held with a named
 reason and counted, never dropped.
 
+Besides review activity, two states of the PR itself are events:  a check run
+on the current head that failed, and a current head in merge conflict with
+the base branch.  Both take the same road as a review event (one Operator
+status line, then one exact-origin wake), so the chat that owns the PR hears
+what blocks it.  Mergeability is read from the PR body;  a body without it
+(the relay's reduced read) derives no conflict event, in either direction.
+
 Only claimed-ownership rows drive alerts:  session, letter AND generation
 claims come from the open_pr caller;  a row missing any of them is held
 ("no-origin-claim"), never delivered.  The claims are untrusted hints:  the
@@ -272,8 +279,8 @@ class AlertService:
                 comments,
                 check_runs,
                 self.store.cursor(repo, number),
+                pull=pr,
             )
-            found.extend(detect.merge_conflict(repo, number, pr))
             link = str(pr.get("html_url") or "")
             for event in found:
                 if self.store.get(repo, number, event["kind"], event["event_id"]):
