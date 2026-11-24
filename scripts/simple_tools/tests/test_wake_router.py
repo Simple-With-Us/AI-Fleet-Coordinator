@@ -5802,6 +5802,70 @@ class RegistryNotConfigured(Base):
         with mock.patch.object(WR.registry_api, "_knob_value", side_effect=AssertionError("knob")):
             self.assertEqual(WR.Seats([router]).seat_health("CLAUDE")[0], 503)
 
+    def test_health_says_whether_the_mac_route_is_configured_and_never_names_the_mac(self) -> None:
+        # AFC-836:  a token for the route to chats on the Mac.  Health needs no key, and the
+        # destination names a host, so only whether one is named is ever said.
+        router = self.router()
+        router.env = self.router_env()
+        dest = "owner-mac-tailnet-alias"
+        cases = {
+            dest: WR.MAC_ROUTE_CONFIGURED,
+            "  ": WR.MAC_ROUTE_NONE,
+            "": WR.MAC_ROUTE_NONE,
+            None: WR.MAC_ROUTE_NONE,
+            "two words": WR.MAC_ROUTE_NONE,
+            "-starts-with-a-dash": WR.MAC_ROUTE_NONE,
+            "a/slash": WR.MAC_ROUTE_NONE,
+        }
+        for value, token in cases.items():
+            with self.subTest(repr(value)):
+                router.config["mac_ssh"] = value
+                status, answer = WR.Seats([router]).seat_health("CLAUDE")
+                self.assertEqual(status, 200)
+                self.assertEqual(answer["mac_route"], token)
+                self.assertNotIn(dest, json.dumps(answer))
+        router.config["mac_ssh"] = dest
+        status, answer = WR.Seats([router]).seat_health("CLAUDE")
+        # The whole answer:  the token sits beside the others and changes none of them.
+        self.assertEqual(
+            (status, answer),
+            (200, {"seat": "CLAUDE", "delivery": True, "healthy": True,
+                   "mac_route": WR.MAC_ROUTE_CONFIGURED}),
+        )
+
+    def test_the_mac_route_is_there_for_an_unhealthy_seat_and_absent_for_one_not_served(self) -> None:
+        # So a missing destination is seen whatever else is wrong with the seat.
+        router = self.router()
+        router.env = {"HOME": self.tmp}  # no registry address or key
+        router.config["mac_ssh"] = "owner-mac-tailnet-alias"
+        seats = WR.Seats([router], not_installed=["MC"])
+        status, answer = seats.seat_health("CLAUDE")
+        self.assertEqual(
+            (status, answer["reason"], answer["mac_route"]),
+            (503, WR.NOT_CONFIGURED, WR.MAC_ROUTE_CONFIGURED),
+        )
+        self.assertNotIn("mac_route", seats.seat_health("MC")[1])
+        every = seats.health()[1]["seats"]
+        self.assertEqual(every["CLAUDE"]["mac_route"], WR.MAC_ROUTE_CONFIGURED)
+        self.assertNotIn("mac_route", every["MC"])
+
+    def test_a_platform_whose_settings_have_no_mac_ssh_says_nothing_about_the_route(self) -> None:
+        router = self.router()  # built from ROUTER_DEFAULTS, which have no `mac_ssh`
+        router.env = self.router_env()
+        self.assertNotIn("mac_ssh", router.config)
+        self.assertIsNone(router.mac_route())
+        status, answer = WR.Seats([router]).seat_health("CLAUDE")
+        self.assertEqual(status, 200)
+        self.assertNotIn("mac_route", answer)
+
+    def test_the_destinations_shape_is_the_one_the_ssh_route_accepts(self) -> None:
+        # wake_router and claude_wake each hold it:  a destination the router calls configured
+        # must be one the route does not refuse.
+        self.assertEqual(WR.MAC_SSH_DEST_RE.pattern, CW.SSH_DEST_RE.pattern)
+        for value in ("mac", "owner@mac.tailnet", "100.64.0.9", "host-2.example"):
+            self.assertEqual(WR.MAC_SSH_DEST_RE.fullmatch(value) is not None,
+                             CW.SSH_DEST_RE.fullmatch(value) is not None, value)
+
     def test_serve_starts_without_it(self) -> None:
         # Infisical may be down at start:  the router starts and says so on /health instead.
         self.assertNotIn("registry API URL is not set", Path(WR.__file__).read_text())
