@@ -90,16 +90,13 @@ class GitHubClient:
                 return
             yield from data
             link = headers.get("Link", "")
-            if 'rel="next"' not in linj:
+            if 'rel="next"' not in link:
                 return
             page += 1
 
     def _default_request(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str],
-    ) -> tuple[bytes, dict[str, str]:
+        self, method: str, url: str, headers: dict[str, str]
+    ) -> tuple[bytes, dict[str, str]]:
         req = urllib.request.Request(url, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=60) as response:
@@ -147,34 +144,34 @@ class GitHubClient:
             attempt += 1
             try:
                 raw, hdrs = self._request_fn(method, url, headers)
-        except GitHubError as exc:
-            if exc.status in (403, 429) or (exc.status is not None and exc.status >= 500):
-                retry_after = getattr(exc, "retry_after", None)
-                wait = (
-                    float(retry_after) if retry_after is not None else min(60.0, 2.0**attempt)
-                )
-                if attempt >= self._max_retries:
-                    # Do not leak a pending 403 backoff into the next call.
-                    self._secondary_backoff = 0.0
-                    raise
-                if exc.status == 403:
-                    # Secondary rate limit: the loop head sleeps this once.
-                    self._secondary_backoff = max(wait, 2.0)
-                else:
-                    self._sleep(wait)
-                continue
-            raise
-        try:
-            data = json.loads(raw)
-        except ValueError as exc:
-            raise GitHubError("invalid JSON from GitHub") from exc
+            except GitHubError as exc:
+                if exc.status in (403, 429) or (exc.status is not None and exc.status >= 500):
+                    retry_after = getattr(exc, "retry_after", None)
+                    wait = (
+                        float(retry_after) if retry_after is not None else min(60.0, 2.0**attempt)
+                    )
+                    if attempt >= self._max_retries:
+                        # Do not leak a pending 403 backoff into the next call.
+                        self._secondary_backoff = 0.0
+                        raise
+                    if exc.status == 403:
+                        # Secondary rate limit: the loop head sleeps this once.
+                        self._secondary_backoff = max(wait, 2.0)
+                    else:
+                        self._sleep(wait)
+                    continue
+                raise
+            try:
+                data = json.loads(raw)
+            except ValueError as exc:
+                raise GitHubError("invalid JSON from GitHub") from exc
             remaining = hdrs.get("X-RateLimit-Remaining")
-        if remaining == "0":
-            reset = hdrs.get("X-RateLimit-Reset")
-            if reset and reset.isdigit():
-                wait = max(0.0, int(reset) - time.time()) + 1.0
-                self._sleep(min(wait, 120.0))
-        return data, hdrs
+            if remaining == "0":
+                reset = hdrs.get("X-RateLimit-Reset")
+                if reset and reset.isdigit():
+                    wait = max(0.0, int(reset) - time.time()) + 1.0
+                    self._sleep(min(wait, 120.0))
+            return data, hdrs
 
 
 FAIL_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})

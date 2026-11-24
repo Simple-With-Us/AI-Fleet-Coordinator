@@ -33,9 +33,9 @@ class ScannerTests(unittest.TestCase):
             {"conclusion": "failure", "id": 3},
             {"conclusion": "success", "id": 4},
         ]
-        length, streak = scanner.stream_from_runs(runs)
+        length, streak = scanner.streak_from_runs(runs)
         self.assertEqual(length, 2)
-        self.assertEqual([r["id"] for r in stream], [1, 3])
+        self.assertEqual([r["id"] for r in streak], [1, 3])
 
     def test_fixture_scan_one_repo(self) -> None:
         client = FixtureGitHub()
@@ -51,7 +51,7 @@ class ScannerTests(unittest.TestCase):
         row = report["red_workflows"][0]
         self.assertEqual(row["repo"], "fixture-repo")
         self.assertEqual(row["workflow_name"], "CI")
-        self.assertEqual(row["stream_length"], 2)
+        self.assertEqual(row["streak_length"], 2)
         self.assertEqual(row["first_red_commit_sha"], "ccc333")
         self.assertEqual(row["latest_commit_sha"], "aaa111")
         self.assertEqual(row["failing_job_name"], "test")
@@ -152,7 +152,7 @@ class PhantomWorkflowTests(unittest.TestCase):
         self.assertEqual(report["red_count"], 1)
         row = report["red_workflows"][0]
         self.assertEqual(row["workflow_name"], "Push CI")
-        self.assertEqual(row["stream_length"], 1)
+        self.assertEqual(row["streak_length"], 1)
         # The phantom workflow's jobs were never fetched: it was skipped
         # before the failing-job lookup, not filtered afterwards.
         job_paths = [c for c in client.calls if c.endswith("/jobs")]
