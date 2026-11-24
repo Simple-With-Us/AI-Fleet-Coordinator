@@ -39,6 +39,7 @@ import {
   GATE_LOG_NAME,
   PROPS_PHASE,
   SEAT_SECRETS,
+  OPERATOR_NOTES_SECRET,
   SEAT_LABELS,
   WAKE_SECRETS,
   LISTENER_KEY_SECRET_NAMES,
@@ -69,6 +70,7 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
 import { bearerStatusRows, adminBearerAction, diagnosticSummaryRows } from "./admin-api.js";
+import { seatToolStates, settle, listenerNameFor } from "./seat-tools-status.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
@@ -1361,6 +1363,43 @@ async function serveAdmin(request, env, config, oauth, email) {
     let diagnostics = null;
     try { diagnostics = diagnosticSummaryRows(await gate(env, GATE_LOG_NAME).diagnosticTail(50)); } catch { /* Reported as null, never as an empty list. */ }
     return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows, diagnostics }), {
+      status: 200,
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
+  if (path === "/admin/api/seat-tools" && request.method === "GET") {
+    // Read-only per-seat, per-tool readiness for Muster (names and states only; each read mirrors the seat wiring).
+    await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools", "/gr-front"].map((p) => prefetchFolder(env, p))).catch(() => {});
+    const [fleetlinkSecret, recallSecrets, relaySecrets] = await Promise.all([
+      settle(async () => (await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true })).trim()),
+      settle(() => resolveRecallSecrets(env)),
+      settle(() => resolveGrSecrets(env)),
+    ]);
+    const notesRaw = env?.[OPERATOR_NOTES_SECRET];
+    const rows = await Promise.all(config.hostedSeats.map(async (seat) => {
+      const names = SEAT_SECRETS[seat];
+      const tag = seatTagForSeat(seat);
+      const listener = listenerNameFor(seat);
+      const [zulipKey, linearPair, wakeKey, tokens] = await Promise.all([
+        settle(async () => names ? (await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true })).trim() : ""),
+        settle(() => resolveLinearPair(env, tag)),
+        listener ? settle(async () => (await resolveSecret(env, { name: listener, path: "/wake", envName: listener, optional: true })).trim()) : Promise.resolve(""),
+        settle(() => resolveFleetlinkSeatTokens(env, [seat])),
+      ]);
+      const ok = tokens && typeof tokens === "object" && tokens.seatTokens instanceof Map;
+      return seatToolStates(seat, {
+        zulipKey, zulipEmail: config.botEmails[seat],
+        linearEnabled: LINEAR_SEATS.includes(tag), linearPair,
+        wakeKey, fleetlinkSecret,
+        fleetlinkSeatToken: ok ? tokens.seatTokens.has(seat) : tokens,
+        fleetlinkDenied: ok ? tokens.deniedSeats.has(seat) : false,
+        recallConfigured: recallSecrets && typeof recallSecrets === "object" ? recallClientFromResolved(recallSecrets, env) !== null : recallSecrets,
+        relaySecrets, relayUpstream: Boolean(env?.GR_UPSTREAM_URL),
+        eventsOnly: config.eventsOnlySeats.includes(seat),
+        notesKey: typeof notesRaw === "string" ? notesRaw : "",
+      });
+    }));
+    return new Response(JSON.stringify({ generatedAt: new Date().toISOString(), infisicalMode: infisicalMode(env), rows }), {
       status: 200,
       headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
     });
