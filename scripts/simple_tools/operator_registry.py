@@ -2470,7 +2470,9 @@ def sweep_stale(
             reports: dict[tuple[str, str], Mapping[str, Any]] = {}
             for host in {str(row["verified_host"]) for row in candidates}:
                 reports[(namespace, host)] = _host_liveness_row(conn, namespace, host)
-            candidates, _refused = attested_retirement(candidates, reports, cutoff, now=moment)
+            candidates, _refused = attested_retirement(
+                candidates, reports, cutoff, now=moment
+            )
             for row in candidates:
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:
@@ -3080,25 +3082,35 @@ EXPORT_OUTCOMES = ("exported", "already_present", "failed", "ambiguous")
 # exporter reconciles by id against the sheet itself, so an exported row is never read
 # again;  the window keeps recent attempts auditable (the store-side fence, OPS-1037).
 EXPORT_KEEP_SECONDS = 7 * 24 * 3600
+# The free-list size a trim must reach before the VACUUM rewrite is worth its cost:  below
+# it, SQLite reuses the freed pages and the file does not grow.
+EXPORT_VACUUM_MIN_BYTES = 1024 * 1024
 
 
 def trim_export_rows(db_path: str, *, keep_seconds: int = EXPORT_KEEP_SECONDS) -> dict[str, int]:
-    """Delete export rows nothing reads again (AFC-822):  audit attempts older than the window,
-    then outbox rows exported before it whose attempts are all gone.  Pending rows and their
-    attempts are never touched, so the drain's own bookkeeping is unchanged;  the sheets write
-    reconciles by id against the sheet, so idempotency does not depend on these rows.  When the
-    trim deleted anything the file is vacuumed in the same call, so the store does not keep the
-    freed pages.  Returns the deleted counts."""
-    cutoff = (
-        (datetime.now(UTC) - timedelta(seconds=max(1, int(keep_seconds))))
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    """Delete export rows nothing reads again (AFC-822):  audit attempts older than the window
+    whose outbox row is exported, then exported outbox rows whose attempts are all gone.  A
+    pending row and its attempts are never touched, so a stuck export keeps the audit of why it
+    is stuck and the drain's own bookkeeping is unchanged;  the sheets write reconciles by id
+    against the sheet, so idempotency does not depend on these rows.  `keep_seconds` must be
+    positive:  a non-positive window is a caller mistake, and clamping it to one second would
+    wipe nearly the whole audit (Kody, PR 2474).  When the trim deleted anything, the freed
+    pages are returned to the file only once they are worth a rewrite:  SQLite reuses freed
+    pages before it grows the file, so a small trim that skips the VACUUM costs nothing and the
+    next bigger one reclaims the space.  Returns the deleted counts."""
+    keep = int(keep_seconds)
+    if keep <= 0:
+        raise ValueError("keep_seconds must be positive")
+    cutoff = (datetime.now(UTC) - timedelta(seconds=keep)).isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
     conn = sqlite3.connect(str(db_path))
     try:
         with conn:
             attempts = conn.execute(
-                "DELETE FROM export_attempts WHERE attempted_at < ?", (cutoff,)
+                "DELETE FROM export_attempts WHERE attempted_at < ? AND outbox_id IN"
+                " (SELECT outbox_id FROM export_outbox WHERE exported_at IS NOT NULL)",
+                (cutoff,),
             ).rowcount
             outbox = conn.execute(
                 "DELETE FROM export_outbox WHERE exported_at IS NOT NULL AND exported_at < ?"
@@ -3107,8 +3119,13 @@ def trim_export_rows(db_path: str, *, keep_seconds: int = EXPORT_KEEP_SECONDS) -
             ).rowcount
         deleted = {"attempts": max(0, attempts), "outbox": max(0, outbox)}
         if deleted["attempts"] or deleted["outbox"]:
-            conn.isolation_level = None  # VACUUM cannot run inside a transaction
-            conn.execute("VACUUM")
+            # VACUUM cannot run inside a transaction, and it rewrites the whole file:  pay it
+            # only when the free list is worth reclaiming (Kody, PR 2474).
+            page = conn.execute("PRAGMA page_size").fetchone()[0]
+            free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+            if page * free >= EXPORT_VACUUM_MIN_BYTES:
+                conn.isolation_level = None  # VACUUM cannot run inside a transaction
+                conn.execute("VACUUM")
         return deleted
     finally:
         conn.close()
@@ -3663,6 +3680,10 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         if args.command == "trim-export-rows":
             try:
                 counts = trim_export_rows(db, keep_seconds=args.keep_seconds)
+            except ValueError as exc:
+                print(json.dumps({"error": "registry_error", "code": "registry_error",
+                                  "detail": str(exc)}))
+                return 2
             except sqlite3.Error:
                 print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
                 return 3

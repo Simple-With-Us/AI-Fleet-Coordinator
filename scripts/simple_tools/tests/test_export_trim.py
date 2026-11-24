@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from unittest import mock
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -110,14 +111,44 @@ class TrimTest(unittest.TestCase):
     def test_the_default_window_is_seven_days(self) -> None:
         self.assertEqual(OR.EXPORT_KEEP_SECONDS, 7 * 24 * 3600)
 
-    def test_a_pending_row_is_never_deleted_even_when_old(self) -> None:
+    def test_a_pending_row_and_its_audit_are_never_deleted_even_when_old(self) -> None:
         # A row the drain never confirmed stays pending however old it is:  deleting it
-        # would drop an event the sheet has never seen.
+        # would drop an event the sheet has never seen, and its failure attempt is the only
+        # audit of why it is stuck, so the attempts delete is restricted to exported rows
+        # (Kody, PR 2474).
         ancient = iso(datetime.now(UTC) - timedelta(days=30))
         self.row("stuck", created_at=ancient, attempts=[("failed", ancient)])
         counts = OR.trim_export_rows(self.db, keep_seconds=7 * 24 * 3600)
-        self.assertEqual(counts, {"attempts": 1, "outbox": 0})
-        self.assertEqual(self.store(), {"outbox": 1, "attempts": 0, "pending": 1, "lost": 0})
+        self.assertEqual(counts, {"attempts": 0, "outbox": 0})
+        self.assertEqual(self.store(), {"outbox": 1, "attempts": 1, "pending": 1, "lost": 0})
+
+
+    def test_a_non_positive_window_is_refused_not_clamped(self) -> None:
+        # A clamped one-second window would wipe nearly the whole audit (Kody, PR 2474).
+        for keep in (0, -1, -7 * 24 * 3600):
+            with self.subTest(keep=keep):
+                with self.assertRaises(ValueError):
+                    OR.trim_export_rows(self.db, keep_seconds=keep)
+        self.assertEqual(self.store(), {"outbox": 0, "attempts": 0, "pending": 0, "lost": 0})
+
+    def test_the_vacuum_runs_only_when_the_free_list_is_worth_a_rewrite(self) -> None:
+        # A small trim leaves the freed pages to SQLite's reuse:  the gate is the module's
+        # constant, and patching it to zero forces the rewrite path, patching it huge skips it.
+        recent = iso(datetime.now(UTC) - timedelta(days=1))
+        old = iso(datetime.now(UTC) - timedelta(days=8))
+        self.row("new-1", exported_at=recent, attempts=[("exported", recent)])
+        self.row("old-1", exported_at=old, attempts=[("exported", old)])
+        with mock.patch.object(OR, "EXPORT_VACUUM_MIN_BYTES", 0):
+            counts = OR.trim_export_rows(self.db, keep_seconds=7 * 24 * 3600)
+        self.assertEqual(counts, {"attempts": 1, "outbox": 1})
+        conn = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(
+                conn.execute("PRAGMA freelist_count").fetchone()[0], 0,
+                "the forced VACUUM returned the freed pages",
+            )
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
