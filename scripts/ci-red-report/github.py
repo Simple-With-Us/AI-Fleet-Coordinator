@@ -198,7 +198,7 @@ def classify_run_conclusion(conclusion: str | None) -> str:
 def pick_failing_job_step(jobs_payload: Mapping[str, Any]) -> tuple[str, str]:
     """First failed job and step on a workflow run."""
     jobs = jobs_payload.get("jobs")
-    if not isinstance(jobs, list:
+    if not isinstance(jobs, list):
         return "", ""
     for job in jobs:
         if not isinstance(job, dict):
