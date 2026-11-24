@@ -57,11 +57,13 @@ class GitHubClient:
         """GET one file's decoded UTF-8 text from the contents API at a ref.
 
         repo_path is the /repos/{owner}/{repo} prefix; file_path is relative
-        to the repository root without a leading slash.
+        to the repository root without a leading slash.  Each path segment is
+        percent-encoded separately (slashes stay separators), so workflow
+        paths with spaces or reserved characters fetch the right resource.
         """
         params: dict[str, str] | None = {"ref": ref} if ref else None
-        encoded_path = "/".join(urllib.parse.quote(part, safe="") for part in file_path.split("/"))
-        data = self.get_json(f"{repo_path}/contents/{encoded_path}", params=params)
+        encoded = "/".join(urllib.parse.quote(part, safe="") for part in file_path.split("/"))
+        data = self.get_json(f"{repo_path}/contents/{encoded}", params=params)
         if not isinstance(data, dict) or data.get("encoding") != "base64":
             raise GitHubError("contents response does not carry base64 file content")
         try:
@@ -104,20 +106,20 @@ class GitHubClient:
                 body = response.read(2_000_001)
                 if len(body) > 2_000_000:
                     raise GitHubError("response too large")
-                hdrs = {k: v for k, v in response.headers.items()}
-                return body, hdrs
-        except urllib.error.HTTPError as exc:
-            retry_after = exc.headers.get("Retry-After") if exc.headers else None
-            err = GitHubError(
-                f"GitHub HTTP {exc.code} for {method} {url}",
-                status=exc.code,
-            )
-            if retry_after is not None:
-                try:
-                    err.retry_after = float(retry_after)  # type: ignore[attr-defined]
-                except ValueError:
-                    pass
-            raise err from None
+                    hdrs = {k: v for k, v in response.headers.items()}
+                    return body, hdrs
+            except urllib.error.HTTPError as exc:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                err = GitHubError(
+                    f"GitHub HTTP {exc.code} for {method} {url}",
+                    status=exc.code,
+                )
+                if retry_after is not None:
+                    try:
+                        err.retry_after = float(retry_after)  # type: ignore[attr-defined]
+                    except ValueError:
+                        pass
+                raise err from None
 
     def _request_json(self, method: str, url: str) -> Any:
         data, _headers = self._request_json_with_headers(method, url, None)
@@ -196,7 +198,7 @@ def classify_run_conclusion(conclusion: str | None) -> str:
 def pick_failing_job_step(jobs_payload: Mapping[str, Any]) -> tuple[str, str]:
     """First failed job and step on a workflow run."""
     jobs = jobs_payload.get("jobs")
-    if not isinstance(jobs, list):
+    if not isinstance(jobs, list:
         return "", ""
     for job in jobs:
         if not isinstance(job, dict):
