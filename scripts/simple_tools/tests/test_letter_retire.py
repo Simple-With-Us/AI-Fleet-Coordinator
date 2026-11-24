@@ -15,6 +15,7 @@ import os
 import sqlite3
 import time
 import unittest
+from unittest import mock
 
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_minimax as PM
@@ -43,6 +44,7 @@ class RetireTests(Base):
         # The assigner keeps a row its chat touched lately (its own rule, 45 minutes).  These tests report a chat
         # the platform says is archived, so that rule is turned off here.
         self.fake.service.gone_report_live_minutes = 0
+        self.fake.service.gone_report_max_share = 1.0  # two chats are reported at once here
         self.now = time.time()
 
     # ---- the session store ------------------------------------------------------------------
@@ -209,6 +211,72 @@ class RetireTests(Base):
         self.assertEqual(self.title_of("m-0008"), "%s: Fix Login" % note["label"])
         self.assertIn('"@**MiniMax** %s"' % note["label"], out)
 
+
+    def test_a_note_the_old_retire_path_left_behind_is_retired_without_a_report(self) -> None:
+        # The shape the retire path used to leave:  the chat was reported gone, and its note still holds the letter
+        # the assigner has already freed.  It is retired here, and no report is made for it again.
+        self.add("m-0009", title="Fix Login")
+        self.start("m-0009")
+        label = self.note("m-0009")["label"]
+        path = PL.note_path(self.env(), PM.SEAT, "m-0009")
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        note["gone_at"] = self.now  # the old path marked the chat and left the letter in place
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+        done = self.report()
+        self.assertEqual(done["gone"], [])  # the platform says nothing about this chat
+        self.assertIn("m-0009", done["retired"])  # and the note is retired all the same
+        note = self.note("m-0009")
+        self.assertFalse(PL.lettered(note))
+        self.assertEqual(note["label"], "")
+        self.assertIn(label, note["labels"])
+        self.assertEqual(self.title_of("m-0009"), "Fix Login")  # and the title loses the letter
+
+    def test_a_title_write_that_fails_is_tried_again_when_the_chat_comes_back(self) -> None:
+        # The platform would not take the title, so the stale prefix stays on the chat.  The letter is released all
+        # the same, and the mark says the title still has to lose it:  the next event of the chat tries again.
+        self.add("m-0010", title="Fix Login")
+        self.start("m-0010")
+        label = self.note("m-0010")["label"]
+        self.archive("m-0010")
+
+        os.chmod(self.store, 0o444)  # the store takes no writes
+        try:
+            self.report()
+        finally:
+            os.chmod(self.store, 0o644)
+        note = self.note("m-0010")
+        self.assertFalse(PL.lettered(note))  # the letter is released
+        self.assertTrue(note.get("title_pending"))  # and the title still has to lose it
+        self.assertEqual(self.title_of("m-0010"), "%s: Fix Login" % label)  # the stale prefix is still there
+
+        # The chat is here again:  the pending write is tried, and a compact start registers nothing.
+        self.run_hook(
+            PM.SPEC,
+            {"hook_event_name": "SessionStart", "session_id": "m-0010", "source": "compact"},
+            now=self.now + 60,
+        )
+        note = self.note("m-0010")
+        self.assertNotIn("title_pending", note)  # the pending write is done
+        self.assertEqual(self.title_of("m-0010"), "Fix Login")  # and the stale prefix is gone
+
+    def test_a_lettered_archive_beyond_the_newest_notes_still_reaches_the_adapter(self) -> None:
+        # The archive path asks the adapter about every lettered chat of this host, so a chat that is not among the
+        # newest notes is still offered and its letter is freed.
+        self.add("m-0011", title="Fix Login")
+        self.start("m-0011")
+        self.add("m-0012", title="Fix Signup")
+        self.start("m-0012")
+        self.archive("m-0011")
+        self.archive("m-0012")
+
+        with mock.patch.object(PL, "GONE_SCAN_NOTES", 1):  # the quiet path reads only the newest note
+            done = self.report()
+        self.assertEqual(sorted(row["session_id"] for row in done["gone"]), ["m-0011", "m-0012"])
+        self.assertFalse(PL.lettered(self.note("m-0011")))
+        self.assertFalse(PL.lettered(self.note("m-0012")))
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
