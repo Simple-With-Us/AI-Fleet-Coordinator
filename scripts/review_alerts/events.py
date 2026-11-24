@@ -38,9 +38,30 @@ EVENT_FIELDS = (
     "reason",
     "message_id",
     "link",
+    # The recovery-attempt marker:  set when the bounded recovery pass
+    # persists a selected next attempt, NEVER cleared by any status
+    # transition.  Reconciliation reads it to keep that attempt bounded to
+    # its selection.  None on every ordinary row.
+    "recovery",
+    # Frozen at dispatch by the bounded recovery pass:  the exact target a
+    # next-attempt wake was sent to.  Immutable provenance that
+    # reconciliation consumes (frozen seat for the receipt lookup, frozen
+    # target for audit):  current owner claims may rotate after the
+    # attempt;  these never do.  None on every ordinary row.
+    "target_seat",
+    "target_session",
+    "target_letter",
+    "target_generation",
 )
 
-KINDS = ("review_submitted", "review_completed", "findings_added")
+KINDS = (
+    "review_submitted",
+    "review_completed",
+    "findings_added",
+    "merge_conflict",
+    "changes_requested",
+    "check_failure",
+)
 TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
 #: outcome is not settled (transport failure or a possibly-lost answer) and is
@@ -198,6 +219,10 @@ class EventStore:
                     comments = int(parts[1])
                 if len(parts) >= 3 and parts[2].isdigit():
                     checks = int(parts[2])
+            # The first-sight baselines, before any event-derived maximum:
+            # detection passes that must not assume numeric completion order
+            # filter on these and leave repeats to the event store.
+            review_seed, check_seed = reviews, checks
             for (r, n, kind, event_id), row in self._by_key.items():
                 if r != repo or n != int(number):
                     continue
@@ -217,6 +242,8 @@ class EventStore:
             "review_id": reviews,
             "comment_id": comments,
             "check_id": checks,
+            "review_seed": review_seed,
+            "check_seed": check_seed,
             "completed_heads": sorted(completed_heads),
         }
 

@@ -13,6 +13,7 @@ NAMES = frozenset(
     (
         "RA_ENABLED",
         "RA_REPOS",
+        "RA_RECOVER_HELD",
         "RA_SEAT_MAP_JSON",
         "RA_PLATFORM_MAP_JSON",
         "RA_STATE_DIR",

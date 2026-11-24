@@ -137,6 +137,12 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
             message_poster=messenger.post,
         )
         interval = max(60, float(env.get("RA_INTERVAL_S", "900")))
+        # Post-repair recovery selection:  explicit exact attempts or none.
+        # A malformed entry is a configuration refusal, never a guess.
+        recovery_selection = service._recovery_selection(env)
+    except ValueError as exc:
+        os.close(lock_fd)
+        raise Held("review-service-recovery-selection-invalid") from exc
     except Exception:
         os.close(lock_fd)
         raise
@@ -149,6 +155,16 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
                     if not qualified:
                         router.check_required_session_support(gate, probe_id=str(time.time_ns()))
                         qualified = True
+                        if recovery_selection:
+                            # Post-repair recovery:  one explicitly
+                            # selected, bounded pass at process start,
+                            # after the capability gate, before the first
+                            # cycle, under the single-writer lock.  No
+                            # selection, no pass.
+                            log(
+                                "review-alert-recovery",
+                                **runner.recover_held(recovery_selection),
+                            )
                     if stop.is_set():
                         break
                     counts = runner.cycle()

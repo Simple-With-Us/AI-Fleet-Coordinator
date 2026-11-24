@@ -118,6 +118,96 @@ RECEIPT_DEADLINE_S = 3600
 #: record is certainly undelivered.
 MAX_EPOCHS = 5
 
+#: Reasons the bounded recovery pass may revisit:  the delivery-time store
+#: miss is the one hold that accumulates terminal rows below the epoch cap
+#: (it was never redrive-eligible, so such rows exist).  The pick-time
+#: holds in wakes.REDRIVE_REASONS are already redriven while pending by
+#: every settle pass;  a below-cap terminal row carrying one of them is a
+#: state current code cannot produce, and recovering it is outside this
+#: gap.  Membership here is only context for which rows a selection may
+#: name:  it never substitutes for the row's authoritative delivered:false
+#: receipt, which the pass reads live.  REDRIVE_REASONS itself is NOT
+#: expanded:  the settle path's reasons are unchanged.
+RECOVERY_REASONS = ("session-not-found",)
+
+#: The marker a recovery next-attempt carries on its ledger row in the
+#: dedicated `recovery` field:  set when the pass persists the selected
+#: attempt and NEVER cleared by any status transition, so reconciliation
+#: can keep the attempt bounded to its selection in every state.  A marked
+#: row whose receipt is missing (or expired past retention) is NEVER
+#: resubmitted - after an uncertain acceptance the absence of a record
+#: cannot prove the wake did not run, and same-id dedupe is not
+#: permanent.  It fails closed instead.
+RECOVERY_ATTEMPT = "recovery-attempt"
+
+#: Upper bound on redispatches in ONE recovery pass, whatever the explicit
+#: selection names:  recovery is a bounded post-repair act, not a scan.
+MAX_RECOVERY_SENDS = 8
+
+#: Selector fields, exactly:  the event, the prior wake that must still be
+#: its ledger row, the epoch that row must sit at, and the posted Operator
+#: message the redispatch will reference.
+SELECTION_FIELDS = ("repo", "number", "kind", "event_id", "wake_id", "epoch", "message_id")
+
+
+def _recovery_selection(env) -> list:
+    """The explicit recovery selection (RA_RECOVER_HELD):  a JSON array of
+    objects, one per exact stored attempt::
+
+        [{"repo": "owner/name", "number": 2196, "kind": "review_completed",
+          "event_id": "51", "wake_id": "ra-...", "epoch": 0,
+          "message_id": 91}]
+
+    Structured JSON because event ids legitimately contain separators
+    (merge_conflict ids are head:base commit pairs) - a delimited string
+    cannot carry them.  Empty, unset, "[]", "0", "false" or "no" means
+    recovery is OFF:  there is no default-on startup scan.  A malformed
+    document or entry is a configuration refusal, never a guess.  Kinds
+    validate against events.KINDS as adopted NOW.
+    """
+    raw = str(env.get("RA_RECOVER_HELD") or "").strip()
+    if not raw or raw.lower() in ("0", "false", "no"):
+        return []
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError("RA_RECOVER_HELD is not a JSON array of selectors: %s" % exc)
+    if not isinstance(doc, list):
+        raise ValueError("RA_RECOVER_HELD must be a JSON array of selectors")
+    selected = []
+    for item in doc:
+        if not isinstance(item, dict) or set(item) != set(SELECTION_FIELDS):
+            raise ValueError(
+                "RA_RECOVER_HELD entry must have exactly the fields %s: %r"
+                % (", ".join(SELECTION_FIELDS), item)
+            )
+        repo = item["repo"]
+        number = item["number"]
+        kind = item["kind"]
+        event_id = item["event_id"]
+        wake_id = item["wake_id"]
+        epoch = item["epoch"]
+        message_id = item["message_id"]
+        ok = (
+            type(repo) is str
+            and type(number) is int
+            and wakes.PR_RE.fullmatch("%s#%d" % (repo, number)) is not None
+            and kind in events.KINDS
+            and type(event_id) is str
+            and bool(event_id)
+            and type(wake_id) is str
+            and wakes.WAKE_ID_RE.fullmatch(wake_id) is not None
+            and type(epoch) is int
+            and 0 <= epoch
+            and epoch + 1 < MAX_EPOCHS
+            and type(message_id) is int
+            and message_id > 0
+        )
+        if not ok:
+            raise ValueError("RA_RECOVER_HELD entry is not a valid selector: %r" % (item,))
+        selected.append((repo, number, kind, event_id, wake_id, epoch, message_id))
+    return selected
+
 
 class AlertService:
     def __init__(
@@ -273,6 +363,7 @@ class AlertService:
                 check_runs,
                 self.store.cursor(repo, number),
             )
+            found.extend(detect.merge_conflict(repo, number, pr))
             link = str(pr.get("html_url") or "")
             for event in found:
                 if self.store.get(repo, number, event["kind"], event["event_id"]):
@@ -355,7 +446,13 @@ class AlertService:
             ):
                 continue
             owner = self._owner_row(owners, pending["repo"], pending["number"])
-            owner_seat = seat_for(str((owner or {}).get("seat") or ""), self.seat_map)
+            # A recovery attempt's receipt is always read from the seat the
+            # wake was actually submitted to (frozen on its row):  owner
+            # rotation or disappearance never reroutes the lookup, and a
+            # gone owner still permits safe frozen reconciliation.
+            owner_seat = str(row.get("target_seat") or "") or seat_for(
+                str((owner or {}).get("seat") or ""), self.seat_map
+            )
             if not owner_seat:
                 continue
             age = now - self._row_epoch_seconds(row)
@@ -393,7 +490,17 @@ class AlertService:
                 # if it did land).  For a submitted row the router's record
                 # is gone past retention:  bounded by the deadline.
                 if row["status"] == "submit-pending":
-                    self._resubmit(row, owner, counts)
+                    if row.get("recovery") == RECOVERY_ATTEMPT:
+                        # A recovery's next attempt is never resubmitted
+                        # blind:  after an uncertain acceptance a missing
+                        # (expired or removed) record cannot prove the wake
+                        # did not run, and same-id dedupe is not permanent.
+                        # Fail closed;  only a fresh explicit selection
+                        # against proven evidence may retry, next epoch.
+                        self._finish(row, "held", "recovery-receipt-uncertain")
+                        counts["held"] += 1
+                    else:
+                        self._resubmit(row, owner, counts)
                 else:
                     self._maybe_expire(row, age, counts)
                 continue
@@ -409,7 +516,17 @@ class AlertService:
                 counts["unknown"] += 1
             else:
                 reason = outcome[5:]
-                if reason in wakes.REDRIVE_REASONS and int(row.get("epoch") or 0) + 1 < MAX_EPOCHS:
+                if (
+                    reason in wakes.REDRIVE_REASONS
+                    and int(row.get("epoch") or 0) + 1 < MAX_EPOCHS
+                    # A recovery attempt (its marker rides the row through
+                    # every status) is bounded to the explicitly selected
+                    # attempt in every reconciliation state:  no automatic
+                    # fresh epoch, and never a target change from rotated
+                    # current claims.  It settles held with the receipt's
+                    # reason and waits for a fresh explicit selection.
+                    and row.get("recovery") != RECOVERY_ATTEMPT
+                ):
                     if not self._effects_allowed(row["repo"], row["number"]):
                         continue
                     # The wake record is certainly undelivered;  a fresh wake
@@ -437,6 +554,216 @@ class AlertService:
                 else:
                     self._finish(row, "held", reason)
                     counts["held"] += 1
+
+    def recover_held(self, selected: list) -> dict:
+        """One bounded post-repair pass over terminal-held events, only for
+        the exact attempts the selection names.  Requires the protected
+        owner provider and the live origin binder:  without fresh binding
+        there is no protected identity to act on, so the pass refuses
+        outright rather than skipping the check.
+
+        A held row is redispatched only when ALL of these hold:
+          - the selection names THIS exact event (repo, number, kind,
+            event_id) AND the row still carries the selection's expected
+            prior wake id, epoch and posted message id - the ledger row is
+            the original envelope of what was submitted, and a row that
+            moved on is never recovered on guesswork;
+          - the pass has not reached MAX_RECOVERY_SENDS;
+          - the hold reason is in RECOVERY_REASONS (the store-miss gap
+            this pass exists for), and the next epoch stays below
+            MAX_EPOCHS;
+          - the AUTHORITATIVE prior receipt, fetched now from the router
+            by the row's exact wake id, exists and is readable (an absent
+            or expired-past-retention record, a read failure, or an
+            unknown or delivered outcome all fail closed), proves explicit
+            delivered IS false with the same failure code, and its pick
+            identity (seat, session, letter, generation) matches what the
+            redispatch would use NOW from the current owner claims.  The
+            receipt carries no require_pr or message_id, so PR and message
+            provenance come from the validated ledger row alone;  the
+            receipt proves outcome and chat target, nothing more;
+          - the origin still binds NOW (fresh resolve + bind-pr against
+            the live registry, exactly as a cycle does) and effects are
+            allowed.
+        The exact next attempt (deterministic wake id at the next epoch,
+        same posted message id) is persisted as submit-pending BEFORE the
+        router is called, marked RECOVERY_ATTEMPT with its dispatch target
+        frozen on the row (target_seat/session/letter/generation - current
+        owner claims may rotate later;  provenance never does).  Ordinary
+        reconciliation then owns it:  a receipt settles it as usual, but a
+        MISSING receipt is never answered with a blind resubmit of the
+        same id - after an uncertain acceptance that can re-execute a wake
+        that already ran - and fails closed to held
+        recovery-receipt-uncertain, retriable only by a fresh explicit
+        selection against proven evidence.  The settle pass's own
+        delivered-is-False semantics are untouched, and REDRIVE_REASONS is
+        not expanded.  Append-only:  no ledger row is rewritten."""
+        if self.owner_provider is None or self.origin_binder is None:
+            raise ValueError(
+                "held recovery requires the protected owner provider"
+                " and the live origin binder"
+            )
+        counts = {
+            "candidates": 0,
+            "recovered": 0,
+            "skipped": 0,
+            "mismatched": 0,
+            "unmatched": 0,
+            "submitted": 0,
+            "submit-pending": 0,
+            "held": 0,
+        }
+        owners = self.owner_provider()
+        wanted = {(e[0], e[1], e[2], e[3]): e for e in selected}
+        seen = set()
+        rows = sorted(
+            self.store.held(),
+            key=lambda r: (r["repo"], int(r["number"]), r["kind"], str(r["event_id"])),
+        )
+        for row in rows:
+            repo, number = row["repo"], int(row["number"])
+            key = (repo, number, row["kind"], str(row.get("event_id")))
+            expect = wanted.get(key)
+            if expect is None:
+                continue
+            seen.add(key)
+            reason = str(row.get("reason") or "")
+            old_wake_id = str(row.get("wake_id") or "")
+            epoch = int(row.get("epoch") or 0)
+            message_id = row.get("message_id")
+            if (
+                repo not in self.repos
+                or reason not in RECOVERY_REASONS
+                or old_wake_id != expect[4]
+                or epoch != expect[5]
+                or epoch + 1 >= MAX_EPOCHS
+                or message_id != expect[6]
+                or type(message_id) is not int
+                or message_id <= 0
+            ):
+                # The ledger no longer shows the exact attempt the
+                # selection names:  refuse rather than recover a different
+                # attempt on guesswork.
+                counts["mismatched"] += 1
+                continue
+            if counts["recovered"] >= MAX_RECOVERY_SENDS:
+                break
+            counts["candidates"] += 1
+            owner = self._owner_row(owners, repo, number)
+            if owner is None:
+                counts["skipped"] += 1
+                continue
+            owner_seat = seat_for(str(owner.get("seat") or ""), self.seat_map)
+            if not owner_seat:
+                counts["skipped"] += 1
+                continue
+            # The authoritative outcome evidence:  the router's own record
+            # of THIS wake, read now.  Only an explicit delivered:false
+            # with the same code proves certain-undelivered;  a missing,
+            # expired, unreadable, unknown or delivered record fails
+            # closed.
+            try:
+                receipt = self.router.receipt(owner_seat, old_wake_id)
+            except wakes.WakeError:
+                counts["skipped"] += 1
+                continue
+            if not isinstance(receipt, dict):
+                counts["skipped"] += 1
+                continue
+            session = str(owner.get("origin_session_claim") or "")
+            letter = str(owner.get("origin_letter_claim") or "")
+            generation = owner.get("origin_generation_claim")
+            if (
+                receipt.get("delivered") is not False
+                or str(receipt.get("wake_id") or "") != old_wake_id
+                or str(receipt.get("code") or receipt.get("reason") or "") != reason
+                or str(receipt.get("seat") or "") != owner_seat
+                or not session
+                or not letter
+                or type(generation) is not int
+                or generation < 1
+                or str(receipt.get("session_id") or "") != session
+                or str(receipt.get("picked_letter") or "") != letter
+                or receipt.get("picked_generation") != generation
+            ):
+                counts["skipped"] += 1
+                continue
+            try:
+                if self.cancelled():
+                    counts["skipped"] += 1
+                    continue
+                origin = self.origin_binder(repo, number)
+                self.origins_this_cycle[(repo, number)] = origin
+                self.bound_this_cycle.add((repo, number))
+            except Exception:  # noqa: BLE001 - a bind failure holds, never guesses
+                counts["skipped"] += 1
+                continue
+            if not self._effects_allowed(repo, number):
+                counts["skipped"] += 1
+                continue
+            # Persist the exact next attempt BEFORE crossing the router,
+            # marked, with its dispatch target frozen on the row.
+            next_epoch = epoch + 1
+            next_wake = wakes.wake_id_for(
+                repo, number, row["kind"], str(row.get("event_id")), next_epoch
+            )
+            intent = {
+                k: row.get(k)
+                for k in (
+                    "repo",
+                    "number",
+                    "kind",
+                    "event_id",
+                    "actor",
+                    "head",
+                    "current_head",
+                    "head_matches",
+                    "summary",
+                )
+            }
+            intent.update(
+                ts=None,
+                epoch=next_epoch,
+                status="submit-pending",
+                wake_id=next_wake,
+                reason=None,
+                recovery=RECOVERY_ATTEMPT,
+                message_id=message_id,
+                link=row.get("link") or "",
+                target_seat=owner_seat,
+                target_session=session,
+                target_letter=letter,
+                target_generation=generation,
+            )
+            self.store.append(intent)
+            head_note = "" if row.get("head_matches") else " (against an older head)"
+            topic = "%s#%s: %s%s" % (repo, number, row.get("summary") or "", head_note)
+            try:
+                self.router.submit(
+                    owner_seat,
+                    next_wake,
+                    session,
+                    letter,
+                    generation,
+                    "%s#%s" % (repo, number),
+                    topic,
+                    row.get("link") or "",
+                    message_id=message_id,
+                )
+            except wakes.WakeRetryable:
+                # Unsettled:  the marked intent row stands;  ordinary
+                # reconciliation reads the receipt and never blind-
+                # resubmits this attempt.
+                counts["submit-pending"] += 1
+            except wakes.WakeError as exc:
+                self._finish(intent, "held", "wake-submit: %s" % exc)
+                counts["held"] += 1
+            else:
+                self._finish(intent, "submitted", None)
+                counts["submitted"] += 1
+            counts["recovered"] += 1
+        counts["unmatched"] = len(wanted) - len(seen)
+        return counts
 
     def _post_message(self, owner: dict, row: dict, counts: dict) -> None:
         if not self._effects_allowed(row["repo"], row["number"]):
@@ -639,6 +966,23 @@ def main(argv=None) -> int:
     service = AlertService(
         store, gh, router, owners_path, seat_map_from(env), repos=repos, gate_seat=selftest_seat
     )
+    try:
+        recovery_selection = _recovery_selection(env)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if recovery_selection:
+        # Post-repair recovery:  one explicitly selected, bounded pass at
+        # process start, before the first cycle, under the single-writer
+        # lock.  With no selection there is no pass at all, and without
+        # the protected owner provider and live origin binder the pass
+        # refuses (this standalone wiring has neither).
+        try:
+            recovery = service.recover_held(recovery_selection)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(json.dumps({"recovery": recovery}, sort_keys=True), flush=True)
     if "--once" in argv:
         counts = service.cycle()
         _write_status(state_dir, service.status_snapshot())
