@@ -152,12 +152,13 @@ def prerequisites(
         say(f"interpreter: {interpreter}")
     else:
         missing.append(f"interpreter {interpreter} (Python 3.9 or later)")
-    env, names = fwb.restic_env(cfg)
+    credentials = fwb.read_credentials(cfg)
+    env, names = fwb.restic_env(cfg, credentials=credentials)
     if env is None:
         missing.append("credentials in the secret store or the environment: " + ", ".join(names))
     else:
         say("credentials: all four names are set (values not shown)")
-        probs = fwb.check_b2_setup(cfg)
+        probs = fwb.check_b2_setup(cfg, credentials)
         for is_hard, text in probs:
             missing.append(f"B2 setup: {text}")
             if is_hard:

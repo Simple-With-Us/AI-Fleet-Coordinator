@@ -3167,9 +3167,9 @@
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
-              "ZCODE_ZULIP_EMAIL",
-              "ZCODE_ZULIP_KEY",
-              "ZCODE_ZULIP_SITE"
+              "ZC_ZULIP_EMAIL",
+              "ZC_ZULIP_KEY",
+              "ZC_ZULIP_SITE"
             ],
             "present": true
           },
@@ -3186,8 +3186,8 @@
         {
           "autofixAllowed": false,
           "check": {
-            "detail": "ZULIP_ZCODE",
-            "target": "~/.secrets/Zulip/Zcode-zuliprc",
+            "detail": "ZULIP_ZC",
+            "target": "~/.secrets/Zulip/ZC-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",

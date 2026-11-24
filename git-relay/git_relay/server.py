@@ -73,6 +73,13 @@ FILE_REQUEST_ACTIONS = frozenset({"wf_file_put", "wf_files_put"})
 # envelope allowance stays narrow and the verb owns the exact text bound.
 MAX_LARGE_TEXT_REQUEST_BYTES = 6 * 1024 * 1024
 LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_create"})
+# Sealed secret values (up to 48 KiB, base64 plus envelope) exceed the default 64 KiB cap; the verb owns the exact bound.
+MAX_SECRET_PUT_REQUEST_BYTES = 128 * 1024
+SECRET_PUT_REQUEST_ACTIONS = frozenset(
+    a
+    for a in SeatPolicy.WORKFLOW_ACTIONS
+    if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
+)
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -533,6 +540,8 @@ class Relay:
                     )
                 elif action in LARGE_TEXT_REQUEST_ACTIONS:
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
+                elif action in SECRET_PUT_REQUEST_ACTIONS:
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_SECRET_PUT_REQUEST_BYTES])
                 else:
                     scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
@@ -753,6 +762,17 @@ class Relay:
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
+                if key is None and exc.code in {"response_too_large", "response_invalid_unicode"}:
+                    # A bounded READ changed nothing. Retrying the same body cannot
+                    # make it fit. Writes still keep their unknown-outcome fence.
+                    outcome = "github_terminal"
+                    detail = {"status": exc.status, "github_code": exc.code}
+                    return 502, {
+                        "error": "github response failed deterministic validation",
+                        "github_status": exc.status,
+                        "github_code": exc.code,
+                        "retryable": False,
+                    }
                 if (
                     key is None
                     and exc.status in (0, 408, 429)
@@ -1034,6 +1054,44 @@ _REAPPLY_STATE_ACTIONS = frozenset(
     {
         "wf_repo_variable_update",
         "wf_repo_variable_delete",
+        "wf_secret_put_org_actions",
+        "wf_secret_delete_org_actions",
+        "wf_secret_repos_set_org_actions",
+        "wf_secret_put_org_dependabot",
+        "wf_secret_delete_org_dependabot",
+        "wf_secret_repos_set_org_dependabot",
+        "wf_secret_put_org_codespaces",
+        "wf_secret_delete_org_codespaces",
+        "wf_secret_repos_set_org_codespaces",
+        "wf_secret_put_repo_actions",
+        "wf_secret_delete_repo_actions",
+        "wf_secret_put_repo_dependabot",
+        "wf_secret_delete_repo_dependabot",
+        "wf_secret_put_repo_codespaces",
+        "wf_secret_delete_repo_codespaces",
+        "wf_secret_put_env_actions",
+        "wf_secret_delete_env_actions",
+        "wf_hook_create",
+        "wf_hook_update",
+        "wf_hook_delete",
+        "wf_hook_ping",
+        "wf_hook_test",
+        "wf_hook_redeliver",
+        "wf_org_hook_create",
+        "wf_org_hook_update",
+        "wf_org_hook_delete",
+        "wf_org_hook_ping",
+        "wf_deploy_key_add",
+        "wf_deploy_key_delete",
+        "wf_environment_put",
+        "wf_environment_delete",
+        "wf_env_branch_policy_create",
+        "wf_env_branch_policy_delete",
+        "wf_env_variable_set",
+        "wf_env_variable_delete",
+        "wf_org_variable_set",
+        "wf_org_variable_delete",
+        "wf_org_variable_repos_set",
         "wf_labels_add",
         "wf_label_update",
         "wf_issue_dependency_add",
@@ -1470,6 +1528,8 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False, service_read_on
                 if action in FILE_REQUEST_ACTIONS
                 else MAX_LARGE_TEXT_REQUEST_BYTES
                 if action in LARGE_TEXT_REQUEST_ACTIONS
+                else MAX_SECRET_PUT_REQUEST_BYTES
+                if action in SECRET_PUT_REQUEST_ACTIONS
                 else MAX_REQUEST_BYTES
             )
             if length < 1 or length > cap:

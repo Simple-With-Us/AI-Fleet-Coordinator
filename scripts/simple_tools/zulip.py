@@ -237,7 +237,6 @@ USER_AGENT = "simple-tools/1 (fleet)"
 SEAT_FILE_OVERRIDES: dict[str, str] = {
     "GROK": "Grok-Build",  # GROK posts as grok-build-bot@ (owner 2026-10-08)
     "OPENCODE": "OpenCode",  # the credential file is OpenCode-zuliprc (Sat, Oct 10);  the rule would say Opencode
-    "ZC": "Zcode",  # the created /zulip records are ZCODE_ZULIP_* (2026-11-03);  the rule would say ZC
 }
 SHORT_PART_MAX = 2
 
@@ -627,31 +626,30 @@ def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
     return None
 
 
-def _scoped_binding(scoped: Mapping[str, str], path: str) -> str:
-    """The token this read uses:  the consumer's own scoped service token for that folder,
-    read from the host's approved store, else a copy of that same token in the environment.
+def _scoped_binding(scoped: Mapping[str, str], path: str, project: str | None = None) -> str:
+    """The token this read runs under:  this consumer's own scoped service token for that folder.
 
-    The store is the authority:  a hand-set environment value never replaces the reviewed,
-    scope-limited grant.  A copy in the environment is only used when the scoped read populated it, which is how a host transports a value it already synced from Infisical.
+    The store is the authority:  the consumer's own account token is read from the host's
+    approved store first, and it is the credential.  An environment binding is a second
+    source only when the token's own grant metadata proves it is this consumer's narrow
+    grant:  the workspace is the project, the permissions are exactly read, the granted
+    folder is exactly this one, and the token's own name is this account.  A general
+    binding scoped to "/" or to several folders fails that check, so it can no longer serve
+    a consumer, and a hand-set value never replaces the reviewed grant.
 
     There is no other source:  no shared reader, no machine identity and no cached copy.  A
     missing token, a locked keychain or an unreadable store yields nothing, and the refusal
-    names which of those it was.
+    names the account the consumer needs and which of those it was.
     """
     import fleet_infisical as FI
 
     account = INFISICAL_TOKEN_ACCOUNTS.get(path)
-    status = "no-token"
-    if account:
-        token, status = FI.token_from_store(account, scoped, home=FI.home_dir(scoped))
-        if token:
-            return token
-    bound = (scoped.get(FI.ENV_TOKEN) or "").strip()
-    if bound:
-        return FI.check_service_token(bound)
-    if account:
-        raise FI.SecretsError(f"service-token-required: {account} is not usable ({status})")
-    raise FI.SecretsError(f"service-token-required: no scoped token covers {path}")
+    if not account:
+        raise FI.SecretsError(f"service-token-required: no scoped token covers {path}")
+    if project is None:
+        project = _project_scope(scoped, FI.home_dir(scoped))
+    token, _source = FI.consumer_binding(account, path, scoped, project, home=FI.home_dir(scoped))
+    return token
 
 
 def _infisical_context(
@@ -664,11 +662,11 @@ def _infisical_context(
     scoped = dict(env, HOME=str(home))
     scoped[FI.ENV_READ_PATHS] = path
     try:
-        binding = _scoped_binding(scoped, path)
-    except FI.SecretsError:
-        raise CredentialError(
-            "Infisical service-token-required: the scoped token for %s is not usable" % path
-        ) from None
+        binding = _scoped_binding(scoped, path, project)
+    except FI.SecretsError as exc:
+        # The refusal names the account the consumer needs and which refusal it was, so the
+        # operator knows what to provision:  the message holds no value.
+        raise CredentialError("Infisical %s" % exc.message) from None
     route = hashlib.sha256(
         (scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()
     ).hexdigest()

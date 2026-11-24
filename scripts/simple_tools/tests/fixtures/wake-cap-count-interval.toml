@@ -1,0 +1,28 @@
+# Fixture:  one seat's wake count cap, and the interval counter that reads it.
+#
+# Source only.  It holds no secret and no environment value, no running listener ever loads it,
+# and nothing in it wakes:  the test that reads it uses the real config loader and a fixed clock.
+# The shape is the shipped server listener's own MM section
+# (scripts/simple_tools/server/listener.toml), so the seat identifier and the cap are the ones a
+# live file carries.
+#
+# The seat identifier is the real shape:  the tag is upper-cased, so a lower-case [seat.mm] folds
+# into MM (config.py upper-cases the section name), and a hyphen is a legal character
+# (see server-listener-live-oct9.toml).
+#
+# The count cap is a WHOLE number on purpose.  The budget compares a whole count against the cap
+# (count >= cap), so a fractional cap admits ceil(c) wakes per window and would behave exactly
+# like its ceiling:  a decimal value here is not a distinct limit, and a decimal rate needs its
+# own enforcement path, not a decimal value in this table.
+[daemon]
+instance = "server"
+
+[seat.MM]
+creds = "env"                     # ZULIP_MM_EMAIL, ZULIP_MM_API_KEY
+wake = "http"
+routine = { url_env = "MM_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+# The five wake count caps (config.py, WAKE_CAP_KEYS) carry no default:  a seat that wants one
+# writes it here, and a seat that leaves one out is never held back by a number nobody set.
+budget = { wakes_per_hour = 2, wakes_per_day = 80, per_topic_per_hour = 6, owner_per_day = 40, owner_per_topic_per_hour = 12, board_per_day = 0 }
+# The live table is a different thing:  the live room's interrupt-turn budget per lease.
+live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }

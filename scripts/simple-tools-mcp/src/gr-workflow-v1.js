@@ -1,4 +1,6 @@
 import {z} from 'zod';
+import {SECRET_SPECS, SECRET_READ_ACTIONS, SECRET_INPUT_LIMITS, isSecretAction, validSecretResponse} from './gr-secrets-v1.js';
+import {HOOK_SPECS, HOOK_READ_ACTIONS, isHookAction, validHookResponse} from './gr-hooks-v1.js';
 // Default-off caller contract. hosted-tools registers these tools, but they are neither listed nor
 // callable unless the owner sets GR_WORKFLOW_TOOLS=on (config.grWorkflowEnabled).
 // Contract for the git-relay wf_ workflow verbs (git-relay/git_relay/workflow_verbs.py).
@@ -23,7 +25,7 @@ const ASSET_NAME = { type: 'string', pattern: '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,9
 const BINARY_B64 = 245760;
 // The opt-in 716800-byte text class needs envelope headroom for JSON escaping. The file actions (wf_file_put, wf_files_put, wf_git_blob_create, wf_git_tree_create) use the 6 MiB file-args envelope via the allowlisted mcp-body.js path; binary upload stays under the 256 KiB MCP body bound.
 export const WF_V1_INPUT_LIMITS = Object.freeze({ wf_release_asset_upload_binary: 253952, wf_file_put: FILE_INPUT_BYTES, wf_files_put: FILE_INPUT_BYTES, wf_git_blob_create: FILE_INPUT_BYTES, wf_git_tree_create: FILE_INPUT_BYTES });
-export const workflowInputLimit = action => WF_V1_INPUT_LIMITS[action] ?? 65536;
+export const workflowInputLimit = action => WF_V1_INPUT_LIMITS[action] ?? SECRET_INPUT_LIMITS[action] ?? 65536;
 const STR = { type: 'string', maxLength: 500 };
 const obj = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 
@@ -226,8 +228,9 @@ const SPECS = {
   wf_pr_close: ['Close an open PR only; never deletes the branch. expected_head_sha and expected_base_ref pre-read pins (non-atomic). Receipt shows the provider-visible effect at response time only and supplies no authority by itself.', obj(['repo','number','expected_head_sha','expected_base_ref'], {repo:REPO, number:INT, expected_head_sha:SHA, expected_base_ref:REF})],
   wf_merge_guarded: ['Merge a pull request, fenced on its head; optional commit title/message validated and secret-scanned, empty message distinct from absent.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA, commit_title: {type:'string',minLength:1,maxLength:256}, commit_message: {type:'string',maxLength:65536} })],
 };
+Object.assign(SPECS, SECRET_SPECS, HOOK_SPECS);
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_thread_comments','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get','wf_repo_list','wf_pr_search','wf_repo_hooks','wf_deploy_keys','wf_org_installations','wf_branch_rules','wf_rulesets']);
+export const WF_V1_READ_ACTIONS = Object.freeze([...SECRET_READ_ACTIONS,...HOOK_READ_ACTIONS,'wf_installation_metadata','wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_thread_comments','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get','wf_repo_list','wf_pr_search','wf_repo_hooks','wf_deploy_keys','wf_org_installations','wf_branch_rules','wf_rulesets']);
 // Descriptions explain capability and safe routing, not static permission claims.
 // The live relay seat policy remains the source of truth for action availability.
 // AFC-683 / #2227: wf_pr_create stays retired from the advertised list; fleet PR
@@ -241,6 +244,7 @@ export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.filter(action => action !
 })));
 const typeOk = (schema, v) => schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
   : schema.type === 'boolean' ? typeof v === 'boolean'
+  : schema.type === 'object' ? validWfV1Args2(schema, v)
   : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => schema.items.type === "object" ? validWfV1Args2(schema.items, x) : typeOk(schema.items, x))
   : typeof v === 'string' && (!schema.pattern || new RegExp(schema.pattern).test(v)) && (!schema.enum || schema.enum.includes(v)) &&
     (!schema.minLength || v.length >= schema.minLength) && (!schema.maxLength || v.length <= schema.maxLength);
@@ -520,7 +524,7 @@ const readResponseSchemas={
  wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
 };
 const environmentItem=z.object({id:z.number().int().positive(),name:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=255),created_at:z.string().max(100),updated_at:z.string().max(100),protection_rule_types:z.array(z.string().min(1).max(100)).max(20).nullable(),deployment_branch_policy:z.object({protected_branches:z.boolean(),custom_branch_policies:z.boolean()}).strict().nullable()}).strict();
-const environmentResponses={wf_environment_get:z.object({environment:environmentItem}).strict(),wf_environments:z.object({environments:z.array(environmentItem).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()};
+const environmentResponses={wf_environment_put:z.object({environment:environmentItem}).strict(),wf_environment_get:z.object({environment:environmentItem}).strict(),wf_environments:z.object({environments:z.array(environmentItem).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()};
 const deploymentText=z.string().refine(v=>new TextEncoder().encode(v).length<=1024).nullable();
 const deploymentItem=z.object({id:positive,sha:shaValue,ref:deploymentText,environment:deploymentText,task:deploymentText,created_at:deploymentText,transient_environment:z.boolean().nullable(),production_environment:z.boolean().nullable()}).strict();
 const deploymentStatus=z.object({id:positive,state:z.enum(['error','failure','inactive','in_progress','queued','pending','success']),description:deploymentText,created_at:deploymentText}).strict();
@@ -614,6 +618,8 @@ const releaseNotesCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0
 const releaseNotesText=limit=>z.string().refine(v=>!v.includes('\0')&&new TextEncoder().encode(v).length<=limit&&!releaseNotesCredential.test(v));
 const releaseNotesReceipt=z.object({preview:z.object({name:releaseNotesText(500),body:releaseNotesText(32768)}).strict(),saved:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
+ if(isSecretAction(action))return validSecretResponse(action,body,args);
+ if(isHookAction(action)&&action!=='wf_environment_put')return validHookResponse(action,body,args);
 
  if(typeof action!=='string')return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;

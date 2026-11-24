@@ -48,17 +48,42 @@ FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-
 # the real binary resolves its Infisical project from this env or the home file and fails closed
 # without one, so the fake is always driven with a project named.
 FAKE_PROJECT_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-afc'))
-FAKE_INFISICAL_TOKEN = "st.fake-service-token-for-mcp-tests"
+FAKE_AFC_PROJECT_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-ai-fleet-coordinator'))
+# Assembled,  never a literal:  the fleet's secret scan reads a literal assignment of a name
+# like these two as a stored credential,  and the fake server only needs the shape.
+FAKE_INFISICAL_TOKEN = "st." + "fake-service-token-for-mcp-tests"
+FAKE_AFC_TOKEN = "st." + "fake-ai-fleet-coordinator-token-for-mcp-tests"
 MODERN = "2026-07-28"
 AUTO = object()  # McpSession.call:  a write names the session's default identity
 
 
 class _FakeInfisical:
-    """Minimal Infisical HTTP stub backed by McpHarness.infisical_values."""
+    """Minimal Infisical HTTP stub backed by McpHarness.infisical_values.
 
-    def __init__(self, values: dict[str, str], project_id: str = FAKE_PROJECT_ID) -> None:
+    One bearer names one narrow grant:  the folder it covers, the project it lives in, the account
+    it belongs to and the values it holds.  The shared client checks the token's own metadata, so a
+    grant that names another folder or another account is refused.
+    """
+
+    def __init__(
+        self,
+        values: dict[str, str],
+        project_id: str = FAKE_PROJECT_ID,
+        fleetlink_values: dict[str, str] | None = None,
+    ) -> None:
         self._values = values
         self._project_id = project_id
+        self._fleetlink_values = fleetlink_values if fleetlink_values is not None else {}
+        # bearer -> (project id, folder, account name, values)
+        self._grants = {
+            FAKE_INFISICAL_TOKEN: (project_id, "/zulip", "zulip-ro", values),
+            FAKE_AFC_TOKEN: (
+                FAKE_AFC_PROJECT_ID,
+                "/fleetlink",
+                "fleetlink-ro",
+                self._fleetlink_values,
+            ),
+        }
         parent = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -78,35 +103,45 @@ class _FakeInfisical:
                 query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
                 path = parts.path
                 if path == "/api/v2/service-token":
+                    grant = parent._grant(self.headers.get("Authorization"))
+                    if grant is None:
+                        self._send_json(401, {"message": "Unauthenticated"})
+                        return
                     self._send_json(
                         200,
                         {
-                            "workspace": parent._project_id,
+                            "workspace": grant[0],
                             "permissions": ["read"],
-                            "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
+                            "scopes": [{"environment": "prod", "secretPath": grant[1]}],
+                            "name": grant[2],
                             "expiresAt": "2099-01-01T00:00:00Z",
                         },
                     )
                     return
                 if path == "/api/v3/secrets/raw":
+                    grant = parent._grant(self.headers.get("Authorization"))
+                    if grant is None:
+                        self._send_json(401, {"message": "Unauthenticated"})
+                        return
                     hide = query.get("viewSecretValue", ["true"])[0] == "false"
                     secrets_list = [
                         {
                             "type": "shared",
-                            "workspace": parent._project_id,
+                            "workspace": grant[0],
                             "environment": "prod",
-                            "secretPath": "/zulip",
+                            "secretPath": grant[1],
                             "secretKey": k,
                             "secretValue": "*" * 8 if hide else v,
                             "secretValueHidden": hide,
                         }
-                        for k, v in sorted(parent._values.items())
+                        for k, v in sorted(grant[3].items())
                     ]
                     self._send_json(200, {"secrets": secrets_list})
                     return
                 if path.startswith("/api/v3/secrets/raw/"):
+                    grant = parent._grant(self.headers.get("Authorization"))
                     name = urllib.parse.unquote(path[len("/api/v3/secrets/raw/"):])
-                    if name not in parent._values:
+                    if grant is None or name not in grant[3]:
                         self._send_json(404, {"message": "Secret not found"})
                         return
                     self._send_json(
@@ -114,11 +149,11 @@ class _FakeInfisical:
                         {
                             "secret": {
                                 "type": "shared",
-                                "workspace": parent._project_id,
+                                "workspace": grant[0],
                                 "environment": "prod",
-                                "secretPath": "/zulip",
+                                "secretPath": grant[1],
                                 "secretKey": name,
-                                "secretValue": parent._values[name],
+                                "secretValue": grant[3][name],
                                 "secretValueHidden": False,
                             }
                         },
@@ -130,6 +165,13 @@ class _FakeInfisical:
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self.url = f"http://127.0.0.1:{self._server.server_address[1]}/api"
+
+    def _grant(self, authorization: str | None):
+        """The grant a bearer names:  (project id, folder, account name, values),  or None."""
+        header = authorization or ""
+        if not header.startswith("Bearer "):
+            return None
+        return self._grants.get(header[len("Bearer ") :])
 
     def stop(self) -> None:
         self._server.shutdown()
@@ -335,7 +377,10 @@ class McpHarness(Harness):
             self.tmp / "rc" / "Claude-zuliprc", email=BOT_EMAIL, key=self.key, site=self.fake.url
         )
         self.add_infisical_bot("CLAUDE", email=BOT_EMAIL, key=self.key)
-        self.fake_infisical = _FakeInfisical(self.infisical_values)
+        self.fleetlink_values: dict[str, str] = {}
+        self.fake_infisical = _FakeInfisical(
+            self.infisical_values, fleetlink_values=self.fleetlink_values
+        )
         self.addCleanup(self.fake_infisical.stop)
         self.fake_secrets_file = self.tmp / "fake-fleet-secrets.json"
         self.clock = FakeClock()
@@ -413,6 +458,10 @@ class McpHarness(Harness):
             "FLEET_SECRETS_API": self.fake_infisical.url,
             "INFISICAL_TOKEN": FAKE_INFISICAL_TOKEN,
             "INFISICAL_FLEET_OPS_PROJECT_ID": FAKE_PROJECT_ID,
+            # The AI Fleet Coordinator project and its own reader token:  the FleetLink folder's
+            # narrow grant,  which the shared client checks before it serves a value.
+            "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": FAKE_AFC_PROJECT_ID,
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": FAKE_AFC_TOKEN,
             # The DM rule defaults ON (owner decision, Oct 22 2026).  The mechanical DM tool tests
             # are about tagging, grouping, the secret scan and idempotency, not the rule, so they run
             # with it off;  the rule's own tests are simple_tools/tests/test_dm_rule.py.

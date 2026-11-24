@@ -748,6 +748,11 @@ class FakeScopedClient:
         self.calls.append(("token", account))
         return (self.token, "ok") if self.token else ("", "no-token")
 
+    def consumer_binding(self, account, path, env, project, **kwargs):
+        """The store is the authority:  the consumer's own account token is the credential."""
+        self.calls.append(("binding", account, path))
+        return (self.token, "store") if self.token else ("", "no-token")
+
     def infisical_project_id(self, env, home):
         # The project id is built at run time:  no project id,  UUID or hostname is
         # committed to source,  not even a synthetic one.
@@ -1054,6 +1059,39 @@ class RunCase(RunBase):
         self.assertIn("B2_FLEET_WORK_APPLICATION_KEY", line)
         self.assertIn("RESTIC_FLEET_WORK_PASSWORD", line)
         self.assertEqual(self.argv(), [])
+
+    def test_a_local_repository_needs_only_the_password(self):
+        """A local repository run needs the password only,  so the B2 names never fail it."""
+        self.set_creds(names=("RESTIC_FLEET_WORK_PASSWORD",))
+        calls = []
+        original = fwb._read_infisical_names
+
+        def counting(names, folder):
+            calls.append(tuple(names))
+            return original(names, folder)
+
+        self.cfg.repository = str(self.tmp / "mirror")
+        with mock.patch.object(fwb, "_read_infisical_names", side_effect=counting):
+            env, missing = fwb.restic_env(self.cfg)
+        self.assertEqual(missing, [])
+        self.assertEqual(env["RESTIC_PASSWORD"], PW)
+        self.assertEqual(env["RESTIC_REPOSITORY"], str(self.tmp / "mirror"))
+        # Only the name this run uses is asked for,  so a name it does not need can never fail it.
+        self.assertEqual(set(calls[-1]), {"RESTIC_FLEET_WORK_PASSWORD"})
+
+    def test_one_run_reads_the_store_once(self):
+        """The run reads the store once and hands the answer on:  one read, not one per caller."""
+        calls = []
+        original = fwb._read_infisical_names
+
+        def counting(names, folder):
+            calls.append(tuple(names))
+            return original(names, folder)
+
+        with mock.patch.object(fwb, "_read_infisical_names", side_effect=counting):
+            self.assertEqual(fwb.cmd_run(self.cfg, self.args), 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(set(calls[0]), set(fwb.CRED_NAMES.values()))
 
     def test_the_bucket_name_has_no_fallback_to_the_shared_fleet_bucket(self):
         """The shared name in fleet-secrets or the environment must never point the backup at the shared bucket."""
@@ -3460,7 +3498,9 @@ class MiscCase(unittest.TestCase):
         client = fwb._infisical_reader()
         original = client.bounded_fetch_project
         values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "RESTIC_FLEET_WORK_PASSWORD": "fixture password"}
-        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+        with ScopedReadAPI(
+            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+        ) as api:
             calls = []
             def read(project, folder, env, **options):
                 calls.append(options["names"])
@@ -3468,28 +3508,106 @@ class MiscCase(unittest.TestCase):
                     {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
             with (
                 mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
-                    "INFISICAL_TOKEN": api.token, "B2_FLEET_WORK_BUCKET_NAME": "synced"}, clear=True),
+                    "INFISICAL_TOKEN": api.token,
+                    "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                    # The store is the authority:  an empty home has no account token,  so the
+                    # bound copy is used and it has to prove itself.
+                    "HOME": str(Path(tempfile.mkdtemp(prefix="fwb-store-"))),
+                    "B2_FLEET_WORK_BUCKET_NAME": "synced"}, clear=True),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
             ):
                 self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
-                self.assertNotIn("B2_FLEET_WORK_BUCKET_NAME", calls[0])
+                # The store is asked for every name:  the environment is never a source,  so a
+                # hand-set copy cannot skip the read or shadow the answer.
+                self.assertEqual(set(calls[0]), set(fwb.CRED_NAMES.values()))
                 self.assertEqual(len(calls), 1)
                 api.status = 503
-                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                # The provider is down,  so the binding cannot prove itself:  the refusal
+                # names the account the operator has to provision instead of the read
+                # answering nothing with no reason.
+                with self.assertRaises(fwb.BindingRefused) as caught:
+                    fwb.read_credentials(fwb.Config(home=Path("/")))
+                self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
                 with mock.patch.dict(os.environ, {n: "synced" for n in fwb.CRED_NAMES.values()}):
                     before = len(calls)
-                    self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {})
+                    # The environment is never a source,  so the store is still the only answer
+                    # and its refusal still reaches the caller.
+                    with self.assertRaises(fwb.BindingRefused):
+                        fwb.read_credentials(fwb.Config(home=Path("/")))
                     self.assertEqual(len(calls), before)
 
 
     def test_a_store_that_cannot_answer_fails_closed_and_names_its_store(self):
         """A store that raises is a failure,  not an empty token:  it never falls back."""
         client = mock.Mock()
-        client.token_from_store.side_effect = OSError("the store could not answer")
+        client.consumer_binding.side_effect = OSError("the store could not answer")
         with self.assertRaises(RuntimeError) as caught:
-            fwb._own_token(client)
+            fwb._own_token(client, fwb.CREDENTIAL_FOLDER, str(uuid.uuid4()))
         self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
         self.assertNotIn("synthetic", str(caught.exception))
+
+    def test_a_binding_refusal_reaches_the_caller_instead_of_an_empty_answer(self):
+        """The refusal names the account the operator has to provision,  so it is never swallowed."""
+        client = mock.Mock()
+        client.consumer_binding.side_effect = OSError("the store could not answer")
+        with mock.patch.object(fwb, "_infisical_reader", return_value=client):
+            with mock.patch.dict(
+                os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())}
+            ):
+                with self.assertRaises(fwb.BindingRefused) as caught:
+                    fwb._read_infisical_names(("WANTED",), fwb.CREDENTIAL_FOLDER)
+        self.assertIn(fwb.CREDENTIAL_TOKEN_ACCOUNT, str(caught.exception))
+
+    def test_the_environment_cannot_shadow_the_store_at_this_file(self):
+        """The store is the only source:  a hand-set copy is never the value this job uses."""
+        sys.path.insert(0, str(HERE.parent))
+        from fleet_knobs.tests._fake import ScopedReadAPI
+        client = fwb._infisical_reader()
+        original = client.bounded_fetch_project
+        values = {
+            "B2_FLEET_WORK_BUCKET_NAME": "store bucket",
+            "B2_FLEET_WORK_KEY_ID": "store key id",
+            "B2_FLEET_WORK_APPLICATION_KEY": "store application key",
+            "RESTIC_FLEET_WORK_PASSWORD": "store password",
+        }
+        wrong = {
+            "B2_FLEET_WORK_BUCKET_NAME": "env bucket",
+            "B2_FLEET_WORK_KEY_ID": "env key id",
+            "B2_FLEET_WORK_APPLICATION_KEY": "env application key",
+            "RESTIC_FLEET_WORK_PASSWORD": "env password",
+        }
+        with ScopedReadAPI(
+            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+        ) as api:
+            calls = []
+            def read(project, folder, env, **options):
+                calls.append(options["names"])
+                return original(project, folder,
+                    {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
+            with (
+                mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
+                    "INFISICAL_TOKEN": api.token,
+                    "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                    "HOME": str(Path(tempfile.mkdtemp(prefix="fwb-store-"))),
+                    **wrong}, clear=True),
+                mock.patch.object(client, "bounded_fetch_project", side_effect=read),
+            ):
+                # The store answers for every name,  and the copy in the environment is not it.
+                self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), values)
+                self.assertEqual(set(calls[-1]), set(fwb.CRED_NAMES.values()))
+                # The child environment carries the store's values,  and no copy of the values the
+                # environment holds.
+                env, missing = fwb.restic_env(fwb.Config(home=Path("/")))
+                self.assertEqual(missing, [])
+                self.assertEqual(env["RESTIC_PASSWORD"], values["RESTIC_FLEET_WORK_PASSWORD"])
+                self.assertEqual(env["AWS_ACCESS_KEY_ID"], values["B2_FLEET_WORK_KEY_ID"])
+                self.assertEqual(
+                    env["AWS_SECRET_ACCESS_KEY"], values["B2_FLEET_WORK_APPLICATION_KEY"]
+                )
+                self.assertIn("/" + values["B2_FLEET_WORK_BUCKET_NAME"] + "/", env["RESTIC_REPOSITORY"])
+                for name, wrong_value in wrong.items():
+                    self.assertNotIn(name, env)
+                    self.assertNotIn(wrong_value, "".join(env.values()))
 
     def test_read_credentials_master_names_keep_the_existing_explicit_gate(self):
         sys.path.insert(0, str(HERE.parent))
@@ -3497,7 +3615,9 @@ class MiscCase(unittest.TestCase):
         client = fwb._infisical_reader()
         original = client.bounded_fetch_project
         values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "BACKBLAZE_MASTER_KEY_ID": "fixture master"}
-        with ScopedReadAPI(values, project=str(uuid.uuid4()), path="/") as api:
+        with ScopedReadAPI(
+            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+        ) as api:
             calls = []
             def read(project, folder, env, **options):
                 calls.append(options["names"])
@@ -3505,7 +3625,9 @@ class MiscCase(unittest.TestCase):
                     {**env, "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"]}, **options)
             with (
                 mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": api.project,
-                    "INFISICAL_TOKEN": api.token}, clear=True),
+                    "INFISICAL_TOKEN": api.token,
+                    "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                    "HOME": str(Path(tempfile.mkdtemp(prefix="fwb-store-")))}, clear=True),
                 mock.patch.object(client, "bounded_fetch_project", side_effect=read),
             ):
                 self.assertEqual(fwb.read_credentials(fwb.Config(home=Path("/"))), {"B2_FLEET_WORK_KEY_ID": "public fixture"})

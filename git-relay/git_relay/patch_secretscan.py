@@ -338,6 +338,16 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
 # CT offsets come from the source owner's whole-file location-only review.
 _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, int, int, int]]] = {
     (
+        "Simple-With-Us/Usage-Monitor",
+        "scripts/muse-code-usage-collector.mjs",
+        "92618a94e0b5efd9dfcc2ed97b9f39797e1d90773cc5816bfcb25843991ce920",
+    ): frozenset([("assigned secret", 8103, 8130, 8111, 8130)]),
+    (
+        "Simple-With-Us/Usage-Monitor",
+        "scripts/__tests__/muse-code-usage-collector.test.mjs",
+        "aeb48889d7147e35f0059a7448be7c58916a075f6153b78303b20947ca7a6fe0",
+    ): frozenset([("assigned secret", 8630, 8656, 8640, 8656)]),
+    (
         "Simple-With-Us/AI-Fleet-Coordinator",
         "docs/security/reviewed-generic-fixtures.md",
         "825f87972a207b3ad52a99250f230db13ef55777be78eb566208d674d24419c6",

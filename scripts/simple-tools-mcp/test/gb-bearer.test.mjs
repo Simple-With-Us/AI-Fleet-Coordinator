@@ -750,3 +750,17 @@ test("bot admin lookup failure is unknown without aborting the page", async () =
   assert.match(html, /Service readiness unknown/);
   assert.doesNotMatch(html, /Missing service credentials|No credentials loaded|name="action" value="mint_gb_bearer"/);
 });
+
+test("a seat with no credentials gets a disabled mint button that names the missing record", async () => {
+  const html = await adminPage({
+    email: "mail@example.test", seats: [], clients: [], refusals: [], audits: [], csrf: "b".repeat(64), generatedAt: NOW,
+    gbBearers: [
+      { identity: "ZC", kind: "seat", credentials: false, missingRecords: { names: ["ZC_ZULIP_KEY", "ZC_ZULIP_EMAIL"], note: null }, status: { active: false } },
+      { identity: "XX", kind: "seat", credentials: false, status: { active: true, created_at: NOW, expires_at: NOW + 1e9 } },
+    ],
+  }, new Headers()).text();
+  assert.match(html, /<button type="button" disabled[^>]*>Mint<\/button>/);
+  assert.match(html, /Missing records: <code>ZC_ZULIP_KEY<\/code>, <code>ZC_ZULIP_EMAIL<\/code>/);
+  assert.match(html, /<button type="button" disabled[^>]*>Rotate \(Mint New\)<\/button>/);
+  assert.match(html, /Missing the seat's Zulip key and bot email records/);
+});

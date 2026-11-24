@@ -163,6 +163,8 @@ class ProvisionTests(unittest.TestCase):
             {**ADMIN_ENV, "ZULIP_OPERATOR_SITE": self.fake.url},
             project=str(uuid.uuid4()),
             path="/zulip_operator",
+            # The consumer's own account:  the shared client checks the token's own name.
+            token_name=prov.TOKEN_ACCOUNTS["/zulip_operator"],
         )
         self.api.__enter__()
         self.client = prov._infisical_reader()
@@ -186,6 +188,8 @@ class ProvisionTests(unittest.TestCase):
                 "HOME": str(self.home),
                 "INFISICAL_FLEET_OPS_PROJECT_ID": self.api.project,
                 "INFISICAL_TOKEN": self.api.token,
+                # The shared client reads the token's own grant metadata from the same host.
+                "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
             },
             clear=True,
         )
@@ -247,28 +251,38 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn("role 200", out)
         self.assertIn("/zulip_operator", out)
 
-    def test_synced_env_wins_without_reader_work(self):
-        with mock.patch.dict(os.environ, {**ADMIN_ENV, "ZULIP_OPERATOR_SITE": self.fake.url}):
-            code, out, err = self.run_main("--dry-run", "--only", "Clutch")
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.fs_calls(), [])
-
-    def test_site_defaults_to_realm_when_absent(self):
-        # The scoped reader can not answer SITE (exit 3) but EMAIL and KEY are in env.
-        with (
-            mock.patch.dict(os.environ, ADMIN_ENV),
-            mock.patch.dict(self.api.values, {}, clear=True),
+    def test_the_environment_is_not_a_source_for_the_credential(self):
+        # The environment is never a source for a value:  the credential resolves from the
+        # consumer's own scoped grant,  and a hand-set copy does not replace it.
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ZULIP_OPERATOR_EMAIL": "someone-else@example.test",
+                "ZULIP_OPERATOR_API_KEY": "not-the-key",
+            },
         ):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
+        # The credential came from the consumer's own scoped grant,  not from the environment.
+        self.assertEqual(
+            sorted(self.fs_calls()),
+            ["ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_SITE"],
+        )
 
-    def test_scoped_reader_failure_names_folder_and_key_without_provider_prose(self):
+    def test_site_defaults_to_realm_when_absent(self):
+        # The scoped reader can not answer SITE (exit 3) but EMAIL and KEY are in the store.
+        with mock.patch.dict(self.api.values):
+            self.api.values.pop("ZULIP_OPERATOR_SITE", None)
+            code, out, err = self.run_main("--dry-run", "--only", "Clutch")
+        self.assertEqual(code, 0, err)
+
+    def test_scoped_reader_failure_names_the_account_and_folder_without_provider_prose(self):
         with mock.patch.object(self.api, "status", 503):
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
         msg = str(code.code)
         self.assertIn("/zulip_operator", msg)
-        self.assertIn("ZULIP_OPERATOR_EMAIL", msg)
+        self.assertIn(prov.TOKEN_ACCOUNTS["/zulip_operator"], msg)
         self.assertNotIn("LEAKY", msg + out + err)
         self.assert_no_keys(msg, out, err)
         self.assertEqual(self.fake.requests, [])
@@ -302,9 +316,10 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(self.fake.requests, [])
 
     def test_credential_for_another_realm_is_refused(self):
-        with mock.patch.dict(
-            os.environ, {**ADMIN_ENV, "ZULIP_OPERATOR_SITE": "https://evil.example"}
-        ):
+        # The site comes from the consumer's own scoped grant,  so a realm it does not name is
+        # refused before anything is sent.
+        with mock.patch.dict(self.api.values):
+            self.api.values["ZULIP_OPERATOR_SITE"] = "https://evil.example"
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
         self.assertIn("expected", str(code.code))
