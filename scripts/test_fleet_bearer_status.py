@@ -48,7 +48,10 @@ def _row(ident, kind, problem, count=None):
 class OAuthSeatTests(unittest.TestCase):
     def test_a_hosted_seat_without_a_bearer_is_not_an_alarm_but_a_bearer_only_one_is(self):
         doc = {
-            "rows": [_row("GROK-WEB", "hosted", "no_bearer"), _row("BF-FIXER", "bearer_only", "no_bearer")],
+            "rows": [
+                _row("GROK-WEB", "hosted", "no_bearer"),
+                _row("BF-FIXER", "bearer_only", "no_bearer"),
+            ],
             "diagnostics": [],
         }
         alarms, _ = fbs.desired_alarms(doc, None)
@@ -284,7 +287,13 @@ class ReviewRound3Tests(ReviewRound2Tests):
                 ]
             )
             outs = [
-                fbs.run(a, now=t, token_fn=lambda: "a.b.c", fetch_fn=lambda u, tk: next(docs), notify_fn=lambda *x: None)
+                fbs.run(
+                    a,
+                    now=t,
+                    token_fn=lambda: "a.b.c",
+                    fetch_fn=lambda u, tk: next(docs),
+                    notify_fn=lambda *x: None,
+                )
                 for t in (1000, 1300, 1600)
             ]
             self.assertEqual(outs[1]["alarms"], [])
