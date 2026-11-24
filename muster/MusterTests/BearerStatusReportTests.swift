@@ -48,4 +48,23 @@ final class BearerStatusReportTests: XCTestCase {
         let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("no-\(UUID().uuidString).json")
         XCTAssertNotNil(BearerStatusReader.read(at: url, now: now).problem)
     }
+    func test_seat_tools_findings_and_error_are_read() {
+        let reading = parse("""
+        {"schemaVersion":1,"generatedAt":"2026-11-23T16:08:00Z","ok":true,"rows":[],
+         "seatTools":[{"seat":"WISE","problem":"x","tools":{"notes":"ok","wake":"missing","zulip":"ok","relay":"not_applicable","extra":"unavailable"}}],
+         "findings":[{"seat":"WISE","tool":"wake","state":"missing"}],"seatToolsError":"unreachable","alarms":[]}
+        """)
+        XCTAssertEqual(reading.seatTools.count, 1)
+        XCTAssertEqual(reading.seatTools[0].tools.map(\.tool), ["zulip", "wake", "relay", "notes", "extra"])
+        XCTAssertFalse(reading.seatTools[0].isHealthy)
+        XCTAssertEqual(reading.findings, [SeatToolFinding(seat: "WISE", tool: "wake", state: "missing")])
+        XCTAssertEqual(reading.seatToolsError, "unreachable")
+    }
+
+    func test_a_file_without_seat_tools_still_reads() {
+        let reading = parse(good)
+        XCTAssertTrue(reading.seatTools.isEmpty)
+        XCTAssertTrue(reading.findings.isEmpty)
+        XCTAssertNil(reading.seatToolsError)
+    }
 }
