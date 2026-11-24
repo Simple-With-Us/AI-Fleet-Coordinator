@@ -887,7 +887,9 @@ def _failure_signature(output: object, *, include_cli_errors: bool = False) -> s
     quoted matching line is at most a category, never evidence of nonexecution.
     No signature match is no code: the failure is never guessed."""
     if isinstance(output, bytes):
-        text = output.decode("utf-8", "replace")
+        # Preserve the historical byte-capped auth suffix exactly. The extra
+        # reader byte is boundary metadata, never substantive scan content.
+        text = output[-OUTPUT_SCAN_CAP:].decode("utf-8", "replace")
     elif isinstance(output, str):
         text = output
     else:

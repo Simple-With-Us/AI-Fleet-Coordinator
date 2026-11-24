@@ -69,6 +69,18 @@ class Delivery(Runner):
             self.assertEqual(self.single(0,raw,persist=False).outcome,'sent')
             self.assertEqual(self.turn(0,raw,persist=False).delivery.outcome,'sent')
 
+    def test_reader_sentinel_never_extends_clean_exit_auth_scan(self):
+        marker = b'project_token_login_failed'
+        remaining = Z.OUTPUT_SCAN_CAP + 1 - len(marker)
+        raw = marker + b'\xc3\xa9' * (remaining // 2) + b'x' * (remaining % 2)
+        tail, thread = Z._read_tail(io.BytesIO(raw), Z.OUTPUT_SCAN_CAP + 1)
+        thread.join()
+        self.assertEqual(len(tail), Z.OUTPUT_SCAN_CAP + 1)
+        self.assertEqual(Z._failure_signature(bytes(tail)), '')
+        self.assertEqual(Z._failure_signature(bytes(tail), include_cli_errors=True), '')
+        self.assertEqual(self.single(0, raw, persist=False).outcome, 'sent')
+        self.assertEqual(self.turn(0, raw, persist=False).delivery.outcome, 'sent')
+
     def test_matching_quoted_full_line_never_proves_nonexecution(self):
         d=self.single(1,b'model quotation\n'+SAMPLES[0][0],persist=True)
         self.assertEqual((d.outcome,d.ack),('sent','unknown'))
