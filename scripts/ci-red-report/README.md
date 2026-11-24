@@ -71,9 +71,12 @@ A workflow whose file carries no default-branch trigger (a `workflow_call`-only 
 `pull_request`-only reusable pushed to `main`) still registers one red run per push with
 zero jobs behind it — GitHub runs the file reference, not a real suite (the Oct 2025
 autofix-reusable class).  When a workflow shows a streak, the scanner reads its file from
-the default branch and skips rows whose `on:` triggers cannot produce a default-branch run.
-The check fails open: an unreadable or unparseable file keeps its red row and records the
-read failure under `errors`, so the filter can only remove noise, never hide a failure.
+the default branch and skips rows whose `on:` triggers are all in the known
+cannot-run-on-default-branch denylist (`workflow_call`, `pull_request`,
+`pull_request_target`).  Denylist on purpose: a trigger this module does not know about
+(`merge_group`, a future event) keeps its red row.  The check also fails open: an
+unreadable or unparseable file keeps its red row and records the read failure under
+`errors`, so the filter can only remove noise, never hide a failure.
 
 ## Tests
 
