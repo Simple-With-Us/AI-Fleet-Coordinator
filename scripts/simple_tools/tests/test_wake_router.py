@@ -5862,7 +5862,7 @@ class RegistryNotConfigured(Base):
         # wake_router and claude_wake each hold it:  a destination the router calls configured
         # must be one the route does not refuse.
         self.assertEqual(WR.MAC_SSH_DEST_RE.pattern, CW.SSH_DEST_RE.pattern)
-        for value in ("mac", "owner@mac.tailnet", "100.64.0.9", "host-2.example"):
+        for value in ("mac", "owner@mac.tailnet", "192.0.2.9", "host-2.example"):
             self.assertEqual(WR.MAC_SSH_DEST_RE.fullmatch(value) is not None,
                              CW.SSH_DEST_RE.fullmatch(value) is not None, value)
 
