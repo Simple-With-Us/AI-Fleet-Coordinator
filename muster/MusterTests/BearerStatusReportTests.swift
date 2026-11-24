@@ -67,4 +67,15 @@ final class BearerStatusReportTests: XCTestCase {
         XCTAssertTrue(reading.findings.isEmpty)
         XCTAssertNil(reading.seatToolsError)
     }
+
+    func test_one_malformed_tool_value_reads_unknown_and_keeps_the_valid_tools() {
+        let reading = parse("""
+        {"schemaVersion":1,"generatedAt":"2026-11-23T16:08:00Z","ok":true,"rows":[],
+         "seatTools":[{"seat":"WISE","tools":{"zulip":"ok","wake":7}}],"alarms":[]}
+        """)
+        let tools = reading.seatTools[0].tools
+        XCTAssertEqual(tools.first(where: { $0.tool == "zulip" })?.state, "ok")
+        XCTAssertEqual(tools.first(where: { $0.tool == "wake" })?.state, "unknown")
+        XCTAssertFalse(reading.seatTools[0].isHealthy)
+    }
 }

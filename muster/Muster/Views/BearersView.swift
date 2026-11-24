@@ -117,7 +117,7 @@ struct BearersView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Seat Tools").font(.headline)
             if let error = reading.seatToolsError {
-                Text("The poll could not read the seat tools on its last run: \(error).  The rows below are its last good view.")
+                Text("The poll could not read the seat tools on its last run: \(error).\(reading.seatTools.isEmpty ? "" : "  The rows below are its last good view.")")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

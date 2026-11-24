@@ -140,7 +140,8 @@ enum BearerStatusReader {
         }
         reading.seatTools = ((object["seatTools"] as? [[String: Any]]) ?? []).compactMap { raw in
             guard let seat = raw["seat"] as? String else { return nil }
-            let states = (raw["tools"] as? [String: String]) ?? [:]
+            // One malformed value must not erase the valid tools or leave an empty row looking healthy:  it reads "unknown".
+            let states = ((raw["tools"] as? [String: Any]) ?? [:]).mapValues { ($0 as? String) ?? "unknown" }
             return SeatToolsRow(seat: seat, problem: raw["problem"] as? String, tools: SeatToolsOrder.sorted(states))
         }
         reading.findings = ((object["findings"] as? [[String: Any]]) ?? []).compactMap { raw in
