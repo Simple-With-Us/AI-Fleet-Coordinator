@@ -48,7 +48,10 @@ def _row(ident, kind, problem, count=None):
 class OAuthSeatTests(unittest.TestCase):
     def test_a_hosted_seat_without_a_bearer_is_not_an_alarm_but_a_bearer_only_one_is(self):
         doc = {
-            "rows": [_row("GROK-WEB", "hosted", "no_bearer"), _row("BF-FIXER", "bearer_only", "no_bearer")],
+            "rows": [
+                _row("GROK-WEB", "hosted", "no_bearer"),
+                _row("BF-FIXER", "bearer_only", "no_bearer"),
+            ],
             "diagnostics": [],
         }
         alarms, _ = fbs.desired_alarms(doc, None)
