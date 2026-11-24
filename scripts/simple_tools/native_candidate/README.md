@@ -2,7 +2,7 @@
 
 Source publication only. Nothing imports or enables this directory from the installed router. No deployment/config changes. Apply neither the adapter patch nor activation flags without the separate qualification described in REVISION1113.md.
 
-Run `python prepare_dependencies.py` once after checkout, then the offline test commands in REVISION1113.md. It unpacks pinned bundled dependencies without network access.
+Run `python prepare_dependencies.py`, then `node prepare_candidate.cjs SOURCE` with the authorized pinned installed source. Missing/mismatched generated files fail closed. Then run the offline test commands in REVISION1113.md. It unpacks pinned bundled dependencies without network access.
 
 # Current review entry: REVISION1110.md
 

@@ -1,3 +1,12 @@
+# Required local generation, fail-closed candidate packaging
+
+The published source intentionally omits native_source_schemas.cjs and schema-provenance.json because the normal publication scanner refused these source-derived files. No encoded/disguised copy is published, and no scanner bypass is used. Generate them only from the authorized pinned installed source before tests or qualification:
+
+    python prepare_dependencies.py
+    node prepare_candidate.cjs SOURCE
+
+Missing/mismatched generated schema/provenance stops native_flow at module load. A deployment script must not activate or install this candidate merely because preparation succeeded. The pinned SOURCE is required, never fetched from an untrusted URL.
+
 # Reproduce source declarations
 
 Use Node22 and Python3. No package install or network is needed; MIT-licensed Acorn8.15.0 and its license are included under vendor/acorn. Zod and its license are included separately.

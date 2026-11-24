@@ -1,5 +1,8 @@
 'use strict';
 // Candidate native route. No endpoint discovery, token read, or activation.
+const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const provenance=JSON.parse(fs.readFileSync(path.join(__dirname,'schema-provenance.json'),'utf8'));
+if(provenance.source_sha256!=='ab42d8c5fb2085a1539876a5c40da54e67e2abd71a222ed5bd31b622898984c0'||crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname,'native_source_schemas.cjs'))).digest('hex')!==provenance.generated_sha256)throw Error('candidate-schema-provenance');
 const z=require('./offline_node_modules/zod');
 const restricted=require('./native_schemas.cjs').schemas(z);
 const {conversationTopicFrameSchema,createTopicWireFrameSchema,helloMessageSchema2,clientHelloSchema,v4ConversationSubscribeResultSchema,commandAckSchema,commandsQueryResultSchema}=require('./native_source_schemas.cjs');
