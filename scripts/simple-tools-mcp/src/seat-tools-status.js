@@ -31,7 +31,8 @@ const state = (v, ok) => (v === UNAVAILABLE ? "unavailable" : ok ? "ok" : "missi
  *   zulipKey, zulipEmail (strings), linearEnabled (bool), linearPair ({clientId, clientSecret}|null),
  *   wakeKey (string), fleetlinkSecret (string), fleetlinkSeatToken (bool), fleetlinkDenied (bool),
  *   recallConfigured (bool), relaySecrets ({accessId, accessSecret}), relayUpstream (bool),
- *   eventsOnly (bool), notesKey (string)
+ *   eventsOnly (bool), notesKey (string), listenerUrlOk (bool: LISTENER_API_URL is a valid https origin).
+ * relayUpstream must already be the validated origin check (grUpstreamUrl), not raw truthiness.
  */
 export function seatToolStates(seat, f) {
   const tools = [];
@@ -40,7 +41,7 @@ export function seatToolStates(seat, f) {
   if (!f.linearEnabled) add("linear", "not_applicable");
   else add("linear", state(f.linearPair, Boolean(f.linearPair && f.linearPair.clientId && f.linearPair.clientSecret)));
   if (!listenerNameFor(seat)) add("wake", "not_applicable");
-  else add("wake", state(f.wakeKey, typeof f.wakeKey === "string" && f.wakeKey.trim().length >= LISTENER_KEY_MIN));
+  else add("wake", state(f.wakeKey, Boolean(f.listenerUrlOk) && typeof f.wakeKey === "string" && f.wakeKey.trim().length >= LISTENER_KEY_MIN));
   if (f.fleetlinkSecret === UNAVAILABLE || f.fleetlinkSeatToken === UNAVAILABLE) add("fleetlink", "unavailable");
   else if (f.fleetlinkDenied) add("fleetlink", "missing");
   else add("fleetlink", Boolean(f.fleetlinkSeatToken) || Boolean(f.fleetlinkSecret) ? "ok" : "missing");
@@ -50,7 +51,7 @@ export function seatToolStates(seat, f) {
     const s = f.relaySecrets;
     add("relay", state(s, Boolean(f.relayUpstream) && Boolean(s && s.accessId && s.accessSecret)));
   }
-  add("notes", state(f.notesKey, typeof f.notesKey === "string" && f.notesKey.length >= NOTES_KEY_MIN));
+  add("notes", state(f.notesKey, Boolean(f.listenerUrlOk) && typeof f.notesKey === "string" && f.notesKey.trim().length >= NOTES_KEY_MIN));
   const bad = tools.filter((t) => t.state === "missing" || t.state === "unavailable");
   return { seat, tools, problem: bad.length ? bad.map((t) => `${t.tool}:${t.state}`).join(",") : "ok" };
 }

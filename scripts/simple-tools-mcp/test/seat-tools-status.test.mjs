@@ -6,7 +6,7 @@ const good = {
   zulipKey: "k", zulipEmail: "e@x", linearEnabled: true, linearPair: { clientId: "a", clientSecret: "b" },
   wakeKey: "w".repeat(32), fleetlinkSecret: "s", fleetlinkSeatToken: false, fleetlinkDenied: false,
   recallConfigured: true, relaySecrets: { accessId: "i", accessSecret: "s" }, relayUpstream: true,
-  eventsOnly: false, notesKey: "n".repeat(32),
+  eventsOnly: false, notesKey: "n".repeat(32), listenerUrlOk: true,
 };
 const get = (row, tool) => row.tools.find((t) => t.tool === tool).state;
 
@@ -28,6 +28,10 @@ test("each missing credential names its tool", () => {
   assert.equal(get(seatToolStates("WISE", { ...good, relaySecrets: { accessId: "", accessSecret: "s" } }), "relay"), "missing");
   assert.equal(get(seatToolStates("WISE", { ...good, relayUpstream: false }), "relay"), "missing");
   assert.equal(get(seatToolStates("WISE", { ...good, notesKey: "x" }), "notes"), "missing");
+  assert.equal(get(seatToolStates("WISE", { ...good, notesKey: ` ${"n".repeat(31)} ` }), "notes"), "missing");
+  assert.equal(get(seatToolStates("WISE", { ...good, notesKey: `${"n".repeat(32)}\n` }), "notes"), "ok");
+  assert.equal(get(seatToolStates("WISE", { ...good, listenerUrlOk: false }), "notes"), "missing");
+  assert.equal(get(seatToolStates("WISE", { ...good, listenerUrlOk: false }), "wake"), "missing");
   assert.match(seatToolStates("WISE", { ...good, zulipKey: "" }).problem, /zulip:missing/);
 });
 

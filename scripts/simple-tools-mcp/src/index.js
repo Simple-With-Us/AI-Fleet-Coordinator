@@ -74,7 +74,7 @@ import { seatToolStates, settle, listenerNameFor } from "./seat-tools-status.js"
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
-import { resolveGrSecrets, grClientFromResolved, grUnavailableWhenNoClient } from "./gr-tools.js";
+import { resolveGrSecrets, grClientFromResolved, grUnavailableWhenNoClient, grUpstreamUrl } from "./gr-tools.js";
 
 function wireGrFront({ grSecrets, env, grClient, relayAuthAvailable }) {
   if (grClient) return { gr: grClient, grUnavailableReason: null, grMissingEnv: [] };
@@ -90,7 +90,7 @@ import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
 import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
-import { listenerClientFromEnv, listenerSecretName } from "./eavesdropper.js";
+import { listenerClientFromEnv, listenerSecretName, listenerBaseUrl } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
@@ -1375,16 +1375,19 @@ async function serveAdmin(request, env, config, oauth, email) {
       settle(() => resolveRecallSecrets(env)),
       settle(() => resolveGrSecrets(env)),
     ]);
+    // One read for every hosted seat, not one per seat on each poll.
+    const fleetlinkTokens = await settle(() => resolveFleetlinkSeatTokens(env, config.hostedSeats));
+    const listenerUrlOk = listenerBaseUrl(env?.LISTENER_API_URL) !== null;
     const notesRaw = env?.[OPERATOR_NOTES_SECRET];
     const rows = await Promise.all(config.hostedSeats.map(async (seat) => {
       const names = SEAT_SECRETS[seat];
       const tag = seatTagForSeat(seat);
       const listener = listenerNameFor(seat);
-      const [zulipKey, linearPair, wakeKey, tokens] = await Promise.all([
+      const tokens = fleetlinkTokens;
+      const [zulipKey, linearPair, wakeKey] = await Promise.all([
         settle(async () => names ? (await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true })).trim() : ""),
         settle(() => resolveLinearPair(env, tag)),
         listener ? settle(async () => (await resolveSecret(env, { name: listener, path: "/wake", envName: listener, optional: true })).trim()) : Promise.resolve(""),
-        settle(() => resolveFleetlinkSeatTokens(env, [seat])),
       ]);
       const ok = tokens && typeof tokens === "object" && tokens.seatTokens instanceof Map;
       return seatToolStates(seat, {
@@ -1394,7 +1397,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         fleetlinkSeatToken: ok ? tokens.seatTokens.has(seat) : tokens,
         fleetlinkDenied: ok ? tokens.deniedSeats.has(seat) : false,
         recallConfigured: recallSecrets && typeof recallSecrets === "object" ? recallClientFromResolved(recallSecrets, env) !== null : recallSecrets,
-        relaySecrets, relayUpstream: Boolean(env?.GR_UPSTREAM_URL),
+        relaySecrets, relayUpstream: grUpstreamUrl(env?.GR_UPSTREAM_URL) !== null, listenerUrlOk,
         eventsOnly: config.eventsOnlySeats.includes(seat),
         notesKey: typeof notesRaw === "string" ? notesRaw : "",
       });
