@@ -261,9 +261,7 @@ def _check_runs_for(head_sha):
             if not isinstance(body, dict):
                 raise RuntimeError("check-runs evidence is not an object")
             batch = body.get("check_runs")
-            if not isinstance(batch, list) or not all(
-                isinstance(run, dict) for run in batch
-            ):
+            if not isinstance(batch, list) or not all(isinstance(run, dict) for run in batch):
                 raise RuntimeError("check-runs evidence is not shaped entries")
             runs.extend(batch)
             if len(batch) < 100:
@@ -281,10 +279,16 @@ def _check_runs_for(head_sha):
     return runs
 
 
-def _newest_review_request(number):
-    """Newest manual review-request timestamp on the PR, or None in auto mode."""
-    if number in _review_request_cache:
-        return _review_request_cache[number]
+def _newest_review_request(number, at_or_before=None):
+    """Newest manual review-request timestamp on the PR, or None in auto mode.
+
+    at_or_before caps the walk: requests posted after that instant (a start
+    review on an already-merged PR, for example) do not count toward
+    freshness, while earlier requests keep their full force.
+    """
+    cache_key = (number, at_or_before)
+    if cache_key in _review_request_cache:
+        return _review_request_cache[cache_key]
     comments = github_paginated(
         "/issues/" + str(number) + "/comments",
         "Review-request history exceeds bounded page limit",
@@ -311,19 +315,27 @@ def _newest_review_request(number):
             epoch = _epoch(created)
             if epoch is None:
                 raise RuntimeError("Invalid review-request evidence")
+            if at_or_before is not None and epoch > at_or_before:
+                continue
             if newest is None or epoch > newest:
                 newest = epoch
-    _review_request_cache[number] = newest
+    _review_request_cache[cache_key] = newest
     return newest
 
 
-def kody_check_receipt(head_sha, number=None):
+def kody_check_receipt(head_sha, number=None, merged_at_epoch=None):
     """A completed Kody check on the PR head, when manual mode leaves no PR review object.
 
     Freshness follows the auto-merge receipt contract: the numeric app id (not
     only the renamable slug) must own the check, and after a manual review
     request the check must have started at or after the newest request, so a
     stale success cannot qualify a head whose re-review is queued or failed.
+
+    A request posted after the PR merged is ignored (merged_at_epoch): a
+    closed PR can still collect a start-review comment, but its head no
+    longer moves, so no qualifying re-review can ever answer it and honoring
+    the request would block the gate forever.  Requests from before the
+    merge keep their full force: the newest of them still defines freshness.
     """
     runs = _check_runs_for(head_sha)
     if runs is None:
@@ -332,7 +344,9 @@ def kody_check_receipt(head_sha, number=None):
     # completed success, whenever it started; qualification waits for it.
     if _kody_run_pending(runs, head_sha):
         return False
-    requested = _newest_review_request(number) if number is not None else None
+    requested = (
+        _newest_review_request(number, at_or_before=merged_at_epoch) if number is not None else None
+    )
     for run in runs:
         app = run.get("app") if isinstance(run.get("app"), dict) else {}
         output = run.get("output") if isinstance(run.get("output"), dict) else {}
@@ -397,6 +411,12 @@ def reviewed(sha):
         head = pr.get("head", {}).get("sha")
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
             continue
+        # Freshness counts only requests made at or before the merge: a
+        # start-review comment posted after the merge can never be answered by
+        # a qualifying re-review, because the PR is closed and its head no
+        # longer moves, so honoring it would block the gate forever.  None
+        # keeps today's fail-closed behavior when the merge time is unreadable.
+        merged_at_epoch = _epoch(pr.get("merged_at"))
         # Only fully shaped review objects are evidence: a malformed entry is
         # not a candidate (and never crashes the gate), while well-formed
         # candidates are unaffected.
@@ -415,8 +435,10 @@ def reviewed(sha):
         if matching:
             # A review predating the newest review request is stale: only
             # reviews submitted at or after it qualify, matching the
-            # freshness rule in the check-run receipt branch.
-            requested = _newest_review_request(number)
+            # freshness rule in the check-run receipt branch.  The request
+            # walk itself caps at the merge, so pre-merge requests keep their
+            # force and post-merge ones never count.
+            requested = _newest_review_request(number, at_or_before=merged_at_epoch)
             fresh = [
                 r
                 for r in matching
@@ -432,9 +454,9 @@ def reviewed(sha):
             runs = _check_runs_for(head)
             kody_qualified = (
                 bool(fresh) and runs is not None and not _kody_run_pending(runs, head)
-            ) or kody_check_receipt(head, number)
+            ) or kody_check_receipt(head, number, merged_at_epoch=merged_at_epoch)
         else:
-            kody_qualified = kody_check_receipt(head, number)
+            kody_qualified = kody_check_receipt(head, number, merged_at_epoch=merged_at_epoch)
         if not kody_qualified:
             continue
         # GraphQL includes actual thread resolution, unlike review state.
