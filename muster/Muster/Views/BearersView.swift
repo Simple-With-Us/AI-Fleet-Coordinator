@@ -42,6 +42,7 @@ struct BearersView: View {
                         problemBox("The poll's last answer is older than fifteen minutes, so these rows are not current.")
                     }
                     if !reading.alarms.isEmpty { alarms(reading.alarms) }
+                    if !reading.seatTools.isEmpty || reading.seatToolsError != nil { seatTools(reading) }
                     if reading.rows.isEmpty {
                         Text("No bearer rows were read.")
                             .font(.callout)
@@ -107,6 +108,58 @@ struct BearersView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.red)
             }
+        }
+    }
+
+    /// Every hosted seat's tools as the Worker last reported them:  missing and unavailable stand out, a known gap
+    /// listed as a finding is orange and never an alarm, and nothing reads as healthy when the file is not current.
+    private func seatTools(_ reading: BearerStatusReading) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Seat Tools").font(.headline)
+            if let error = reading.seatToolsError {
+                Text("The poll could not read the seat tools on its last run: \(error).\(reading.seatTools.isEmpty ? "" : "  The rows below are its last good view.")")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if !reading.findings.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Open findings (listed, not alarmed)").font(.caption.weight(.semibold))
+                    ForEach(reading.findings) { finding in
+                        Text("\(finding.seat): \(finding.tool) \(finding.state)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+            ForEach(reading.seatTools) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(row.seat).font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .frame(width: 100, alignment: .leading)
+                    ForEach(row.tools) { tool in
+                        Text(tool.tool + " " + toolWord(tool.state, current: reading.isCurrent))
+                            .font(.system(size: 10, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(toolColor(tool.state, current: reading.isCurrent).opacity(0.15))
+                            .foregroundStyle(toolColor(tool.state, current: reading.isCurrent))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private func toolWord(_ state: String, current: Bool) -> String {
+        current ? state.replacingOccurrences(of: "_", with: " ") : "not known"
+    }
+
+    private func toolColor(_ state: String, current: Bool) -> Color {
+        guard current else { return .orange }
+        switch state {
+        case "ok": return .green
+        case "not_applicable": return .secondary
+        case "missing": return .red
+        default: return .orange
         }
     }
 

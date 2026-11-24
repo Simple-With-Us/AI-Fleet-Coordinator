@@ -36,7 +36,8 @@ URL = "https://agents.simplewithus.com/admin/api/bearers"
 SEAT_TOOLS_URL = "https://agents.simplewithus.com/admin/api/seat-tools"
 # (seat, tool) pairs that are known gaps under review:  shown as findings in the output, never notified, never an alarm.
 # Remove an entry when its owner decision lands (then a missing state alarms like any other).
-OPEN_FINDINGS = frozenset({("WISE", "wake")})
+# Empty since WISE's wake key landed (Nov 23 2026, 9:23 PM CST).
+OPEN_FINDINGS = frozenset()
 # (seat, tool) pairs the owner ruled not applicable (GROK-WEB cannot take wakes, owner statement of Nov 23 2026, 9:21 PM CST):
 # shown as not_applicable, never an alarm or a finding, whatever the Worker reports.
 NOT_APPLICABLE = frozenset({("GROK-WEB", "wake")})

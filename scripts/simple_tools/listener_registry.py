@@ -839,10 +839,7 @@ class RegistryService:
             "kept_count": len(kept),
         }
 
-
-    def _report_mismatch(
-        self, platform: str, host: str, live: Mapping[str, Any]
-    ) -> str | None:
+    def _report_mismatch(self, platform: str, host: str, live: Mapping[str, Any]) -> str | None:
         """Why this report may not speak for this host, or None when it may.
 
         A report speaks for the host it files under.  A chat that another host holds open is a
@@ -876,9 +873,12 @@ class RegistryService:
                     ).fetchall()
                     foreign.extend(str(row[0]) for row in rows)
                 if foreign:
-                    return "the report names %d chat(s) of another host,  so it may not speak for %r" % (
-                        len(foreign),
-                        host,
+                    return (
+                        "the report names %d chat(s) of another host,  so it may not speak for %r"
+                        % (
+                            len(foreign),
+                            host,
+                        )
                     )
                 if not named:
                     held = conn.execute(
@@ -1067,6 +1067,19 @@ class Sweeper:
             return False
         self.next_at = now + self.interval_s
         return True
+
+    def schedule(self) -> dict[str, Any]:
+        """When this sweeper runs, for the status document (AFC-833):  how often a pass is due
+        (`interval_minutes`), after how long an unreplaced chat's letter ends
+        (`stale_after_minutes`), and when the next pass is due (`next_at`, epoch seconds, or None
+        before the tick has booked one).  A reader judges the last pass against the real interval
+        instead of guessing one.  No lock:  the tick books a pass and the status is written on the
+        same thread."""
+        return {
+            "interval_minutes": int(self.interval_s // 60),
+            "stale_after_minutes": self.stale_after_minutes,
+            "next_at": self.next_at or None,
+        }
 
     def maybe_run(self, now: float) -> dict[str, Any] | None:
         if not self.claim(now):

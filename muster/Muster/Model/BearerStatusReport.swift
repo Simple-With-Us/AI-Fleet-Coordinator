@@ -38,8 +38,48 @@ struct BearerStatusAlarm: Identifiable, Equatable {
     let since: String?
 }
 
+/// One hosted seat's tools as the Worker's seat-tools readiness API reported them (ok, missing,
+/// unavailable, not_applicable).  The poll copies it next to the bearer rows;  names and states only.
+struct SeatToolsRow: Identifiable, Equatable {
+    var id: String { seat }
+    let seat: String
+    let problem: String?
+    let tools: [SeatToolState]
+
+    var isHealthy: Bool { tools.allSatisfy { $0.state == "ok" || $0.state == "not_applicable" } }
+}
+
+struct SeatToolState: Identifiable, Equatable {
+    var id: String { tool }
+    let tool: String
+    let state: String
+}
+
+/// A known gap the poll lists but does not alarm on, until its owner decision lands.
+struct SeatToolFinding: Identifiable, Equatable {
+    var id: String { seat + "|" + tool }
+    let seat: String
+    let tool: String
+    let state: String
+}
+
+enum SeatToolsOrder {
+    static let tools = ["zulip", "linear", "wake", "fleetlink", "recall", "relay", "notes"]
+
+    /// The Worker's tool order, then any tool the Worker added later by name.
+    static func sorted(_ states: [String: String]) -> [SeatToolState] {
+        let known = tools.compactMap { name in states[name].map { SeatToolState(tool: name, state: $0) } }
+        let extra = states.keys.filter { !tools.contains($0) }.sorted().map { SeatToolState(tool: $0, state: states[$0] ?? "unknown") }
+        return known + extra
+    }
+}
+
 struct BearerStatusReading: Equatable {
     var rows: [BearerStatusRow] = []
+    var seatTools: [SeatToolsRow] = []
+    var findings: [SeatToolFinding] = []
+    /// Why the poll could not read the seat tools this time, when it could not.
+    var seatToolsError: String?
     var alarms: [BearerStatusAlarm] = []
     var generatedAt: Date?
     /// Whether the poll reached the Worker on its last run.
@@ -98,6 +138,17 @@ enum BearerStatusReader {
                 missingRecords: (raw["missingRecords"] as? [String]) ?? [],
                 mismatchCount: raw["mismatchCount"] as? Int)
         }
+        reading.seatTools = ((object["seatTools"] as? [[String: Any]]) ?? []).compactMap { raw in
+            guard let seat = raw["seat"] as? String else { return nil }
+            // One malformed value must not erase the valid tools or leave an empty row looking healthy:  it reads "unknown".
+            let states = ((raw["tools"] as? [String: Any]) ?? [:]).mapValues { ($0 as? String) ?? "unknown" }
+            return SeatToolsRow(seat: seat, problem: raw["problem"] as? String, tools: SeatToolsOrder.sorted(states))
+        }
+        reading.findings = ((object["findings"] as? [[String: Any]]) ?? []).compactMap { raw in
+            guard let seat = raw["seat"] as? String, let tool = raw["tool"] as? String else { return nil }
+            return SeatToolFinding(seat: seat, tool: tool, state: (raw["state"] as? String) ?? "missing")
+        }
+        reading.seatToolsError = (object["seatToolsError"] as? String)?.replacingOccurrences(of: "_", with: " ")
         reading.alarms = ((object["alarms"] as? [[String: Any]]) ?? []).compactMap { raw in
             guard let key = raw["key"] as? String else { return nil }
             return BearerStatusAlarm(key: key, summary: (raw["summary"] as? String) ?? key, since: raw["since"] as? String)
