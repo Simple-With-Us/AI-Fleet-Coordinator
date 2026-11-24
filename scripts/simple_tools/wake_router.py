@@ -165,9 +165,14 @@ It is an opt-in.  A platform takes part only by declaring `Platform.deliver_turn
 with the same rules as `deliver` (an exception is `failed`), and only while the setting
 `turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  1 is off, and unset counts as not set) is 2 or more;  the core
 never goes past TURN_MAX_WAKES.  Every other seat, and every wake that cannot ride, takes the path
-above, unchanged.  Only exact addresses ride (`certain`:  a letter, a reply or a session id) and
-only to the same session, letter, generation and host as the head, so a pick the router is not
-sure of is delivered alone, as before, and a turn never makes it certain.  The pick is the
+above, unchanged.  Only exact addresses ride (`certain`:  a letter, a reply, a session id or an
+exact-origin required session) and only to the same session, letter, generation and host as the
+head, so a pick the router is not sure of is delivered alone, as before, and a turn never makes
+it certain.  An exact-origin wake's attested constraints (its required session, and the letter,
+generation and PR binding it carries) are re-verified for every member against the one registry
+read made before the turn:  the head by the check before delivery, each rider when the turn is
+gathered (`_contracts_ok`), and a member whose constraints no longer hold stays pending and
+leads or rides a later turn, never delivered on an unproven claim.  The pick is the
 router's own, made on the addressing without the sender's own quoted tags, so a sender quoting
 itself never makes a wake ride.  A run is contiguous:  the walk from the head stops at the first
 wake of that chat that cannot ride, so one chat's wakes still run in the order they came.  A head
@@ -422,9 +427,10 @@ TURN_MAX_PROMPT_CHARS = 3500  # turn_text() with a prefix of up to TURN_PREFIX_M
 TURN_PREFIX_MAX = 40
 TURN_ID_RE = re.compile(r"^t-[0-9a-f]{16}$")
 MESSAGE_ID_MAX = 2**63 - 1
-# The picks that are exact addresses:  the sender or the listener named the chat.  Nothing the
+# The picks that are exact addresses:  the sender or the listener named the chat, or the origin
+# named it by full session id with attested constraints (a required-session pick).  Nothing the
 # router inferred (an issue, a topic, a tie, a decider, recency) rides.
-CERTAIN_REASONS = frozenset({"letter", "reply", "session-id"})
+CERTAIN_REASONS = frozenset({"letter", "reply", "session-id", "required-session"})
 # A turn ran and its answer cannot say which riders it carried.
 TURN_UNCONFIRMED = "turn-unconfirmed"
 # An answer that names riders as carried by a turn that ran nothing.
@@ -2142,7 +2148,7 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            stale, stale_note = self._stale(pick.target, wake)
+            stale, stale_note, stale_answer = self._stale(pick.target, wake)
             if stale == RELEASED:
                 self._released(entry, pick, wake)
                 return
@@ -2164,7 +2170,9 @@ class Router:
                 # disk before the head's commit (module docstring, Turns).  None, or a head
                 # whose chat has answered it busy, and the wake goes alone, exactly as below.
                 turn_id = "t-" + secrets.token_hex(8)
-                riders = self._board(self._gather(entry, pick, turn_id), wake.wake_id, turn_id)
+                riders = self._board(
+                    self._gather(entry, pick, turn_id, stale_answer), wake.wake_id, turn_id
+                )
                 if riders:
                     self._deliver_turn(entry, pick, wake, riders, turn_id)
                     return
@@ -2189,14 +2197,18 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _stale(self, target: Target, wake: Wake | None = None) -> tuple[str, str]:
+    def _stale(
+        self, target: Target, wake: Wake | None = None
+    ) -> tuple[str, str, Mapping[str, Any] | None]:
         """The reason this chat must not be delivered to, and the note that says why.
 
         The reason is empty when the registry still has this letter on this session at the
         generation picked, else `RELEASED` when it says so, or the code of a bounded retry when
         it cannot be read or its row cannot be read as a chat of this seat.  Neither of those
         is a yes or a no.  The note names the variable that is missing, when the registry named
-        one, so the receipt of the failure says what to fix."""
+        one, so the receipt of the failure says what to fix.  The registry read itself is the
+        third element, so a turn gathered right after re-verifies every rider's attested
+        constraints against this same read instead of asking the registry again."""
         answer = registry_api.call(
             self.env,
             "resolve",
@@ -2205,12 +2217,12 @@ class Router:
         )
         if not isinstance(answer, Mapping) or "error" in answer:
             note = registry_note(answer.get("error")) if isinstance(answer, Mapping) else ""
-            return registry_trouble(answer), note
+            return registry_trouble(answer), note, None
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
-            return UNREADABLE_ROW, ""
+            return UNREADABLE_ROW, "", None
         if not held:
-            return RELEASED, ""
+            return RELEASED, "", None
         if (
             wake is not None
             and wake.require_pr
@@ -2219,8 +2231,8 @@ class Router:
             # Delivery-time recheck:  the binding present at pick is gone (or
             # its generation stamp went stale).  Do not deliver on a pick the
             # registry no longer supports;  a bounded retry re-reads it.
-            return "required-pr-unbound", ""
-        return "", ""
+            return "required-pr-unbound", "", None
+        return "", "", answer
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -2437,20 +2449,22 @@ class Router:
             Wake(**entry["wake"]), picked=pick.picked, reason=pick.reason, link_note=pick.link_note
         )
 
-    def _gather(self, entry: dict[str, Any], pick: Pick, turn_id: str) -> list[dict[str, Any]]:
+    def _gather(
+        self,
+        entry: dict[str, Any],
+        pick: Pick,
+        turn_id: str,
+        answer: Mapping[str, Any] | None,
+    ) -> list[dict[str, Any]]:
         """The wakes that may ride with this head, marked running so no worker claims them:  the
         run of exact-address wakes for the same chat that comes next, in arrival order, within
         the caps.  An unpicked wake that could want this chat, or one of this chat that cannot
         ride, ends the run;  one addressed to another seat or letter is passed over like any
-        other chat's wake.  There is no deduplication by message id."""
+        other chat's wake.  There is no deduplication by message id.  An exact-origin wake may
+        head or ride:  its attested constraints were verified at its pick and are re-verified
+        here against `answer`, the registry read the head's check before delivery just made."""
         target = pick.target
-        if (
-            entry["wake"].get("required_session")
-            or entry["wake"].get("require_pr")
-            or not certain(pick)
-            or not message_id_ok(entry["wake"]["message_id"])
-            or self._stopping
-        ):
+        if not certain(pick) or not message_id_ok(entry["wake"]["message_id"]) or self._stopping:
             return []
         if target is None:  # certain() has said so already;  this only tells a type checker
             return []
@@ -2478,7 +2492,7 @@ class Router:
                     break
                 if _session_of(other) != session:
                     continue
-                if not self._may_ride(other, key, now) or len(riders) + 2 > cap:
+                if not self._may_ride(other, key, now, answer) or len(riders) + 2 > cap:
                     break
                 told = [self._told(rider) for rider in [*riders, other]]
                 text = turn_text(" " * TURN_PREFIX_MAX, head, told, turn_id)
@@ -2493,7 +2507,11 @@ class Router:
         return riders
 
     def _may_ride(
-        self, other: Mapping[str, Any], key: tuple[str, str, int, str], now: float
+        self,
+        other: Mapping[str, Any],
+        key: tuple[str, str, int, str],
+        now: float,
+        answer: Mapping[str, Any] | None,
     ) -> bool:
         """Whether this pending wake may ride a turn for the chat `key` names now."""
         if other.get("running") or other.get("receipt") is not None:
@@ -2502,13 +2520,12 @@ class Router:
             return False
         pick = _pick_from(other["pick"])
         return (
-            not other["wake"].get("required_session")
-            and not other["wake"].get("require_pr")
-            and certain(pick)
+            certain(pick)
             and pick.target is not None
             and turn_key(pick.target) == key
             and message_id_ok(other["wake"]["message_id"])
             and now - other["accepted_at"] < int(self.config["max_age_seconds"])
+            and _contracts_ok(other["wake"], pick.target, answer)
         )
 
     def _board(
@@ -3255,6 +3272,32 @@ def _pr_bound(row: Mapping[str, Any] | None, require_pr: str, generation: int = 
             continue
         return True
     return False
+
+
+def _contracts_ok(
+    wake: Mapping[str, Any], target: Target, answer: Mapping[str, Any] | None
+) -> bool:
+    """A turn member's attested exact-origin constraints, re-verified at gather time.
+
+    The read is the one the head's check before delivery just made, so a turn adds no registry
+    traffic:  the required session is this chat, the attested letter and generation still match
+    the live row when the wake carries them, and the PR binding is stamped at the chat's live
+    generation (`_pr_bound`).  A wake with no contracts passes;  one whose constraints no longer
+    hold does not ride, it stays pending and leads or rides a later turn, never delivered on an
+    unproven claim."""
+    required_session = wake.get("required_session") or ""
+    if required_session and required_session != target.session_id:
+        return False
+    require_letter = wake.get("require_letter") or ""
+    if require_letter and require_letter != target.letter:
+        return False
+    require_generation = wake.get("require_generation") or 0
+    if require_generation and require_generation != target.generation:
+        return False
+    require_pr = wake.get("require_pr") or ""
+    if require_pr and not _pr_bound(answer, require_pr, target.generation):
+        return False
+    return True
 
 
 def _issues_of(row: Mapping[str, Any]) -> list[tuple[str, float | None]]:

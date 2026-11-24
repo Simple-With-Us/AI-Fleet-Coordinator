@@ -539,6 +539,8 @@ SHIPPED_REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # Match the receiver: the pinned diagnostic launcher is host-installed only.
+        "scripts/simple_tools/minimax_supervised_exec.mjs",
         # The thread-registry exporter node test: mirrors the release REPO_ONLY
         # (the CI leg and local node --test run it from the checkout; nothing installed loads it).
         "scripts/simple_tools/thread_registry_export.test.mjs",

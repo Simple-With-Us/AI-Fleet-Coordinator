@@ -28,6 +28,7 @@ from unittest import mock
 from simple_tools import daemon as D
 from simple_tools import listener_api as API
 from simple_tools import notes as N
+from simple_tools import notes_client as NC
 from simple_tools import notes_queue as NQ
 from simple_tools import notes_wire as W
 
@@ -697,9 +698,20 @@ class DaemonWiringTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.events: list[tuple[str, dict]] = []
         self.keys = {name: secrets.token_hex(24) for name in W.PRINCIPALS}
+        # The principal keys resolve from the notes reader's own grant and never from
+        # the environment, so this test drives that read.
+        self.reads: dict[str, str] = {}
+        patcher = mock.patch.object(NC, "scoped_read", side_effect=self.fake_scoped_read)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_scoped_read(self, name: str, path: str, env: dict[str, str], **options: Any) -> str:
+        """One scoped read:  the value the grant's own read answers, or nothing."""
+        return self.reads.get(name, "")
 
     def daemon(self, *, env: dict[str, str] | None = None, enabled: bool = True, api: bool = True,
-               worker: tuple[str, ...] = ("CLAUDE", "JET"), seat_keys: bool = False) -> D.Daemon:
+               worker: tuple[str, ...] = ("CLAUDE", "JET"), seat_keys: bool = False,
+               reads: dict[str, str] | None = None) -> D.Daemon:
         d = D.Daemon.__new__(D.Daemon)
         d.hidden, d.hidden_lock = [], threading.Lock()
         d.root = str(self.tmp / "state")
@@ -709,7 +721,12 @@ class DaemonWiringTests(unittest.TestCase):
         d.notes_queue = None
         d._notes_queue_spec = None
         d.seats = {"JET": object()} if seat_keys else {}
-        d.env = dict(env if env is not None else {W.KEY_NAMES[name]: self.keys[name] for name in W.PRINCIPALS})
+        d.env = dict(env if env is not None else {})
+        self.reads = dict(
+            reads
+            if reads is not None
+            else {W.KEY_NAMES[name]: self.keys[name] for name in W.PRINCIPALS}
+        )
         if seat_keys:
             d.env["JET_ROUTINE_KEY"] = "j" * 40
         d.config = SimpleNamespace(
@@ -750,9 +767,10 @@ class DaemonWiringTests(unittest.TestCase):
             self.assertNotIn(key, json.dumps(self.events))
             self.assertEqual(d.scrub("x %s y" % key), "x [redacted] y")
 
-    def test_quoted_keys_are_stripped_and_a_missing_runner_key_is_a_warning(self) -> None:
-        env = {W.KEY_NAMES["WORKER"]: '"%s"' % self.keys["WORKER"]}
-        d = self.daemon(env=env)
+    def test_the_reader_answers_verbatim_and_a_missing_runner_key_is_a_warning(self) -> None:
+        # The reader's own read answers the key as it is, and a principal the read
+        # does not answer is a warning rather than an end.
+        d = self.daemon(reads={W.KEY_NAMES["WORKER"]: self.keys["WORKER"]})
         d._configure_listener_api()
         self.assertEqual(d.notes_queue.principals["WORKER"].key, self.keys["WORKER"])
         started = self.fields("notes-queue-started")
@@ -760,13 +778,13 @@ class DaemonWiringTests(unittest.TestCase):
         self.assertIn("nothing can claim a request", started["warning"])
 
     def test_no_key_means_no_queue_and_with_no_seat_key_no_server(self) -> None:
-        d = self.daemon(env={})
+        d = self.daemon(reads={})
         d._configure_listener_api()
         self.assertIsNone(d.notes_queue)
         self.assertIsNone(d.listener_api_server)
         self.assertIn("no key is set", self.fields("notes-queue-off")["reason"])
         self.assertIn("not started", self.fields("listener-api-deny-all")["reason"])
-        short = self.daemon(env={W.KEY_NAMES["WORKER"]: "k" * 20})
+        short = self.daemon(reads={W.KEY_NAMES["WORKER"]: "k" * 20})
         short._configure_listener_api()
         self.assertIsNone(short.notes_queue)
         self.assertIn("shorter than 32", self.fields("notes-queue-off")["reason"])

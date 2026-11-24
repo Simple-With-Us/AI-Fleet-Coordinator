@@ -1076,7 +1076,7 @@ class TestMinter(unittest.TestCase):
 
         minter = AppTokenMinter(None, None, clock=lambda: 0)
         with self.assertRaises(AppTokenError):
-            minter.token_for("swu-echo", "a/b", {"administration": "write"})
+            minter.token_for("swu-echo", "a/b", {"organization_administration": "write"})
 
 
 class TestAppClientShapes(unittest.TestCase):
@@ -1913,7 +1913,7 @@ class TestPolicyMintPermissionsValidation(unittest.TestCase):
                             "actions": ["mint_token"],
                             "repos": ["a/b"],
                             "app_slug": "swu-echo",
-                            "mint_permissions": {"administration": "write"},
+                            "mint_permissions": {"organization_administration": "write"},
                         }
                     }
                 )

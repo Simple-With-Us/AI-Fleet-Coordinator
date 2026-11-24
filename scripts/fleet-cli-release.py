@@ -71,7 +71,9 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
 # the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
-MAX_FILES = 190
+# MiniMax catalog observation adds the 191st shipped file. Keep the matching
+# sender/receiver count budget bounded, with room for small additive modules.
+MAX_FILES = 200
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -201,6 +203,9 @@ REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # Pinned one-shot host diagnostic, explicitly installed only after review.
+        # No fleet CLI imports or runs this launcher.
+        "scripts/simple_tools/minimax_supervised_exec.mjs",
         # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
         # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
         "scripts/simple_tools/thread_registry_export.test.mjs",

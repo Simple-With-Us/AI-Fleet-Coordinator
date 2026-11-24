@@ -219,6 +219,10 @@
     // only.  The identity provider is One-time PIN, so a second address would make
     // that inbox a full admin credential for this server.
     "OWNER_EMAILS": "mail@jays.services",
+    // Cloudflare Access service-token client ids (comma separated) allowed on /admin/api/* only, so Muster
+    // connects without the owner's browser login.  Not secrets.  Empty = off.  Added by the owner after the
+    // Access service token and its Service Auth policy exist.
+    "ADMIN_API_SERVICE_CLIENT_IDS": "1844b185d553e0fa138dcde71b3e9914.access",
     // Fleet recall (spec 1.1):  the recall service's REST twin.  The Worker
     // accepts exactly this origin.  Its three secrets are RECALL_API_TOKEN,
     // RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET (DEPLOY.md);

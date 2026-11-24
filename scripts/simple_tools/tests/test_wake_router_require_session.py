@@ -431,19 +431,19 @@ class DeliveryRecheckTests(Base):
         return self.router._stale(pick.target, w)
 
     def test_still_bound_delivers(self):
-        reason, _ = self._pick_and_stale(
+        reason, _, _ = self._pick_and_stale(
             [row(SID_A, "AB", "pr work", generation=1,
                  bound_prs=[{"repo": "Simple-With-Us/HogHunter", "number": 7,
                              "generation": 1}])])
         self.assertEqual(reason, "")
 
     def test_binding_removed_before_delivery_holds(self):
-        reason, _ = self._pick_and_stale(
+        reason, _, _ = self._pick_and_stale(
             [row(SID_A, "AB", "pr work", generation=1)])
         self.assertEqual(reason, "required-pr-unbound")
 
     def test_binding_replaced_with_other_pr_holds(self):
-        reason, _ = self._pick_and_stale(
+        reason, _, _ = self._pick_and_stale(
             [row(SID_A, "AB", "pr work", generation=1,
                  bound_prs=[{"repo": "Simple-With-Us/HogHunter", "number": 9,
                              "generation": 1}])])
@@ -469,12 +469,12 @@ class DeliveryRecheckTests(Base):
                 bound_prs=[{"repo": "Simple-With-Us/HogHunter", "number": 7,
                             "generation": 0}])
         ]
-        reason, _ = self.router._stale(pick.target, w)
+        reason, _, _ = self.router._stale(pick.target, w)
         self.assertEqual(reason, "required-pr-unbound")
 
     def test_no_require_pr_wake_skips_recheck(self):
         self.registry.rows = [row(SID_A, "AB", "pr work", generation=1)]
         w = wake(required_session=SID_A)
         pick = self.router.pick(w, consult=False)
-        reason, _ = self.router._stale(pick.target, w)
+        reason, _, _ = self.router._stale(pick.target, w)
         self.assertEqual(reason, "")

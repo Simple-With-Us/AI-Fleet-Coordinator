@@ -456,7 +456,7 @@
         "zcode/"
       ],
       "zulipBotEmail": "zc-bot@simplewithus.zulipchat.com",
-      "zulipFileCode": "Zcode",
+      "zulipFileCode": "ZC",
       "notes": "Z Code (Z.ai / Zhipu AI desktop IDE, ~/.zcode, global rules ~/.zcode/AGENTS.md)."
     }
   ],

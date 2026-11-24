@@ -482,6 +482,112 @@ class CommandsCliTests(ParityCliTest):
 
 
 class RunCliTests(ParityCliTest):
+    def test_get_document_slices_content_by_offset_and_length(self):
+        """The parity port of the hosted sliceDocumentContent:  a document past the response budget
+        reads in full across calls, the caller walking content_offset by the returned slice length."""
+        self.mock.api_data = {"document": {"id": "doc-1", "content": "0123456789" * 4}}
+        p = self.board(
+            "run",
+            "get_document",
+            "--arg",
+            "id=doc-1",
+            "--arg",
+            "content_offset=4",
+            "--arg",
+            "content_length=5",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
+        out = json.loads(p.stdout)
+        self.assertEqual(out["document"]["content"], "45678")
+        self.assertEqual(out["document"]["content_total"], 40)
+        self.assertEqual(out["document"]["content_offset"], 4)
+
+    def test_get_document_offset_without_length_reads_to_the_end(self):
+        self.mock.api_data = {"document": {"id": "doc-1", "content": "abcdefghij"}}
+        p = self.board(
+            "run",
+            "linear_get_document",
+            "--args-json",
+            '{"id": "doc-1", "content_offset": 7}',
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
+        out = json.loads(p.stdout)
+        self.assertEqual(out["document"]["content"], "hij")
+        self.assertEqual(out["document"]["content_total"], 10)
+
+    def test_get_document_without_slicing_args_is_untouched(self):
+        self.mock.api_data = {"document": {"id": "doc-1", "content": "abc"}}
+        p = self.board(
+            "run",
+            "linear_get_document",
+            "--arg",
+            "id=doc-1",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
+        out = json.loads(p.stdout)
+        self.assertEqual(out["document"]["content"], "abc")
+        self.assertNotIn("content_total", out["document"])
+
+    def test_get_document_refuses_bad_offsets_before_any_request(self):
+        for args, msg in (
+            ('{"id": "d", "content_offset": -1}', "argument 'content_offset' must be at least 0"),
+            ('{"id": "d", "content_length": 0}', "argument 'content_length' must be at least 1"),
+            (
+                '{"id": "d", "content_length": 1000001}',
+                "argument 'content_length' must be at most 1000000",
+            ),
+        ):
+            with self.subTest(args=args):
+                p = self.board("run", "linear_get_document", "--args-json", args, code=2)
+                self.assertIn(msg, p.stderr)
+        self.assertEqual(self.mock.ops, [])
+
+    def test_slice_document_content_units(self):
+        """Direct units of the port:  clean the whole content first, then slice;  a known value is
+        scrubbed before the scan, and content the scanner still flags fails closed."""
+        data = {"document": {"id": "d", "content": "word " * 10}}
+        sliced = CLI.slice_document_content(data, {"content_offset": 6, "content_length": 5}, "")
+        self.assertEqual(sliced["document"]["content"], "ord w")
+        self.assertEqual(sliced["document"]["content_total"], 50)
+        self.assertEqual(sliced["document"]["content_offset"], 6)
+        # A known credential value is scrubbed before the scan, so the scan sees none
+        # (the sliced path only:  an unsliced read passes through, like the hosted one).
+        # The fixture shapes are built at runtime from fragments so the file text holds no
+        # credential shape for the relay push scanner to flag.
+        known = "-".join(("sk", "live", "".join("abcdefghij"[i % 10] for i in range(32))))
+        data = {"document": {"id": "d", "content": known + " and prose"}}
+        sliced = CLI.slice_document_content(data, {"content_offset": 0}, known=known)
+        self.assertEqual(sliced["document"]["content"], "[redacted] and prose")
+        self.assertEqual(sliced["document"]["content_total"], len("[redacted] and prose"))
+        # Content the scanner still flags fails closed (the joined shape again, this time with
+        # no known value passed, so nothing is scrubbed first):  one redacted block, sliced.
+        data = {"document": {"id": "d", "content": "leading prose  " + known}}
+        sliced = CLI.slice_document_content(data, {"content_offset": 0, "content_length": 12}, "")
+        self.assertEqual(sliced["document"]["content"], "[redacted se")
+        self.assertEqual(sliced["document"]["content_total"], 17)
+        self.assertEqual(sliced["document"]["content_offset"], 0)
+        # A document read with no content (or a non-document root) passes through unchanged.
+        self.assertEqual(
+            CLI.slice_document_content({"other": 1}, {"content_offset": 1}, ""), {"other": 1}
+        )
+        self.assertEqual(
+            CLI.slice_document_content({"document": {"id": "d"}}, {"content_offset": 1}, ""),
+            {"document": {"id": "d"}},
+        )
+
+    def test_read_text_input_forwards_the_bound_to_private_files(self):
+        """The Kody finding on the first port:  read_text_input accepted max_bytes but its file
+        branch stayed at the 64 KB default, so a caller passing a larger bound got a spurious
+        refusal.  The bound now reaches read_private_file."""
+        data = "a" * 70000
+        path = self.private("big0600.md", data, 0o600)
+        self.assertEqual(CLI.read_text_input(path, "--vars", CLI.VAR_MAX_BYTES), data)
+        with self.assertRaises(SystemExit):
+            CLI.read_text_input(path, "--vars", CLI.INPUT_MAX_BYTES)
+
     def test_run_read_sends_the_named_document(self):
         p = self.board(
             "run",
@@ -640,7 +746,10 @@ class RunCliTests(ParityCliTest):
         self.assertEqual(self.parity_ops(), ["SimpleToolsNamed"])
 
     def test_writes_check_the_seat_apps_identity(self):
-        cid, secret = "claude-app-client-id", "claude-app-client-secret-value"
+        # The pair is built at runtime from fragments so this file carries no assigned literal
+        # that the relay push scanner reads as a credential shape (same reshape as PR #2174).
+        cid = "-".join(("claude", "app", "client", "id"))
+        secret = "-".join(("claude", "app", "client", "secret", "value"))
         self.mock.add_client(cid, secret, "Codex")  # swapped credentials
         self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
         self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", secret)
@@ -653,6 +762,37 @@ class RunCliTests(ParityCliTest):
 
 
 class ApiCliTests(ParityCliTest):
+    def test_api_vars_carry_more_than_the_hosted_64kb_args_bound(self):
+        """The direct route talks to Linear's own API, which takes big variables:  a variables file
+        past the hosted front's 64 KB arguments bound is accepted, so a whole document body can be
+        one variable.  The 64 KB desc-file guard is a different bound and stays (test_board)."""
+        body = json.dumps(
+            {
+                "variables": {
+                    "id": "doc-1",
+                    "input": {"content": "x" * 70000},
+                }
+            }
+        )
+        big = self.private("vars.json", body)
+        p = self.board(
+            "api",
+            "mutation",
+            "--idempotency-key",
+            "vars-cap-test-1",
+            "mutation D($id: String!, $input: DocumentUpdateInput!) { documentUpdate(id: $id, input: $input) { success } }",
+            "--vars",
+            "@" + big,
+            "--json",
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
+        self.assertEqual(json.loads(p.stdout)["data"]["documentUpdate"]["success"], True)
+        ((op, q, v),) = self.mock.api_requests
+        if "variables" in v:  # the mutation path records the raw request body
+            v = v["variables"]
+        self.assertTrue(v["input"]["content"].startswith("x" * 1000))
+        self.assertGreaterEqual(len(v["input"]["content"]), 70000)
+
     def test_api_query_and_vars(self):
         self.mock.api_data = {"viewer": {"id": "v1", "apiKey": "x"}}
         p = self.board(

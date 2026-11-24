@@ -214,6 +214,20 @@ _READER_CACHE = None
 _READER_NAME = "_zulip_linkifiers_fleet_infisical"
 _MAX_READER_BYTES = 2 * 1024 * 1024
 
+# This consumer's own scoped read-only service tokens:  one grant per Infisical folder,  each named
+# for the folder it covers and held in the consumer's own store (the owner's login keychain on the
+# Mac, a private file on a server).  The store is the authority and is read first;  an environment
+# binding is used only when the token's own grant metadata proves the narrow grant.
+TOKEN_ACCOUNTS = {
+    "/zulip_operator": "zulip-linkifiers-operator-ro",
+    "/zulip": "zulip-linkifiers-zulip-ro",
+    "/": "zulip-linkifiers-root-ro",
+}
+
+
+class BindingRefused(Exception):
+    """The consumer's own scoped token is not usable:  the message names the account and the refusal."""
+
 
 def _infisical_reader():
     """Execute only the fixed canonical sibling source, never an import-path candidate."""
@@ -284,7 +298,7 @@ def _read_infisical_names(names, folder):
         project = client.infisical_project_id(
             {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        token = os.environ.get("INFISICAL_TOKEN", "").strip()
+        token = _own_token(client, folder, project)
         if not token:
             return {}
         return client.bounded_fetch_project(
@@ -297,40 +311,90 @@ def _read_infisical_names(names, folder):
             max_output_bytes=65536,
             strict_records=True,
         )
+    except BindingRefused:
+        raise
     except Exception:
         return {}
 
 
-def _fleet_secret(name: str) -> str:
-    """One named read, retaining the member-only /zulip-to-root retry."""
+def _own_token(client, folder, project):
+    """This consumer's own scoped token:  its own store first,  a bound copy only when it proves itself.
+
+    The store is the authority:  the consumer's own account token is read from the host's approved
+    store first,  and it is the credential the read runs under.  An environment binding is a second
+    source only when the token's own grant metadata proves it is this consumer's narrow grant:  the
+    workspace is the project,  the permissions are exactly read,  the granted folder is exactly this
+    one,  and the token's own name is this account.  A general binding scoped to "/" or to several
+    folders fails that check,  so it can no longer serve a consumer,  and a hand-set value never
+    replaces the reviewed grant.  The refusal names the account the consumer needs and which
+    refusal it was."""
+    account = TOKEN_ACCOUNTS.get(folder)
+    if not account:
+        raise BindingRefused("no scoped token covers %s" % folder)
+    home = os.environ.get("HOME", "").strip()
+    try:
+        token, _source = client.consumer_binding(
+            account,
+            folder,
+            dict(os.environ),
+            project,
+            home=Path(home) if home else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+        detail = getattr(exc, "message", "") or type(exc).__name__
+        raise BindingRefused(
+            "the %s scoped token for %s could not be resolved (%s)" % (account, folder, detail)
+        ) from None
+    return token
+
+
+def _fleet_secret(name: str, *, required: bool = True) -> str:
+    """One named read, retaining the member-only /zulip-to-root retry.
+
+    Every folder in the retry gets its turn:  a refusal on one folder says that folder has no
+    grant on this host,  so the next folder still answers.  The refusal names the accounts to
+    provision only when every folder refused,  because a folder that answered empties the name
+    and the caller says which one is missing;  an optional name is simply absent and the
+    caller's documented default applies.
+    """
     folders = ("/zulip_operator",) if name.startswith("ZULIP_OPERATOR_") else ("/zulip", "/")
+    refusals = []
     for folder in folders:
-        value = _read_infisical_names((name,), folder).get(name, "").strip()
+        try:
+            value = _read_infisical_names((name,), folder).get(name, "").strip()
+        except BindingRefused as exc:
+            refusals.append(str(exc))
+            continue
         if value:
             return value
+    if required and len(refusals) == len(folders):
+        raise BindingRefused("; ".join(refusals))
     return ""
 
 
 def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
+    """This consumer's own credential, from Infisical only.
+
+    The environment is not a source for a value either:  the names resolve from the consumer's own
+    scoped grant,  and a refusal names the account to provision."""
+    try:
+        return _credentials(rc_path, admin)
+    except BindingRefused as exc:
+        sys.exit(str(exc))
+
+
+def _credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
     if admin:
-        email, key, site = (
-            os.environ.get(f"ZULIP_OPERATOR_{'API_KEY' if part == 'KEY' else part}", "").strip()
-            or _fleet_secret(f"ZULIP_OPERATOR_{'API_KEY' if part == 'KEY' else part}")
-            for part in ("EMAIL", "KEY", "SITE")
-        )
+        email = _fleet_secret("ZULIP_OPERATOR_EMAIL")
+        key = _fleet_secret("ZULIP_OPERATOR_API_KEY")
+        site = _fleet_secret("ZULIP_OPERATOR_SITE", required=False)
         if not (email and key):
             sys.exit(
-                "no ZULIP_OPERATOR_EMAIL / ZULIP_OPERATOR_API_KEY in env or Infisical Fleet-OPS "
+                "no ZULIP_OPERATOR_EMAIL / ZULIP_OPERATOR_API_KEY in Infisical Fleet-OPS "
                 "/zulip_operator"
             )
         return email, key, (site or REALM).rstrip("/")
     path = rc_path
-    if not path and os.environ.get("ZULIP_EMAIL") and os.environ.get("ZULIP_API_KEY"):
-        return (
-            os.environ["ZULIP_EMAIL"],
-            os.environ["ZULIP_API_KEY"],
-            os.environ.get("ZULIP_SITE", REALM),
-        )
     if not path:
         seat = (os.environ.get("AGENT_LAUNCH_SEAT") or os.environ.get("AGENT_SEAT") or "").strip()
         if not seat:
@@ -338,9 +402,9 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
                 "no verified seat:  set AGENT_SEAT (or pass --rc / Zulip env) so this run uses its own credential"
             )
         bot = seat.upper().replace("-", "_")
-        email, key, site = (
-            _fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE")
-        )
+        email = _fleet_secret(f"{bot}_ZULIP_EMAIL")
+        key = _fleet_secret(f"{bot}_ZULIP_KEY")
+        site = _fleet_secret(f"{bot}_ZULIP_SITE", required=False)
         if not (email and key):
             sys.exit(
                 f"no {bot}_ZULIP_EMAIL / {bot}_ZULIP_KEY in Infisical Fleet-OPS (and no --rc or env)"
