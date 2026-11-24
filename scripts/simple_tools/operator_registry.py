@@ -2470,9 +2470,7 @@ def sweep_stale(
             reports: dict[tuple[str, str], Mapping[str, Any]] = {}
             for host in {str(row["verified_host"]) for row in candidates}:
                 reports[(namespace, host)] = _host_liveness_row(conn, namespace, host)
-            candidates, _refused = attested_retirement(
-                candidates, reports, cutoff, now=moment
-            )
+            candidates, _refused = attested_retirement(candidates, reports, cutoff, now=moment)
             for row in candidates:
                 letter, generation = registry._active_alias(conn, row["record_id"])
                 if row["closed_at"]:
@@ -3101,9 +3099,11 @@ def trim_export_rows(db_path: str, *, keep_seconds: int = EXPORT_KEEP_SECONDS) -
     keep = int(keep_seconds)
     if keep <= 0:
         raise ValueError("keep_seconds must be positive")
-    cutoff = (datetime.now(UTC) - timedelta(seconds=keep)).isoformat(
-        timespec="milliseconds"
-    ).replace("+00:00", "Z")
+    cutoff = (
+        (datetime.now(UTC) - timedelta(seconds=keep))
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
     conn = sqlite3.connect(str(db_path))
     try:
         with conn:
@@ -3681,8 +3681,11 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             try:
                 counts = trim_export_rows(db, keep_seconds=args.keep_seconds)
             except ValueError as exc:
-                print(json.dumps({"error": "registry_error", "code": "registry_error",
-                                  "detail": str(exc)}))
+                print(
+                    json.dumps(
+                        {"error": "registry_error", "code": "registry_error", "detail": str(exc)}
+                    )
+                )
                 return 2
             except sqlite3.Error:
                 print(json.dumps({"error": "registry_unavailable", "code": "registry_unavailable"}))
