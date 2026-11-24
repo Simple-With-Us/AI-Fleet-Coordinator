@@ -67,12 +67,22 @@ The document:
      "disabled": [name],
      "registry_sweep": {"ran_at": ISO | null, "ok": bool | null, "ended": int | null,
                         "error": code | null, "stale_after_minutes": int | null,
-                        "refused": int | null, "refused_platforms": [token]}}
+                        "refused": int | null, "refused_platforms": [token]},
+     "registry_sweep_schedule": {"interval_minutes": int | null,
+                                 "stale_after_minutes": int | null, "next_at": ISO | null},
+     "linear_comments": {"state": "off" | "module_missing" |
+                                   "token_file_unusable" | "no_service_token" |
+                                   "credential_refused" | "ledger_refused" | "build_error" |
+                                   "unconfigured" | "running" | "stopped" | "other" | null,
+                         "since": ISO | null, "last_tick": ISO | null,
+                         "errors": int | null, "last_error": code | null}}
 
 `registry_sweep` was added after v1 shipped.  It is additive:  a reader that does not know the key
 ignores it, so `schema` stays 1.  Each seat's `routine` came later still, in the same way:  a
 reader that does not know it ignores it, and a reader that does must allow for a document from an
-older reducer that has no `routine` key at all.
+older reducer that has no `routine` key at all.  `registry_sweep_schedule` and
+`linear_comments` came later still (AFC-833), in the same way.
+later still (AFC-833), in the same way.
 
 Where each field comes from (`Daemon.status()` in daemon.py, which this module reads and never
 changes):
@@ -178,6 +188,15 @@ listener may still carry them, and it is read as before.  `drain` is not read e
 planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
 before a SIGTERM, and its terminal rows name message ids and effect reasons - an id and free
 text are exactly what this document never emits, and the apps have no drain surface to feed.
+  * `registry_sweep_schedule` is the source's own block (`Daemon._registry_sweep_schedule_status`,
+    AFC-833):  how often the one stale sweeper's pass is due and when the next one is, so a reader
+    judges `registry_sweep.ran_at` against the real interval instead of guessing one.  All null
+    where no sweeper runs.
+  * `linear_comments` is the source's own block (`Daemon._linear_comments_status`, AFC-833):
+    how the Operator's Zulip -> Linear living comments are, in words from a closed list.  It
+    is never a message from the engine:  the daemon keeps those in its log, and a state the
+    list does not know reads as "other".
+
   * each seat's `wake_outcomes_24h` is the source seat's own block (AFC-835):  how many of the
     seat's wakes of the last day ended delivered, undelivered or unknown, and how many still wait
     on their router's receipt however old.  Counts only;  all null where the source does not say.
@@ -289,6 +308,19 @@ _SKIP_REASONS = (
 # A sweep that failed on its store writes "<exception class>: <message>" as its error
 # (`listener_registry.Sweeper.run`).  The class picks the code;  the message is never read.  Only
 # a name shaped like an exception class counts (RegistryUnavailable, or one ending in Error).
+# The living comments' state, every word the daemon writes (Daemon._linear_comments_status).
+_LINEAR_COMMENT_STATES = (
+    "off",
+    "module_missing",
+    "token_file_unusable",
+    "no_service_token",
+    "credential_refused",
+    "ledger_refused",
+    "build_error",
+    "unconfigured",
+    "running",
+    "stopped",
+)
 _SWEEP_ERROR_CLASS_RE = re.compile(r"([A-Z][A-Za-z0-9]{0,63}): ")
 _SWEEP_ERROR_CLASSES = {"RegistryUnavailable": "registry_unavailable"}
 
@@ -711,6 +743,44 @@ def _registry_sweep(raw: Any) -> dict[str, Any]:
     return out
 
 
+def _registry_sweep_schedule(raw: Any) -> dict[str, Any]:
+    """The source's `registry_sweep_schedule` (AFC-833) as counts and a time;  all null when it is
+    absent.  A next-due time that is not a time the daemon could have written reads as null."""
+    out: dict[str, Any] = {
+        "interval_minutes": None,
+        "stale_after_minutes": None,
+        "next_at": None,
+    }
+    if not isinstance(raw, dict):
+        return out
+    out["interval_minutes"] = _count(raw.get("interval_minutes"))
+    out["stale_after_minutes"] = _count(raw.get("stale_after_minutes"))
+    out["next_at"] = _when(raw.get("next_at"))
+    return out
+
+
+def _linear_comments(raw: Any) -> dict[str, Any]:
+    """The source's `linear_comments` (AFC-833), the Operator's Zulip -> Linear living comments'
+    health:  a state from a closed list, a count, two times and a reason code;  all null when it is
+    absent.  A state the list does not know reads as "other", so nothing the daemon might one day
+    write there is passed on, and the block's other fields are never read."""
+    out: dict[str, Any] = {
+        "state": None,
+        "since": None,
+        "last_tick": None,
+        "errors": None,
+        "last_error": None,
+    }
+    if not isinstance(raw, dict):
+        return out
+    out["state"] = _fixed_word(raw.get("state"), _LINEAR_COMMENT_STATES)
+    out["since"] = _when(raw.get("since"))
+    out["last_tick"] = _when(raw.get("last_tick"))
+    out["errors"] = _count(raw.get("errors"))
+    out["last_error"] = _code(raw.get("last_error"))
+    return out
+
+
 # ---- the entry point ---------------------------------------------------------------------------
 
 
@@ -733,6 +803,8 @@ def _skeleton(now: float, instance: str | None) -> dict[str, Any]:
         "skipped": [],
         "disabled": [],
         "registry_sweep": _registry_sweep(None),
+        "registry_sweep_schedule": _registry_sweep_schedule(None),
+        "linear_comments": _linear_comments(None),
     }
 
 
@@ -767,6 +839,10 @@ def reduce_status(status: Any, now: Any, instance: Any) -> dict[str, Any]:
             "skipped": _skipped(status.get("skipped_seats")),
             "disabled": _disabled(status.get("disabled")),
             "registry_sweep": _registry_sweep(status.get("registry_sweep")),
+            "registry_sweep_schedule": _registry_sweep_schedule(
+                status.get("registry_sweep_schedule")
+            ),
+            "linear_comments": _linear_comments(status.get("linear_comments")),
         }
     except Exception:  # noqa: BLE001 - a hostile document must degrade, never raise
         return _skeleton(moment, where)

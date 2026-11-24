@@ -139,8 +139,14 @@ TOP = {
     "skipped",
     "disabled",
     "registry_sweep",
+    "registry_sweep_schedule",
+    "linear_comments",
 }
 VOICE = {"available", "code", "since"}
+SCHEDULE = {"interval_minutes", "stale_after_minutes", "next_at"}
+LINEAR = {"state", "since", "last_tick", "errors", "last_error"}
+# "other" for a state the list does not know, and None for a state not reported.
+LINEAR_STATES = (*RS._LINEAR_COMMENT_STATES, "other", None)
 SWEEP = {
     "ran_at",
     "ok",
@@ -323,6 +329,18 @@ def check_shape(case: unittest.TestCase, doc: Any) -> None:
     case.assertEqual(sweep["refused_platforms"], sorted(set(sweep["refused_platforms"])))
     for platform in sweep["refused_platforms"]:
         is_token(platform)
+    schedule = doc["registry_sweep_schedule"]
+    case.assertEqual(set(schedule), SCHEDULE)
+    optional(schedule["interval_minutes"], is_count)
+    optional(schedule["stale_after_minutes"], is_count)
+    optional(schedule["next_at"], is_iso)
+    linear = doc["linear_comments"]
+    case.assertEqual(set(linear), LINEAR)
+    case.assertIn(linear["state"], LINEAR_STATES)
+    optional(linear["since"], is_iso)
+    optional(linear["last_tick"], is_iso)
+    optional(linear["errors"], is_count)
+    optional(linear["last_error"], lambda v: case.assertTrue(CODE.fullmatch(v), repr(v)))
     text = json.dumps(doc, ensure_ascii=False)
     case.assertLess(len(text), 512 * 1024)
     # No string value in the document holds a control, format, surrogate or private character
@@ -556,6 +574,14 @@ def status_document(**changes: Any) -> dict[str, Any]:
             "since": iso(NOW - 3600),
         },
         "registry_sweep": dict(live_sweep(), ran_at=NOW - 600),
+        # Added with AFC-833:  a real daemon writes both, as it writes `registry_sweep`.
+        "registry_sweep_schedule": {
+            "interval_minutes": 15,
+            "stale_after_minutes": 2160,
+            "next_at": NOW + 300,
+        },
+        "linear_comments": {"state": "running", "last_tick": NOW - 30, "errors": 0,
+                            "last_error": None},
         "seats": seats,
     }
     document.update(changes)
@@ -1338,6 +1364,143 @@ class WakeOutcomesTests(unittest.TestCase):
         self.assertEqual(seats["MA"]["wake_outcomes_24h"], self.NONE)
 
 
+class RegistrySweepScheduleTests(unittest.TestCase):
+    """`registry_sweep_schedule` (AFC-833): how often the one stale sweeper's pass is due and when
+    the next one is, so a reader judges `registry_sweep.ran_at` against the real interval."""
+
+    NONE = {"interval_minutes": None, "stale_after_minutes": None, "next_at": None}
+
+    def reduced(self, block: Any) -> dict[str, Any]:
+        document = status_document()
+        if block is ABSENT:
+            document.pop("registry_sweep_schedule", None)
+        else:
+            document["registry_sweep_schedule"] = block
+        out = RS.reduce_status(document, NOW, "server")
+        check_shape(self, out)
+        self.assertEqual(len(out["seats"]), 7, "the rest of the document is still reduced")
+        return out["registry_sweep_schedule"]
+
+    def test_an_absent_block_from_an_older_listener_reads_all_null(self) -> None:
+        self.assertEqual(self.reduced(ABSENT), self.NONE)
+
+    def test_a_valid_block_is_read(self) -> None:
+        self.assertEqual(
+            self.reduced(
+                {"interval_minutes": 15, "stale_after_minutes": 2160, "next_at": NOW + 900}
+            ),
+            {"interval_minutes": 15, "stale_after_minutes": 2160, "next_at": iso(NOW + 900)},
+        )
+
+    def test_before_the_tick_books_a_pass_the_next_time_is_null(self) -> None:
+        self.assertIsNone(self.reduced({"interval_minutes": 5, "next_at": None})["next_at"])
+
+    def test_a_malformed_field_is_null_and_the_others_stand(self) -> None:
+        # A count is an integer (a string and a float are not one), and a time is a time.
+        self.assertEqual(
+            self.reduced(
+                {"interval_minutes": "15", "stale_after_minutes": 2160.0, "next_at": "soon"}
+            ),
+            {"interval_minutes": None, "stale_after_minutes": None, "next_at": None},
+        )
+        self.assertEqual(
+            self.reduced({"interval_minutes": 15, "stale_after_minutes": 2160, "next_at": NOW}),
+            {"interval_minutes": 15, "stale_after_minutes": 2160, "next_at": iso(NOW)},
+        )
+
+    def test_fields_the_daemon_does_not_write_are_never_read(self) -> None:
+        block = {"interval_minutes": 15, "stale_after_minutes": 2160, "next_at": None,
+                 "path": PATH, "host": "hosted.invalid", "config_path": TILDE}
+        out = self.reduced(block)
+        self.assertEqual(set(out), SCHEDULE)
+        for private in (PATH, TILDE, "hosted.invalid"):
+            self.assertNotIn(private, json.dumps(out))
+
+    def test_a_block_that_is_not_an_object_reads_as_all_null(self) -> None:
+        for block in ([], "running", 7, True, [PATH]):
+            self.assertEqual(self.reduced(block), self.NONE, repr(block))
+
+
+class LinearCommentsTests(unittest.TestCase):
+    """`linear_comments` (AFC-833): the Operator's Zulip -> Linear living comments' health, in words
+    from a closed list; nothing else the source carries in the block reaches the output."""
+
+    NONE = {"state": None, "since": None, "last_tick": None, "errors": None, "last_error": None}
+
+    def reduced(self, block: Any) -> dict[str, Any]:
+        document = status_document()
+        if block is ABSENT:
+            document.pop("linear_comments", None)
+        else:
+            document["linear_comments"] = block
+        out = RS.reduce_status(document, NOW, "server")
+        check_shape(self, out)
+        self.assertEqual(len(out["seats"]), 7, "the rest of the document is still reduced")
+        return out["linear_comments"]
+
+    def test_an_absent_block_from_an_older_listener_reads_all_null(self) -> None:
+        self.assertEqual(self.reduced(ABSENT), self.NONE)
+
+    def test_every_word_the_daemon_writes_is_passed_as_itself(self) -> None:
+        # The daemon's words and the reducer's list are one list: a word added to the daemon
+        # without the reducer would read as "other" on every panel, and the other way round
+        # would be a word nothing writes.
+        self.assertEqual(sorted(D.LINEAR_COMMENT_STATES), sorted(RS._LINEAR_COMMENT_STATES))
+        self.assertEqual(len(set(D.LINEAR_COMMENT_STATES)), len(D.LINEAR_COMMENT_STATES))
+        for word in RS._LINEAR_COMMENT_STATES:
+            self.assertEqual(self.reduced({"state": word})["state"], word)
+
+    def test_a_running_engine_reports_its_tick_its_errors_and_the_last_code(self) -> None:
+        self.assertEqual(
+            self.reduced(
+                {"state": "running", "last_tick": NOW - 30, "errors": 2, "last_error": "value_error"}
+            ),
+            {"state": "running", "since": None, "last_tick": iso(NOW - 30), "errors": 2,
+             "last_error": "value_error"},
+        )
+
+    def test_a_stopped_engine_reports_since_when(self) -> None:
+        self.assertEqual(
+            self.reduced({"state": "stopped", "since": NOW - 3600})["since"], iso(NOW - 3600)
+        )
+
+    def test_a_word_the_list_does_not_know_is_other_and_its_text_is_never_copied(self) -> None:
+        for word in (PATH, "Running", "stopped ", "linear refused the credential", ""):
+            self.assertEqual(self.reduced({"state": word})["state"], "other", repr(word))
+        self.assertNotIn(PATH, json.dumps(self.reduced({"state": PATH})))
+
+    def test_a_malformed_field_is_null_and_the_others_stand(self) -> None:
+        # A count is an integer, a time is a time, and a code is lower-case snake_case: the
+        # class name the daemon would write without _snake is not one.
+        self.assertEqual(
+            self.reduced(
+                {"state": "running", "last_tick": True, "errors": "2", "last_error": "ValueError"}
+            ),
+            {"state": "running", "since": None, "last_tick": None, "errors": None,
+             "last_error": None},
+        )
+        self.assertIsNone(self.reduced({"last_error": KEY})["last_error"])
+        self.assertIsNone(self.reduced({"last_error": "a" * 60})["last_error"])
+
+    def test_the_fields_the_daemon_does_not_write_are_omitted_even_if_a_block_has_them(self) -> None:
+        block = {
+            "state": "stopped",
+            "stopped": "another linear_relay already holds " + PATH,
+            "reason": "the ledger " + PATH + " is held",
+            "message": "weekly cap reached",
+            "errors": 1,
+        }
+        out = self.reduced(block)
+        self.assertEqual(set(out), LINEAR)
+        text = json.dumps(out)
+        for private in (PATH, "weekly cap reached", "another linear_relay"):
+            self.assertNotIn(private, text)
+
+    def test_a_block_that_is_not_an_object_reads_as_all_null(self) -> None:
+        for block in ([], "running", 7, True, [PATH]):
+            self.assertEqual(self.reduced(block), self.NONE, repr(block))
+
+
 class RoutineTests(unittest.TestCase):
     """A seat's `routine`:  whether the router its wakes go to is ready, as a flag and two fixed
     words.  The router's host, the detail sentence and the method are never copied."""
@@ -1930,6 +2093,9 @@ class FromRealDaemonStatusTests(DaemonHarness):
             # AFC-721's one stale sweeper's last pass, as counts only:  its letters, record ids
             # and hosts are not read (see reduced_status.py, `registry_sweep`).
             "registry_sweep",
+            # AFC-833:  the sweeper's schedule, and the living comments' health in fixed words
+            # (see reduced_status.py, `registry_sweep_schedule` and `linear_comments`).
+            "registry_sweep_schedule", "linear_comments",
         }  # fmt: skip
         not_read = {
             "pid", "version", "started", "config_errors", "reload_refused",
