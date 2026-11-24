@@ -11,7 +11,9 @@ settings (the deployment names it;  this file carries no private path), and it i
 binding, because a resume runs in the given directory and a wake into another project's
 directory is a wrong-chat delivery.  A chat on this host delivers locally under a per-session
 file lock in `state_dir(env) / "locks"`, re-reading zcode's own stores once the lock is
-acquired.  The tasks index (`~/.zcode/v2/tasks-index.sqlite`) says whether a session is
+acquired.  The tasks index (default `~/.zcode/v2/tasks-index.sqlite`;  the deployment may
+name another through the ZC-only `tasks_index` config fact, because the forced ssh handler
+runs without the server's environment) says whether a session is
 running, and the session's own store row (`~/.zcode/cli/db/db.sqlite`) is the binding:  it
 carries the exact session id and the directory the session reports about itself, and both
 are compared with the requested session and the workspace root the deployment names.  The index is
@@ -121,6 +123,11 @@ DEFAULTS: Mapping[str, Any] = {
     # the wrong-chat delivery this platform exists to refuse.
     "workspace": "",
     "zcode_bin": "",
+    # The deployment may name the tasks index the app actually writes when it does not live
+    # under HOME:  the forced ssh handler runs without the server's environment, so the
+    # ZC_WAKE_TASKS_INDEX override cannot reach it.  Empty keeps the existing order:  the
+    # env override, then the default under HOME.
+    "tasks_index": "",
 }
 
 NEVER_RAN: frozenset[str] = frozenset(
@@ -308,11 +315,20 @@ def _private_dir(folder: Path) -> None:
     WR.private_dir(folder)
 
 
-def tasks_index_path(env: Mapping[str, str]) -> Path:
-    """The tasks index the deployment uses, or the default under HOME."""
+def tasks_index_path(env: Mapping[str, str], config: Mapping[str, Any] | None = None) -> Path:
+    """The tasks index the deployment uses, or the default under HOME.
+
+    The env override keeps its existing precedence.  When it is not set, the ZC-only config
+    fact `tasks_index` names the index:  the Mac-side handler runs under the forced ssh
+    command, which the server's environment never reaches, so the deployment's own config
+    file is the only place that can say where the app actually writes its index.  With
+    neither, the default under HOME is unchanged."""
     explicit = (env.get("ZC_WAKE_TASKS_INDEX") or "").strip()
     if explicit:
         return Path(explicit)
+    configured = str((config or {}).get("tasks_index") or "").strip()
+    if configured:
+        return Path(configured)
     home = str(env.get("HOME") or os.path.expanduser("~"))
     return Path(home) / ".zcode" / "v2" / "tasks-index.sqlite"
 
@@ -347,9 +363,11 @@ def _find_zcode_binary(child_env: Mapping[str, str]) -> str | None:
     return shutil.which("zcode", path=child_env.get("PATH"))
 
 
-def _tasks_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, Any] | None]:
+def _tasks_row(
+    env: Mapping[str, str], session_id: str, config: Mapping[str, Any] | None = None
+) -> tuple[str, dict[str, Any] | None]:
     """(`ok`|`missing`|`error`, row) for one session from the tasks index, read only."""
-    db = tasks_index_path(env)
+    db = tasks_index_path(env, config)
     if not db.is_file():
         return "missing", None
     try:
@@ -476,14 +494,20 @@ def _prompt_persisted(env: Mapping[str, str], session_id: str, wake_id: str) -> 
 
 
 def exclude_non_interactive(
-    env: Mapping[str, str], local_host: str, workspace: str = ""
+    env: Mapping[str, str],
+    local_host: str,
+    workspace: str = "",
+    config: Mapping[str, Any] | None = None,
 ) -> Callable[[list[WR.Target]], set[str]]:
     """Return session ids of local targets that cannot take a wake.
 
     A session is excluded when it is a sub-agent child, when the index does not know it, when
     its recorded workspace is gone, and when its recorded workspace is not the workspace this
     seat delivers into:  a wake into another project's directory is the wrong-chat delivery
-    this platform exists to refuse, so it is never picked in the first place."""
+    this platform exists to refuse, so it is never picked in the first place.  The index is
+    the one the delivery itself reads:  `config` is the seat's live settings mapping, read on
+    every call like the delivery reads it, so a settings refresh can never leave the
+    exclusion reading one index while the delivery reads another."""
 
     def exclude(targets: list[WR.Target]) -> set[str]:
         local_ids = [t.session_id for t in targets if t.host == local_host]
@@ -493,7 +517,7 @@ def exclude_non_interactive(
         status, subagents = _subagent_ids(env, local_ids)
         if status == "ok":
             excluded |= subagents
-        db = tasks_index_path(env)
+        db = tasks_index_path(env, config)
         placeholders = ",".join("?" * len(local_ids))
         try:
             conn = sqlite3.connect(
@@ -635,7 +659,7 @@ def deliver_local(
                 if stale is not None:
                     return stale
 
-            status, row = _tasks_row(env, session_id)
+            status, row = _tasks_row(env, session_id, config)
             if status == "error":
                 return WR.Delivery("failed", "resume", code="store-tasks-index")
             if status == "missing":
@@ -839,6 +863,7 @@ def router_platform(
             env,
             str(config.get("local_host", "server")),
             str(config.get("workspace") or ""),
+            config,
         ),
     )
 
