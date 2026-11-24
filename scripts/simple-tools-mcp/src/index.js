@@ -66,6 +66,7 @@ import {
   safeEqual,
 } from "./policy.js";
 import { verifyAccessJwt, parseServiceClientIds } from "./access.js";
+import { serveMcpConfig } from "./mcp-config.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
@@ -1082,7 +1083,7 @@ async function serveApp(request, env, _ctx) {
   if (route !== "authorize" && route !== "admin") return notFound();
 
   const adminApiPath = route === "admin" && new URL(request.url).pathname.startsWith("/admin/api/");
-  const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access, { allowService: adminApiPath, serviceClientIds: parseServiceClientIds(env.ADMIN_API_SERVICE_CLIENT_IDS) });
+  const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access, { allowService: adminApiPath, serviceClientIds: [...parseServiceClientIds(env.ADMIN_API_SERVICE_CLIENT_IDS), ...parseServiceClientIds(env.BF_ADMIN_API_SERVICE_CLIENT_IDS)] });
   if (!who.ok) {
     // Name the variable, never its value:  an unprovisioned AUD or team domain
     // is an operator fix, and saying which one turns a mystery 403 into a
@@ -1107,7 +1108,9 @@ async function serveApp(request, env, _ctx) {
     return textResponse("Method Not Allowed", 405, { Allow: "GET, POST" });
   }
   // A service principal has no email:  the actor recorded on its changes names the token, never a secret.
-  return serveAdmin(request, env, config, oauth, who.service ? `service-token:${who.serviceTokenId}` : who.email);
+  // A token listed only in BF_ADMIN_API_SERVICE_CLIENT_IDS is limited to BF-* seats and the MCP list routes (checked in serveAdmin).
+  const bfOnly = Boolean(who.service) && !parseServiceClientIds(env.ADMIN_API_SERVICE_CLIENT_IDS).includes(who.serviceTokenId);
+  return serveAdmin(request, env, config, oauth, who.service ? `service-token:${who.serviceTokenId}` : who.email, bfOnly ? "bf" : "owner");
 }
 
 async function authorizeGet(request, env, config, oauth, email) {
@@ -1350,8 +1353,18 @@ const DONE_NOTICES = {
   revoke_gb_bearer: "Bearer revoked.",
 };
 
-async function serveAdmin(request, env, config, oauth, email) {
+async function serveAdmin(request, env, config, oauth, email, scope = "owner") {
   const path = new URL(request.url).pathname;
+  if (scope === "bf" && path !== "/admin/api/mcp-config") {
+    return new Response(JSON.stringify({ ok: false, error: "scope_refused" }), { status: 403, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+  }
+  if (path === "/admin/api/mcp-config") {
+    return serveMcpConfig(request, {
+      issuer: config.issuer, actor: email, scope, seats: [...BEARER_SEATS],
+      kv: { get: (k) => env.OAUTH_KV.get(k), put: (k, v) => env.OAUTH_KV.put(k, v) },
+      audit: (e) => gate(env, GATE_LOG_NAME).audit(e),
+    });
+  }
   if (path === "/admin/api/bearers" && request.method === "GET") {
     // Read-only owner status for Muster (same Access owner check as /admin; no secret in the body).
     await Promise.all(["/zulip", "/linear", "/tools"].map((p) => prefetchFolder(env, p))).catch(() => {});
