@@ -18,47 +18,14 @@ SCHEMA_VERSION = 1
 DEFAULT_ORG = "Simple-With-Us"
 DEFAULT_MAX_RUNS = 15
 
-# Trigger keys that can produce a workflow run recorded on the default branch.
-# A workflow file whose only triggers sit outside this set (workflow_call-only
-# and pull_request-only files pushed to main) still registers a phantom red
-# run per push with zero jobs behind it, which is report noise, not a red
-# streak on the default branch.
-REPORTABLE_TRIGGERS = frozenset(
-    {
-        "push",
-        "schedule",
-        "workflow_dispatch",
-        "workflow_run",
-        "repository_dispatch",
-        "release",
-        "status",
-        "deployment",
-        "deployment_status",
-        "create",
-        "delete",
-        "registry_package",
-        "page_build",
-        "issues",
-        "issue_comment",
-        "project",
-        "project_card",
-        "project_column",
-        "label",
-        "milestone",
-        "check_run",
-        "check_suite",
-        "fork",
-        "gollum",
-        "watch",
-        "public",
-        "discussion",
-        "membership",
-        "organization",
-        "team",
-        "security_advisory",
-        "meta",
-    }
-)
+# Trigger keys that cannot produce a workflow run recorded on the default
+# branch.  A workflow file whose triggers all sit in this denylist
+# (workflow_call-only and pull_request-only files pushed to main) still
+# registers a phantom red run per push with zero jobs behind it, which is
+# report noise, not a red streak on the default branch.  A denylist, not an
+# allowlist: a trigger this file does not know about (merge_group, a future
+# event) must keep its red row visible, never hide behind "unknown".
+PHANTOM_ONLY_TRIGGERS = frozenset({"workflow_call", "pull_request", "pull_request_target"})
 
 
 def _repo_access_error(owner: str, repo: str, exc: github.GitHubError, *, context: str) -> str:
@@ -131,7 +98,7 @@ def parse_on_triggers(content: str) -> set[str]:
     """Return the top-level trigger keys of a workflow file's `on:` block.
 
     Deliberately a narrow subset of YAML: workflows are hand-maintained with
-    the house style (block or inline-list `on:` at column 0, trigger keys at
+    the house style (block or inline-list `on: at column 0, trigger keys at
     exactly two spaces), and any file this parser cannot read yields an empty
     set, which callers treat as "unknown" and keep scanning.
     """
@@ -149,6 +116,11 @@ def parse_on_triggers(content: str) -> set[str]:
             inline = re.match(r'^(?:on|"on"):\s*\[(.*)\]\s*$', line)
             if inline:
                 triggers |= _split_trigger_list(inline.group(1))
+                continue
+            # Bare-scalar form: `on: workflow_call` (no block, no list).
+            bare = re.match(r"""^(?:on|"on"):\s*['"]?([A-Za-z][A-Za-z0-9_-]*)['"]?\s*$""", line)
+            if bare:
+                triggers.add(bare.group(1))
             continue
         if not line[0].isspace():
             # A new column-0 key ends the `on:` block.
@@ -156,9 +128,10 @@ def parse_on_triggers(content: str) -> set[str]:
             continue
         indent = len(line) - len(line.lstrip(" "))
         if indent == 2:
-            key = re.match(r"([A-Za-z][A-Za-z0-9_-]*):", stripped)
+            # Optional quotes: YAML allows `"push":` beside `push:`.
+            key = re.match(r"""(['"]?)(([A-Za-z][A-Za-z0-9_-]*)\1:""", stripped)
             if key:
-                triggers.add(key.group(1))
+                triggers.add(key.group(2))
                 continue
             item = re.match(r"-\s+('|\")?([A-Za-z][A-Za-z0-9_-]*)\1?\s*:?\s*$", stripped)
             if item:
@@ -197,7 +170,10 @@ def _workflow_skipped_as_phantom(
     if not triggers:
         # Unknown shape: keep the row rather than guess.
         return False
-    return triggers.isdisjoint(REPORTABLE_TRIGGERS)
+    # Denylist semantics: only the known phantom-only trigger sets are
+    # filtered; anything else (including triggers this file does not know)
+    # stays visible.
+    return triggers.issubset(PHANTOM_ONLY_TRIGGERS)
 
 
 def scan_repo(
@@ -209,7 +185,7 @@ def scan_repo(
     errors: list[str],
 ) -> tuple[list[RedWorkflow], int]:
     """Return red workflows for one repo and the number of workflows scanned."""
-    repo_path = f"/repos/{owner}/{repo}"
+    repo_path = f"/repos{owner}/{repo}"
     try:
         meta = client.get_json(repo_path)
     except github.GitHubError as exc:
