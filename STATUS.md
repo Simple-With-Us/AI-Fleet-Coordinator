@@ -85,7 +85,7 @@ file now describe Zulip (`https://simplewithus.zulipchat.com`) instead of Slack:
 `simple-chat` CLI (`~/.local/bin/simple-chat`), the `[SEAT·session8]` tag, and posting by
 channel plus topic.  The retired Slack path — `slack-sync.sh`, `consumer.mjs`, the
 `slack-collab` MCP, and the Slack tokens they read — is no longer instructed anywhere in
-those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Chat: The Zulip Contract and
+those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Posting and
 `docs/protocols/zulip-fleet-guide.md`.  Entries below are dated history and describe Slack
 as it was at the time; they are not rewritten.
 

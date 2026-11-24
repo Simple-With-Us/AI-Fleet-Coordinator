@@ -292,7 +292,7 @@ sentence terminator.
 
 **Agent failure mode:** shipping App Store description, review notes, or UI
 paragraphs with single spaces after periods, or stale trial/corpus copy.
-Fix on sight.  Protocol: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces.
+Fix on sight.  Protocol: `/Users/jay/apps/FLEET-PROTOCOL.md` § Sentence Gap.
 
 ## Run-once glyph = emoji bolt (owner preference 2026-08-08, Socratic.Trade)
 The Run-once affordance uses the colored emoji ⚡ (U+26A1), not a line-icon Zap —
