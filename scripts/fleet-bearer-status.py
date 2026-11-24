@@ -159,7 +159,7 @@ def desired_alarms(doc, last_counts):
             # The count is a lifetime total with no reset, so a standing alarm could never clear.  Alarm on growth
             # only; a seat with no earlier baseline just records one.
             mm = (r.get("mismatches") or {}).get("count")
-            if isinstance(mm, int) and mm >= 0:
+            if isinstance(mm, int) and not isinstance(mm, bool) and mm >= 0:
                 key = f"mismatch|{ident}"
                 counts[key] = mm
                 if last_counts is not None and key in last_counts:
@@ -169,7 +169,8 @@ def desired_alarms(doc, last_counts):
                         alarms[f"delta:wrong_secret:{ident}"] = (
                             f"{ident}: {grew} new wrong-secret attempts since the last poll"
                         )
-            continue
+                continue
+            # No usable count:  fall through to the generic alarm so the fault signal never disappears.
         if p == "no_bearer" and r.get("kind") == "hosted":
             # A hosted seat connects through its OAuth client; a bearer is optional for it, so none is not a fault.
             continue
@@ -308,7 +309,7 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
     if doc is not None:
         found, counts = desired_alarms(doc, state.get("diagCounts"))
         alarms.update(found)
-        if doc.get("diagnostics") is not None:
+        if doc.get("diagnostics") is not None or counts:
             # Merge, never overwrite:  a row that drops out of the API's tail for one poll keeps its baseline,
             # so its lifetime count is not read as growth when it returns.
             merged = dict(state.get("diagCounts") or {})
