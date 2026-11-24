@@ -215,12 +215,13 @@ class GoneChatsTests(StoreBase):
         self.add("m-0001", title="Secret Title")
         self.begin("m-0001", now=self.t0)
         self.archive("m-0001")
+        label = self.label("m-0001")  # the letter the chat held, read before the report retires it
         out = io.StringIO()
         with self.reports() as sent:
             code = PL.gone_main(["--platform", "minimax"], self.env(), out, now=self.due, platform="darwin")
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(out.getvalue().splitlines(), [
-            "would report MiniMax %s (m-0001, mac)" % self.label("m-0001"),
+            "would report MiniMax %s (m-0001, mac)" % label,
             "MiniMax gone report, mac:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
         ])
         self.assertNotIn("Secret Title", out.getvalue())
@@ -229,8 +230,10 @@ class GoneChatsTests(StoreBase):
         out = io.StringIO()
         code = PL.gone_main(["--platform", "minimax", "--apply"], self.env(), out, now=self.due, platform="darwin")
         self.assertEqual(code, 0, out.getvalue())
-        self.assertIn("reported MiniMax %s (m-0001, mac)" % self.label("m-0001"), out.getvalue())
+        self.assertIn("reported MiniMax %s (m-0001, mac)" % label, out.getvalue())
         self.assertEqual(self.row_state("m-0001"), "closed")
+        # The report retires the chat locally:  its note holds no letter any more.
+        self.assertEqual(self.label("m-0001"), "")
 
     def test_nothing_about_the_store_can_fail_a_start(self) -> None:
         self.add("m-0001")
