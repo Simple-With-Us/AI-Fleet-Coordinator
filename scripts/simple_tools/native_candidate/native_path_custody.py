@@ -42,14 +42,15 @@ def validate_paths(paths,uid,*,lstat=os.lstat,accounts=pwd.getpwall,group=grp.ge
             for name in os.listdir('/proc'):
                 if not name.isdecimal():continue
                 try:
-                    data=open('/proc/'+name+'/status').read()
+                    with open('/proc/'+name+'/status')as f:data=f.read()
                     if status_holds_foreign_group(data,gid,uid):values.append(name)
                 except FileNotFoundError:continue
                 except ProcessLookupError:continue
                 # A process that cannot be inspected is not proof of absence.
                 except (PermissionError,IndexError,ValueError):raise ValueError('custody-process-unverifiable')
             return values
-    if nss is None:nss=open('/etc/nsswitch.conf').read()
+    if nss is None:
+        with open('/etc/nsswitch.conf')as f:nss=f.read()
     local_nss_complete(nss)
     records=[];verified=set()
     for path in paths:

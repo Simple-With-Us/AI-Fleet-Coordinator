@@ -45,6 +45,6 @@ class Failures(unittest.TestCase):
   def child():
    d=NativeDelivery(self.folder,lambda _:os._exit(23),lambda _:True)
    d.deliver(B,'new','fixture',fresh=True)
-  p=multiprocessing.Process(target=child);p.start();p.join(5);self.assertEqual(p.exitcode,23)
+  p=multiprocessing.get_context('fork').Process(target=child);p.start();p.join(5);self.assertEqual(p.exitcode,23)
   self.send();self.assertEqual(self.calls,['query'])
 if __name__=='__main__':unittest.main()

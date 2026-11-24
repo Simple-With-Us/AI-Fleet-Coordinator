@@ -73,7 +73,7 @@ class Tests(unittest.TestCase):
   self.assertEqual(self.calls,[])
  def test_two_processes_only_one_dispatch(self):
   import multiprocessing,time
-  counter=multiprocessing.Value('i',0)
+  counter=multiprocessing.get_context('fork').Value('i',0)
   def work():
    def transport(req):
     if req['action']=='dispatch':
@@ -81,7 +81,7 @@ class Tests(unittest.TestCase):
      time.sleep(.1)
     return {}
    d=NativeDelivery(self.folder,transport,lambda b:True);d.deliver(B,'concurrent','fixture',fresh=True);d.close()
-  jobs=[multiprocessing.Process(target=work)for _ in range(2)]
+  jobs=[multiprocessing.get_context('fork').Process(target=work)for _ in range(2)]
   for job in jobs:job.start()
   for job in jobs:job.join(5);self.assertEqual(job.exitcode,0)
   self.assertEqual(counter.value,1)
