@@ -338,6 +338,13 @@ REGISTRY_UNAVAILABLE = "registry-unavailable"
 UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
+# The Mac route in a served seat's health (AFC-836):  whether chats on the Mac can be
+# reached from this router, as a token.  Never the destination itself:  health needs no key, and
+# the destination names a host.  It is the one shape the ssh route accepts (claude_wake.SSH_DEST_RE,
+# which a test keeps equal to this), and the setting is the platform's `mac_ssh` (wake_settings).
+MAC_ROUTE_CONFIGURED = "configured"
+MAC_ROUTE_NONE = "no-ssh-destination"
+MAC_SSH_DEST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]*")
 #: The name the note carries when the shared loader file itself could not be read:  the loader
 #: file is the one source a loader read can fail on, and it carries the same name on every host.
 #: It is a token the transport keeps.
@@ -1539,6 +1546,20 @@ class Router:
 
     def _other_seat(self, row: Mapping[str, Any]) -> str:
         return other_seat(row, self.platform.seat, self.platform.target_re)
+
+    def mac_route(self) -> str | None:
+        """Whether this router can reach chats on the Mac (AFC-836):  `configured` when the
+        platform's `mac_ssh` setting names a destination in the one shape the ssh route accepts,
+        `no-ssh-destination` when it does not (such a wake is refused before anything ran), and
+        None for a platform whose settings have no `mac_ssh`.  A token and never the destination.
+        It says that a destination is named, not that the Mac's gate accepts this router's key:  only
+        a delivery or a dry run shows that."""
+        if "mac_ssh" not in self.config:
+            return None
+        dest = str(self.config.get("mac_ssh") or "").strip()
+        if MAC_SSH_DEST_RE.fullmatch(dest):
+            return MAC_ROUTE_CONFIGURED
+        return MAC_ROUTE_NONE
 
     def other_seat_health(self) -> dict[str, Any]:
         """What this seat's health says about the latest history read:  a count, never an id, a
@@ -3373,9 +3394,10 @@ class Seats:
         return self.down.get(seat)
 
     def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
-        """One seat's state:  reason tokens, and for a served seat only the other-seat count
-        (`Router.other_seat_health`), never a value and never the time of the read:  health
-        needs no key, and that time would show when the seat was last woken."""
+        """One seat's state:  reason tokens, and for a served seat only the other-seat count
+        (`Router.other_seat_health`) and the Mac route (`Router.mac_route`), never a value, never
+        the destination and never the time of the read:  health needs no key, that time would show
+        when the seat was last woken, and the destination names a host."""
         router = self.routers.get(seat)
         if router is None:
             if seat in self.not_installed:
@@ -3385,6 +3407,12 @@ class Seats:
         delivery = router.config.get("delivery_enabled") is True
         # The other-seat count is a warning beside the answer:  it never changes `healthy`.
         answer: dict[str, Any] = {"seat": seat, "delivery": delivery, **router.other_seat_health()}
+        # The Mac route is a token beside the answer (AFC-836):  it never changes `healthy` either,
+        # and it is there for an unhealthy seat too, so a missing destination is seen whatever
+        # else is wrong.
+        route = router.mac_route()
+        if route is not None:
+            answer["mac_route"] = route
         key, why = router.routine_key()
         if not key:
             reason = "routine-key-unavailable:" + why
