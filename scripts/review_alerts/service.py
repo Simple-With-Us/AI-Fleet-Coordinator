@@ -273,6 +273,7 @@ class AlertService:
                 check_runs,
                 self.store.cursor(repo, number),
             )
+            found.extend(detect.merge_conflict(repo, number, pr))
             link = str(pr.get("html_url") or "")
             for event in found:
                 if self.store.get(repo, number, event["kind"], event["event_id"]):
