@@ -40,6 +40,14 @@ REVIEWED_PRESERVATIONS: frozenset[tuple[str, str, str, str]] = frozenset(
             "e970e451e414d3efd963abed5d544f0713fe2b2934901c032fe8b01898085d2e",
             "1eaa804f7514122721888bd9f49c41a4088d827a28855391739d97c334008634",
         ),
+        # Owner-approved RENEWAL (Jay, Nov 23, 2026, in chat: the Nov 21 recall pair's
+        # base drifted when OPS-1102 #2473 touched the file; same fixtures, same flips):
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/fleet_rag/tests/test_recall.py",
+            "8a6911c37d2f27d75be7193552b1b9402c4f4f5f3777c2ff350aded37ab6b32e",
+            "de6b309011f0d0f043dfb209584d71989f6a599128d7eaa3ae5703d54dc5aa31",
+        ),
     }
 )
 
