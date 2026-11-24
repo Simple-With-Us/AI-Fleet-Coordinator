@@ -123,7 +123,7 @@ The Operator is one service on the server:  the Eavesdropper reads Zulip, one wa
 
 Each read is optional field by field:  a field the server leaves out or sends as null reads as not reported, never as zero, live or ready, and a key Muster does not know is ignored.  A document of another version, or one that does not say it is the server's, is not shown.  When the router's own health check was read, the wake router card says Running (or Not running, when nothing answers on its port);  without that read it falls back to Ready or Some not ready from each seat's `routine` readiness, or Not read here.  A seat's Router cell is that same readiness (the reducer's `ready`, `auth` and `why` words, never the router's address).
 
-The registry's stale chat sweep is called late when its last pass is more than an hour old, because the document carries no interval and the sweep runs every fifteen minutes by default.  The allowlist for Settings is read from the copy inside the app first and the checkout's second, and when neither can be read the panel says what it tried in each place, once.
+The registry's stale chat sweep is called late when its last pass is more than an hour old: the sweep runs every fifteen minutes by default, and the panel does not yet read the schedule, though the reduced document carries the sweeper's real interval and next-due time (`registry_sweep_schedule`, AFC-833).  The allowlist for Settings is read from the copy inside the app first and the checkout's second, and when neither can be read the panel says what it tried in each place, once.
 
 ## Drift Alerts
 
