@@ -442,7 +442,16 @@ def _subagent_ids(env: Mapping[str, str], sids: list[str]) -> tuple[str, set[str
             pass
 
 
-def _prompt_evidence(env: Mapping[str, str], session_id: str, prompt: str) -> bool | None:
+#: How many newest candidate parts one evidence check reads.
+EVIDENCE_CANDIDATES = 500
+
+
+def _prompt_evidence(
+    env: Mapping[str, str],
+    session_id: str,
+    prompt: str,
+    identities: tuple[str, ...] = (),
+) -> bool | None:
     """Is this exact prompt in the session's own transcript as a user turn?  `True` or `None`.
 
     `True` only on exact structured identity:  a `part` row of this session whose data is a
@@ -467,15 +476,25 @@ def _prompt_evidence(env: Mapping[str, str], session_id: str, prompt: str) -> bo
         )
     except (OSError, sqlite3.Error):
         return None
-    ids = re.findall(r"\b(?:t-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._:-]{7,})\b", prompt)
-    needle = max(ids, key=len) if ids else prompt[:64]
-    literal = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    # Candidates must carry EVERY identity of this prompt (each wake id and the turn id), so a
+    # common word or one old quoted id never fills the candidate window.  Without the
+    # caller's identities they are read off the prompt.
+    ids = tuple(dict.fromkeys(i for i in identities if i)) or tuple(
+        dict.fromkeys(re.findall(r"\bt-[0-9a-f]{16}\b|\b[A-Za-z0-9][A-Za-z0-9._:-]{7,}\b", prompt))
+    )
+    if not ids:
+        return None
+    clauses = " AND ".join("data LIKE ? ESCAPE '\\'" for _ in ids)
+    args = [session_id]
+    for needle in ids:
+        literal = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        args.append("%" + literal + "%")
     try:
         try:
             parts = conn.execute(
-                "SELECT message_id, data FROM part WHERE session_id = ? AND data LIKE ? ESCAPE '\\'"
-                " LIMIT 50",
-                (session_id, "%" + literal + "%"),
+                "SELECT message_id, data FROM part WHERE session_id = ? AND " + clauses
+                + " ORDER BY time_created DESC, id DESC LIMIT %d" % EVIDENCE_CANDIDATES,
+                tuple(args),
             ).fetchall()
         except sqlite3.Error:
             return None
@@ -624,6 +643,7 @@ def deliver_local(
         session_id,
         wake_text(wake),
         int(config.get("resume_timeout_seconds") or 900),
+        evidence_ids=(wake.wake_id,),
         target=target,
         recheck_registry=recheck_registry,
         runner=runner,
@@ -637,6 +657,7 @@ def _deliver_prompt(
     prompt: str,
     timeout_seconds: int,
     *,
+    evidence_ids: tuple[str, ...] = (),
     target: WR.Target | None = None,
     recheck_registry: bool = False,
     runner: Runner = subprocess.Popen,
@@ -794,7 +815,7 @@ def _deliver_prompt(
             # wake into the chat's own transcript and the open chat runs it from there, so the
             # first question is whether the prompt reached that transcript at all.
             code = failure or "resume-exit-%d" % returncode
-            if _prompt_evidence(env, session_id, prompt):
+            if _prompt_evidence(env, session_id, prompt, evidence_ids):
                 # Exact transport evidence:  the prompt is in the session as a user turn.
                 # Nothing proves the chat acted on it, so this is never a confirmed delivery,
                 # and it is never repeated:  a second prompt would be a second turn.
@@ -893,6 +914,7 @@ def deliver_turn_local(
         target.session_id,
         WR.turn_text(TURN_PREFIX, head, riders, turn_id),
         base * (1 + len(riders)),
+        evidence_ids=(head.wake_id, *(w.wake_id for w in riders), turn_id),
         target=target,
         recheck_registry=False,
         runner=runner,

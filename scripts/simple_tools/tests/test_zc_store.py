@@ -14,15 +14,15 @@ class Base(ZBase):
         self.db = self.cli
         c = sqlite3.connect(self.db)
         c.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT)")
-        c.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT)")
+        c.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
         c.commit(); c.close()
         self.cfg = {"workspace": str(self.workspace), "local_host": "server", "resume_timeout_seconds": 5}
         self.tgt = WR.Target(SID, "BB", "server", "", "", 3)
 
-    def put(self, text, role="user", mid="m1", sid=SID, ptype="text"):
+    def put(self, text, role="user", mid="m1", sid=SID, ptype="text", ts=1000):
         c = sqlite3.connect(self.db)
         c.execute("INSERT OR REPLACE INTO message VALUES (?,?,?)", (mid, sid, json.dumps({"role": role})))
-        c.execute("INSERT INTO part VALUES (?,?,?,?)", (mid + ptype, mid, sid, json.dumps({"type": ptype, "text": text})))
+        c.execute("INSERT INTO part VALUES (?,?,?,?,?)", (mid + ptype, mid, sid, ts, json.dumps({"type": ptype, "text": text})))
         c.commit(); c.close()
 
     def ev(self, prompt):
@@ -58,6 +58,31 @@ class Evidence(Base):
         self.put(self.P, mid="m5", sid="sess_bbbb")
         self.put(self.P, mid="m6", ptype="reasoning")
         self.assertIsNone(self.ev(self.P))
+
+    def test_exact_current_prompt_found_after_many_old_quoting_rows(self):
+        c = sqlite3.connect(self.db)
+        for n in range(150):  # old assistant quotes of the same ids, newer ids sort last by id
+            c.execute("INSERT INTO message VALUES (?,?,?)", ("o%03d" % n, SID, json.dumps({"role": "assistant"})))
+            c.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("z%03d" % n, "o%03d" % n, SID, 10 + n,
+                      json.dumps({"type": "text", "text": "re " + self.P})))
+        c.commit(); c.close()
+        self.assertIsNone(self.ev(self.P))
+        self.put(self.P, mid="cur", ts=99999)
+        self.assertIs(self.ev(self.P), True)
+        ids = ("w-aaaaaaaa", "w-bbbbbbbb", TID)
+        self.assertIs(ZC._prompt_evidence(self.env, SID, self.P, ids), True)
+
+    def test_common_words_do_not_fill_the_window(self):
+        c = sqlite3.connect(self.db)
+        for n in range(120):
+            c.execute("INSERT INTO message VALUES (?,?,?)", ("c%03d" % n, SID, json.dumps({"role": "user"})))
+            c.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("y%03d" % n, "c%03d" % n, SID, 5,
+                      json.dumps({"type": "text", "text": "instructions other wake"})))
+        c.commit(); c.close()
+        p = "[ZC wake]  instructions w-cccccccc"
+        self.put(p, mid="cur", ts=50)
+        self.assertIs(self.ev(p), True)
+        self.assertIs(ZC._prompt_evidence(self.env, SID, p, ("w-cccccccc",)), True)
 
     def test_missing_tables_or_store_is_none(self):
         self.db.unlink(); self.assertIsNone(self.ev(self.P))
