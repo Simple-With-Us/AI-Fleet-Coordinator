@@ -50,7 +50,10 @@ class BuilderTests(unittest.TestCase):
                 router_platform=platform,
                 state_dir=lambda e: root,
                 _recheck=lambda *a: None,
-                _session_binding=lambda *a: ("ok", {"id": "sess_fixture", "directory": tmp}),
+                _session_binding=lambda *a: (
+                    "ok",
+                    {"id": "sess_fixture", "directory": tmp},
+                ),
                 _subagent_ids=lambda *a: ("ok", set()),
                 _deliver_prompt=prompt,
                 WR=SimpleNamespace(Delivery=Delivery, Turn=Turn),
@@ -106,7 +109,11 @@ class BuilderTests(unittest.TestCase):
 
     def test_notification_has_only_validated_metadata(self):
         h = SimpleNamespace(
-            wake_id="ra-new", message_id=123, topic="injected", sender="other", text="external"
+            wake_id="ra-new",
+            message_id=123,
+            topic="injected",
+            sender="other",
+            text="external",
         )
         text = builder.notification(h, "t-1234567890123456")
         self.assertIn("message_id 123.", text)
@@ -163,7 +170,10 @@ class BuilderTests(unittest.TestCase):
             "state": Path("/fixture"),
             "fresh": lambda *a: True,
         }
-        exec(compile(ast.Module(body=[native], type_ignores=[]), "<native-deadline>", "exec"), env)
+        exec(
+            compile(ast.Module(body=[native], type_ignores=[]), "<native-deadline>", "exec"),
+            env,
+        )
         env["native"](
             SimpleNamespace(session_id="sess_fixture"),
             SimpleNamespace(wake_id="ra-new"),
@@ -192,12 +202,20 @@ class BuilderTests(unittest.TestCase):
                 router_platform=lambda *a, **k: base,
                 state_dir=lambda e: root,
                 _recheck=lambda *a: None,
-                _session_binding=lambda *a: ("ok", {"id": target.session_id, "directory": tmp}),
+                _session_binding=lambda *a: (
+                    "ok",
+                    {"id": target.session_id, "directory": tmp},
+                ),
                 _subagent_ids=lambda *a: ("ok", set()),
                 _deliver_prompt=lambda *a, **k: Delivery("unknown"),
                 WR=SimpleNamespace(Delivery=Delivery, Turn=Turn),
             )
-            spec = {"target": vars(target), "workspace": tmp, "epoch": 100, "expires": 200}
+            spec = {
+                "target": vars(target),
+                "workspace": tmp,
+                "epoch": 100,
+                "expires": 200,
+            }
             with patch.object(builder, "Driver", return_value=SimpleNamespace()):
                 p, q, d, c = builder.build(adapter, {"HOME": tmp}, {}, spec)
             q.clock = lambda: 101
@@ -242,3 +260,46 @@ class BuilderTests(unittest.TestCase):
                         (q.store.folder / "slot.claim").unlink()
             finally:
                 q.close()
+
+    def test_event_driven_driver_retains_both_binding_checks(self):
+        import ast
+
+        tree = ast.parse(Path(builder.__file__).read_text())
+        build = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build")
+        native = next(
+            n for n in build.body if isinstance(n, ast.FunctionDef) and n.name == "native"
+        )
+        now = [1000000]
+        captured = []
+
+        def driver(*a, **kw):
+            captured.append(kw["verify"]({}))
+            now[0] = 99
+            captured.append(kw["verify"]({}))
+            return {}
+
+        def prompt(*a, **kw):
+            return kw["native_driver"]({}, verify=lambda b: True)
+
+        env = {
+            "env": {},
+            "adapter": SimpleNamespace(_deliver_prompt=prompt),
+            "spec": {"epoch": 100, "expires": None},
+            "time": SimpleNamespace(time=lambda: now[0]),
+            "driver": driver,
+            "local_config": {},
+            "config": {},
+            "state": Path("/fixture"),
+            "fresh": lambda *a: True,
+        }
+        exec(
+            compile(ast.Module(body=[native], type_ignores=[]), "<event-driven>", "exec"),
+            env,
+        )
+        env["native"](
+            SimpleNamespace(session_id="sess_fixture"),
+            SimpleNamespace(wake_id="ra-new"),
+            "text",
+            "turn",
+        )
+        self.assertEqual(captured, [True, False])
