@@ -9,6 +9,7 @@ by every test and every process, so one test's cleanup could fail another's asse
 from __future__ import annotations
 
 import io
+import json
 import os
 import sqlite3
 import subprocess
