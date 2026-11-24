@@ -184,11 +184,17 @@ def changes_requested(reviews: list, *, exclude=(KODY_LOGIN,)) -> bool:
 
 
 def merge_blockers(
-    pull: dict | None, reviews: list, check_runs: list, current_head: str
+    pull: dict | None,
+    reviews: list,
+    check_runs: list,
+    current_head: str,
+    *,
+    exclude=(KODY_LOGIN,),
 ) -> list[str]:
     """What keeps the PR's current head from merging, named in a fixed order;  empty when
     nothing does.  Mergeability is read from the PR body:  without it a conflict is neither
-    found nor ruled out, and the other blockers are still answered."""
+    found nor ruled out, and the other blockers are still answered.  `exclude` is the
+    completion bot(s) whose decision is already its own event."""
     blockers: set[str] = set()
     if pull is not None and in_conflict(pull) is True:
         blockers.add("conflicts")
@@ -199,7 +205,7 @@ def merge_blockers(
         and str(gate.get("conclusion") or "") in CI_FAILURE_CONCLUSIONS
     ):
         blockers.add("merge_gate")
-    if changes_requested(reviews):
+    if changes_requested(reviews, exclude=exclude):
         blockers.add("changes_requested")
     if failed_checks(check_runs, current_head):
         blockers.add("checks_failed")
@@ -378,7 +384,7 @@ def derive(
     # 5. What keeps the current head from merging.  Keyed by the head and the blockers:  one
     #    head alerts once per blocker set, and the store keeps a set from alerting twice.
     if current_head:
-        blockers = merge_blockers(pull, reviews, check_runs, current_head)
+        blockers = merge_blockers(pull, reviews, check_runs, current_head, exclude=(review_actor,))
         if blockers:
             events.append(
                 {

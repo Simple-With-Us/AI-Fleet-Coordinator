@@ -498,6 +498,31 @@ class DetectMergeBlockedTests(unittest.TestCase):
         ]
         self.assertEqual(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0))), [])
 
+    def test_a_custom_completion_bot_s_own_decision_never_blocks(self):
+        # The deployment names its completion bot:  its changes-requested is already the
+        # review event, and hardcoding Kody would double-report it or exclude an
+        # uninvolved bot.
+        found = detect.derive(
+            REPO,
+            7,
+            HEAD,
+            [review(11, "other-bot[bot]", "CHANGES_REQUESTED")],
+            [],
+            [],
+            dict(CURSOR0),
+            review_actor="other-bot[bot]",
+        )
+        self.assertEqual(kinds(found), ["review_submitted"])
+
+    def test_the_default_completion_bot_stays_kody_when_derive_passes_its_default(self):
+        reviews = [
+            review(11, "other-bot[bot]", "CHANGES_REQUESTED"),
+            kody_review(12, state="CHANGES_REQUESTED"),
+        ]
+        found = detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0))
+        self.assertEqual(kinds(found), ["review_submitted", "merge_blocked"])
+        self.assertEqual(found[-1]["event_id"], "mb%s:changes_requested" % HEAD)
+
     def test_review_activity_and_pr_states_coexist_in_one_cycle(self):
         found = detect.derive(
             REPO,
