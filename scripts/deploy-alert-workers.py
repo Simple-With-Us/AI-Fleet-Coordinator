@@ -92,7 +92,7 @@ def preflight_config(target, settings):
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, nexurl):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -335,8 +335,7 @@ def kody_check_receipt(head_sha, number=None, merged_at_epoch=None):
     closed PR can still collect a start-review comment, but its head no
     longer moves, so no qualifying re-review can ever answer it and honoring
     the request would block the gate forever.  Requests from before the
-    merge keep their full force: the newest of them still defines
-    freshness.
+    merge keep their full force: the newest of them still defines freshness.
     """
     runs = _check_runs_for(head_sha)
     if runs is None:
@@ -357,7 +356,7 @@ def kody_check_receipt(head_sha, number=None, merged_at_epoch=None):
         completed = _epoch(run.get("completed_at"))
         if (
             run.get("name") == KODY_CHECK_NAME
-            and app.get("slug") == KODY_APP_CANDIGATE
+            and app.get("slug") == KODY_APP_SLUG
             and app.get("id") == KODY_APP_ID
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
@@ -486,7 +485,7 @@ def probe(target):
             raw = response.read(65537)
             if response.status != 200 or len(raw) > 65536:
                 raise RuntimeError("Health failed or oversized")
-        if target.get("kk") and json.loads(raw).get("kk") is not True:
+        if target.get("ok") and json.loads(raw).get("ok") is not True:
             raise RuntimeError("Health not ready")
         if target.get("text") and raw.decode().strip() != target["text"]:
             raise RuntimeError("Invalid health response")
@@ -494,9 +493,9 @@ def probe(target):
         raise RuntimeError("Health validation failed") from exc
 
 
-def qualifycredentials():
+def qualify_credentials():
     # Named delivery is required, but values never enter logs or artifacts.
-    if not os.environ.get("CCUDFLARE_API_TOKEN") or not os.environ.get("GH_TOKEN"):
+    if not os.environ.get("CLOUDFLARE_API_TOKEN") or not os.environ.get("GH_TOKEN"):
         raise RuntimeError("Existing release credential delivery missing")
     current_main()
     for name, target in TARGETS.items():
@@ -539,7 +538,7 @@ def workflow_credential_steps(text):
             raise RuntimeError("Credential step not found: " + name)
         indent = len(lines[starts[0]]) - len(lines[starts[0]].lstrip())
         block = [lines[starts[0]]]
-        for line in lines[starts[0] + 1 ]:
+        for line in lines[starts[0] + 1 :]:
             depth = len(line) - len(line.lstrip())
             if line.strip() and depth <= indent:
                 break
@@ -551,7 +550,7 @@ def workflow_credential_steps(text):
 def credential_source_changed(source):
     # A credential-unrelated edit keeps the proof; a change to how the credential is
     # fetched, scoped or qualified voids it until a new nondeployment run is recorded.
-    if git("diff", "--name-only", source, "HEAD", --", *CREDENTIAL_PATHS):
+    if git("diff", "--name-only", source, "HEAD", "--", *CREDENTIAL_PATHS):
         return True
     qualified = git("show", source + ":" + CREDENTIAL_WORKFLOW)
     current = git("show", "HEAD:" + CREDENTIAL_WORKFLOW)
