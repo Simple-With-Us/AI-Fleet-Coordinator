@@ -908,5 +908,104 @@ class RouterPlatformTests(Base):
         self.assertIn("ssh", remote_calls[0][0])
 
 
+class TasksIndexConfigTests(Base):
+    """The ZC-only `tasks_index` fact:  one configured index for lookup and exclusion.
+
+    The app's own index may live outside HOME (the deployment's external volume), while the
+    copy under HOME is stale.  The env override cannot reach the forced ssh handler, so the
+    config file is where the deployment names the real one."""
+
+    def _other_index(self, session_ids=(SID,)):
+        """A second tasks index, standing in for the one the app actually writes."""
+        other = self.tmp / "external" / ".zcode" / "v2" / "tasks-index.sqlite"
+        private_dir(other.parent)
+        con = sqlite3.connect(other)
+        con.execute(
+            "CREATE TABLE tasks (workspace_key TEXT, workspace_path TEXT, task_id TEXT,"
+            " task_status TEXT)"
+        )
+        for sid in session_ids:
+            con.execute(
+                "INSERT INTO tasks VALUES (?, ?, ?, ?)",
+                (str(self.workspace), str(self.workspace), sid, "completed"),
+            )
+        con.commit()
+        con.close()
+        return other
+
+    def _drop_from_home_index(self, session_id=SID):
+        con = sqlite3.connect(self.index)
+        con.execute("DELETE FROM tasks WHERE task_id = ?", (session_id,))
+        con.commit()
+        con.close()
+
+    def test_the_configured_index_reaches_the_session_lookup(self):
+        other = self._other_index()
+        self._drop_from_home_index()
+        delivery = self._deliver_local(config={"tasks_index": str(other)})
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_without_the_fact_the_stale_home_index_still_rules(self):
+        # The default is unchanged:  with no env override and no config fact, the index under
+        # HOME is the one read, and a session only the real app index knows is not found.
+        self._other_index()
+        self._drop_from_home_index()
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-not-found")
+
+    def test_the_env_override_still_wins_over_the_config_fact(self):
+        empty = self._other_index(session_ids=())
+        self.env["ZC_WAKE_TASKS_INDEX"] = str(empty)
+        delivery = self._deliver_local(config={"tasks_index": str(self.index)})
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-not-found")
+
+    def test_exclusion_reads_the_same_configured_index(self):
+        other = self._other_index()
+        self._drop_from_home_index()
+        targets = [zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3)]
+        configured = zcode_wake.exclude_non_interactive(
+            self.env, "server", str(self.workspace), str(other)
+        )
+        self.assertEqual(configured(targets), set())
+        plain = zcode_wake.exclude_non_interactive(self.env, "server", str(self.workspace))
+        self.assertEqual(plain(targets), {SID})
+
+    def test_router_platform_threads_the_configured_index_to_exclusion(self):
+        other = self._other_index()
+        self._drop_from_home_index()
+        targets = [zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3)]
+        platform = zcode_wake.router_platform(
+            self.env,
+            {
+                "workspace": str(self.workspace),
+                "local_host": "server",
+                "tasks_index": str(other),
+            },
+            runner=self._runner(0),
+        )
+        self.assertEqual(platform.exclude(targets), set())
+
+    def test_the_forced_handler_reads_the_index_fact_from_its_own_config_file(self):
+        # The Mac side of the ssh route:  the server's environment never reaches it, so the
+        # ZC-only config file it reads on its own host is where the real index is named.
+        other = self._other_index()
+        self._drop_from_home_index()
+        state = zcode_wake.state_dir(self.env)
+        private_dir(state)
+        (state / "config.json").write_text(
+            json.dumps({"workspace": str(self.workspace), "tasks_index": str(other)}),
+            encoding="utf-8",
+        )
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
+        ):
+            answer = zcode_wake.deliver_request(
+                self._request(), env=self.env, runner=self._runner(0)
+            )
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+
+
 if __name__ == "__main__":
     unittest.main()
