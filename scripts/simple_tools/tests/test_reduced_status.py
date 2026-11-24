@@ -159,6 +159,7 @@ SEAT_KEYS = {
     "wake",
     "paused",
     "wakes_24h",
+    "wake_outcomes_24h",
     "held_back",
     "jobs",
     "last_event",
@@ -198,6 +199,7 @@ LEASE = {
     "watcher",
 }
 WAKES = {"inbox", "muse", "http", "claude", "openrouter", "mcode", "fallback", "other"}
+OUTCOME_KEYS = {"delivered", "undelivered", "unknown", "awaiting"}
 
 
 def iso(epoch: float) -> str:
@@ -259,6 +261,10 @@ def check_shape(case: unittest.TestCase, doc: Any) -> None:
         optional(seat["paused"], is_bool)
         for field in ("wakes_24h", "held_back", "jobs"):
             optional(seat[field], is_count)
+        outcomes = seat["wake_outcomes_24h"]
+        case.assertEqual(set(outcomes), OUTCOME_KEYS)
+        for state in ("delivered", "undelivered", "unknown", "awaiting"):
+            optional(outcomes[state], is_count)
         optional(seat["last_event"], is_iso)
         quota = seat["quota"]
         case.assertEqual(set(quota), QUOTA)
@@ -409,6 +415,7 @@ def seat_row(**changes: Any) -> dict[str, Any]:
         "provider": None,
         "quota": None,
         "wakes_24h": 3,
+        "wake_outcomes_24h": {"delivered": 2, "undelivered": 1, "unknown": 0, "awaiting": 1},
         "routes_24h": 0,
         "route_enabled": True,
         "budget": {"wakes_per_day": 40, "wakes_per_hour": 6, "usd_per_day": 2.0},
@@ -1249,6 +1256,88 @@ class RegistrySweepTests(unittest.TestCase):
         )
 
 
+class WakeOutcomesTests(unittest.TestCase):
+    """each seat's `wake_outcomes_24h` (AFC-835):  counts only, all null when absent, and nothing
+    the source carries beyond the four counts reaches the output."""
+
+    NONE = {"delivered": None, "undelivered": None, "unknown": None, "awaiting": None}
+
+    def seat(self, block: Any, **row_changes: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        document = status_document()
+        row = dict(document["seats"]["CLAUDE"])
+        row.pop("wake_outcomes_24h", None)
+        if block is not ABSENT:
+            row["wake_outcomes_24h"] = block
+        row.update(row_changes)
+        document["seats"]["CLAUDE"] = row
+        out = RS.reduce_status(document, NOW, "server")
+        check_shape(self, out)
+        seats = {s["seat"]: s for s in out["seats"]}
+        self.assertEqual(len(out["seats"]), 7, "the rest of the document is still reduced")
+        return out, seats["CLAUDE"]["wake_outcomes_24h"]
+
+    def test_a_valid_block_is_read_as_counts(self) -> None:
+        _out, block = self.seat(
+            {"delivered": 2, "undelivered": 1, "unknown": 0, "awaiting": 3}
+        )
+        self.assertEqual(
+            block, {"delivered": 2, "undelivered": 1, "unknown": 0, "awaiting": 3}
+        )
+
+    def test_an_absent_block_reads_all_null(self) -> None:
+        self.assertEqual(self.seat(ABSENT)[1], self.NONE)
+
+    def test_a_partly_absent_block_reads_the_rest_and_null_for_the_rest(self) -> None:
+        self.assertEqual(
+            self.seat({"delivered": 2, "awaiting": 3})[1],
+            {"delivered": 2, "undelivered": None, "unknown": None, "awaiting": 3},
+        )
+
+    def test_a_malformed_count_is_null_and_the_others_stand(self) -> None:
+        # A count is an integer:  a bool, a float and a string are not one.
+        self.assertEqual(
+            self.seat({"delivered": True, "undelivered": 1.0, "unknown": "2", "awaiting": 4})[1],
+            {"delivered": None, "undelivered": None, "unknown": None, "awaiting": 4},
+        )
+
+    def test_nothing_beyond_the_four_counts_is_read(self) -> None:
+        block = {
+            "delivered": 2,
+            "wake_id": "w-private",
+            "receipt_id": "r-private",
+            "note": PATH,
+            "picked_letter": "AA",
+        }
+        out, block_out = self.seat(block)
+        self.assertEqual(block_out["delivered"], 2)
+        self.assertEqual(set(block_out), OUTCOME_KEYS)
+        # The block is scrubbed;  the rest of the document may legitimately carry a letter.
+        text = json.dumps(block_out)
+        for private in ("w-private", "r-private", PATH, "AA"):
+            self.assertNotIn(private, text)
+
+    def test_a_block_that_is_not_an_object_reads_all_null(self) -> None:
+        for block in ([], "delivered", 7, True, [PATH]):
+            self.assertEqual(self.seat(block)[1], self.NONE, repr(block))
+
+    def test_a_seat_without_the_block_sits_beside_one_with_it(self) -> None:
+        document = status_document()
+        row = dict(document["seats"]["CLAUDE"])
+        row["wake_outcomes_24h"] = {"delivered": 5, "awaiting": 1}
+        document["seats"]["CLAUDE"] = row
+        # Another seat carries no block at all, as a daemon older than the field would write.
+        document["seats"]["MA"] = {
+            k: v for k, v in document["seats"]["MA"].items() if k != "wake_outcomes_24h"
+        }
+        out = RS.reduce_status(document, NOW, "server")
+        seats = {s["seat"]: s for s in out["seats"]}
+        self.assertEqual(
+            seats["CLAUDE"]["wake_outcomes_24h"],
+            {"delivered": 5, "undelivered": None, "unknown": None, "awaiting": 1},
+        )
+        self.assertEqual(seats["MA"]["wake_outcomes_24h"], self.NONE)
+
+
 class RoutineTests(unittest.TestCase):
     """A seat's `routine`:  whether the router its wakes go to is ready, as a flag and two fixed
     words.  The router's host, the detail sentence and the method are never copied."""
@@ -1864,7 +1953,7 @@ class FromRealDaemonStatusTests(DaemonHarness):
             # route; the reducer deliberately does not read it.
             "bracket_recipient_wakes",
             "bot", "creds", "connected", "cursor", "webhook_high_water", "last_event", "wake",
-            "routine", "wakes_24h", "budget", "live", "jobs", "running",
+            "routine", "wakes_24h", "wake_outcomes_24h", "budget", "live", "jobs", "running",
             "paused", "wakes_paused", "held_back", "leases", "red", "chat_nudges",
         }  # fmt: skip
         self.assertEqual(set(document["seats"]["CLAUDE"]), seat_keys)

@@ -6368,6 +6368,18 @@ class Daemon:
                 if isinstance((v.get("times") or {}).get("started"), (int, float))
                 and now - v["times"]["started"] < W.DAY
             ]
+            # The router outcomes of the last day, and every wake still waiting on its router
+            # receipt however old (AFC-835), for the status document:  the same words and the same
+            # window rule `listener_records.wakes_view` gives the listener API's view (a wake is in
+            # the window while its newest row is), computed from the ledger this seat already holds
+            # in memory.
+            recent = [
+                v
+                for v in views.values()
+                if isinstance(v.get("ts"), (int, float)) and now - v["ts"] < W.DAY
+            ]
+            outcomes = W.outcome_counts(recent)
+            outcomes["awaiting"] = W.outcome_counts(views.values())["awaiting"]
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -6455,6 +6467,9 @@ class Daemon:
                 "wake": runner.cfg.wake,
                 "routine": routine,
                 "wakes_24h": len(day),
+                # The outcomes of those wakes, for the Operator panel (AFC-835).  Additive:  a
+                # reader that predates it ignores it.
+                "wake_outcomes_24h": outcomes,
                 # Additive:  a reader that predates the switch ignores it (AFC-643-style decode).
                 "bracket_recipient_wakes": bool(runner.cfg.bracket_recipient_wakes),
                 # No dollar figures in the status at all (owner 2026-10-13):  the per-run cost of a wake was

@@ -1905,3 +1905,51 @@ class OneRegistryWriterTests(DaemonHarness):
             daemon._registry_sweep_thread.join(5)
             self.assertEqual(run.call_count, 1)
 
+
+class WakeOutcomeStatusTests(DaemonHarness):
+    """AFC-835:  the status's seat row carries how many of the seat's wakes of the last day ended
+    at each router outcome, and how many still wait on their router's receipt."""
+
+    def seed(self, wake_id: str, rows: list[dict[str, Any]]) -> None:
+        runner = self.daemon().seats["CLAUDE"]
+        for row in rows:
+            runner.ledger.append({"ts": self.clock.time(), "wake_id": wake_id,
+                                  "seat": "CLAUDE", **row})
+        return runner
+
+    def test_the_seat_row_carries_the_outcome_counts(self) -> None:
+        import types
+
+        daemon = self.daemon()
+        runner = daemon.seats["CLAUDE"]
+        now = self.clock.time()
+        # Rows as the real paths write them:  a delivered and an undelivered wake each ran (a
+        # queued row, then a started row, then their outcome), w-a went to the router and waits,
+        # and w-n stopped before it ran without ever going to the router.
+        for wake_id, outcome in (("w-d", "delivered"), ("w-u", "undelivered")):
+            runner.ledger.append({"ts": now, "wake_id": wake_id, "seat": "CLAUDE",
+                                  "state": "queued", "trigger_ids": [1]})
+            runner.ledger.append({"ts": now, "wake_id": wake_id, "seat": "CLAUDE",
+                                  "state": "started"})
+            runner.ledger.append({"ts": now, "wake_id": wake_id, "seat": "CLAUDE",
+                                  "state": outcome})
+        runner.ledger.append({"ts": now, "wake_id": "w-a", "seat": "CLAUDE", "state": "done",
+                              "receipt_awaited": True})
+        runner.ledger.append({"ts": now, "wake_id": "w-n", "seat": "CLAUDE", "state": "done"})
+        outcomes = daemon.status()["seats"]["CLAUDE"]["wake_outcomes_24h"]
+        self.assertEqual(
+            outcomes,
+            {"delivered": 1, "undelivered": 1, "unknown": 0, "awaiting": 1},
+            "a done wake that never went to the router is neither awaiting nor an outcome",
+        )
+
+    def test_an_outcome_older_than_the_day_stays_in_awaiting_but_leaves_its_state(self) -> None:
+        daemon = self.daemon()
+        runner = daemon.seats["CLAUDE"]
+        now = self.clock.time()
+        old = now - 2 * 24 * 3600
+        runner.ledger.append({"ts": old, "wake_id": "w-old", "seat": "CLAUDE", "state": "done",
+                              "receipt_awaited": True})
+        outcomes = daemon.status()["seats"]["CLAUDE"]["wake_outcomes_24h"]
+        self.assertEqual(outcomes["awaiting"], 1, "awaiting counts every unsettled receipt")
+        self.assertEqual(outcomes["delivered"], 0)
