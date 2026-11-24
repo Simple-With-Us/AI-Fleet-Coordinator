@@ -60,7 +60,10 @@ class GitHubClient:
         to the repository root without a leading slash.
         """
         params: dict[str, str] | None = {"ref": ref} if ref else None
-        data = self.get_json(f"{repo_path}/contents/{file_path}", params=params)
+        encoded_path = "/".join(
+            urllib.parse.quote(part, safe="") for part in file_path.split("/")
+        )
+        data = self.get_json(f"{repo_path}/contents/{encoded_path}", params=params)
         if not isinstance(data, dict) or data.get("encoding") != "base64":
             raise GitHubError("contents response does not carry base64 file content")
         try:
