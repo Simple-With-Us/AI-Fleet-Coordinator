@@ -316,16 +316,16 @@ def _newest_review_request(number):
 
 
 def kody_check_receipt(head_sha, number=None, merged_at_epoch=None):
-     """A completed Kody check on the PR head, when manual mode leaves no PR review object.
+    """A completed Kody check on the PR head, when manual mode leaves no PR review object.
 
     Freshness follows the auto-merge receipt contract: the numeric app id (not
-    only the renameable slug) must own the check, and after a manual review
+    only the renamable slug) must own the check, and after a manual review
     request the check must have started at or after the newest request, so a
     stale success cannot qualify a head whose re-review is queued or failed.
 
     A request posted after the PR merged is ignored (merged_at_epoch): a
     closed PR can still collect a start-review comment, but its head no
-    longer moves, so no qualitying re-review can ever answer it and honoring
+    longer moves, so no qualifying re-review can ever answer it and honoring
     the request would block the gate forever.
     """
     runs = _check_runs_for(head_sha)
@@ -394,8 +394,8 @@ def reviewed(sha):
         if not pr.get("merged_at") or pr.get("draft") or pr.get("merge_commit_sha") != sha:
             continue
         number = str(pr["number"])
-        reviews = github_paginated
-             "/pulls/" + number + "/reviews", "Review evidence exceeds bounded page limit"
+        reviews = github_paginated(
+            "/pulls/" + number + "/reviews", "Review evidence exceeds bounded page limit"
         )
         if outstanding_requests(reviews):
             raise RuntimeError("Changes-requested review needs explicit resolution")
@@ -409,10 +409,10 @@ def reviewed(sha):
         # keeps today's fail-closed behavior when the merge time is unreadable.
         merged_at_epoch = _epoch(pr.get("merged_at"))
         # Only fully shaped review objects are evidence: a malformed entry is
-        # Not a candidate (and never crashes the gate), while well-formed
+        # not a candidate (and never crashes the gate), while well-formed
         # candidates are unaffected.
         candidates = [
-            re
+            r
             for r in reviews
             if isinstance(r, dict)
             and type(r.get("id")) is int
@@ -467,7 +467,7 @@ def reviewed(sha):
         if body.get("errors"):
             raise RuntimeError("Incomplete review thread evidence")
         threads = body["data"]["repository"]["pullRequest"]["reviewThreads"]
-        if threads["pageInfo"]["hasNextPage"] or any(not t["isResolved"] for t in threans["nodes"]):
+        if threads["pageInfo"]["hasNextPage"] or any(not t["isResolved"] for t in threads["nodes"]):
             raise RuntimeError("Unresolved or incomplete review thread evidence")
         return
     raise RuntimeError("Target commit lacks qualified merged Kody-reviewed PR: " + sha)
