@@ -10,7 +10,7 @@ import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { testEnv } from "./helpers.mjs";
 
-function harness() {
+function harness(seat = "CODEX") {
   const sent = [];
   const store = S.memoryStore();
   const gate = { store };
@@ -28,7 +28,7 @@ function harness() {
     },
   });
   const tools = new HostedTools({
-    seat: "CODEX", scopes: ["zulip:read", "zulip:write"], clientId: "sbt-bearer",
+    seat, scopes: ["zulip:read", "zulip:write"], clientId: "sbt-bearer",
     grantRef: "abc123", paused: false, config: loadConfig(testEnv()), zulip: null,
     key: "", gate, cf: {}, gr, now: () => now, sleep: async () => {}, log: () => {},
   });
@@ -115,4 +115,52 @@ test("projection client refuses unsafe endpoints, redirects, bad and large respo
     const resolver = nativeOriginResolver(env, { fetcher: async () => response });
     await assert.rejects(resolver({ seat: "CODEX", session: claims.origin_session_claim }));
   }
+});
+
+test("ZC actual invocation snapshots canonical projection before real relay creation", async () => {
+  const claims = {origin_session_claim:"sess_7e170443-7fad-4343-acfe-95a4c34377be",origin_letter_claim:"II",origin_generation_claim:2};
+  const { tools, sent } = harness("ZC");
+  const original = globalThis.fetch;
+  let reads = 0;
+  _resetInfisicalForTests();
+  const projectionKey = randomBytes(32).toString("hex");
+  tools.workerEnv = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "fixture-fleet-ops",
+    INFISICAL_SERVICE_TOKEN: randomBytes(24).toString("hex") };
+  globalThis.fetch = async (url, init) => {
+    const parsed = new URL(url);
+    if (parsed.origin === "https://app.infisical.com") {
+      assert.equal(parsed.searchParams.get("secretPath"), "/zulip");
+      const name = decodeURIComponent(parsed.pathname.split("/").at(-1));
+      assert.ok(["REVIEW_ORIGIN_ZC_READ_URL", "REVIEW_ORIGIN_ZC_READ_KEY"].includes(name));
+      return Response.json({ secret: { secretValue: name === "REVIEW_ORIGIN_ZC_READ_URL"
+        ? "https://operator.example.test/registry/v1/review-origin-zcode" : projectionKey } });
+    }
+    reads++;
+    assert.equal(parsed.searchParams.get("native_session_id"), claims.origin_session_claim);
+    assert.equal(init.redirect, "manual");
+    assert.equal(init.headers["X-Simple-Tools-Signature"].length, 64);
+    return Response.json(claims);
+  };
+  try {
+    const context = { state: "exact", session: claims.origin_session_claim, platform: "zcode" };
+    assert.ok(!(await tools.call("gr_open_pr", base, context)).isError);
+    for (const [key, value] of Object.entries(claims)) assert.equal(sent[0].args[key], value);
+    for (const over of [{ origin_session_claim: "019a1234-abcd-7123-8123-0123456789ac" }, { origin_letter_claim: "BB" }, { origin_generation_claim: 8 }]) {
+      assert.ok((await tools.call("gr_open_pr", { ...base, ...claims, ...over }, context)).isError);
+    }
+    assert.equal(reads, 4);
+    assert.equal(sent.length, 1);
+    globalThis.fetch = async () => new Response("held", { status: 503 });
+    assert.ok((await tools.call("gr_open_pr", { ...base, ...claims }, context)).isError);
+    assert.equal(sent.length, 1);
+  } finally { globalThis.fetch = original; _resetInfisicalForTests(); }
+});
+
+
+test('ZC missing metadata cannot silently create another null-origin protected receipt',async()=>{
+ const {tools,sent}=harness('ZC');
+ for(const context of [undefined,null,{state:'missing',session:null},{state:'invalid',session:null}]) {
+   assert.ok((await tools.call('gr_open_pr',base,context)).isError);
+ }
+ assert.equal(sent.length,0);
 });

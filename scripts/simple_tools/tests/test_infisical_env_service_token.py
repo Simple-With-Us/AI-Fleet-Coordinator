@@ -208,8 +208,8 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         for name in {"INFISICAL_TOKEN", *credentials}:
             self.assertNotIn(name, child)
 
-    def _projection_build(self, value, container="container-sentinel", zulip_value=None):
-        key = MODULE.REVIEW_ORIGIN_READ_KEY
+    def _projection_build(self, value, container="container-sentinel", zulip_value=None, key=None, other_value=None):
+        key = key or MODULE.REVIEW_ORIGIN_READ_KEY
         secondary = str(UUID(int=43))
         env = dict(self.env(), EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN=TOKEN,
                    INFISICAL_LISTENER_READ_PROJECT_ID=secondary,
@@ -219,7 +219,7 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         def fetch(source, **kwargs):
             calls.append(kwargs)
             if source["INFISICAL_PROJECT_ID"] == secondary:
-                return {key: value} if value is not None else {}
+                return ({key: value} if value is not None else {}) | ({MODULE.REVIEW_ORIGIN_READ_KEY: other_value} if other_value is not None else {})
             if kwargs["path"] == MODULE.OPERATOR_PATH:
                 return {"OPERATOR_ZULIP_USER_ID": "1", "OPERATOR_ZULIP_EMAIL": "op@example.test"}
             if kwargs["path"] == MODULE.WAKE_ROUTER_PATH:
@@ -245,7 +245,18 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
                 self.assertNotIn(key, out)
                 self.assertIn("optional capability held", line)
         self.assertNotIn(key, MODULE.infisical_only_names())
-        self.assertEqual(MODULE.OPTIONAL_PROJECTION_NAMES, frozenset({key}))
+        self.assertEqual(MODULE.OPTIONAL_PROJECTION_NAMES, frozenset({key, MODULE.REVIEW_ORIGIN_ZC_READ_KEY}))
+
+    def test_zc_optional_projection_has_same_source_and_rejects_codex_key_reuse(self):
+        key = MODULE.REVIEW_ORIGIN_ZC_READ_KEY
+        good = secrets.token_hex(24)
+        out, _ = self._projection_build(good, key=key)
+        self.assertEqual(out[key], good)
+        out, _ = self._projection_build(good, key=key, other_value=good)
+        self.assertNotIn(key, out)
+        self.assertNotIn(MODULE.REVIEW_ORIGIN_READ_KEY, out)
+        out, _ = self._projection_build(good, key=key, zulip_value=good)
+        self.assertNotIn(key, out)
 
     def test_fetch_optional_projection_unavailable_value_does_not_break_other_names(self):
         key = MODULE.REVIEW_ORIGIN_READ_KEY

@@ -148,7 +148,8 @@ SEAT_NAME_RE = re.compile(
 OPERATOR_PATH = "/operator"
 # Optional capability, secondary /zulip only; never inherited from the container.
 REVIEW_ORIGIN_READ_KEY = "REVIEW_ORIGIN_CODEX_READ_KEY"
-OPTIONAL_PROJECTION_NAMES = frozenset({REVIEW_ORIGIN_READ_KEY})
+REVIEW_ORIGIN_ZC_READ_KEY = "REVIEW_ORIGIN_ZC_READ_KEY"
+OPTIONAL_PROJECTION_NAMES = frozenset({REVIEW_ORIGIN_READ_KEY, REVIEW_ORIGIN_ZC_READ_KEY})
 OPERATOR_NAMES = frozenset(
     {"OPERATOR_NOTES_WORKER_KEY", "OPERATOR_NOTES_SERVER_KEY", "OPERATOR_NOTES_RUNNER_KEY"}
 )
@@ -765,8 +766,10 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     read_keys, read_note = listener_read_keys(env, codes, **kw)
     # The one optional origin key is not a seat or routine key. No primary or
     # container copy can replace this canonical secondary-source value.
-    projection_value = read_keys.pop(REVIEW_ORIGIN_READ_KEY, None)
-    projection_conflict = REVIEW_ORIGIN_READ_KEY in found or REVIEW_ORIGIN_READ_KEY in operator_all
+    projection_values = {name: read_keys.pop(name, None) for name in OPTIONAL_PROJECTION_NAMES}
+    projection_conflicts = {
+        name for name in OPTIONAL_PROJECTION_NAMES if name in found or name in operator_all
+    }
     # One home per name:  a routine key held by both projects is used from neither, so deleting one copy to
     # revoke it can never leave the other in service.
     conflicts = sorted(name for name in read_keys if name in found)
@@ -786,17 +789,26 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         loaded_values.update(part)
     # Missing, malformed and reused read keys disable only this optional capability.
     # The source was already fetched under the existing secondary /zulip grant.
-    projection_ok = (
-        not projection_conflict
-        and isinstance(projection_value, str)
-        and re.fullmatch(r"[!-~]{32,512}", projection_value) is not None
-        and "${" not in projection_value
-        and projection_value not in {_strip_quotes(value) for value in loaded_values.values()}
-    )
-    if projection_ok:
-        loaded_values[REVIEW_ORIGIN_READ_KEY] = projection_value
-    projection_note = "; review-origin read key " + (
-        "loaded from secondary /zulip" if projection_ok else "not loaded (optional capability held)"
+    projection_loaded = []
+    for name, value in projection_values.items():
+        projection_ok = (
+            name not in projection_conflicts
+            and isinstance(value, str)
+            and re.fullmatch(r"[!-~]{32,512}", value) is not None
+            and "${" not in value
+            and value not in {_strip_quotes(v) for v in loaded_values.values()}
+            and sum(v == value for v in projection_values.values()) == 1
+        )
+        if projection_ok:
+            loaded_values[name] = value
+            projection_loaded.append(name)
+    projection_note = "; review-origin read keys loaded from secondary /zulip: " + (
+        str(len(projection_loaded))
+        + (
+            " (optional capability held)"
+            if len(projection_loaded) < len(OPTIONAL_PROJECTION_NAMES)
+            else ""
+        )
     )
     loaded = sorted(loaded_values)
     replaced = sum(1 for name in loaded if name in env)
