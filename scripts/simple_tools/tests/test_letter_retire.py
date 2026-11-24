@@ -437,5 +437,36 @@ class RetireTests(Base):
         self.assertFalse(PL.lettered(self.note("m-0022")))
 
 
+    def test_a_title_that_keeps_failing_cannot_starve_the_release_of_a_letter(self) -> None:
+        # One sweep retires two classes of note:  the ones that still hold a letter the assigner freed, and the
+        # titles that still owe their letter.  Each class has its own bound, so a title that keeps failing cannot
+        # hold a letter back.
+        self.add("m-0023", title="Fix Login")
+        self.start("m-0023")
+        self.add("m-0024", title="Fix Signup")
+        self.start("m-0024")
+        # Both notes are marked after both chats have started, because a start makes a sweep of its own.
+        path = PL.note_path(self.env(), PM.SEAT, "m-0023")
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        note["gone_at"] = self.now  # reported gone, and the letter is still in place
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+        path = PL.note_path(self.env(), PM.SEAT, "m-0024")
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        owed = note["label"]
+        note.update(state="closed", label="", gone_at=self.now, title_pending=True,
+                    labels=[owed], shown="%s: Fix Signup" % owed)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+        with mock.patch.object(PL, "GONE_REPORT_IDS", 1):
+            done = self.report()
+        self.assertIn("m-0023", done["retired"])  # the letter is released all the same
+        self.assertFalse(PL.lettered(self.note("m-0023")))
+        self.assertEqual(self.title_of("m-0023"), "Fix Login")  # and the title loses its letter
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
