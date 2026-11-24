@@ -32,6 +32,16 @@ class ReviewedGenericTests(unittest.TestCase):
             ),
             (
                 "Simple-With-Us/Usage-Monitor",
+                "scripts/muse-code-usage-collector.mjs",
+                "92618a94e0b5efd9dfcc2ed97b9f39797e1d90773cc5816bfcb25843991ce920",
+            ),
+            (
+                "Simple-With-Us/Usage-Monitor",
+                "scripts/__tests__/muse-code-usage-collector.test.mjs",
+                "aeb48889d7147e35f0059a7448be7c58916a075f6153b78303b20947ca7a6fe0",
+            ),
+            (
+                "Simple-With-Us/Usage-Monitor",
                 "scripts/lib/run-session-token-collector.mjs",
                 "e96f73542ff0a5923af4d53981f96693bb67f80444e54cf94a520737ac5418f4",
             ),
