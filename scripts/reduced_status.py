@@ -47,6 +47,8 @@ The document:
                 "wake": "inbox" | "muse" | "http" | "claude" | "openrouter" | "mcode" |
                         "fallback" | "other",
                 "paused": bool | null, "wakes_24h": int | null, "held_back": int | null,
+                "wake_outcomes_24h": {"delivered": int | null, "undelivered": int | null,
+                                      "unknown": int | null, "awaiting": int | null} | null,
                 "jobs": int | null, "last_event": ISO | null,
                 "quota": {"known": bool, "exhausted": bool | null, "remaining": int | null,
                           "reset_at": ISO | null, "used": null, "cap_day": null,
@@ -194,6 +196,10 @@ text are exactly what this document never emits, and the apps have no drain surf
     how the Operator's Zulip -> Linear living comments are, in words from a closed list.  It
     is never a message from the engine:  the daemon keeps those in its log, and a state the
     list does not know reads as "other".
+
+  * each seat's `wake_outcomes_24h` is the source seat's own block (AFC-835):  how many of the
+    seat's wakes of the last day ended delivered, undelivered or unknown, and how many still wait
+    on their router's receipt however old.  Counts only;  all null where the source does not say.
 
 Of `registry_sweep`, only the fields above are read.  Its `platforms` (the session letters and
 registry record ids of every chat a pass ended, by platform and seat) and each refused entry's
@@ -607,6 +613,21 @@ def _routine(raw: Any) -> dict[str, Any] | None:
     }
 
 
+_OUTCOME_STATES = ("delivered", "undelivered", "unknown", "awaiting")
+
+
+def _wake_outcomes(raw: Any) -> dict[str, Any]:
+    """The source seat's `wake_outcomes_24h` (AFC-835):  how many of the seat's wakes of the last
+    day ended at each router outcome, and how many still wait on their router's receipt however
+    old;  all null when it is absent.  Counts only:  no wake id, no receipt detail."""
+    out: dict[str, Any] = {state: None for state in _OUTCOME_STATES}
+    if not isinstance(raw, dict):
+        return out
+    for state in _OUTCOME_STATES:
+        out[state] = _count(raw.get(state))
+    return out
+
+
 def _seat(name: str, row: dict[str, Any], fresh: bool) -> dict[str, Any]:
     raw_leases = row.get("leases")
     leases = raw_leases[:MAX_LEASES] if isinstance(raw_leases, list) else []
@@ -620,6 +641,7 @@ def _seat(name: str, row: dict[str, Any], fresh: bool) -> dict[str, Any]:
         "wake": _wake(row),
         "paused": _seat_paused(row),
         "wakes_24h": _count(row.get("wakes_24h")),
+        "wake_outcomes_24h": _wake_outcomes(row.get("wake_outcomes_24h")),
         "held_back": _count(held.get("count")) if isinstance(held, dict) else None,
         "jobs": _count(row.get("jobs")),
         "last_event": _when(row.get("last_event")),
