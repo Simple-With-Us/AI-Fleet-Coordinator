@@ -33,9 +33,9 @@ class ScannerTests(unittest.TestCase):
             {"conclusion": "failure", "id": 3},
             {"conclusion": "success", "id": 4},
         ]
-        length, streak = scanner.streak_from_runs(runs)
+        length, streak = scanner.stream_from_runs(runs)
         self.assertEqual(length, 2)
-        self.assertEqual([r["id"] for r in streak], [1, 3])
+        self.assertEqual([r["id"] for r in stream], [1, 3])
 
     def test_fixture_scan_one_repo(self) -> None:
         client = FixtureGitHub()
@@ -51,7 +51,7 @@ class ScannerTests(unittest.TestCase):
         row = report["red_workflows"][0]
         self.assertEqual(row["repo"], "fixture-repo")
         self.assertEqual(row["workflow_name"], "CI")
-        self.assertEqual(row["streak_length"], 2)
+        self.assertEqual(row["stream_length"], 2)
         self.assertEqual(row["first_red_commit_sha"], "ccc333")
         self.assertEqual(row["latest_commit_sha"], "aaa111")
         self.assertEqual(row["failing_job_name"], "test")
@@ -106,6 +106,77 @@ class ScannerTests(unittest.TestCase):
         md = scanner.render_markdown(report)
         self.assertIn("Red workflows: 1", md)
         self.assertIn("Run unittests", md)
+
+
+class ParseOnTriggersTests(unittest.TestCase):
+    def test_block_triggers(self) -> None:
+        content = "name: CI\non:\n  push:\n    branches: [main]\n  schedule:\n    - cron: '0 0 * * *'\n  workflow_dispatch:\njobs:\n  build: {}\n"
+        self.assertEqual(
+            scanner.parse_on_triggers(content), {"push", "schedule", "workflow_dispatch"}
+        )
+
+    def test_inline_list_triggers(self) -> None:
+        self.assertEqual(scanner.parse_on_triggers("on: [push, schedule]\njobs: {}\n"), {"push", "schedule"})
+
+    def test_workflow_call_only_is_phantom_shape(self) -> None:
+        triggers = scanner.parse_on_triggers("name: R\non:\n  workflow_call:\njobs:\n  caller: {}\n")
+        self.assertEqual(triggers, {"workflow_call"})
+        self.assertTrue(triggers.isdisjoint(scanner.REPORTABLE_TRIGGERS))
+
+    def test_pull_request_only_is_phantom_shape(self) -> None:
+        triggers = scanner.parse_on_triggers('on:\n  pull_request_target:\n    types: [labeled]\njobs: {}\n')
+        self.assertEqual(triggers, {"pull_request_target"})
+        self.assertTrue(triggers.isdisjoint(scanner.REPORTABLE_TRIGGERS))
+
+    def test_nested_keys_are_not_triggers(self) -> None:
+        content = "on:\n  push:\n    branches:\n      - main\n  pull_request:\njobs: {}\n"
+        self.assertEqual(scanner.parse_on_triggers(content), {"push", "pull_request"})
+
+    def test_comments_and_blank_lines_do_not_end_the_block(self) -> None:
+        content = "on:\n  # scheduled nightly\n\n  schedule:\n    - cron: '0 0 * * *'\njobs: {}\n"
+        self.assertEqual(scanner.parse_on_triggers(content), {"schedule"})
+
+    def test_missing_on_block_yields_empty_set(self) -> None:
+        self.assertEqual(scanner.parse_on_triggers("name: X\njobs:\n  a: {}\n"), set())
+
+
+class PhantomWorkflowTests(unittest.TestCase):
+    def test_phantom_red_workflow_is_excluded_and_reportable_kept(self) -> None:
+        client = FixtureGitHub()
+        report = scanner.build_report(
+            client,
+            org="fixture-org",
+            repos=["phantom-repo"],
+            max_runs_per_workflow=10,
+        )
+        self.assertEqual(report["red_count"], 1)
+        row = report["red_workflows"][0]
+        self.assertEqual(row["workflow_name"], "Push CI")
+        self.assertEqual(row["stream_length"], 1)
+        # The phantom workflow's jobs were never fetched: it was skipped
+        # before the failing-job lookup, not filtered afterwards.
+        job_paths = [c for c in client.calls if c.endswith("/jobs")]
+        self.assertEqual(len(job_paths), 1)
+        self.assertIn("/actions/runs/9102/jobs", job_paths[0])
+
+    def test_unreadable_workflow_file_fails_open(self) -> None:
+        class DenyContents(FixtureGitHub):
+            def get_text_file(self, repo_path: str, file_path: str, *, ref: str) -> str:
+                if "reusable.yml" in file_path:
+                    raise github.GitHubError("contents denied", status=403)
+                return super().get_text_file(repo_path, file_path, ref=ref)
+
+        report = scanner.build_report(
+            DenyContents(),
+            org="fixture-org",
+            repos=["phantom-repo"],
+            max_runs_per_workflow=10,
+        )
+        # Fail open: the unreadable file's red row stays visible, with the
+        # read failure recorded in errors.
+        names = {row["workflow_name"] for row in report["red_workflows"]}
+        self.assertIn("Reusable only", names)
+        self.assertTrue(any("phantom-trigger check" in err for err in report["errors"]))
 
 
 if __name__ == "__main__":
