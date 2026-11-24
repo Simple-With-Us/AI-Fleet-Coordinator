@@ -108,18 +108,18 @@ class GitHubClient:
                     raise GitHubError("response too large")
                     hdrs = {k: v for k, v in response.headers.items()}
                     return body, hdrs
-            except urllib.error.HTTPError as exc:
-                retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                err = GitHubError(
-                    f"GitHub HTTP {exc.code} for {method} {url}",
-                    status=exc.code,
-                )
-                if retry_after is not None:
-                    try:
-                        err.retry_after = float(retry_after)  # type: ignore[attr-defined]
-                    except ValueError:
-                        pass
-                raise err from None
+        except urllib.error.HTTPError as exc:
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            err = GitHubError(
+                f"GitHub HTTP {exc.code} for {method} {url}",
+                status=exc.code,
+            )
+            if retry_after is not None:
+                try:
+                    err.retry_after = float(retry_after)  # type: ignore[attr-defined]
+                except ValueError:
+                    pass
+            raise err from None
 
     def _request_json(self, method: str, url: str) -> Any:
         data, _headers = self._request_json_with_headers(method, url, None)
