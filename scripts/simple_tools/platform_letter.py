@@ -3306,7 +3306,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if state == "mismatch":
         return 0
     if state == "closed" and not note.get("gone_at"):
-        return 0  # a chat that ended for good;  a chat reported gone may still be alive and asks again
+        return (
+            0  # a chat that ended for good;  a chat reported gone may still be alive and asks again
+        )
     current = chat_name(spec.current_title(data, chat.env))
     if not lettered(note):  # a note that says open with no letter is not one to trust
         # No letter yet:  ask again when the stamp says it is due, else (or when the answer is still no) keep the
