@@ -36,7 +36,10 @@ URL = "https://agents.simplewithus.com/admin/api/bearers"
 SEAT_TOOLS_URL = "https://agents.simplewithus.com/admin/api/seat-tools"
 # (seat, tool) pairs that are known gaps under review:  shown as findings in the output, never notified, never an alarm.
 # Remove an entry when its owner decision lands (then a missing state alarms like any other).
-OPEN_FINDINGS = frozenset({("WISE", "wake"), ("GROK-WEB", "wake")})
+OPEN_FINDINGS = frozenset({("WISE", "wake")})
+# (seat, tool) pairs the owner ruled not applicable (GROK-WEB cannot take wakes, owner statement of Nov 23 2026, 9:21 PM CST):
+# shown as not_applicable, never an alarm or a finding, whatever the Worker reports.
+NOT_APPLICABLE = frozenset({("GROK-WEB", "wake")})
 SEAT_TOOL_STATES = frozenset({"ok", "missing", "unavailable", "not_applicable"})
 APP = "https://agents.simplewithus.com/admin"
 OUT = os.path.expanduser("~/.local/state/fleet-tools/bearer-status.json")
@@ -232,6 +235,8 @@ def seat_tool_alarms(doc, prev_unavailable):
             tool, state = t.get("tool"), t.get("state")
             if not isinstance(tool, str) or state not in ("missing", "unavailable"):
                 continue
+            if (seat, tool) in NOT_APPLICABLE:
+                continue
             if (seat, tool) in OPEN_FINDINGS:
                 findings.append({"seat": seat, "tool": tool, "state": state})
                 continue
@@ -253,9 +258,9 @@ def seat_tool_rows(doc):
                     "seat": r["seat"],
                     "problem": r.get("problem"),
                     "tools": {
-                        t.get("tool"): t.get("state")
-                        if t.get("state") in SEAT_TOOL_STATES
-                        else "unknown"
+                        t.get("tool"): "not_applicable"
+                        if (r["seat"], t.get("tool")) in NOT_APPLICABLE
+                        else (t.get("state") if t.get("state") in SEAT_TOOL_STATES else "unknown")
                         for t in _dict_items(r.get("tools"))
                         if isinstance(t.get("tool"), str)
                     },
@@ -402,7 +407,10 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
             merged = dict(state.get("diagCounts") or {})
             merged.update(counts)
             state["diagCounts"] = merged
-    elif state.get("active"):
+    else:
+        # An unreadable poll breaks the run of consecutive `unavailable` seat-tool polls.
+        state["seatToolsUnavailable"] = []
+    if doc is None and state.get("active"):
         # An unreadable poll must not clear identity or seat-tool alarms:  carry them over.
         for k, v in state["active"].items():
             if k.startswith(("problem:", "seat-tool:")):

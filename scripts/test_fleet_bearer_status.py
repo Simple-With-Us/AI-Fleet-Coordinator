@@ -547,5 +547,38 @@ class SeatToolsRobustnessTests(unittest.TestCase):
             self.assertNotIn("seat-tool:ECHO:recall:unavailable", [x["key"] for x in out["alarms"]])
 
 
+class SeatToolsOwnerRulingTests(unittest.TestCase):
+    def test_grok_web_wake_is_not_applicable_and_bearers_outage_resets_baseline(self):
+        doc = {
+            "rows": [
+                {"seat": "GROK-WEB", "problem": "x", "tools": [{"tool": "wake", "state": "missing"}]},
+                {"seat": "WISE", "problem": "x", "tools": [{"tool": "wake", "state": "missing"}, {"tool": "recall", "state": "unavailable"}]},
+            ]
+        }
+        a, f, u = fbs.seat_tool_alarms(doc, None)
+        self.assertEqual(a, {})
+        self.assertEqual(f, [{"seat": "WISE", "tool": "wake", "state": "missing"}])
+        self.assertEqual(fbs.seat_tool_rows(doc)[0]["tools"]["wake"], "not_applicable")
+        self.assertEqual(fbs.seat_tool_rows(doc)[1]["tools"]["wake"], "missing")
+        with tempfile.TemporaryDirectory() as d:
+            args = types.SimpleNamespace(
+                url="u", seat_tools_url="s", write=os.path.join(d, "o.json"), state=os.path.join(d, "st.json"), no_notify=True, dry_run=False
+            )
+            docs = {"u": DOC_OK, "s": doc}
+
+            def fetch(url, t):
+                if docs.get("down"):
+                    raise OSError("down")
+                return docs[url]
+
+            run = lambda now: fbs.run(args, now=now, token_fn=lambda: ("a", "b"), fetch_fn=fetch, notify_fn=lambda *x: None)
+            run(1000)
+            docs["down"] = True
+            run(2000)  # bearers API unreadable: the unavailable run is broken
+            docs["down"] = False
+            out = run(3000)
+            self.assertNotIn("seat-tool:WISE:recall:unavailable", [x["key"] for x in out["alarms"]])
+
+
 if __name__ == "__main__":
     unittest.main()
