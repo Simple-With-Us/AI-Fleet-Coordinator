@@ -47,13 +47,13 @@ class QualificationTests(unittest.TestCase):
         p.write_text(json.dumps(x))
         p.chmod(0o600)
 
-    def make(self):
+    def make(self, expires=200):
         return Qualification(
             self.root,
             vars(self.target),
             "/fixture",
             100,
-            200,
+            expires,
             lambda *a: self.sent.append(a) or "unknown",
             lambda *a: self.fallbacks.append(a) or "fallback",
             lambda h, t: "deterministic " + h.wake_id + " " + str(h.message_id),
@@ -69,6 +69,45 @@ class QualificationTests(unittest.TestCase):
     def call(self, riders=()):
         return self.q(self.target, self.head, riders, "t-1234567890123456")
 
+    def test_event_driven_wait_and_restart_cap1(self):
+        self.q.close()
+        self.q = self.make(expires=None)
+        self.now = 1000000
+        self.assertEqual(self.call(), "unknown")
+        self.assertEqual(len(self.sent), 1)
+        self.q.close()
+        self.q = self.make(expires=None)
+        self.assertEqual(self.call(), "native-qualification-slot-consumed")
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.fallbacks, [])
+        self.head = SimpleNamespace(wake_id="ra-later", message_id=124, link_note="")
+        self.assertEqual(self.call(), "fallback")
+        self.assertEqual(len(self.sent), 1)
+
+    def test_event_driven_rejects_pre_epoch_and_nonfinite_time(self):
+        self.q.expires = None
+        for now in [99, float("nan"), float("inf"), True]:
+            self.now = now
+            self.assertEqual(self.call(), "fallback")
+        self.assertEqual(self.sent, [])
+        self.assertFalse((self.q.store.folder / "slot.claim").exists())
+
+    def test_event_driven_constructor_and_consumed_mode_change_fail_closed(self):
+        self.q.close()
+        self.q = self.make(expires=None)
+        self.now = 1000000
+        self.call()
+        self.q.close()
+        self.q = self.make()
+        self.assertEqual(self.call(), "native-qualification-claim-invalid")
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.fallbacks, [])
+
+    def test_numeric_window_limits_still_enforced(self):
+        for value in [True, False, float("inf"), float("nan"), 100, 3701]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.make(expires=value)
+
     def test_first_only_then_restart_consumed(self):
         self.assertEqual(self.call(), "unknown")
         self.assertEqual(len(self.sent), 1)
@@ -82,7 +121,10 @@ class QualificationTests(unittest.TestCase):
 
     def test_unmatched_target_unchanged(self):
         self.q(
-            SimpleNamespace(**{**vars(self.target), "session_id": "sess_other"}), self.head, (), "t"
+            SimpleNamespace(**{**vars(self.target), "session_id": "sess_other"}),
+            self.head,
+            (),
+            "t",
         )
         self.assertEqual(len(self.fallbacks), 1)
         self.assertEqual(self.sent, [])
@@ -124,7 +166,8 @@ class QualificationTests(unittest.TestCase):
 
     def test_failed_preview_save_consumed_across_restart(self):
         with patch(
-            "native_fixture_package.native_qualification._save", side_effect=OSError("full")
+            "native_fixture_package.native_qualification._save",
+            side_effect=OSError("full"),
         ):
             self.call()
         self.q.close()

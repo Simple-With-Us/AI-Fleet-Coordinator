@@ -31,11 +31,16 @@ class Qualification:
         if (
             not isinstance(epoch, (int, float))
             or isinstance(epoch, bool)
-            or not isinstance(expires, (int, float))
-            or isinstance(expires, bool)
             or not math.isfinite(epoch)
-            or not math.isfinite(expires)
-            or not 0 < expires - epoch <= 3600
+            or (
+                expires is not None
+                and (
+                    not isinstance(expires, (int, float))
+                    or isinstance(expires, bool)
+                    or not math.isfinite(expires)
+                    or not 0 < expires - epoch <= 3600
+                )
+            )
             or not Path(workspace).is_absolute()
         ):
             raise ValueError("qualification-window")
@@ -58,6 +63,15 @@ class Qualification:
         self.unknown, self.custody = unknown, custody
         self.store = NativeDelivery(
             self.state / "native-qualification", lambda _: None, lambda _: False
+        )
+
+    def window_open(self, now):
+        # Null expiry is event-driven cap1, not a rolling/rearmed clock window.
+        return (
+            type(now) in (int, float)
+            and math.isfinite(now)
+            and self.epoch <= now
+            and (self.expires is None or now < self.expires)
         )
 
     def close(self):
@@ -103,14 +117,14 @@ class Qualification:
                 or not 0 < len(old["text"].encode()) <= 16000
                 or old.get("text_sha256") != digest(old["text"])
                 or type(old.get("reserved_at")) not in (int, float)
-                or not self.epoch <= old["reserved_at"] < self.expires
+                or not self.window_open(old["reserved_at"])
             ):
                 return self.unknown("native-qualification-claim-invalid")
             if old.get("wake_id") == head.wake_id:
                 return self.unknown("native-qualification-slot-consumed")
             return fallback(target, head, riders, turn_id)
         now = self.clock()
-        if not self.epoch <= now < self.expires:
+        if not self.window_open(now):
             return fallback(target, head, riders, turn_id)
         if riders or not fresh(self.state, head.wake_id, target, self.epoch):
             return fallback(target, head, riders, turn_id)
@@ -155,7 +169,10 @@ class Qualification:
                     return fallback(target, head, riders, turn_id)
                 return self.unknown("native-qualification-slot-consumed")
             fd = os.open(
-                "slot.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=self.store.dirfd
+                "slot.lock",
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=self.store.dirfd,
             )
             with os.fdopen(fd, "w") as lock:
                 st = os.fstat(lock.fileno())
@@ -186,10 +203,10 @@ class Qualification:
             # Existing reservation on restart never resumes dispatch. Only the original
             # process can reach this path, and only while authoritative custody holds.
             if (
-                not self.epoch <= self.clock() < self.expires
+                not self.window_open(self.clock())
                 or not fresh(self.state, head.wake_id, target, self.epoch)
                 or not self.custody(target, self.workspace)
-                or not self.epoch <= self.clock() < self.expires
+                or not self.window_open(self.clock())
             ):
                 return self.unknown("native-qualification-reserved-not-dispatched")
             return self.native(target, head, text, turn_id)

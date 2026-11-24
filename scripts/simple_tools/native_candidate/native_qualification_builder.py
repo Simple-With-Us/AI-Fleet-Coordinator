@@ -57,9 +57,11 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
 
             def verify(binding):
                 return (
-                    spec["epoch"] <= time.time() < spec["expires"]
+                    spec["epoch"] <= time.time()
+                    and (spec["expires"] is None or time.time() < spec["expires"])
                     and original_verify(binding)
-                    and spec["epoch"] <= time.time() < spec["expires"]
+                    and spec["epoch"] <= time.time()
+                    and (spec["expires"] is None or time.time() < spec["expires"])
                 )
 
             kwargs["verify"] = verify
