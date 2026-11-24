@@ -177,7 +177,9 @@ def changes_requested(reviews: list, *, exclude=REVIEW_BOTS) -> bool:
     )
 
 
-def merge_blockers(pull: dict | None, reviews: list, check_runs: list, current_head: str) -> list[str]:
+def merge_blockers(
+    pull: dict | None, reviews: list, check_runs: list, current_head: str
+) -> list[str]:
     """What keeps the PR's current head from merging, named in a fixed order;  empty when
     nothing does.  Mergeability is read from the PR body:  without it a conflict is neither
     found nor ruled out, and the other blockers are still answered."""
