@@ -70,7 +70,7 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
 import { bearerStatusRows, adminBearerAction, diagnosticSummaryRows } from "./admin-api.js";
-import { seatToolStates, settle, listenerNameFor } from "./seat-tools-status.js";
+import { seatToolStates, settle, isUnavailable, listenerNameFor } from "./seat-tools-status.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
@@ -1376,14 +1376,20 @@ async function serveAdmin(request, env, config, oauth, email) {
       settle(() => resolveGrSecrets(env)),
     ]);
     // One read for every hosted seat, not one per seat on each poll.
-    const fleetlinkTokens = await settle(() => resolveFleetlinkSeatTokens(env, config.hostedSeats));
+    // Resolve once for every seat; if that one read throws, retry per seat so a single seat's failure
+    // marks only that seat unavailable.
+    let fleetlinkBySeat = null;
+    const all = await settle(() => resolveFleetlinkSeatTokens(env, config.hostedSeats));
+    if (isUnavailable(all)) {
+      fleetlinkBySeat = new Map(await Promise.all(config.hostedSeats.map(async (seat) => [seat, await settle(() => resolveFleetlinkSeatTokens(env, [seat]))])));
+    }
     const listenerUrlOk = listenerBaseUrl(env?.LISTENER_API_URL) !== null;
     const notesRaw = env?.[OPERATOR_NOTES_SECRET];
     const rows = await Promise.all(config.hostedSeats.map(async (seat) => {
       const names = SEAT_SECRETS[seat];
       const tag = seatTagForSeat(seat);
       const listener = listenerNameFor(seat);
-      const tokens = fleetlinkTokens;
+      const tokens = fleetlinkBySeat ? fleetlinkBySeat.get(seat) : all;
       const [zulipKey, linearPair, wakeKey] = await Promise.all([
         settle(async () => names ? (await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true })).trim() : ""),
         settle(() => resolveLinearPair(env, tag)),
