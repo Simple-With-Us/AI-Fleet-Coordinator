@@ -117,7 +117,9 @@ function view(config, seats, scope) {
     ...(bf ? {} : { defaults: config.defaults }),
     bf: config.bf,
     perSeat,
-    effective: Object.fromEntries(shown.map((s) => [s, effectiveFor(config, s)])),
+    // A BF-scoped token never learns `defaults`, so its effective lists are computed without them.
+    ...(bf ? { effectiveExcludesDefaults: true } : {}),
+    effective: Object.fromEntries(shown.map((s) => [s, effectiveFor(bf ? { ...config, defaults: [] } : config, s)])),
   };
 }
 
@@ -170,7 +172,9 @@ export async function serveMcpConfig(request, deps) {
       next.perSeat[seat] = r.value;
     }
   } else return json(400, { ok: false, error: "unknown_action" });
-  await deps.kv.put(MCP_CONFIG_KEY, JSON.stringify(next));
+  // Workers KV has no compare-and-set:  expected_version catches a stale editor, not two writes in the same instant.
+  // This route has one human owner and one plugin at a few writes an hour;  the limit is stated, not hidden.
+  try { await deps.kv.put(MCP_CONFIG_KEY, JSON.stringify(next)); } catch { return json(503, { ok: false, error: "store_unavailable" }); }
   try { await deps.audit({ event: "mcp_config_changed", by: deps.actor, scope: deps.scope, version: next.version, ...detail }); } catch { /* the change stands; the audit gap is the caller's log */ }
   return json(200, { ok: true, ...view(next, deps.seats, deps.scope) });
 }

@@ -65,6 +65,8 @@ test("bf scope: BF-* seats and bf list only, never defaults or other seats", asy
   const body = await ok.json();
   assert.deepEqual(Object.keys(body.effective).sort(), ["BF-BUILDER", "BF-TRADER"]);
   assert.equal(body.defaults, undefined);
+  assert.ok(!JSON.stringify(body).includes("secret-default"));
+  assert.equal(body.effectiveExcludesDefaults, true);
   assert.equal(body.perSeat.WISE, undefined);
   const read = await (await serveMcpConfig(get(), d)).json();
   assert.equal(read.perSeat.WISE, undefined);
@@ -86,4 +88,13 @@ test("an unreadable store or a failing read is refused, never treated as empty",
   assert.equal((await serveMcpConfig(post({ action: "set_bf", entries: [], expected_version: 0 }), d)).status, 503);
   d.kv.get = async () => "{bad";
   assert.equal((await serveMcpConfig(get(), d)).status, 503);
+});
+
+test("a failing write answers 503 and the owner view still shows defaults inside effective", async () => {
+  const { d } = deps("owner", { version: 1, defaults: [E("secret-default")], bf: [], perSeat: {} });
+  assert.ok(JSON.stringify(await (await serveMcpConfig(get(), d)).json()).includes("secret-default"));
+  d.kv.put = async () => { throw new Error("down"); };
+  const r = await serveMcpConfig(post({ action: "set_bf", entries: [], expected_version: 1 }), d);
+  assert.equal(r.status, 503);
+  assert.equal((await r.json()).error, "store_unavailable");
 });
