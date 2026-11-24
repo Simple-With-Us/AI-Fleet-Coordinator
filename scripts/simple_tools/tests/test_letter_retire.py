@@ -340,7 +340,9 @@ class RetireTests(Base):
 
         with mock.patch.object(PL, "_lettered_chats", counting), mock.patch.object(PL, "GONE_REPORT_IDS", 1):
             done = self.report()
-        self.assertEqual(len(calls), 1)  # one scan for the whole sweep
+        # Two passes:  a bounded one over the oldest notes for the ones an earlier path left behind, and the one
+        # over the notes of this host that the report is about.
+        self.assertEqual(len(calls), 2)
         self.assertEqual(len(done["gone"]), 1)  # and the adapter is asked about a bounded number of chats
 
 if __name__ == "__main__":  # pragma: no cover

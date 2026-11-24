@@ -165,6 +165,9 @@ GONE_SCAN_NOTES = 2000
 #: The archive path reads every note of the host, not only the newest ones:  a chat that has waited longest must
 #: still reach the adapter, or its letter is never freed.  The report, not this scan, bounds what is sent.
 GONE_SCAN_ALL = 20000
+#: The notes an earlier retire path left behind are the oldest notes of the host, so they are looked for there:
+#: a bounded pass over the oldest files, which drains itself as those notes are retired and rewritten.
+GONE_SCAN_LEGACY = 2000
 GONE_REPORT_IDS = 500
 #: The most bytes of the `--gone` JSON that are parsed (500 ids of a session id's length are about 40 KB).
 GONE_JSON_BYTES = 256 * 1024
@@ -4346,13 +4349,15 @@ def _lettered_chats(
     rewrite: bool = True,
     floor: float = GONE_QUIET_SECONDS,
     limit: int = GONE_SCAN_NOTES,
+    oldest: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """One scan of this host's notes for the platform and location:  (the lettered chats that were not reported
     gone,  the ones that were reported and still hold a letter).  Both are the longest quiet first, so a chat that
     has waited longest is offered before one that has not waited at all.
 
-    `floor` is how long a chat's hook must have been quiet before it is offered, and `limit` how many note files are
-    read at all.  The scan is done once and shared:  a sweep that needs both shapes pays for one pass."""
+    `floor` is how long a chat's hook must have been quiet before it is offered, `limit` how many note files are
+    read at all, and `oldest` walks them from the oldest rather than the newest.  The scan is done once and shared:
+    a sweep that needs both shapes pays for one pass."""
     folder = os.path.dirname(note_path(env, seat, "stamp"))
     files: list[tuple[float, str]] = []
     try:
@@ -4368,7 +4373,7 @@ def _lettered_chats(
                     continue
     except OSError:
         return {}, {}
-    files.sort(reverse=True)
+    files.sort(reverse=not oldest)
     found: list[dict[str, Any]] = []
     for _, name in files[:limit]:
         path = os.path.join(folder, name)
@@ -4701,14 +4706,43 @@ def report_gone(
     no note."""
     if spec.gone_sessions is None or not seat or where not in LOCATIONS:
         return {"skipped": "this platform names no gone chats on this host"}
+    adopt = isinstance(spec.seat, str) and spec.seat == seat
+    # The notes an earlier retire path left behind:  a chat that was reported gone and still holds its letter.  The
+    # assigner freed those letters when it closed the rows, so they are retired here and no report is made for them.
+    # They are the oldest notes of the host, so the pass looks there, and it runs on every sweep:  a freed letter is
+    # released at once and does not wait for the report to be due.
+    _, already = _lettered_chats(
+        env,
+        seat,
+        spec.platform,
+        where,
+        now,
+        adopt=adopt,
+        rewrite=True,
+        floor=0,
+        limit=GONE_SCAN_LEGACY,
+        oldest=True,
+    )
+    retired: list[str] = []
+    for row in already.values():
+        chat = Chat(spec, env, where, row["session_id"], now=now, transport=transport, seat=seat)
+        note = chat.read()
+        # The note has to be the one the scan saw:  a chat that ran since then is in use, not gone.
+        if lettered(note) and _seconds(note.get("updated_at")) == row["seen"]:
+            chat.write(_retire(chat, note, now))
+            retired.append(row["session_id"])
     path = gone_stamp_path(env, seat, spec.platform, where)
     stamp = _read_json(path)
     if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < GONE_REPORT_SECONDS:
-        # Not due:  nothing is scanned, nothing is retired, and no report is made.
-        return {"skipped": "not due"}
-    adopt = isinstance(spec.seat, str) and spec.seat == seat
-    # One scan of the notes:  the lettered chats of this host, and the ones an earlier retire path left behind.
-    candidates, already = _lettered_chats(
+        # Not due:  no report is made, and nothing else is scanned.
+        return {"skipped": "not due", "retired": sorted(retired)}
+    limit = _allowed(stamp.get("allowed"))
+    if not _save_json(path, {"at": now, **({"allowed": limit} if limit else {})}):
+        # No stamp, no throttle:  nothing is sent.
+        return {"skipped": "the stamp could not be saved", "retired": sorted(retired)}
+    # The lettered chats of this host, and only the longest quiet ones go to the adapter:  the call is bounded, and
+    # the ones that are not offered yet are offered once the ones before them are retired.
+    candidates, _ = _lettered_chats(
         env,
         seat,
         spec.platform,
@@ -4719,22 +4753,6 @@ def report_gone(
         floor=0,
         limit=GONE_SCAN_ALL,
     )
-    # The notes an earlier retire path left behind:  a chat that was reported gone and still holds its letter.  The
-    # assigner freed those letters when it closed the rows, so they are retired here and no report is made for them.
-    retired: list[str] = []
-    for row in already.values():
-        chat = Chat(spec, env, where, row["session_id"], now=now, transport=transport, seat=seat)
-        note = chat.read()
-        # The note has to be the one the scan saw:  a chat that ran since then is in use, not gone.
-        if lettered(note) and _seconds(note.get("updated_at")) == row["seen"]:
-            chat.write(_retire(chat, note, now))
-            retired.append(row["session_id"])
-    limit = _allowed(stamp.get("allowed"))
-    if not _save_json(path, {"at": now, **({"allowed": limit} if limit else {})}):
-        # No stamp, no throttle:  nothing is sent.
-        return {"skipped": "the stamp could not be saved", "retired": sorted(retired)}
-    # The longest quiet chats go to the adapter, and only those:  the call is bounded, and the ones that are not
-    # offered yet are offered once the ones before them are retired.
     offered = dict(list(candidates.items())[:GONE_REPORT_IDS])
     gone = _named_gone(spec, env, offered)[: limit or GONE_REPORT_IDS]
     if not gone:
