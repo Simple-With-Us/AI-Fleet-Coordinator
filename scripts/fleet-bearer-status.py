@@ -33,6 +33,14 @@ import urllib.error
 import urllib.request
 
 URL = "https://agents.simplewithus.com/admin/api/bearers"
+SEAT_TOOLS_URL = "https://agents.simplewithus.com/admin/api/seat-tools"
+# (seat, tool) pairs that are known gaps under review:  shown as findings in the output, never notified, never an alarm.
+# Remove an entry when its owner decision lands (then a missing state alarms like any other).
+OPEN_FINDINGS = frozenset({("WISE", "wake")})
+# (seat, tool) pairs the owner ruled not applicable (GROK-WEB cannot take wakes, owner statement of Nov 23 2026, 9:21 PM CST):
+# shown as not_applicable, never an alarm or a finding, whatever the Worker reports.
+NOT_APPLICABLE = frozenset({("GROK-WEB", "wake")})
+SEAT_TOOL_STATES = frozenset({"ok", "missing", "unavailable", "not_applicable"})
 APP = "https://agents.simplewithus.com/admin"
 OUT = os.path.expanduser("~/.local/state/fleet-tools/bearer-status.json")
 STATE = os.path.expanduser("~/.local/state/fleet-tools/bearer-alarm-state.json")
@@ -205,6 +213,62 @@ def desired_alarms(doc, last_counts):
     return alarms, counts
 
 
+def _dict_items(value):
+    """The dict members of a list, or nothing:  a null or odd shape from the API must not abort the poll."""
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+def seat_tool_alarms(doc, prev_unavailable):
+    """(alarms {key: summary}, findings [{seat, tool, state}], unavailable [seat|tool]) from GET /admin/api/seat-tools.
+
+    A `missing` tool alarms (credentials absent or tool unconfigured) unless the pair is an open finding.  An
+    `unavailable` state means the Worker could not read the store this time, so it alarms only when the previous poll was
+    also unavailable (a one-poll blip is not an alarm).  `not_applicable` and unknown states never alarm.  Alarm keys are
+    "seat-tool:<seat>:<tool>:<state>";  the reconcile step already de-duplicates and re-alarms every 6 hours."""
+    alarms, findings, unavailable = {}, [], []
+    prev = set(prev_unavailable or []) if isinstance(prev_unavailable, list) else set()
+    for r in _dict_items((doc or {}).get("rows")):
+        seat = r.get("seat")
+        if not isinstance(seat, str):
+            continue
+        for t in _dict_items(r.get("tools")):
+            tool, state = t.get("tool"), t.get("state")
+            if not isinstance(tool, str) or state not in ("missing", "unavailable"):
+                continue
+            if (seat, tool) in NOT_APPLICABLE:
+                continue
+            if (seat, tool) in OPEN_FINDINGS:
+                findings.append({"seat": seat, "tool": tool, "state": state})
+                continue
+            if state == "unavailable":
+                tag = f"{seat}|{tool}"
+                unavailable.append(tag)
+                if tag not in prev:
+                    continue
+            alarms[f"seat-tool:{seat}:{tool}:{state}"] = f"{seat}: {tool} {state}"
+    return alarms, findings, unavailable
+
+
+def seat_tool_rows(doc):
+    out = []
+    for r in _dict_items((doc or {}).get("rows")):
+        if isinstance(r.get("seat"), str):
+            out.append(
+                {
+                    "seat": r["seat"],
+                    "problem": r.get("problem"),
+                    "tools": {
+                        t.get("tool"): "not_applicable"
+                        if (r["seat"], t.get("tool")) in NOT_APPLICABLE
+                        else (t.get("state") if t.get("state") in SEAT_TOOL_STATES else "unknown")
+                        for t in _dict_items(r.get("tools"))
+                        if isinstance(t.get("tool"), str)
+                    },
+                }
+            )
+    return out
+
+
 def reconcile(state, alarms, now):
     """Update state in place;  return (to_notify [(key, text)], recovered [key])."""
     if not isinstance(state.get("active"), dict):
@@ -306,6 +370,34 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
                 alarms.setdefault(
                     "access:login_needed", prior.get("summary", "access:login_needed")
                 )
+    seat_doc, seat_error, findings = None, None, []
+    st_url = getattr(args, "seat_tools_url", None)
+    if doc is not None and st_url:
+        try:
+            seat_doc = fetch_fn(st_url, token)
+        except (OSError, ValueError) as e:
+            seat_error = (
+                f"http_{e.code}" if isinstance(e, urllib.error.HTTPError) else "unreachable"
+            )
+        if seat_doc is not None and not isinstance(seat_doc, dict):
+            seat_doc, seat_error = None, "malformed"
+        if seat_doc is not None:
+            found, findings, unavailable = seat_tool_alarms(
+                seat_doc, state.get("seatToolsUnavailable")
+            )
+            alarms.update(found)
+            state["seatToolsUnavailable"] = unavailable
+            state["seatToolsLast"] = {
+                "seatTools": seat_tool_rows(seat_doc),
+                "findings": findings,
+            }
+        else:
+            # An unreadable poll must not clear seat-tool alarms:  carry them over.  It also breaks the run of
+            # consecutive `unavailable` polls, so the baseline is reset.
+            state["seatToolsUnavailable"] = []
+            for k, v in (state.get("active") or {}).items():
+                if k.startswith("seat-tool:"):
+                    alarms.setdefault(k, v.get("summary", k))
     if doc is not None:
         found, counts = desired_alarms(doc, state.get("diagCounts"))
         alarms.update(found)
@@ -315,10 +407,13 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
             merged = dict(state.get("diagCounts") or {})
             merged.update(counts)
             state["diagCounts"] = merged
-    elif state.get("active"):
-        # An unreadable poll must not clear identity alarms:  carry them over.
+    else:
+        # An unreadable poll breaks the run of consecutive `unavailable` seat-tool polls.
+        state["seatToolsUnavailable"] = []
+    if doc is None and state.get("active"):
+        # An unreadable poll must not clear identity or seat-tool alarms:  carry them over.
         for k, v in state["active"].items():
-            if k.startswith("problem:"):
+            if k.startswith(("problem:", "seat-tool:")):
                 alarms.setdefault(k, v.get("summary", k))
     to_notify, recovered = reconcile(state, alarms, now)
     iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
@@ -339,6 +434,15 @@ def run(args, now=None, token_fn=credentials, fetch_fn=fetch, notify_fn=notify_m
         ],
         "recovered": [{"key": k, "at": iso(now)} for k in recovered],
     }
+    if st_url and doc is not None:
+        # An unreadable poll keeps the last good view, so the output never contradicts the alarms it carries.
+        last = state.get("seatToolsLast") if isinstance(state.get("seatToolsLast"), dict) else {}
+        out["seatTools"] = (
+            seat_tool_rows(seat_doc) if seat_doc is not None else last.get("seatTools", [])
+        )
+        out["findings"] = findings if seat_doc is not None else last.get("findings", [])
+        if seat_error:
+            out["seatToolsError"] = seat_error
     if error:
         out["error"] = error
     if not args.dry_run:
@@ -357,6 +461,7 @@ def main(argv):
     ap.add_argument("--write", default=OUT)
     ap.add_argument("--state", default=STATE)
     ap.add_argument("--url", default=URL)
+    ap.add_argument("--seat-tools-url", default=SEAT_TOOLS_URL)
     ap.add_argument("--no-notify", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     out = run(ap.parse_args(argv))
