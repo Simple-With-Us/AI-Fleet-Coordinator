@@ -17,7 +17,7 @@ The build refuses to run until the operator supplies the execution-time
 `--config-sha256` (live `/etc/git-relay/config.env`) and `--policy-sha256`
 (physical seats.json policy file) digests as explicit arguments; neither is
 hardcoded in source. Only digests are captured, never file contents. The
-existing finite recovery modules are hash-pinned at the current main blobs,
+existing finite recovery modules are hash-pinned at the current main blobs (refreshed 2026-11-22 after engine PR #2440; the module closure is unchanged - deploy_entry_prep.py, deploy_manifest.py and deploy_proof.py are not imported by the runner package, and deploy_proof.py is supplied by the rendered proof template),
 with only the executor unit literal changed for this new package. Exclusive
 lock, frozen single-task no-child/no-pending-write qualification, confirmed
 stop, durable before-image, atomic replacement, failed-exit/boot recovery,
@@ -43,7 +43,7 @@ full sudo). Nothing here is executed by merging this PR.
 1. Custody step (required before anything else). The relay code directory
    `/opt/git-relay/git-relay/git_relay` and its module files are currently
    uid 1001. `LinuxHost.preflight` (`git-relay/git_relay/deploy_host.py`,
-   the `[(self.CODE, 0), (self.STATE, 65534)]` anchor check at lines 169-192)
+   the `[(self.CODE, 0), (self.STATE, 65534)]` anchor check at lines 179-192 of the current engine)
    requires the CODE anchor root-owned with no group/other write bits, and
    the transaction baseline check requires each manifest row's live file to
    be exactly uid 0, gid 0, mode 0644. Take qualified custody without touching
