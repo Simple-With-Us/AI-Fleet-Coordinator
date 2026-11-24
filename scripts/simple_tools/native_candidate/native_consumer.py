@@ -48,9 +48,7 @@ class Consumer:
     def step(self):
         folder = self.driver.state / "native-commands"
         names = sorted(
-            p.name
-            for p in folder.glob("*.json")
-            if re.fullmatch(r"[a-f0-9]{64}\.json", p.name)
+            p.name for p in folder.glob("*.json") if re.fullmatch(r"[a-f0-9]{64}\.json", p.name)
         )
         available = [n for n in names if n > self.after]
         if not available:
@@ -79,10 +77,7 @@ class Consumer:
                 if not self.verify(binding):
                     raise ValueError("consumer-binding-changed")
                 evidence = read_private(evidence_path)
-                if (
-                    evidence["binding"] != binding
-                    or evidence["wake_key"] != intent["wake_key"]
-                ):
+                if evidence["binding"] != binding or evidence["wake_key"] != intent["wake_key"]:
                     raise ValueError("consumer-evidence-binding")
                 if not self.verify(binding):
                     raise ValueError("consumer-post-read-binding-changed")
@@ -103,11 +98,7 @@ class Consumer:
     def run(self, emit, *, max_rounds=12, interval_seconds=300, wait=time.sleep):
         # Explicit bounded worker entry for later scheduler wiring. Nothing starts
         # at import or installation, and no dispatch code exists in this worker.
-        if (
-            type(max_rounds) is not int
-            or not 1 <= max_rounds <= 288
-            or interval_seconds < 60
-        ):
+        if type(max_rounds) is not int or not 1 <= max_rounds <= 288 or interval_seconds < 60:
             raise ValueError("consumer-run-budget")
         for index in range(max_rounds):
             emit(self.step())

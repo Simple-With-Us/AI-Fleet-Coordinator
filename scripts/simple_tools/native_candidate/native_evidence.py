@@ -34,10 +34,7 @@ def alert_id(state, wake_key):
 def merge(old, current):
     if old is None:
         return current
-    if (
-        old.get("binding") != current["binding"]
-        or old.get("wake_key") != current["wake_key"]
-    ):
+    if old.get("binding") != current["binding"] or old.get("wake_key") != current["wake_key"]:
         raise ValueError("evidence-binding-conflict")
     previous = old.get("evidence", {})
     now = current["evidence"]

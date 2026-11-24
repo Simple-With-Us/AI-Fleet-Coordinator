@@ -81,9 +81,8 @@ class Failures(unittest.TestCase):
                 raise OSError("post-send-save")
             return actual(*args)
 
-        with patch("zcode_native._save", side_effect=save):
-            with self.assertRaises(OSError):
-                self.send()
+        with patch("zcode_native._save", side_effect=save), self.assertRaises(OSError):
+            self.send()
         self.assertEqual(self.calls, ["dispatch"])
         self.send()
         self.assertEqual(self.calls, ["dispatch", "query"])
@@ -134,9 +133,7 @@ class Failures(unittest.TestCase):
 
         def child():
             d = NativeDelivery(self.folder, lambda _: os._exit(99), lambda _: True)
-            with patch(
-                "zcode_native.os.replace", side_effect=lambda *a, **kw: os._exit(24)
-            ):
+            with patch("zcode_native.os.replace", side_effect=lambda *a, **kw: os._exit(24)):
                 d.deliver(B, "new", "fixture", fresh=True)
 
         p = multiprocessing.get_context("fork").Process(target=child)

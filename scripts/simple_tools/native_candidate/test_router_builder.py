@@ -95,19 +95,13 @@ class Tests(unittest.TestCase):
             }
             tree = ast.parse((ROOT / "candidate-zcode_wake.py").read_text())
             names = {"_deliver_prompt", "deliver_turn_local", "make_deliver_turn"}
-            nodes = [
-                n
-                for n in tree.body
-                if isinstance(n, ast.FunctionDef) and n.name in names
-            ]
+            nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
             for n in nodes:
                 n.returns = None
                 for arg in n.args.args + n.args.kwonlyargs:
                     arg.annotation = None
             exec(
-                compile(
-                    ast.Module(body=nodes, type_ignores=[]), "<actual-builder>", "exec"
-                ),
+                compile(ast.Module(body=nodes, type_ignores=[]), "<actual-builder>", "exec"),
                 g,
             )
             platform = SimpleNamespace(
@@ -120,9 +114,7 @@ class Tests(unittest.TestCase):
             )
             rtree = ast.parse((ROOT / "wake_router_base.py").read_text())
             router = next(
-                n
-                for n in rtree.body
-                if isinstance(n, ast.ClassDef) and n.name == "Router"
+                n for n in rtree.body if isinstance(n, ast.ClassDef) and n.name == "Router"
             )
             method = next(
                 n
@@ -177,9 +169,7 @@ class Tests(unittest.TestCase):
                 "t-current",
             )
             self.assertEqual(len(calls), 1)
-            self.assertEqual(
-                entry["turn"], {"id": "t-current", "riders": [], "message_ids": [123]}
-            )
+            self.assertEqual(entry["turn"], {"id": "t-current", "riders": [], "message_ids": [123]})
 
 
 if __name__ == "__main__":

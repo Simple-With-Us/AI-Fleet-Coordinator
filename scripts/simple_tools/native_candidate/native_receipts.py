@@ -7,9 +7,7 @@ The caller supplies source-verified records; these predicates cannot authenticat
 from native_store import fetched_response
 
 
-def classify(
-    binding, command_id, text, native_message=None, turn=None, fetch=None, alert_id=None
-):
+def classify(binding, command_id, text, native_message=None, turn=None, fetch=None, alert_id=None):
     result = {
         "admission": "unverified",
         "native_input": "unverified",

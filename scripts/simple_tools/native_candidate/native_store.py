@@ -77,9 +77,7 @@ def reconcile(db_path, binding, command_id, text, alert_id=None):
     }
     try:
         sid = binding["session_id"]
-        row = c.execute(
-            "SELECT id,directory FROM session WHERE id=?", (sid,)
-        ).fetchone()
+        row = c.execute("SELECT id,directory FROM session WHERE id=?", (sid,)).fetchone()
         if not row or row["directory"] != binding["workspace"]:
             return result
         ledger = c.execute(
@@ -108,10 +106,7 @@ def reconcile(db_path, binding, command_id, text, alert_id=None):
         if len(rows) != 1:
             return result
         message = rows[0]
-        if (
-            result.get("promoted_message_id")
-            and result["promoted_message_id"] != message["id"]
-        ):
+        if result.get("promoted_message_id") and result["promoted_message_id"] != message["id"]:
             return {**result, "conflict": True}
         parts = c.execute(
             "SELECT data FROM part WHERE session_id=? AND message_id=? ORDER BY sequence,time_created,id",
@@ -135,10 +130,7 @@ def reconcile(db_path, binding, command_id, text, alert_id=None):
         ).fetchall()
         if assistants:
             result["turn"] = "started"
-            if all(
-                json.loads(a["data"]).get("time", {}).get("completed")
-                for a in assistants
-            ):
+            if all(json.loads(a["data"]).get("time", {}).get("completed") for a in assistants):
                 result["turn"] = "completed"
             if alert_id is not None:
                 for a in assistants:

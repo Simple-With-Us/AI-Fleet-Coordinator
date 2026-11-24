@@ -23,14 +23,10 @@ class Driver:
         self.state, self.activation_epoch = Path(state), activation_epoch
         self.node, self.home = node, home
         self.context = threading.local()
-        self.journal = NativeDelivery(
-            self.state / "native-commands", self.transport, self.verify
-        )
+        self.journal = NativeDelivery(self.state / "native-commands", self.transport, self.verify)
 
     def verify(self, binding):
-        return bool(
-            getattr(self.context, "verify", None) and self.context.verify(binding)
-        )
+        return bool(getattr(self.context, "verify", None) and self.context.verify(binding))
 
     def __call__(self, binding, wake_key, text, *, fresh=False, verify, target=None):
         # Router's own predispatch pending record is authoritative, not fresh kwarg.
@@ -90,9 +86,7 @@ class Driver:
         selector = selectors.DefaultSelector()
         selector.register(child.stdout, selectors.EVENT_READ)
         try:
-            child.stdin.write(
-                (json.dumps(request, separators=(",", ":")) + "\n").encode()
-            )
+            child.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
             child.stdin.flush()
             deadline = time.monotonic() + 35
             buffer = b""
@@ -110,19 +104,14 @@ class Driver:
                     line, buffer = buffer.split(b"\n", 1)
                     message = json.loads(line)
                     if "verify" in message:
-                        ok = message.get("binding") == request[
-                            "binding"
-                        ] and self.verify(request["binding"])
+                        ok = message.get("binding") == request["binding"] and self.verify(
+                            request["binding"]
+                        )
                         child.stdin.write(
-                            (
-                                json.dumps({"verify": message["verify"], "ok": ok})
-                                + "\n"
-                            ).encode()
+                            (json.dumps({"verify": message["verify"], "ok": ok}) + "\n").encode()
                         )
                         child.stdin.flush()
-                    elif set(message) == {"result"} and isinstance(
-                        message["result"], dict
-                    ):
+                    elif set(message) == {"result"} and isinstance(message["result"], dict):
                         return message["result"]
                     else:
                         raise ValueError("native-driver-unverified")

@@ -40,9 +40,7 @@ class ConsumerTests(unittest.TestCase):
             "fetch_message_id": "a",
             "fetch_part_id": "p",
         }
-        with patch(
-            "native_fixture_package.native_integration.reconcile", return_value=proof
-        ):
+        with patch("native_fixture_package.native_integration.reconcile", return_value=proof):
             r = c.step()[0]
         self.assertEqual(r["owning_alert"], "fetched")
         self.assertEqual(r["handling"], "unverified")
@@ -63,9 +61,7 @@ class ConsumerTests(unittest.TestCase):
     def test_frozen_intent(self):
         self.seed()
         c = Consumer(self.d, lambda _: True)
-        with patch(
-            "native_fixture_package.native_integration.reconcile", return_value={}
-        ) as read:
+        with patch("native_fixture_package.native_integration.reconcile", return_value={}) as read:
             c.step()
         self.assertEqual(read.call_args.args[1], B)
         self.assertEqual(read.call_args.args[3], "frozen original")
@@ -104,9 +100,7 @@ class ConsumerTests(unittest.TestCase):
                 current[0] = False
             return value
 
-        with patch(
-            "native_fixture_package.native_consumer.read_private", side_effect=read
-        ):
+        with patch("native_fixture_package.native_consumer.read_private", side_effect=read):
             r = c.step()[0]
         self.assertEqual(r["reconciliation"], "unverified")
         self.assertEqual(self.actions, ["query"])

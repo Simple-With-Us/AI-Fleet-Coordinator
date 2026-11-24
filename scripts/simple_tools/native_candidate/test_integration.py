@@ -100,9 +100,7 @@ class Integration(unittest.TestCase):
             "native_fixture_package.native_integration.subprocess.Popen",
             side_effect=lambda argv, **kw: original(["node", "-e", code], **kw),
         ):
-            r = self.driver(
-                B, "new", "fixture", fresh=True, target=self.target, verify=verify
-            )
+            r = self.driver(B, "new", "fixture", fresh=True, target=self.target, verify=verify)
         self.assertEqual(r["outcome"], "unknown")
 
     def test_partial_response_eof_unknown(self):
@@ -140,9 +138,7 @@ if __name__ == "__main__":
 class EvidenceIntegration(Integration):
     def test_target_binding_mismatch_cannot_dispatch(self):
         self.target.session_id = "other"
-        r = self.driver(
-            B, "new", "fixture", fresh=True, target=self.target, verify=lambda b: True
-        )
+        r = self.driver(B, "new", "fixture", fresh=True, target=self.target, verify=lambda b: True)
         self.assertEqual(r["code"], "native-legacy-attempt-excluded")
 
     def test_durable_alert_id_pass_through(self):
@@ -151,15 +147,11 @@ class EvidenceIntegration(Integration):
             "native_fixture_package.native_integration.reconcile",
             return_value={"native_input": "persisted", "owning_alert": "fetched"},
         ) as read:
-            result = self.driver(
-                B, "new", "fixture", target=self.target, verify=lambda b: True
-            )
+            result = self.driver(B, "new", "fixture", target=self.target, verify=lambda b: True)
         self.assertEqual(read.call_args.args[-1], 123)
         files = list((Path(self.tmp.name) / "native-evidence").glob("*.json"))
         self.assertEqual(len(files), 1)
-        self.assertEqual(
-            json.loads(files[0].read_text())["evidence"]["owning_alert"], "fetched"
-        )
+        self.assertEqual(json.loads(files[0].read_text())["evidence"]["owning_alert"], "fetched")
         self.assertEqual(result["outcome"], "unknown")
 
     def test_report_persistence_failure_does_not_resend(self):
@@ -169,9 +161,7 @@ class EvidenceIntegration(Integration):
             "native_fixture_package.native_integration.persist",
             side_effect=OSError("full"),
         ):
-            a = self.driver(
-                B, "new", "fixture", target=self.target, verify=lambda b: True
-            )
+            a = self.driver(B, "new", "fixture", target=self.target, verify=lambda b: True)
             b = self.driver.reconcile_only(B, "new", "fixture", verify=lambda b: True)
         self.assertEqual(calls, ["dispatch", "query"])
         self.assertEqual(a["evidence_persistence"], "unverified")

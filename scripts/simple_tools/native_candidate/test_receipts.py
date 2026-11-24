@@ -28,30 +28,20 @@ class Tests(unittest.TestCase):
         }
 
     def test_ack_alone_proves_nothing(self):
-        self.assertEqual(
-            classify(self.b, "cmd", "fixture")["native_input"], "unverified"
-        )
+        self.assertEqual(classify(self.b, "cmd", "fixture")["native_input"], "unverified")
 
     def test_persisted_only(self):
-        self.assertEqual(
-            classify(self.b, "cmd", "fixture", self.m)["native_input"], "persisted"
-        )
+        self.assertEqual(classify(self.b, "cmd", "fixture", self.m)["native_input"], "persisted")
 
     def test_wrong_text_refused(self):
-        self.assertEqual(
-            classify(self.b, "cmd", "other", self.m)["native_input"], "unverified"
-        )
+        self.assertEqual(classify(self.b, "cmd", "other", self.m)["native_input"], "unverified")
 
     def test_wrong_session_refused(self):
         self.m["session_id"] = "other"
-        self.assertEqual(
-            classify(self.b, "cmd", "fixture", self.m)["native_input"], "unverified"
-        )
+        self.assertEqual(classify(self.b, "cmd", "fixture", self.m)["native_input"], "unverified")
 
     def test_wrong_command_refused(self):
-        self.assertEqual(
-            classify(self.b, "other", "fixture", self.m)["native_input"], "unverified"
-        )
+        self.assertEqual(classify(self.b, "other", "fixture", self.m)["native_input"], "unverified")
 
     def test_turn_not_fetch(self):
         self.assertEqual(
@@ -61,26 +51,20 @@ class Tests(unittest.TestCase):
 
     def test_parameter_only_fetch_unverified(self):
         self.assertEqual(
-            classify(self.b, "cmd", "fixture", self.m, self.t, self.f, 123)[
-                "owning_alert"
-            ],
+            classify(self.b, "cmd", "fixture", self.m, self.t, self.f, 123)["owning_alert"],
             "unverified",
         )
 
     def test_wrong_alert_refused(self):
         self.assertEqual(
-            classify(self.b, "cmd", "fixture", self.m, self.t, self.f, 456)[
-                "owning_alert"
-            ],
+            classify(self.b, "cmd", "fixture", self.m, self.t, self.f, 456)["owning_alert"],
             "unverified",
         )
 
     def test_empty_output_refused(self):
         self.f["output_nonempty"] = False
         self.assertEqual(
-            classify(self.b, "cmd", "fixture", self.m, self.t, self.f, 123)[
-                "owning_alert"
-            ],
+            classify(self.b, "cmd", "fixture", self.m, self.t, self.f, 123)["owning_alert"],
             "unverified",
         )
 

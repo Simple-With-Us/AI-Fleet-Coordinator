@@ -26,9 +26,10 @@ class Tests(unittest.TestCase):
         def transport(req):
             self.calls.append(req)
             records = list(self.folder.glob("*.json"))
-            assert len(records) == 1 and json.loads(records[0].read_text())[
-                "phase"
-            ] in ("dispatching", "dispatched")
+            assert len(records) == 1 and json.loads(records[0].read_text())["phase"] in (
+                "dispatching",
+                "dispatched",
+            )
             if self.failure:
                 raise self.failure
             return {
@@ -104,9 +105,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
     def test_legacy_excluded(self):
-        self.assertEqual(
-            self.send(fresh=False)["code"], "native-legacy-attempt-excluded"
-        )
+        self.assertEqual(self.send(fresh=False)["code"], "native-legacy-attempt-excluded")
         self.assertEqual(self.calls, [])
 
     def test_mac_refused(self):
@@ -144,15 +143,11 @@ class Tests(unittest.TestCase):
             self.assertEqual(r["outcome"], "unknown")
 
     def test_wrong_ack_key(self):
-        self.d.transport = lambda req: {
-            "ack": {"commandId": "wrong", "status": "accepted"}
-        }
+        self.d.transport = lambda req: {"ack": {"commandId": "wrong", "status": "accepted"}}
         self.assertEqual(self.send()["code"], "native-unreconciled")
 
     def test_corrupt_record_never_dispatches(self):
-        for n, bad in enumerate(
-            [{}, [], {"version": 1}, "invalid-json", {"identity": "wrong"}]
-        ):
+        for n, bad in enumerate([{}, [], {"version": 1}, "invalid-json", {"identity": "wrong"}]):
             self.send(wake="corrupt" + str(n))
             from zcode_native import digest
 
@@ -227,9 +222,7 @@ class Tests(unittest.TestCase):
             d.deliver(B, "concurrent", "fixture", fresh=True)
             d.close()
 
-        jobs = [
-            multiprocessing.get_context("fork").Process(target=work) for _ in range(2)
-        ]
+        jobs = [multiprocessing.get_context("fork").Process(target=work) for _ in range(2)]
         for job in jobs:
             job.start()
         for job in jobs:

@@ -15,9 +15,7 @@ class Custody(unittest.TestCase):
         self.p = Path(self.tmp.name)
         (self.p / "pending").mkdir()
         (self.p / "done").mkdir()
-        self.t = SimpleNamespace(
-            session_id="s", host="server", letter="II", generation=2
-        )
+        self.t = SimpleNamespace(session_id="s", host="server", letter="II", generation=2)
         self.r = {
             "wake": {
                 "wake_id": "ra-new",
@@ -110,9 +108,7 @@ class Store(unittest.TestCase):
                 json.dumps(
                     {
                         "role": "user",
-                        "metadata": {
-                            "conversationInputIntent": {"sourceCommandId": key}
-                        },
+                        "metadata": {"conversationInputIntent": {"sourceCommandId": key}},
                     }
                 ),
             ),
@@ -124,15 +120,11 @@ class Store(unittest.TestCase):
         self.c.commit()
 
     def test_no_input(self):
-        self.assertEqual(
-            reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified"
-        )
+        self.assertEqual(reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified")
 
     def test_exact(self):
         self.add()
-        self.assertEqual(
-            reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "persisted"
-        )
+        self.assertEqual(reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "persisted")
 
     def test_wrong_text(self):
         self.add("wrong")
@@ -140,16 +132,12 @@ class Store(unittest.TestCase):
 
     def test_wrong_key(self):
         self.add(key="other")
-        self.assertEqual(
-            reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified"
-        )
+        self.assertEqual(reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified")
 
     def test_wrong_workspace(self):
         self.add()
         self.b["workspace"] = "/other"
-        self.assertEqual(
-            reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified"
-        )
+        self.assertEqual(reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified")
 
     def test_anchor(self):
         self.add()
@@ -158,9 +146,7 @@ class Store(unittest.TestCase):
             (json.dumps({"role": "user", "anchor": {"sourceCommandId": "cmd"}}),),
         )
         self.c.commit()
-        self.assertEqual(
-            reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "persisted"
-        )
+        self.assertEqual(reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "persisted")
 
     def test_discarded_never_delivery(self):
         self.c.execute(
@@ -220,9 +206,7 @@ class Store(unittest.TestCase):
             ),
         )
         self.c.commit()
-        self.assertEqual(
-            reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified"
-        )
+        self.assertEqual(reconcile(self.p, self.b, "cmd", "fixture")["native_input"], "unverified")
 
 
 if __name__ == "__main__":
@@ -246,9 +230,7 @@ class Fetch(Store):
             (
                 "a",
                 "s",
-                json.dumps(
-                    {"role": "assistant", "parentID": parent, "time": {"completed": 4}}
-                ),
+                json.dumps({"role": "assistant", "parentID": parent, "time": {"completed": 4}}),
             ),
         )
         output = (
@@ -310,8 +292,6 @@ class Fetch(Store):
     def test_wrapper_only_not_fetch(self):
         self.prepared()
         self.part["state"]["output"] = "output present but not a message"
-        self.c.execute(
-            "UPDATE part SET data=? WHERE id=?", (json.dumps(self.part), "fetch")
-        )
+        self.c.execute("UPDATE part SET data=? WHERE id=?", (json.dumps(self.part), "fetch"))
         self.c.commit()
         self.assertEqual(self.evidence()["owning_alert"], "unverified")

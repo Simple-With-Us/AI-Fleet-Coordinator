@@ -63,7 +63,6 @@ def fresh(state: Path, wake_id: str, target, activation_epoch: float):
         and w.get("require_letter") == target.letter
         and w.get("message_id", 0) > 0
         and all(
-            t.get(k) == getattr(target, k)
-            for k in ("session_id", "host", "letter", "generation")
+            t.get(k) == getattr(target, k) for k in ("session_id", "host", "letter", "generation")
         )
     )
