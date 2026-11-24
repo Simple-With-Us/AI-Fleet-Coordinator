@@ -165,9 +165,6 @@ GONE_SCAN_NOTES = 2000
 #: The archive path reads every note of the host, not only the newest ones:  a chat that has waited longest must
 #: still reach the adapter, or its letter is never freed.  The report, not this scan, bounds what is sent.
 GONE_SCAN_ALL = 20000
-#: The notes an earlier retire path left behind are the oldest notes of the host, so they are looked for there:
-#: a bounded pass over the oldest files, which drains itself as those notes are retired and rewritten.
-GONE_SCAN_LEGACY = 2000
 GONE_REPORT_IDS = 500
 #: The most bytes of the `--gone` JSON that are parsed (500 ids of a session id's length are about 40 KB).
 GONE_JSON_BYTES = 256 * 1024
@@ -3316,7 +3313,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     state = note.get("state")
     if state == "mismatch":
         return 0
-    if state == "closed" and not note.get("gone_at"):
+    if state == "closed" and note.get("gone_at") is None:
         return (
             0  # a chat that ended for good;  a chat reported gone may still be alive and asks again
         )
@@ -4349,15 +4346,14 @@ def _lettered_chats(
     rewrite: bool = True,
     floor: float = GONE_QUIET_SECONDS,
     limit: int = GONE_SCAN_NOTES,
-    oldest: bool = False,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """One scan of this host's notes for the platform and location:  (the lettered chats that were not reported
-    gone,  the ones that were reported and still hold a letter).  Both are the longest quiet first, so a chat that
-    has waited longest is offered before one that has not waited at all.
+    gone,  the ones that were reported and still hold a letter,  the ones whose title write is still owed).  All
+    three are the longest quiet first, so a chat that has waited longest is offered before one that has not waited
+    at all.
 
-    `floor` is how long a chat's hook must have been quiet before it is offered, `limit` how many note files are
-    read at all, and `oldest` walks them from the oldest rather than the newest.  The scan is done once and shared:
-    a sweep that needs both shapes pays for one pass."""
+    `floor` is how long a chat's hook must have been quiet before it is offered, and `limit` how many note files
+    are read at all.  The scan is done once and shared:  a sweep that needs all three shapes pays for one pass."""
     folder = os.path.dirname(note_path(env, seat, "stamp"))
     files: list[tuple[float, str]] = []
     try:
@@ -4372,8 +4368,8 @@ def _lettered_chats(
                 except OSError:
                     continue
     except OSError:
-        return {}, {}
-    files.sort(reverse=not oldest)
+        return {}, {}, {}
+    files.sort(reverse=True)
     found: list[dict[str, Any]] = []
     for _, name in files[:limit]:
         path = os.path.join(folder, name)
@@ -4392,21 +4388,35 @@ def _lettered_chats(
                 note = fresh
         if note.get("platform") != platform or note.get("location") != where:
             continue
-        if not lettered(note):
+        # A retired chat whose title write failed holds no letter any more, but the platform still shows one and
+        # the mark says the write is still owed, so it is offered again until its title is clean.
+        owing = bool(note.get("title_pending"))
+        if not lettered(note) and not owing:
             continue
         seen = _seconds(note.get("updated_at"))
         label = note.get("label")
         if not isinstance(label, str) or not LABEL_RE.fullmatch(label):
-            continue
+            if not owing:
+                continue
+            label = ""
         if now - seen < floor:
             continue
         found.append(
-            {"session_id": sid, "label": label, "seen": seen, "reported": bool(note.get("gone_at"))}
+            {
+                "session_id": sid,
+                "label": label,
+                "seen": seen,
+                "reported": bool(note.get("gone_at")),
+                "owing": owing,
+            }
         )
     found.sort(key=lambda row: (row["seen"], row["session_id"]))
-    unreported = {row["session_id"]: row for row in found if not row["reported"]}
-    already = {row["session_id"]: row for row in found if row["reported"]}
-    return unreported, already
+    unreported = {
+        row["session_id"]: row for row in found if not row["reported"] and not row["owing"]
+    }
+    already = {row["session_id"]: row for row in found if row["reported"] and not row["owing"]}
+    owed = {row["session_id"]: row for row in found if row["owing"]}
+    return unreported, already, owed
 
 
 def quiet_chats(
@@ -4440,7 +4450,7 @@ def quiet_chats(
     `adopt` is for the platform a seat's retired client wrote for:  a note of that client (no `platform`) is put in
     this client's shape where it lies (`upgraded_note`), so its chat can be named too.  Without `rewrite` it is only
     read that way and its file is left as it is (a dry run changes nothing)."""
-    unreported, already = _lettered_chats(
+    unreported, already, _ = _lettered_chats(
         env,
         seat,
         platform,
@@ -4495,7 +4505,7 @@ def gone_chats(
     which is no evidence at all.  A chat the adapter does not name is not gone, quiet or not, so the hour never
     retires one on its own."""
     adopt = isinstance(spec.seat, str) and spec.seat == seat
-    unreported, _ = _lettered_chats(
+    unreported, _, _ = _lettered_chats(
         env,
         seat,
         spec.platform,
@@ -4637,14 +4647,18 @@ def _retire(chat: Chat, note: dict[str, Any], now: float) -> dict[str, Any]:
 
     The title is the chat's own words without the letter, put back through the platform's own writer:  a title a
     person chose is left exactly as it is (the writer refuses it), and a platform with no writer keeps the title it
-    has.  A chat whose title carries no letter of its own is left alone as well."""
+    has.  A chat whose title carries no letter of its own is left alone as well.
+
+    A write that fails leaves the mark that says the title still owes the letter (`title_pending`), and the next
+    sweep of the host tries it again:  a chat that never starts once more still loses its prefix.  The letter itself
+    is released either way, because the assigner has closed the row and freed it."""
     label = str(note.get("label") or "")
     held_labels = held(note)
     retired = dict(
         note,
         state="closed",
         label="",
-        labels=list(held_labels)[:8],
+        labels=list(held_labels),
         gone_at=now,
         touched_at=0,
     )
@@ -4699,7 +4713,8 @@ def report_gone(
     how many it would take (`allowed_now`):  the stamp keeps that number, and the next report names no more than that.
 
     A chat the report named is marked in its note (`gone_at`) once the assigner has answered, whether its row was
-    closed now or was closed already, so it is not named again.  The chat is retired locally:  its note holds no
+    closed now or was closed already, so it is not named again.  A note that owes a title write is retried on every
+    sweep, so a stale prefix does not wait for the next report.  The chat is retired locally:  its note holds no
     letter any more (the state of a closed registration, `closed`) and its title loses the letter it carried, so an
     archived chat cannot go on showing a letter the assigner has given to another chat.  A chat that is alive after
     all asks the assigner again on its next prompt and takes a letter once more.  A refused or failed report changes
@@ -4707,11 +4722,9 @@ def report_gone(
     if spec.gone_sessions is None or not seat or where not in LOCATIONS:
         return {"skipped": "this platform names no gone chats on this host"}
     adopt = isinstance(spec.seat, str) and spec.seat == seat
-    # The notes an earlier retire path left behind:  a chat that was reported gone and still holds its letter.  The
-    # assigner freed those letters when it closed the rows, so they are retired here and no report is made for them.
-    # They are the oldest notes of the host, so the pass looks there, and it runs on every sweep:  a freed letter is
-    # released at once and does not wait for the report to be due.
-    _, already = _lettered_chats(
+    # One scan of this host's notes:  the lettered chats a report may name, the ones an earlier retire path left
+    # behind, and the ones whose title write is still owed.  A sweep that needs all three shapes pays for one pass.
+    candidates, already, owed = _lettered_chats(
         env,
         seat,
         spec.platform,
@@ -4720,15 +4733,19 @@ def report_gone(
         adopt=adopt,
         rewrite=True,
         floor=0,
-        limit=GONE_SCAN_LEGACY,
-        oldest=True,
+        limit=GONE_SCAN_ALL,
     )
     retired: list[str] = []
-    for row in already.values():
+    # The notes an earlier retire path left behind are retired here, and no report is made for them:  the assigner
+    # freed those letters when it closed the rows.  A title write that failed is tried again.  Both run on every
+    # sweep, so a freed letter is released at once and a stale prefix does not wait for the report to be due.
+    for row in list(already.values()) + list(owed.values()):
         chat = Chat(spec, env, where, row["session_id"], now=now, transport=transport, seat=seat)
         note = chat.read()
         # The note has to be the one the scan saw:  a chat that ran since then is in use, not gone.
-        if lettered(note) and _seconds(note.get("updated_at")) == row["seen"]:
+        if (lettered(note) or note.get("title_pending")) and _seconds(
+            note.get("updated_at")
+        ) == row["seen"]:
             chat.write(_retire(chat, note, now))
             retired.append(row["session_id"])
     path = gone_stamp_path(env, seat, spec.platform, where)
@@ -4740,19 +4757,8 @@ def report_gone(
     if not _save_json(path, {"at": now, **({"allowed": limit} if limit else {})}):
         # No stamp, no throttle:  nothing is sent.
         return {"skipped": "the stamp could not be saved", "retired": sorted(retired)}
-    # The lettered chats of this host, and only the longest quiet ones go to the adapter:  the call is bounded, and
-    # the ones that are not offered yet are offered once the ones before them are retired.
-    candidates, _ = _lettered_chats(
-        env,
-        seat,
-        spec.platform,
-        where,
-        now,
-        adopt=adopt,
-        rewrite=True,
-        floor=0,
-        limit=GONE_SCAN_ALL,
-    )
+    # Only the longest quiet chats of this host go to the adapter:  the call is bounded, and the ones that are not
+    # offered yet are offered once the ones before them are retired.
     offered = dict(list(candidates.items())[:GONE_REPORT_IDS])
     gone = _named_gone(spec, env, offered)[: limit or GONE_REPORT_IDS]
     if not gone:

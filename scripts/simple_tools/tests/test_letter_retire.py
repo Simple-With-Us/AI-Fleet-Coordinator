@@ -340,10 +340,78 @@ class RetireTests(Base):
 
         with mock.patch.object(PL, "_lettered_chats", counting), mock.patch.object(PL, "GONE_REPORT_IDS", 1):
             done = self.report()
-        # Two passes:  a bounded one over the oldest notes for the ones an earlier path left behind, and the one
-        # over the notes of this host that the report is about.
-        self.assertEqual(len(calls), 2)
+        # One pass:  the report, the notes an earlier path left behind and the owed titles all come from it.
+        self.assertEqual(len(calls), 1)
         self.assertEqual(len(done["gone"]), 1)  # and the adapter is asked about a bounded number of chats
+
+    def test_a_pending_title_is_tried_again_by_the_sweep(self) -> None:
+        # The platform would not take the title, so the stale prefix stays on the chat.  The mark says the title
+        # still owes the letter, and the next sweep of the host tries the write again:  a chat that never starts
+        # once more still loses its prefix.
+        self.add("m-0018", title="Fix Login")
+        self.start("m-0018")
+        label = self.note("m-0018")["label"]
+        self.archive("m-0018")
+
+        os.chmod(self.store, 0o444)  # the store takes no writes
+        try:
+            self.report()
+        finally:
+            os.chmod(self.store, 0o644)
+        note = self.note("m-0018")
+        self.assertTrue(note.get("title_pending"))  # the title still has to lose the letter
+        self.assertEqual(self.title_of("m-0018"), "%s: Fix Login" % label)  # and the stale prefix is still there
+
+        done = self.report()  # the next sweep of the host, with no chat of its own
+        self.assertIn("m-0018", done["retired"])
+        note = self.note("m-0018")
+        self.assertNotIn("title_pending", note)  # the pending write is done
+        self.assertEqual(self.title_of("m-0018"), "Fix Login")  # and the stale prefix is gone
+
+    def test_the_history_of_the_letters_a_chat_held_is_kept_whole(self) -> None:
+        # The note of a closed registration is the audit record of what the chat held, so nothing of it is dropped:
+        # a chat that cycled through more letters than the register keeps elsewhere keeps them all here.
+        self.add("m-0019", title="Fix Login")
+        self.start("m-0019")
+        path = PL.note_path(self.env(), PM.SEAT, "m-0019")
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        history = ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "II", "JJ"]
+        note["labels"] = history
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+        self.archive("m-0019")
+        self.report()
+        note = self.note("m-0019")
+        for held in history:
+            self.assertIn(held, note["labels"])  # every letter the chat held is still in the record
+        self.assertIn(note["label"] if note["label"] else history[0], note["labels"])
+
+    def test_a_note_retired_with_a_zero_timestamp_asks_the_assigner_again(self) -> None:
+        # A note that was retired carries the mark of the retirement, and a mark of zero is a mark:  the chat is
+        # alive after all, so it asks the assigner again the way any alive chat does.
+        self.add("m-0020", title="Fix Login")
+        self.start("m-0020")
+        path = PL.note_path(self.env(), PM.SEAT, "m-0020")
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        note["state"] = "closed"
+        note["label"] = ""
+        note["labels"] = [note.get("labels", ["AA"])[0]]
+        note["gone_at"] = 0
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+        self.run_hook(
+            PM.SPEC,
+            {"hook_event_name": "UserPromptSubmit", "session_id": "m-0020", "prompt": "go on"},
+            now=self.now + 60,
+        )
+        note = self.note("m-0020")
+        self.assertTrue(PL.lettered(note))  # the chat asked again and holds a letter once more
+        self.assertEqual(self.title_of("m-0020"), "%s: Fix Login" % note["label"])
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
