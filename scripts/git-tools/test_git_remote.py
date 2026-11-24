@@ -1191,6 +1191,30 @@ class TestOutcomes(unittest.TestCase):
         m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)", src)
         self.assertIsNotNone(m, "gr-workflow-v1.js WF_V1_READ_ACTIONS export not found")
         worker = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
+        # The Worker spreads the generated secret reads (gr-secrets-v1.js SECRET_READ_ACTIONS) into the list.
+        worker |= {"wf_org_variables", "wf_org_variable_repos"}
+        # ... and the hook/deploy-key/environment reads (gr-hooks-v1.js HOOK_READ_ACTIONS).
+        worker |= {
+            "wf_hook_get",
+            "wf_hook_deliveries",
+            "wf_org_hooks",
+            "wf_org_hook_get",
+            "wf_deploy_key_get",
+            "wf_env_branch_policies",
+            "wf_env_variables",
+        }
+        for scope, org in (
+            ("org_actions", True),
+            ("org_dependabot", True),
+            ("org_codespaces", True),
+            ("repo_actions", False),
+            ("repo_dependabot", False),
+            ("repo_codespaces", False),
+            ("env_actions", False),
+        ):
+            worker |= {f"wf_secrets_{scope}", f"wf_secret_key_{scope}"}
+            if org:
+                worker.add(f"wf_secret_repos_{scope}")
         self.assertTrue(worker)
         self.assertEqual(
             set(git.WF_V1_READ_ACTIONS),
@@ -1706,7 +1730,9 @@ class TestReview1199(unittest.TestCase):
                     walk(item)
 
         walk(tools)
-        self.assertEqual(len(patterns), 19)  # live capture includes paired dispatch intent_id
+        self.assertEqual(
+            len(patterns), 22
+        )  # live capture: paired dispatch intent_id, the two origin claims, and the PRRT thread id; all digests are already in _KNOWN_PATTERN_DIGESTS
         # every real pattern compiles and matches a plausible value inside the child, fast
         samples = {
             "repo": "acme/widgets",

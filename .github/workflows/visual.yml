@@ -16,6 +16,8 @@ on:
 jobs:
   playwright:
     runs-on: ubuntu-latest
+    # Bound the job so a stalled browser install or spec cannot burn the 360-minute GitHub default.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

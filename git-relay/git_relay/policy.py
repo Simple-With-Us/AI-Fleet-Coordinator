@@ -29,6 +29,24 @@ _GRANT_PATH = re.compile(
 )
 _MAX_DEFAULT_BRANCH_PATHS = 8
 
+# A seat's bracketed title tag:  Jay's 2026-11-20 convention is that every
+# relay-created PR title starts with the creating seat's bracketed heading
+# (Echo's PRs begin [ECHO];  a multithreaded seat's begin with its
+# session-qualified tag in the space form, e.g. [MM SS.2.M]).  A colon after
+# the tag ([MM: SS.2.M]) appears on pre-existing PRs and is still accepted
+# as legacy input;  it is not the current convention.  The tag is 1-32 chars
+# of uppercase letters, digits, space, dash or underscore;  per-seat config
+# may pin one with "title_tag", otherwise it derives from the seat name.
+_TITLE_TAG = re.compile(r"[A-Z0-9][A-Z0-9 _-]{0,31}")
+# The bracket a title already opens with, if any:  [TAG], [TAG: ...], [TAG ...].
+_LEADING_BRACKET = re.compile(r"^\[([^\[\]]{1,64})\]")
+
+
+def _derived_title_tag(seat: str) -> str:
+    """The default bracket tag for a seat:  swu-echo -> ECHO."""
+    name = seat.removeprefix("swu-")
+    return name.upper()[:32]
+
 
 def _repo_pattern_allows(patterns, repo: str) -> bool:
     for pattern in patterns:
@@ -236,6 +254,70 @@ class SeatPolicy:
         "wf_repo_variable_create",
         "wf_repo_variable_update",
         "wf_repo_variable_delete",
+        "wf_secrets_org_actions",
+        "wf_secret_key_org_actions",
+        "wf_secret_put_org_actions",
+        "wf_secret_delete_org_actions",
+        "wf_secret_repos_org_actions",
+        "wf_secret_repos_set_org_actions",
+        "wf_secrets_org_dependabot",
+        "wf_secret_key_org_dependabot",
+        "wf_secret_put_org_dependabot",
+        "wf_secret_delete_org_dependabot",
+        "wf_secret_repos_org_dependabot",
+        "wf_secret_repos_set_org_dependabot",
+        "wf_secrets_org_codespaces",
+        "wf_secret_key_org_codespaces",
+        "wf_secret_put_org_codespaces",
+        "wf_secret_delete_org_codespaces",
+        "wf_secret_repos_org_codespaces",
+        "wf_secret_repos_set_org_codespaces",
+        "wf_secrets_repo_actions",
+        "wf_secret_key_repo_actions",
+        "wf_secret_put_repo_actions",
+        "wf_secret_delete_repo_actions",
+        "wf_secrets_repo_dependabot",
+        "wf_secret_key_repo_dependabot",
+        "wf_secret_put_repo_dependabot",
+        "wf_secret_delete_repo_dependabot",
+        "wf_secrets_repo_codespaces",
+        "wf_secret_key_repo_codespaces",
+        "wf_secret_put_repo_codespaces",
+        "wf_secret_delete_repo_codespaces",
+        "wf_secrets_env_actions",
+        "wf_secret_key_env_actions",
+        "wf_secret_put_env_actions",
+        "wf_secret_delete_env_actions",
+        "wf_hook_get",
+        "wf_hook_create",
+        "wf_hook_update",
+        "wf_hook_delete",
+        "wf_hook_ping",
+        "wf_hook_test",
+        "wf_hook_deliveries",
+        "wf_hook_redeliver",
+        "wf_org_hooks",
+        "wf_org_hook_get",
+        "wf_org_hook_create",
+        "wf_org_hook_update",
+        "wf_org_hook_delete",
+        "wf_org_hook_ping",
+        "wf_deploy_key_get",
+        "wf_deploy_key_add",
+        "wf_deploy_key_delete",
+        "wf_environment_put",
+        "wf_environment_delete",
+        "wf_env_branch_policies",
+        "wf_env_branch_policy_create",
+        "wf_env_branch_policy_delete",
+        "wf_env_variables",
+        "wf_env_variable_set",
+        "wf_env_variable_delete",
+        "wf_org_variables",
+        "wf_org_variable_set",
+        "wf_org_variable_delete",
+        "wf_org_variable_repos",
+        "wf_org_variable_repos_set",
         "wf_workflow_get",
         "wf_artifact_get",
         "wf_artifacts_page",
@@ -465,6 +547,16 @@ class SeatPolicy:
             mint_perms = cfg.get("mint_permissions") or {}
             if not isinstance(mint_perms, dict):
                 raise PolicyError(f"seat {seat!r}: mint_permissions must be an object")
+            title_tag = cfg.get("title_tag")
+            if title_tag is not None and not isinstance(title_tag, str):
+                raise PolicyError(f"seat {seat!r}: title_tag must be a string")
+            final_tag = title_tag if title_tag is not None else _derived_title_tag(seat)
+            if not _TITLE_TAG.fullmatch(final_tag):
+                raise PolicyError(
+                    f"seat {seat!r}: title tag {final_tag!r} must be 1-32 chars of "
+                    "A-Z 0-9 space dash underscore; set title_tag when the seat name "
+                    "does not derive one"
+                )
             # Inactive typed actions require the same own-App startup
             # contract, without adding them to live APP dispatch.
             typed_app_actions = ("pr_state", "pr_hold_state", "pr_automerge_disable")
@@ -507,12 +599,22 @@ class SeatPolicy:
                 "auth": auth,
                 "identity": identity,
                 "oauth_assert": oauth_assert,
-                "token_hash": hashlib.sha256(token.encode()).hexdigest() if token else None,
+                # A bearer may carry a lone surrogate (reachable through a
+                # JSON string escape).  surrogatepass encodes it instead of
+                # raising, so the token hashes to a value that matches no
+                # seat:  a crafted bearer is a plain mismatch, never an
+                # exception that escapes the auth path.
+                "token_hash": (
+                    hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
+                    if token
+                    else None
+                ),
                 "actions": set(actions),
                 "repos": repo_names,
                 "app_slug": app_slug,
                 "mint_permissions": dict(mint_perms),
                 "create_repo_public": create_repo_public,
+                "title_tag": final_tag,
             }
             if grants:
                 stored["default_branch_paths"] = grants
@@ -528,6 +630,30 @@ class SeatPolicy:
                         f"seats {other!r} and {seat!r} both claim verified identity {cfg['identity']!r}"
                     )
                 claimed[cfg["identity"]] = seat
+        # Title tags must not collide across seats.  A conforming bracket is
+        # the tag followed by end-of-bracket, space or colon, so if one
+        # seat's tag equals another's ("MM" vs "MM") or is another's tag
+        # plus a space/colon suffix ("MM" vs "MM SS"), the shorter seat's
+        # check would accept the longer seat's brackets as its own and the
+        # visible creator would be ambiguous.  Refuse at config load.
+        tag_owners: dict[str, str] = {}
+        for seat, cfg in self._seats.items():
+            tag = cfg["title_tag"]
+            other = tag_owners.get(tag)
+            if other is not None:
+                raise PolicyError(f"seats {other!r} and {seat!r} share title tag {tag!r}")
+            tag_owners[tag] = seat
+        ordered = sorted(tag_owners)
+        for i, shorter in enumerate(ordered):
+            for longer in ordered[i + 1 :]:
+                if not longer.startswith(shorter):
+                    break
+                if longer[len(shorter)] in " :":
+                    raise PolicyError(
+                        f"title tag {longer!r} of seat {tag_owners[longer]!r} extends "
+                        f"{shorter!r} of seat {tag_owners[shorter]!r}: a {shorter!r} "
+                        "bracket would read as either seat's"
+                    )
         if rate_per_hour < 1:
             raise PolicyError("rate_per_hour must be at least 1")
         if write_rate_per_hour < 1:
@@ -606,7 +732,10 @@ class SeatPolicy:
         """
         if not token:
             return None, "unauthenticated"
-        candidate = hashlib.sha256(token.encode()).hexdigest()
+        # surrogatepass:  a bearer carrying a lone surrogate hashes to a
+        # value that matches no seat instead of raising UnicodeEncodeError
+        # out of the authentication path.
+        candidate = hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
         for seat, cfg in self._seats.items():
             if cfg["token_hash"] and hmac.compare_digest(candidate, cfg["token_hash"]):
                 return seat, ""
@@ -795,6 +924,40 @@ class SeatPolicy:
             return False
         folded = name.casefold()
         return ".." not in name and not name.endswith(".") and not folded.endswith(".git")
+
+    def title_tag(self, seat: str) -> str:
+        """The seat's bracketed title tag (configured, else derived from the seat name)."""
+        return self._seats[seat]["title_tag"]
+
+    def apply_title_tag(self, seat: str, title: str) -> tuple[str, bool]:
+        """The title as the convention sends it, and whether it changed.
+
+        A title whose leading bracket opens with the seat's own tag followed
+        by a boundary (end of bracket, space or colon) conforms:  "[ECHO] ...",
+        "[MM SS.2.M] ...", "[MM SS] ...".  The colon form ("[MM: SS.2.M]") is
+        accepted as legacy from pre-existing PRs;  the current convention is
+        the space form.  Only the tag's own spelling is canonicalized (case
+        and bracket whitespace:  "[echo] x" -> "[ECHO] x");  session text
+        after the tag is caller-supplied, is never rewritten or validated,
+        and must never be trusted as authenticated session ownership.
+        Multiword tags compare whole:  tag "MM SS" keeps "[MM SS] x".
+        A different-tag bracket ("[ECHO-2]", another seat's tag) does not
+        conform.
+
+        Anything else - no bracket, a bracket without the seat's tag, or
+        another seat's bracket - gets the seat's own tag prepended, so the
+        visible creator is always the authenticated one.  The convention is
+        additive;  nothing is refused or stripped.
+        """
+        tag = self.title_tag(seat)
+        match = _LEADING_BRACKET.match(title)
+        if match is not None:
+            content = match.group(1).strip()
+            upper = content.upper()
+            if upper == tag or upper.startswith(tag + ":") or upper.startswith(tag + " "):
+                canonical = f"[{tag}{content[len(tag) :]}]{title[match.end() :]}"
+                return (title, False) if canonical == title else (canonical, True)
+        return f"[{tag}] {title}", True
 
     def bot_identities(self) -> dict[str, str]:
         """Every seat's GitHub App, for the one-bearer-one-bot audit.

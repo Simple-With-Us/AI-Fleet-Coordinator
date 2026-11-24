@@ -1,10 +1,10 @@
 # Codex Delivery Behind The Server Wake Router
 
-Refs AFC-694 and AFC-305.  The shared server router owns capture, target selection, the durable wake queue, retry ordering and final receipts.  Codex supplies a one-shot Mac delivery function using the existing exact-thread native transport.  The obsolete Mac-router PR #1753 is closed; its branch preserves the earlier implementation and review evidence.
+Refs AFC-694 and AFC-305.  The shared server router owns capture, target selection, the durable wake queue, retry ordering and final receipts.  Codex supplies a one-shot delivery function using the existing exact-thread native transport, on the Mac through the Codex Desktop app and on the server through the app-server daemon.  The obsolete Mac-router PR #1753 is closed; its branch preserves the earlier implementation and review evidence.
 
 ## Supported Target
 
-The delivery adapter reaches an existing, loaded Codex Desktop chat on the Mac.  A read-only Codex store supplies candidate UUID/cwd/archive metadata; the native transport independently checks that exact UUID and cwd, writable ownership, active history and loaded state before enqueue.  Engine-owned and subagent chats cannot receive a wake.  Delivery into Codex sessions hosted on the server is unsupported by this adapter.
+The delivery adapter reaches an existing, loaded Codex chat on the host that owns it:  a Codex Desktop chat on the Mac, and a chat the app-server daemon holds on the server.  A read-only Codex store supplies candidate UUID/cwd/archive metadata; the native transport independently checks that exact UUID and cwd, writable ownership, active history and loaded state before enqueue.  Engine-owned and subagent chats cannot receive a wake.  The loaded state is proved the way the host proves it:  the desktop binary holding the rollout open on the Mac, and the daemon's own thread status on the server.
 
 Unavailable native/store/receipt/workspace state is busy before send.  A registry that cannot be read is `busy` with the code `registry-unavailable`, and a host with no registry address or key is `failed` with `registry-not-configured`: the same answer every platform gives (AFC-809).  A call that raises is answered on this host's own configuration, as it is in every other platform, and the classification is made on the one registry environment the call used:  a host with no address or key fails closed and names the variable, and a host that is configured answers the outage and spends no attempt.  The Codex adapter reads its registry settings from the router's own environment and never from the shared loader file, so there is no loader read of its own that can fail: a configuration that cannot be read fails closed with the code `registry-not-configured` and the note names the variable that is missing.  Archived, invalid or stale registry targets are refused before enqueue.  A possibly-enqueued send is terminal with an unknown result; it must never trigger an automatic replay.  The shared server queue remains responsible for bounded retries of proven pre-send unavailability.
 
@@ -71,20 +71,34 @@ Exit 0 means prompt arrival in the expected chat, exit 3 means incomplete or rej
 
 ## The route from the server
 
-The router on the server has no Codex Desktop, so a delivery that stayed there would answer
-every wake with a store it does not have.  The seat's platform therefore has two halves, and
-the platform table names both.
+The seat's platform has two halves, and the platform table names both.
 
 - `router_platform` is the server's platform for seat CODEX.  A chat on the Mac goes over the
   one fixed ssh route in `claude_wake.deliver_remote`, exactly as the other Mac-hosted platforms
-  do.  A chat on the router's own host is refused, because that host has no Codex Desktop
-  either, and any other host is refused too.
+  do.  A chat on the router's own host is delivered from there, with the transport that host
+  runs, and any other host is refused.
 - `deliver_request` is the Mac-side handler that `simple-chat wake-deliver` dispatches to.  It
   re-checks the request, re-reads the store, and hands the wake to the native transport.
 
 The adapter's `local_host` defaults to `server`, never to `mac`:  a host that has not named
 itself does not claim to be the Mac, so a delivery cannot land in a local store the host does
 not have.
+
+## The two native transports
+
+The Mac runs the Codex Desktop app, so `codex_chat_transport` drives that app and proves that a
+thread is loaded by the bundled desktop binary holding its rollout open.  The server runs no
+Desktop app; its live chats live in the long-lived app-server daemon, so
+`codex_server_transport` drives the same shared queue through a one-shot app-server and proves
+that a thread is loaded by the daemon's own `thread/read` status.
+
+Each is asked only what it knows.  A one-shot app-server of our own reports every thread as
+`notLoaded`, the live one included, so it can carry the queue but never prove the loaded state,
+and the daemon refuses the queue calls, so it can prove the loaded state but never carry the
+queue.  A host that cannot answer proves nothing:  the delivery is busy and waits, so a daemon
+that is restarting costs a retry and not a wrong enqueue.  The receipt names the route it took,
+`codex-desktop` on the Mac and `codex-daemon` on the server.
+
 
 ## The pinned owner
 

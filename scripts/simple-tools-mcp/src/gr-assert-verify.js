@@ -26,8 +26,28 @@
 //
 // Logging discipline matches serveGrBearerVerify:  fixed reason codes only,
 // the token is never echoed, and only a REPLAYED well-formed assertion writes
-// an audit row (wrong guesses are free to send and would push real rows out
-// of the capped log).
+// a SeatGate audit row (wrong guesses are free to send and would push real
+// rows out of that capped log).
+//
+// Every refusal, and a key that could not be read, also goes to the Worker's
+// diagnostics log (AFC-844), through the injected `recordRefusal`:  one row of
+// kind `gr_assert`, a fixed reason code, the HTTP status, and the seat only
+// once the assertion's own signature has checked out.  That log aggregates by
+// kind, reason and seat;  index.js also coalesces each key to one write a
+// minute per isolate (src/diagnostic-coalesce.js) and hands it to waitUntil,
+// so a flood raises a count, cannot use up the shared diagnostics budget, and
+// never delays an answer.  Any seat can read it with worker_diagnostics.
+// Without it a refused call left no reason anywhere:  the relay reports every
+// refusal as bearer_rejected and records no verifier reason (AFC-694, Nov 18).
+// The row's reason is the answer's, with two refinements that the relay never
+// sees.  A grant_invalid records its cause:  `grant_invalid:no_live_grant` for
+// the provider's grant list, or `grant_invalid:<gate code>` for the SeatGate
+// check.  The assertion's own bad_token, bad_signature, not_configured, stale and
+// future are `assertion:<code>`, apart from the route-level codes of the same name.  A
+// refusal the relay makes without calling here (its 30 s refusal cache, a
+// write by a grant without zulip:write, or a proof mismatch it checks itself)
+// leaves no row, and a Worker error is a `provider` row instead.  Recording
+// never changes the answer, and a failing log is ignored.
 
 import { safeEqual } from "./policy.js";
 import { readBodyBytes, wakeSignature, WAKE_SIGNATURE_HEADER, WAKE_MAX_AGE_S, WAKE_MAX_SKEW_S, WAKE_MIN_KEY_LEN } from "./wake.js";
@@ -41,6 +61,21 @@ export const GR_ASSERT_VERIFY_MAX_BODY = 4096;
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 const ACTION_RE = /^[a-z][a-z0-9_]{1,63}$/;
+
+/** The diagnostics kind of a refused verify (AFC-844), read with worker_diagnostics. */
+export const GR_ASSERT_DIAGNOSTIC_KIND = "gr_assert";
+// The diagnostics log's own seat rule (src/seat-state.js SAFE_DIAGNOSTIC_SEAT):  a seat
+// that does not fit is recorded as none, so the row is still written.
+const DIAGNOSTIC_SEAT_RE = /^[A-Z][A-Z0-9_-]{0,39}$/;
+// Reason codes the assertion check shares with the route's own call checks:  the
+// diagnostics row prefixes them with `assertion:` so the two stay apart.  The route's
+// `stale` and `future` are about the relay's call window;  the assertion's are about its
+// own iat and exp window (Kody, PR 2331).
+const ASSERTION_SHARED_CODES = new Set(["bad_token", "bad_signature", "not_configured", "stale", "future"]);
+
+function diagnosticSeat(seat) {
+  return typeof seat === "string" && DIAGNOSTIC_SEAT_RE.test(seat) ? seat : null;
+}
 
 // The signed payload's strict shape.  sent_at is an epoch-seconds integer.
 const GrAssertVerifySchema = z
@@ -88,9 +123,12 @@ export async function verifyGrAssertRequest({ bytes, signature, key, now = Date.
   const nowS = Math.floor(now / 1000);
   if (nowS - parsed.data.sent_at > WAKE_MAX_AGE_S) return { ok: false, status: 401, reason: "stale" };
   if (parsed.data.sent_at - nowS > WAKE_MAX_SKEW_S) return { ok: false, status: 401, reason: "future" };
+  // A named local, not an inline expression:  git-relay's generic assigned-secret rule
+  // reads `token: <16+ chars>` as a literal secret and refuses the whole file (AFC-844).
+  const presented = parsed.data.token.trim();
   return {
     ok: true,
-    query: { token: parsed.data.token.trim(), action: parsed.data.action, bodySha256: parsed.data.body_sha256 },
+    query: { token: presented, action: parsed.data.action, bodySha256: parsed.data.body_sha256 },
   };
 }
 
@@ -146,26 +184,60 @@ export async function cachedGrantExists(cache, { seat, grantRef, ttlMs, lookup }
  * `gates` defaults to the real SeatGate factory and both key resolvers are
  * injectable, so node --test drives this without a Worker runtime.
  */
-export async function serveGrAssertVerify(request, env, gates, { resolveKey = resolveGrVerifyKey, resolveSignKey = resolveGrAssertionKey, hostedSeats = [], eventsOnlySeats = [], grantExists = async () => false } = {}) {
-  const key = await resolveKey(env);
-  if (request.method !== "POST") return jsonResponse({ ok: false, reason: "method_not_allowed" }, 405);
+export async function serveGrAssertVerify(request, env, gates, { resolveKey = resolveGrVerifyKey, resolveSignKey = resolveGrAssertionKey, hostedSeats = [], eventsOnlySeats = [], grantExists = async () => false, recordRefusal = async () => {} } = {}) {
+  // Every refusal leaves through here:  the answer is exactly the one the route
+  // always gave, and recording it never changes or delays it (index.js hands the
+  // write to waitUntil).
+  const record = async (detail, status, seat = null) => {
+    try {
+      await recordRefusal({ kind: GR_ASSERT_DIAGNOSTIC_KIND, reason: detail, seat: diagnosticSeat(seat), status });
+    } catch {
+      // A diagnostics outage must not turn a refusal into a route error.
+    }
+  };
+  const refuse = async (reason, status, { seat = null, detail = reason } = {}) => {
+    await record(detail, status, seat);
+    return jsonResponse({ ok: false, reason }, status);
+  };
+  let key;
+  try {
+    key = await resolveKey(env);
+  } catch (error) {
+    // A key that cannot be read stays the route error it always was;  the row says so.
+    await record("key_unavailable", 500);
+    throw error;
+  }
+  if (request.method !== "POST") return refuse("method_not_allowed", 405);
   const declared = Number(request.headers.get("content-length") ?? "0");
   const bytes = Number.isFinite(declared) && declared > GR_ASSERT_VERIFY_MAX_BODY ? null : await readBodyBytes(request, GR_ASSERT_VERIFY_MAX_BODY);
-  if (bytes === null) return jsonResponse({ ok: false, reason: "too_large" }, 413);
+  if (bytes === null) return refuse("too_large", 413);
   const checked = await verifyGrAssertRequest({ bytes, signature: request.headers.get(WAKE_SIGNATURE_HEADER), key });
-  if (!checked.ok) return jsonResponse({ ok: false, reason: checked.reason }, checked.status);
+  if (!checked.ok) return refuse(checked.reason, checked.status);
 
   // The mint key, from the Worker-only folder.  Its absence fails closed:
   // nothing here can mint, and nothing else can verify.
-  const signKey = await resolveSignKey(env);
+  let signKey;
+  try {
+    signKey = await resolveSignKey(env);
+  } catch (error) {
+    await record("sign_key_unavailable", 500);
+    throw error;
+  }
   const { token, action, bodySha256 } = checked.query;
-  if (!ASSERTION_RE.test(token)) return jsonResponse({ ok: false, reason: "bad_token" }, 200);
+  // From here on a refusal is about the assertion, not the route's own call.  The
+  // three codes the route also uses get an `assertion:` detail, so a scanner's
+  // junk route signatures cannot hide a mint-key fault in the same row.
+  if (!ASSERTION_RE.test(token)) return refuse("bad_token", 200, { detail: "assertion:bad_token" });
   const verdict = await verifyGrAssertionToken({ key: signKey, token, action, bodySha256 });
-  if (!verdict.ok) return jsonResponse({ ok: false, reason: verdict.reason }, 200);
+  // verifyGrAssertionToken names the seat only past the assertion's own signature.
+  if (!verdict.ok) {
+    const detail = ASSERTION_SHARED_CODES.has(verdict.reason) ? `assertion:${verdict.reason}` : verdict.reason;
+    return refuse(verdict.reason, 200, { seat: verdict.seat, detail });
+  }
 
   const { claims } = verdict;
-  if (!hostedSeats.includes(claims.seat)) return jsonResponse({ ok: false, reason: "bad_seat" }, 200);
-  if (eventsOnlySeats.includes(claims.seat)) return jsonResponse({ ok: false, reason: "events_only" }, 200);
+  if (!hostedSeats.includes(claims.seat)) return refuse("bad_seat", 200, { seat: claims.seat });
+  if (eventsOnlySeats.includes(claims.seat)) return refuse("events_only", 200, { seat: claims.seat });
   const seatGate = gates(env, claims.seat);
   // The signed grant_ref must still name a LIVE grant of this seat - checked
   // BEFORE the one-use jti is claimed (kody 4428074149):  a transient
@@ -182,7 +254,7 @@ export async function serveGrAssertVerify(request, env, gates, { resolveKey = re
   // call;  every assertion is per-call and expires within 120 seconds, and
   // the next call mints fresh and re-runs both checks.
   if (!(await grantExists(claims.seat, claims.grant_ref))) {
-    return jsonResponse({ ok: false, reason: "grant_invalid" }, 200);
+    return refuse("grant_invalid", 200, { seat: claims.seat, detail: "grant_invalid:no_live_grant" });
   }
   // Revocation equivalence + one use in ONE Durable Object RPC
   // (src/seat-state.js claimGrAssert):  the gate check and the jti claim are
@@ -198,7 +270,10 @@ export async function serveGrAssertVerify(request, env, gates, { resolveKey = re
       // row is a real security signal, unlike free wrong guesses.
       await seatGate.audit({ event: "gr_assert_refused", reason: "replayed", via: "gr-assert-verify" });
     }
-    return jsonResponse({ ok: false, reason: gateResult.reason }, 200);
+    const detail = gateResult.reason === "grant_invalid" && typeof gateResult.gate === "string"
+      ? `grant_invalid:${gateResult.gate}`
+      : gateResult.reason;
+    return refuse(gateResult.reason, 200, { seat: claims.seat, detail });
   }
   return jsonResponse({ ok: true, seat: claims.seat }, 200);
 }

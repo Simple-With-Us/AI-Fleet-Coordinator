@@ -69,9 +69,16 @@ READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _
 # This bridge's own scoped read-only service token:  Fleet-OPS prod /zulip, the one folder it
 # reads.  The token lives in the consumer's own store (the owner's login keychain on the Mac, a
 # private file on a server);  the shared Infisical client checks the token's own grant and the
-# answer's own provenance before a value is used.  A token bound in the environment is only a
-# copy of that same grant,  and it is used when the store has none.
+# answer's own provenance before a value is used.  The store is the authority and is read first;
+# a token bound in the environment is only a copy of that same grant,  and it is used when the
+# store has none and the token's own metadata proves the narrow grant.
 TOKEN_ACCOUNT = "outbox-bridge-ro"
+
+
+class BindingRefused(RuntimeError):
+    """This bridge's own scoped token is not usable:  the message names the account and the refusal."""
+
+
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -526,25 +533,33 @@ def _infisical_reader():
             raise
 
 
-def _own_token(client):
-    """The bridge's own scoped token:  its own store first,  the bound copy second.
+def _own_token(client, folder, project):
+    """The bridge's own scoped token:  its own store first,  a bound copy only when it proves itself.
 
-    The store is the authority:  it is the home the process was given,  so a process
-    with no home has no store and falls back to the copy the host bound.  The client
-    still checks the token's own grant,  so a copy is only ever used for the folder
-    that grant names."""
+    The store is the authority:  the bridge's own account token is read from the host's approved
+    store first,  and it is the credential the read runs under.  An environment binding is a
+    second source only when the token's own grant metadata proves it is this consumer's narrow
+    grant:  the workspace is the project,  the permissions are exactly read,  the granted folder
+    is exactly this one,  and the token's own name is this account.  A general binding scoped to
+    "/" or to several folders fails that check,  so it can no longer serve the bridge,  and a
+    hand-set value never replaces the reviewed grant.  The refusal names the account the bridge
+    needs and which refusal it was."""
     home = os.environ.get("HOME", "").strip()
-    if home:
-        try:
-            token, _status = client.token_from_store(TOKEN_ACCOUNT, dict(os.environ), Path(home))
-        except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
-            raise RuntimeError(
-                "the %s scoped token store could not be read (%s)"
-                % (TOKEN_ACCOUNT, type(exc).__name__)
-            ) from None
-        if token:
-            return token
-    return (os.environ.get("INFISICAL_TOKEN") or "").strip()
+    try:
+        token, _source = client.consumer_binding(
+            TOKEN_ACCOUNT,
+            folder,
+            dict(os.environ),
+            project,
+            home=Path(home) if home else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - a store that cannot answer is a failure, not an empty token
+        detail = getattr(exc, "message", "") or type(exc).__name__
+        raise BindingRefused(
+            "the %s scoped token for %s could not be resolved (%s)"
+            % (TOKEN_ACCOUNT, folder, detail)
+        ) from None
+    return token
 
 
 def _read_infisical_names(names, folder):
@@ -557,7 +572,7 @@ def _read_infisical_names(names, folder):
         project = client.infisical_project_id(
             {"INFISICAL_FLEET_OPS_PROJECT_ID": declared}, Path("/")
         )
-        token = _own_token(client)
+        token = _own_token(client, folder, project)
         if not token:
             return {}
         return client.bounded_fetch_project(
@@ -570,6 +585,10 @@ def _read_infisical_names(names, folder):
             max_output_bytes=65536,
             strict_records=True,
         )
+    except BindingRefused:
+        # The refusal names the account the operator has to provision, so it is never
+        # swallowed into an empty answer.
+        raise
     except Exception:
         return {}
 

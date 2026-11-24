@@ -44,18 +44,37 @@ reader, used by many consumers, each of which should instead hold its own narrow
    precedent for that shape.
 
 4. **The consumer's own store is the authority for the token.**  The scoped service token is read from the
-   consumer's own store, and it is the credential the read runs under.  The environment may carry a copy of
-   that same token, which is how a host transports a value it already synced from Infisical, and such a copy
-   is allowed only under a variable named for that consumer;  the general ambient `INFISICAL_TOKEN` must not
-   silently stand in for a consumer's narrower grant (the owner's ruling on OPS-1101).  A hand-set
+   consumer's own store, and it is the credential the read runs under.  The environment is never a source for it:  the consumer's own store is the only source, and the one bootstrap binding a host keeps to reach Infisical is a reader and not a copy of a value.  The general ambient `INFISICAL_TOKEN` must not silently stand in for a consumer's narrower grant either, and the Option 2 record on OPS-1101 is superseded by the owner's ruling of November 22, 2026, which makes the environment never a source for any consumer.  A hand-set
    environment value never replaces the reviewed, scope-limited grant.  The read's own scope check still decides
    whether any token may read a folder at
    all:  `validate_service_metadata` requires the token's granted folders to equal the declared folders
    exactly.
 
-   This is about the token.  A consumer whose own contract says a host binds a secret *value* in the
-   environment (a realm credential for a given realm, for example) keeps that behaviour:  the value is the
-   host's own binding, and the token that fetches it is still the consumer's own scoped service token.
+   **The store is read first, and an environment binding has to prove itself.**  The shared client's
+   `consumer_binding(account, path, env, project)` is the one way every consumer resolves its own grant:
+   the store answers first, and an environment binding is a second source only when the token's own grant
+   metadata proves it is this consumer's narrow grant.  The workspace must be the project, the permissions
+   must be exactly `read`, the granted folder must be exactly the one this consumer reads, and the token's
+   own name must be this consumer's account.  A general binding scoped to `/` or to several folders fails
+   that check, so it can no longer serve a consumer, and a bound copy of the consumer's own grant still
+   works.  The refusal names the account the operator has to provision and which refusal it was, and no
+   other source is tried after it.
+
+   **A value is not a source either.**  A name a consumer resolves (the recall bearer, the Operator's
+   notes key) comes from Infisical through that consumer's own grant.  The environment is never a
+   source for a value:  a name the grant does not hold stays absent,  and the consumer says which
+   one it was.  The FleetLink seat token is the one documented exception,  and it is narrow: 
+   its own reader grant (`fleetlink-ro`) has to be in place before the environment is consulted at
+   all,  so a hand-set copy never stands in for the reviewed grant.
+
+   This is about the token.  A consumer whose own contract used to say a host binds a secret *value* in the environment (a realm credential for a given realm, for example) keeps its own contract, but the value resolves from the store now:  the environment is never a source for a value either, and the token that fetches it is still the consumer's own scoped service token.
+
+   **The backup job's values are the store's alone.**  `scripts/fleet-work-backup/fleet_work_backup.py` is the
+   conformance site this pull request closed:  the restic and B2 names (`RESTIC_FLEET_WORK_PASSWORD`,
+   `B2_FLEET_WORK_KEY_ID`, `B2_FLEET_WORK_APPLICATION_KEY`, `B2_FLEET_WORK_BUCKET_NAME`) and the master-key
+   names come from the store through `fleet-work-backup-ro`,  and the environment is never a source for them.
+   `FLEET_WORK_BACKUP_ALLOW_MASTER=1` stays in the environment:  it is an operator's per-run consent for a
+   restore and not a value or a copy of one,  so it is a knob and not a secret.
 
 5. **No fallback, no cached copy.**  There is no route to the shared reader, to a machine identity, to the System
    Keychain old identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields
@@ -85,20 +104,22 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | `fleet-doctor-fleetlink-ro` | AI Fleet Coordinator | `/fleetlink` | the fleet doctor's FleetLink check | both |
 | `fleet-config-check-ro` | Fleet-OPS | `/zulip` | the compliance checker's Zulip key | Mac |
 | `outbox-bridge-ro` | Fleet-OPS | `/zulip` | the GitHub outbox bridge | Mac |
+| `fleetlink-ro` | AI Fleet Coordinator | `/fleetlink` | the Simple-Tools MCP's FleetLink reader | both |
 | `grok-acp-ro` | Fleet-OPS | `/grok-acp` | the Grok ACP secret | Mac |
 | `cursor-surfaces-ro` | Fleet-OPS | `/global-api-keys` | the Cursor chat surfaces | Mac |
 | `seat-mcp-ro` | Fleet-OPS | `/seat-mcp` | the seat MCP token | Mac |
 | `worker-health-ro` | Fleet-OPS | `/` | the fleet worker health key (the name is in neither project) | Mac |
 | `zulip-provision-ro` | Fleet-OPS | `/zulip_operator` | the Zulip bot provisioner | Mac |
-| `fleet-work-backup-ro` | Fleet-OPS | `/global-api-keys` | the backup job's credentials | server |
+| `fleet-work-backup-ro` | Fleet-OPS | `/` | the backup job's credentials (it reads the Fleet-OPS root) | server |
 | `fleet-mode-digest-ro` | Fleet-OPS | `/global-api-keys` | the weekly fleet-mode digest | Mac |
 | `infra-phase0-ro` | Fleet-OPS | `/global-api-keys` | the ST-MCP infra phase 0 | Mac |
-| `install-seat-key-ro` | Fleet-OPS | `/global-api-keys` | the seat-key handoff's Cloudflare credentials | Mac |
+| `install-seat-key-ro` | Fleet-OPS | `/` | the seat-key handoff's root names (it reads the Fleet-OPS root) | Mac |
 | `install-seat-key-zulip-ro` | Fleet-OPS | `/zulip` | the seat-key handoff's Zulip credentials | Mac |
 | `ios-testflight-freshness-ro` | Fleet-OPS | `/asc` | the TestFlight freshness check | Mac |
 | `sheet-read-ro` | Fleet-OPS | `/google-sheets-sa` | the sheet reader | both |
 | `zulip-linkifiers-operator-ro` | Fleet-OPS | `/zulip_operator` | the linkifier's Operator credential | server |
 | `zulip-linkifiers-zulip-ro` | Fleet-OPS | `/zulip` | the linkifier's seat credential | server |
+| `zulip-linkifiers-root-ro` | Fleet-OPS | `/` | the linkifier's root-folder retry | server |
 | `muster-fleetops-ro` | Fleet-OPS | `/` | Muster's Fleet-OPS reads | Mac |
 | `muster-afc-ro` | AI Fleet Coordinator | `/` | Muster's knob registry root | Mac |
 | `muster-afc-code-mirrors-ro` | AI Fleet Coordinator | `/code-mirrors` | Muster's knob registry | Mac |
@@ -136,6 +157,11 @@ The project ids are infrastructure identifiers and stay out of this public repos
 `github-pat-ro` is the one account two callers share:  the shell's `GH_TOKEN` resolution and the iOS publish's
 fallback read the same credential from the same folder on the same host,  so they are rotated together.
 
+
+Two folders above are the Fleet-OPS root `/`, because that is the folder those consumers read:  `fleet-work-backup-ro` and
+`install-seat-key-ro` both resolve their names from the root, and a grant scoped to a subfolder cannot
+serve them.  The linkifier's root retry (`zulip-linkifiers-root-ro`) is the same case:  it reads the root
+after `/zulip`.
 A grant covers exactly its folder and no other:  a token scoped to `/` does not reach a subfolder, so a consumer that
 reads two folders holds two tokens.  The Fleet-OPS project root is a cross-folder alias layer, so a name at the root
 is a reference to a name in a subfolder and the raw route returns the reference rather than the value;  the shared

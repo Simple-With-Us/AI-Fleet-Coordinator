@@ -36,20 +36,27 @@ MINT_PERMISSION_CEILING = (
     "actions",
     "checks",
     "actions_variables",
+    "secrets",
+    "organization_secrets",
+    "dependabot_secrets",
+    "organization_dependabot_secrets",
+    "codespaces_secrets",
+    "organization_codespaces_secrets",
+    "organization_actions_variables",
+    "organization_hooks",
+    "environments",
+    "repository_hooks",
+    "administration",
     "statuses",
     "deployments",
     "metadata",
 )
 
-# Permission keys mintable only at read level.  These widen what the relay can
-# READ (repository webhooks, deploy keys, organization installations); the
-# level check below makes a write mint for any of them a hard error, so no
-# verb or seat can ever receive a write-scoped token for them.
-MINT_READ_ONLY_PERMISSIONS = (
-    "administration",
-    "repository_hooks",
-    "organization_administration",
-)
+# Permission keys mintable only at read level (organization administration).
+# Repository hooks, organization hooks and administration moved into the ceiling
+# for the wave 2 hook, deploy key and environment verbs (owner instruction: every
+# GitHub feature for every seat); each verb still requests its exact level.
+MINT_READ_ONLY_PERMISSIONS = ("organization_administration",)
 
 
 # Exact permission objects for create_repo.  Equality-checked.  These writes are
@@ -228,7 +235,17 @@ def _shared_client():
                     raise ValueError()
             finally:
                 os.close(directory_fd)
-            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            fields = (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+                "st_mode",
+                "st_uid",
+                "st_gid",
+                "st_nlink",
+            )
             identities = [
                 tuple(getattr(info, key) for key in fields) for info in (before, after, current)
             ]
@@ -257,6 +274,78 @@ def _shared_client():
             if isinstance(exc, Exception):
                 raise AppTokenError("canonical Infisical reader unavailable") from None
             raise
+
+
+_SYSTEMD_CREDENTIAL_DIRECTORY = "/run/credentials/git-relay.service"
+_SYSTEMD_SOURCE_NAMES = {
+    "/git-relay-owner": "git-relay-owner-token",
+    "/github-apps": "git-relay-apps-token",
+    "/tools": "git-relay-tools-token",
+}
+
+
+def _open_systemd_source(path, scope, environ):
+    """Open only this service's fixed credential for the declared exact scope.
+
+    systemd's 0440 mask is accepted only with its exact named-service-UID ACL,
+    zero group/other rights, and root-owned no-follow directory chain. No new
+    consumer, arbitrary group-readable file, or another scope's token qualifies.
+    """
+    from .policy_input import _systemd_acl
+
+    name = _SYSTEMD_SOURCE_NAMES.get(scope)
+    if (
+        not name
+        or environ.get("CREDENTIALS_DIRECTORY") != _SYSTEMD_CREDENTIAL_DIRECTORY
+        or path != _SYSTEMD_CREDENTIAL_DIRECTORY + "/" + name
+    ):
+        raise ValueError("systemd credential binding invalid")
+    parents = []
+    token_fd = None
+    try:
+        parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        parents.append(parent)
+        for component in ("run", "credentials", "git-relay.service"):
+            parent = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent,
+            )
+            parents.append(parent)
+            info = os.fstat(parent)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != 0
+                or stat.S_IMODE(info.st_mode) & 0o022
+            ):
+                raise ValueError("systemd credential directory invalid")
+        info = os.fstat(parent)
+        if info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o550:
+            raise ValueError("systemd credential directory invalid")
+        _systemd_acl(parent, 5)
+        token_fd = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent
+        )
+        info = os.fstat(token_fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != 0
+            or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o440
+            or info.st_nlink != 1
+            or not 0 < info.st_size <= _MAX_TOKEN_BYTES
+        ):
+            raise ValueError("systemd credential file invalid")
+        _systemd_acl(token_fd, 4)
+        result, token_fd = token_fd, None
+        return result
+    except Exception:
+        raise ValueError("systemd credential custody invalid") from None
+    finally:
+        if token_fd is not None:
+            os.close(token_fd)
+        for fd in reversed(parents):
+            os.close(fd)
 
 
 class InfisicalSource:
@@ -289,19 +378,34 @@ class InfisicalSource:
         if not self._credential_file:
             raise AppTokenError(f"credential file binding required for {self._path}")
         try:
-            fd = os.open(self._credential_file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            systemd = self._credential_file.startswith(_SYSTEMD_CREDENTIAL_DIRECTORY + "/")
+            fd = (
+                _open_systemd_source(self._credential_file, self._path, self._environ)
+                if systemd
+                else os.open(self._credential_file, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            )
             with os.fdopen(fd, "rb") as source:
                 before = os.fstat(source.fileno())
                 if (
                     not stat.S_ISREG(before.st_mode)
                     or before.st_uid not in (0, os.geteuid())
-                    or stat.S_IMODE(before.st_mode) & 0o077
+                    or (not systemd and stat.S_IMODE(before.st_mode) & 0o077)
                     or before.st_size > _MAX_TOKEN_BYTES
                 ):
                     raise ValueError()
                 raw = source.read(_MAX_TOKEN_BYTES + 1)
                 after = os.fstat(source.fileno())
-            fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            fields = (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+                "st_mode",
+                "st_uid",
+                "st_gid",
+                "st_nlink",
+            )
             identities = [
                 tuple(getattr(info, key) for key in fields)
                 for info in (before, after, os.stat(self._credential_file, follow_symlinks=False))
@@ -628,11 +732,107 @@ class AppTokenMinter:
             self._tokens[cache_key] = (expiry, token)
             return token, expiry
 
+    def _mint_installation_token(self, iid, bearer, repositories, permissions):
+        """The service lane's installation issuance request, not its answer validation."""
+        return self._api(
+            "POST",
+            f"/app/installations/{iid}/access_tokens",
+            bearer,
+            {"repositories": repositories, "permissions": permissions},
+        )
+
+    def token_for_service(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
+        """Mint one installation token for the dedicated service-read lane and
+        validate the ANSWER before the token may be used:  the granted
+        permissions must be exactly the requested keys at the requested
+        levels (GitHub may add metadata:read, at read only), and the returned
+        repository set must be exactly the one repo asked for.  Any deviation
+        revokes the minted token at once and raises;  the token is never
+        cached, never returned, never used.  Legacy token_for is unchanged:
+        this strict path exists only for the service lane.
+        """
+        # Fresh mint, never the cache:  a cached token was not re-validated
+        # against THIS answer, and the lane's volume is small.
+        for key, level in permissions.items():
+            if not mint_permission_allowed(key, level):
+                raise AppTokenError(
+                    f"permission {key!r} at level {level!r} is outside the mint ceiling"
+                )
+        now = self._clock()
+        app_id, pem = self._app_credentials(slug)
+        bearer = self._signer(app_id, pem, int(now))
+        del pem
+        app = self._api("GET", "/app", bearer)
+        if not isinstance(app, dict) or app.get("id") != app_id:
+            raise AppTokenError("app key belongs to a different app")
+        owner, name = repo.split("/", 1)
+        install = self._api("GET", f"/repos/{owner}/{name}/installation", bearer)
+        if not isinstance(install, dict):
+            raise AppTokenError("installation lookup was malformed")
+        iid = install.get("id")
+        if (
+            not isinstance(iid, int)
+            or iid <= 0
+            or install.get("suspended_at")
+            or str((install.get("account") or {}).get("login", "")).casefold() != owner.casefold()
+        ):
+            raise AppTokenError("app installation is missing, suspended, or on another account")
+        data = self._mint_installation_token(iid, bearer, [name], permissions)
+        if not isinstance(data, dict):
+            raise AppTokenError("minted-token response was malformed")
+        token = data.get("token")
+        expires_at = str(data.get("expires_at") or "")
+
+        def refuse(why: str):
+            # The token exists upstream:  revoke it before refusing, so a
+            # mis-granted credential is never left live.  A revocation that
+            # GitHub does not accept leaves a live token behind, so the
+            # refusal must carry secret-free operational evidence of that
+            # ("+revocation-failed" in the error:  the reason only, never the
+            # token itself).  A missing token has nothing to revoke.
+            if isinstance(token, str) and token:
+                if not self.revoke_installation_token(token):
+                    why = why + "+revocation-failed"
+            raise AppTokenError(f"minted-token answer failed service validation ({why})")
+
+        if not isinstance(token, str) or not token or not expires_at:
+            # Every post-mint validation failure goes through refuse, so a
+            # usable token inside a malformed answer is still revoked.
+            refuse("minted-token response was malformed")
+
+        granted = data.get("permissions")
+        if not isinstance(granted, dict) or not granted:
+            refuse("permissions missing or malformed")
+        for key, level in granted.items():
+            if key == "metadata" and key not in permissions:
+                if level != "read":
+                    refuse("implicit metadata grant above read")
+            elif permissions.get(key) != level:
+                refuse("granted scope outside the request")
+        for key, level in permissions.items():
+            if granted.get(key) != level:
+                refuse("requested scope not granted")
+        repos = data.get("repositories")
+        if (
+            not isinstance(repos, list)
+            or len(repos) != 1
+            or not isinstance(repos[0], dict)
+            or str(repos[0].get("full_name") or "").casefold() != repo.casefold()
+        ):
+            refuse("repository set is not exactly the requested repo")
+        import datetime as dt
+
+        try:
+            expiry = dt.datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            refuse("expiry malformed")
+        return token, expiry
+
     def token_for_namespace(self, slug: str, owner: str, kind: str) -> str:
         """Mint one uncached installation token for creating a repository.
 
         The permission object is the fixed pair for `kind`.  A caller cannot
-        pass its own permissions.  The token is not stored on this minter.
+        pass its own permissions.  The installation token is not stored on this minter.
         """
         permissions = _NAMESPACE_CREATE_PERMISSIONS.get(kind)
         if (
@@ -694,11 +894,15 @@ class AppTokenMinter:
             if installation_token:
                 self.revoke_installation_token(installation_token)
 
-    def revoke_installation_token(self, token: str) -> None:
-        """Revoke one installation token.  A failure does not change the call result."""
+    def revoke_installation_token(self, token: str) -> bool:
+        """Revoke one installation token.  Returns True when GitHub accepted
+        the revocation, False otherwise.  A failure never raises:  the legacy
+        callers' results are unchanged, and the strict service lane reports
+        the failure itself."""
         if not isinstance(token, str) or not token:
-            return
+            return False
         try:
             self._api("DELETE", "/installation/token", token)
         except Exception:
-            return
+            return False
+        return True

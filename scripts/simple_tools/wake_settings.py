@@ -33,9 +33,14 @@ works as a brake during an outage too, and taking it away restores them.  A file
 read at a refresh keeps the last narrowing that worked in force (none, if there never was one) and
 is logged, and the fetch still runs and is applied through that narrowing:  a broken file never
 widens anything and never freezes the settings.  `local_host` and `claude_bin`, and a
-platform's own `workspace`, `mcode_bin` and `mcode_model`, are not settings but facts about one
+platform's own `workspace`, `mcode_bin` and `mcode_model`, and ZC's `tasks_index`, are not
+settings but facts about one
 host or one platform, which one Infisical value cannot hold, so they are still read from the file,
-by the seats that have them.
+by the seats that have them.  `seat_host_facts` maps canonical seat tags to host-fact
+overrides.  A seat takes its named facts after the top-level fallback; no other seat changes.
+Only the host-fact names below are allowed in that map, with nonblank string values: governed
+settings, delivery switches and routes cannot be placed there.  Bad maps refuse the file under
+the same startup and last-good-refresh rules as any other malformed local value.
 
 What is not per-seat.  The knob registry is flat, with one name per value, so a seat is not a
 dimension of it.  The seats are a list of their own:  delivery runs for a seat only when
@@ -132,6 +137,7 @@ HOST_FACTS = (
     "muse_bin",
     "opencode_bin",
     "zcode_bin",
+    "tasks_index",
     "pinned_profile",
     "pinned_owner_account",
 )
@@ -149,8 +155,10 @@ PLATFORM_DEFAULTS: dict[str, Any] = {
     "resume_timeout_seconds": BY_NAME[INT_KNOBS["resume_timeout_seconds"]].default,
     "confirm_seconds": BY_NAME[INT_KNOBS["confirm_seconds"]].default,
 }
-# The local file's one key that is not a setting:  seat tags, and it can only remove seats.
+# The local file's delivery filter: seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"
+# Host facts only, keyed by canonical seat tag; top-level facts remain the fallback.
+SEAT_HOST_FACTS = "seat_host_facts"
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take
 # The one routine key every seat's path is checked against.
 KEY_KNOB = "WAKE_ROUTER_KEY"
@@ -279,6 +287,10 @@ def narrowed(
     A `delivery_seats` that leaves this seat out turns its delivery off;  it never turns one on."""
     values = dict(base)
     values.update({name: local[name] for name in HOST_FACTS if name in local and name in base})
+    seat_facts = local.get(SEAT_HOST_FACTS, {}).get(seat, {})
+    values.update(
+        {name: seat_facts[name] for name in HOST_FACTS if name in seat_facts and name in base}
+    )
     ignored = []
     for name, knob in NARROWABLE.items():
         if name not in base or name not in local:
@@ -306,7 +318,13 @@ def read_local(
 ) -> dict[str, Any]:
     """The local file, checked against `defaults` and the seat list (wake_router.read_local_config,
     with its refusals)."""
-    return WR.read_local_config(path, defaults, required=required, seat_lists=(LOCAL_SEATS,))
+    return WR.read_local_config(
+        path,
+        defaults,
+        required=required,
+        seat_lists=(LOCAL_SEATS,),
+        seat_fact_maps={SEAT_HOST_FACTS: HOST_FACTS},
+    )
 
 
 def read_once(seat: str, defaults: Mapping[str, Any], local_path: Path) -> dict[str, Any]:

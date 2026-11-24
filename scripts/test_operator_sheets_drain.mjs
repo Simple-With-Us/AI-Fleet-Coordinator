@@ -782,6 +782,21 @@ test("drainOnce: passes repeat while every row exports, then stop when nothing i
   assert.equal(state.marked.length, 5);
 });
 
+test("drainOnce: an invalid OPERATOR_SHEETS_PAGE_LIMIT refuses the run before anything drains", async () => {
+  // "0" would page zero rows a pass and report success forever; "abc" is NaN,
+  // which the registry CLI cannot take. Both must fail at startup instead.
+  for (const value of ["0", "abc"]) {
+    const { bridge, state } = fakeRegistry(["r1"]);
+    const { adapter, appends } = fakeSheet();
+    await assert.rejects(
+      drainOnce({ env: { ...RUN_ENV, OPERATOR_SHEETS_PAGE_LIMIT: value }, bridge, adapter, log: () => {} }),
+      /OPERATOR_SHEETS_PAGE_LIMIT must be an integer between 1 and 10000/,
+    );
+    assert.deepEqual(appends, [], value);
+    assert.deepEqual(state.marked, [], value);
+  }
+});
+
 test("drainOnce: the run deadline stops between rows and leaves the rest pending", async () => {
   const clock = fakeClock(0);
   const { bridge, state } = fakeRegistry(["r1", "r2", "r3", "r4", "r5"]);

@@ -157,3 +157,10 @@ Send Jay [ARMING-JAY.md](ARMING-JAY.md).  Phase 0 results get recorded in `docs
 | Undo a bad deploy | `npx --no-install wrangler rollback` (previous Worker version) with the step 5 environment |
 
 Before Phase 2 puts any Zulip key in this Worker, spec 3.2 requires a per-Worker deploy token minted by Jay (A5), and every Phase 0 grant revoked with every epoch bumped (ARMING-JAY.md, exit criteria).
+
+
+## Muster's service token on /admin/api (optional)
+
+Muster and the bearer poll can connect without the owner's browser login.  The owner makes one Cloudflare Access **service token** (Client ID and Client Secret) and adds one **Service Auth** policy that includes only that token to the admin Access app, next to "Jay emails only", which stays as it is.  The Worker then accepts that principal on `/admin/api/*` only, never on `/authorize` or the `/admin` pages, and only when its Client ID is listed in `ADMIN_API_SERVICE_CLIENT_IDS` (a non-secret var in `wrangler.jsonc`, empty = off).  Access puts the Client ID in the JWT's `common_name`, which is what the Worker checks, after every normal check (signature, issuer, audience, expiry).  Changes made through it record the actor as `service-token:<client id>`.
+
+The Client Secret lives only with its holder (the Mac keychain) and in Cloudflare.  It is never committed, logged or put in a Worker var.  Revoke it by deleting the token in Cloudflare or by emptying the var.

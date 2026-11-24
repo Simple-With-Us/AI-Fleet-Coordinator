@@ -1167,7 +1167,12 @@ enum SeatActivityBuilder {
 
         var problems: [String] = []
         if let problem = sources.rosterProblem { problems.append(problem) }
-        if let problem = sources.listenerProblem { problems.append(problem) }
+        // The Mac's listener is retired when the partition gives the Mac no agent seat (the
+        // Nov 10 one-listener cutover):  its last state file is stale by design, so that is
+        // not a problem to banner.  An unread partition says nothing either way and keeps it.
+        if let problem = sources.listenerProblem, sources.partition?.givesTheMacNoAgentSeat != true {
+            problems.append(problem)
+        }
         if let problem = sources.partition?.problem {
             problems.append("The seat partition could not be read,  so Muster cannot say which machine holds each seat.  \(problem)")
         }

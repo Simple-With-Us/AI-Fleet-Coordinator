@@ -506,6 +506,9 @@ export async function drainOnce({
     db: env.OPERATOR_REGISTRY_DB || "/data/operator/registry.sqlite3",
   });
   const limit = Number(env.OPERATOR_SHEETS_PAGE_LIMIT || 1000);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000) {
+    throw new Error("OPERATOR_SHEETS_PAGE_LIMIT must be an integer between 1 and 10000");
+  }
   const profile = workbookProfileFromEnv(env);
   // One paced adapter for the whole run, so the write spacing holds across passes.  The
   // token provider is named first so the property line is not credential-shaped to the

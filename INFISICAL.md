@@ -424,7 +424,23 @@ Authorization: Bearer <token>
 
 The shared client is `scripts/fleet_infisical.py`, and it stays.  `fetch_verified(name, folder, env, token)` performs the read and checks the answer's own provenance (workspace, environment, secretPath, secretKey and shared type), so a value from the wrong place fails closed.  `token_from_store(account)` reads the consumer's own store and says which refusal it was (`ok`, `no-token`, `keychain-locked`, `token-unreadable`).  `fetch_scoped(name, folder, account)` does both and returns the value and a status (`ok`, `absent`, `forbidden`, `no-token`, `keychain-locked`, `token-unreadable`, `failed`).  A consumer that lives outside this repository calls the same route itself, with the checks its own code needs;  `scripts/mac-resource-watch.py` is the reviewed precedent for that shape.
 
-**The consumer's own scoped token is authoritative.**  The credential for a folder is the consumer's own scoped service token, read from the consumer's own store.  The environment may carry a copy of that same token, which is how a host transports a value it already synced from Infisical, and a copy is used only when the scoped read populated it;  it never outranks the store.  A hand-set environment value must never replace the reviewed, scope-limited grant, and the read's own scope check still decides whether any token may read a folder at all.
+**The consumer's own scoped token is authoritative.**  The credential for a folder is the consumer's own scoped service token, read from the consumer's own store.  The environment is never a source for it:  the consumer's own store is the only source, and the one bootstrap binding a host keeps to reach Infisical is a reader and not a copy of a value;  it never outranks the store.  A hand-set environment value must never replace the reviewed, scope-limited grant, and the read's own scope check still decides whether any token may read a folder at all.
+
+**The store is read first, and a bound copy has to prove itself.**  The shared client's `consumer_binding(account, path, env, project)` resolves a consumer's
+own grant for every consumer in this repository:  the consumer's own store answers first, and an
+environment binding is a second source only when the token's own grant metadata proves it is that
+consumer's narrow grant.  The workspace must be the project, the permissions must be exactly `read`, the
+granted folder must be exactly the one the consumer reads, and the token's own name must be the
+consumer's account.  A general binding scoped to `/` or to several folders fails that check, so it can no
+longer serve a consumer, and a bound copy of the consumer's own grant still works.  The refusal
+names the account the operator has to provision and which refusal it was.
+
+A value is not a source either.  A name a consumer resolves (the recall bearer, the Operator's
+notes key) comes from Infisical through that consumer's own grant.  The environment is never a
+source for a value:  a name the grant does not hold stays absent,  and the consumer says which
+one it was.  The FleetLink seat token is the one documented exception,  and it is narrow: 
+its own reader grant (`fleetlink-ro`) has to be in place before the environment is consulted at
+all,  so a hand-set copy never stands in for the reviewed grant.
 
 **No fallback and no cached copy.**  There is no route to a shared reader, to a machine identity, to the retired System Keychain identity item or to a cached value.  A missing token, a locked keychain, a 403 or a 404 yields nothing, and the consumer says which of those it was.
 
@@ -446,9 +462,19 @@ if status != "ok":
 
 Never `echo` the value, never put it in argv, and never write it to a log or a transcript.
 
-**(b) A program that needs a few values.**  It resolves them at start with the same call, holds them in memory, and never writes them out.  A value already in the environment is used only when it is a copy the scoped read populated, and the token is never a fallback for a hand-set value.
+**(b) A program that needs a few values.**  It resolves them at start with the same call, holds them in memory, and never writes them out.  No value is read from the environment at all:  the consumer's own store is the only source, and the token is never a fallback for a hand-set value.
 
 **(c) A consumer on a server.**  The same client and the same shape, with the token in the 0600 file the store table above names.
+
+**The accounts this repository's consumers name.**  Each consumer names the account it reads, and the account is the token's own name in Infisical:
+`zulip-ro` (`/zulip`), `zulip-operator-ro` (`/zulip_operator`), `wake-ro` (`/wake`),
+`zulip-provision-ro` (`/zulip_operator`), `zulip-linkifiers-operator-ro` (`/zulip_operator`),
+`zulip-linkifiers-zulip-ro` (`/zulip`), `zulip-linkifiers-root-ro` (`/`),
+`outbox-bridge-ro` (`/zulip`), `fleet-work-backup-ro` (`/`), `install-seat-key-ro` (`/`),
+`install-seat-key-zulip-ro` (`/zulip`), `fleetlink-ro` (AI Fleet Coordinator, `/fleetlink`),
+`fleet-rag-fleetops-ro` (`/global-api-keys`), `notes-client-ro` (AI Fleet Coordinator, `/`)
+and `notes-operator-ro` (AI Fleet Coordinator, `/operator`).  A consumer that reads a folder it
+does not name is refused, and the refusal names the account to provision.
 
 **Setup for a new consumer** (agents may do this themselves, owner rule of Nov 11, 2026):  mint one scoped service token with the Infisical CLI under the `service-tokens` skill, one project, environment and folder, read-only unless a write is proven necessary, with a recorded finite or explicitly non-expiring lifetime.  Store it only in the consumer's own store (a root-only file or the platform's secret store), bind it to that consumer as `INFISICAL_TOKEN`, verify its exact scope in both directions, and log it on the service-tokens tab of the fleet references workbook.  Do not create a universal-auth machine identity and do not seed a Keychain with one.
 
@@ -480,7 +506,7 @@ The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical se
 
 ## Retiring `~/.secrets` (AFC-359)
 
-Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with the consumer's own scoped service token (the consumer's own scoped service token, read from the consumer's own store, with an environment copy of that same token used only when the scoped read populated it, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
+Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with the consumer's own scoped service token (the consumer's own scoped service token, read from the consumer's own store, read from the consumer's own store and never from the environment, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
 
 | Old file or folder | Infisical folder (Fleet-OPS, prod) |
 |---|---|
@@ -549,8 +575,11 @@ Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
 | `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `simple-tools-mcp`.  FleetLink's own `DEPLOY.md` lists its matching shared secret as retired and deleted.  Never copy it to source, chat or a client. |
 | `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Simple-Tools Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleetlink`.  No expiry. |
 
-The stdio Simple-Tools server (`simple-chat mcp`, every Mac and server seat) serves the `fleetlink_*` tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  It runs `fleetlink` with that seat's token from `FLEETLINK_TOKEN_<SEAT>` in its environment, else `FLEETLINK_TOKEN` (only when no launcher is set and `AGENT_SEAT` is unset or the same seat;  the server sets `AGENT_SEAT` to the seat it resolved from `--as` or `--default-seat` when the environment named none), else the file `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, `FLEETLINK_TOKEN=...`, a regular file the user owns with mode 0600 or 0400), which it hands to the child as `FLEETLINK_AUTH_FILE` without reading it.  With none of them, those tools answer `not_configured` naming the key to set (`docs/protocols/simple-tools-mcp.md` section 2.2).
-
+The stdio Simple-Tools server (`simple-chat mcp`, every Mac and server seat) serves the `fleetlink_*`
+tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  The seat's
+token comes from this folder first, through the reader's own scoped grant (`fleetlink-ro`, AI Fleet
+Coordinator prod `/fleetlink`, read from the consumer's own store);  an environment value is a second
+source only when that grant is in place, so a hand-set copy never stands in for the reviewed grant.
 The Simple-Tools MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
 Rotate both Workers from this one value, FleetLink first.  See

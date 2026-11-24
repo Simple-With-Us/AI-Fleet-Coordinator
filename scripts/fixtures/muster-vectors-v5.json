@@ -1822,24 +1822,24 @@
      "helperTrustListVersion": 1,
      "host": "server",
      "issuedAt": "2026-11-07T21:00:30Z",
-     "plan": "{\"action\":\"redeploy\",\"auditTarget\":\"Caf? App\",\"commands\":[[\"coolify\",\"GET\",\"/api/v1/deploy?uuid=abc123def456\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"abc123def456\"}",
-     "planSHA256": "f228b73868d712cd10dfc1377531457ea7d2ce88683511ae5c3b6c975073fb8c",
+     "plan": "{\"action\":\"redeploy\",\"auditTarget\":\"Caf? App\",\"commands\":[[\"coolify\",\"POST\",\"/api/v1/deploy?uuid=abc123def456\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"abc123def456\"}",
+     "planSHA256": "2e7eae59333ad54fb77f2d14ccf8f9270c494ffd461370e42c1df76c7f5e3c76",
      "target": "abc123def456"
     },
     "keyId": "38fbd10025f412d0",
     "kind": "plan",
     "protocol": "muster-helper/1",
-    "signature": "MEQCIHvkQ9a3WXnN6loBp4vy6vkFLmS0k27ej_sOdCRaxNcbAiBmZJ0dbZg4G-Zx9rPU4E-PsKUczozOxp1MwYvkzi4aBg"
+    "signature": "MEUCIGcQY_cYtJAwnJnTKZyqann0hYPGCU7RYQO9eSMC8NiuAiEAshdMuOGf0VWecS5HjrwOmX-5z0B4VIhdCqSJPCCfdyQ"
    },
-   "bodySHA256": "95ec2a4c18d027f997f224ca0d682b7e1cbb725f88fb36ce48251174ece994be",
+   "bodySHA256": "e612493220f8faaaa42c45533548695023210b7bcec5944c049077875a1ef7ba",
    "command": "server redeploy abc123def456 --plan",
    "exitStatus": 0,
    "id": "redeployPlanNonAscii",
-   "line": "{\"body\":{\"action\":\"redeploy\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanredeploy\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"action\\\":\\\"redeploy\\\",\\\"auditTarget\\\":\\\"Caf? App\\\",\\\"commands\\\":[[\\\"coolify\\\",\\\"GET\\\",\\\"/api/v1/deploy?uuid=abc123def456\\\"]],\\\"contract\\\":\\\"fleet-ops-plan/1\\\",\\\"scope\\\":\\\"server\\\",\\\"target\\\":\\\"abc123def456\\\"}\",\"planSHA256\":\"f228b73868d712cd10dfc1377531457ea7d2ce88683511ae5c3b6c975073fb8c\",\"target\":\"abc123def456\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEQCIHvkQ9a3WXnN6loBp4vy6vkFLmS0k27ej_sOdCRaxNcbAiBmZJ0dbZg4G-Zx9rPU4E-PsKUczozOxp1MwYvkzi4aBg\"}\n",
-   "lineSHA256": "ba8be8c001900511200c2e1b24e78c8ee72fecad4d529a5fb1b0505519b8d843",
+   "line": "{\"body\":{\"action\":\"redeploy\",\"claimed\":{\"deviceId\":\"d-ae9428d695e414bcefc0ef5b\",\"jobId\":\"jobplanredeploy\",\"jobNonce\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"},\"contract\":\"muster-signed-plan/1\",\"helperTrustListVersion\":1,\"host\":\"server\",\"issuedAt\":\"2026-11-07T21:00:30Z\",\"plan\":\"{\\\"action\\\":\\\"redeploy\\\",\\\"auditTarget\\\":\\\"Caf? App\\\",\\\"commands\\\":[[\\\"coolify\\\",\\\"POST\\\",\\\"/api/v1/deploy?uuid=abc123def456\\\"]],\\\"contract\\\":\\\"fleet-ops-plan/1\\\",\\\"scope\\\":\\\"server\\\",\\\"target\\\":\\\"abc123def456\\\"}\",\"planSHA256\":\"2e7eae59333ad54fb77f2d14ccf8f9270c494ffd461370e42c1df76c7f5e3c76\",\"target\":\"abc123def456\"},\"keyId\":\"38fbd10025f412d0\",\"kind\":\"plan\",\"protocol\":\"muster-helper/1\",\"signature\":\"MEUCIGcQY_cYtJAwnJnTKZyqann0hYPGCU7RYQO9eSMC8NiuAiEAshdMuOGf0VWecS5HjrwOmX-5z0B4VIhdCqSJPCCfdyQ\"}\n",
+   "lineSHA256": "003e384caf73b59ac242fbfe9a625ef63a0b7b35493a527c0b5638d498839a24",
    "now": "2026-11-07T21:00:30Z",
-   "plan": "{\"action\":\"redeploy\",\"auditTarget\":\"Caf? App\",\"commands\":[[\"coolify\",\"GET\",\"/api/v1/deploy?uuid=abc123def456\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"abc123def456\"}",
-   "planSHA256": "f228b73868d712cd10dfc1377531457ea7d2ce88683511ae5c3b6c975073fb8c",
+   "plan": "{\"action\":\"redeploy\",\"auditTarget\":\"Caf? App\",\"commands\":[[\"coolify\",\"POST\",\"/api/v1/deploy?uuid=abc123def456\"]],\"contract\":\"fleet-ops-plan/1\",\"scope\":\"server\",\"target\":\"abc123def456\"}",
+   "planSHA256": "2e7eae59333ad54fb77f2d14ccf8f9270c494ffd461370e42c1df76c7f5e3c76",
    "setup": {
     "report": [
      {

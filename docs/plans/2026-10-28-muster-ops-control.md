@@ -2,6 +2,8 @@
 
 > **Nov 17, 2026.**  The `fleet-secrets` CLI this document names was retired (owner directive):  there is no shared reader any more, and every consumer holds its own scoped Infisical service token, read through `scripts/fleet_infisical.py`.  The contract is `docs/FLEET-SECRETS-RETIREMENT.md`.  This document is the record as it stood.
 
+> **Nov 22, 2026.**  The redeploy route this record shows is the GET the Coolify route never answered:  the live route is POST (`[["coolify", "POST", "/api/v1/deploy?uuid=UUID"]]`), and the live token is `COOLIFY_DEPLOY_ONLY` in `/coolify-deploy-only-token`.  The live statement is `docs/protocols/fleet-tool-parity.md`;  this document is the record as it stood.
+
 > **Historical, marked November 5, 2026.**  This is the October 28 plan as it was written, kept for its reasoning.  It is not a description of Muster or of the server control route today, and the code wins wherever the two differ.  What each panel reads and changes now is the Every Panel table in `muster/README.md`.  The server route's later changes are in `docs/rollouts/2026-11-03-afc-607-muster-update-route.md`.
 >
 > Where this plan is now wrong:

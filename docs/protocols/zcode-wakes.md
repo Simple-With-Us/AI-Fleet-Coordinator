@@ -218,12 +218,19 @@ made explicit.
   router's own sentence.
 - A workspace path that begins with a dash is refused (`invalid-workspace`), so it can never be
   read as an option by the CLI.
-- The three outcomes of a turn are kept apart.  A timeout is `unknown`:  the turn may have run,
-  so the wake is neither recorded as delivered nor retried, and the receipt keeps it visible.  A
-  turn that fails before any model response (the runtime's own documented
-  `project_token_login_failed`) is `failed` even when the process exits 0, so it is never
-  recorded as a delivery.  An exit 0 with nothing to show is `sent` with an unconfirmed
-  acknowledgement, and the receipt never claims a confirmed delivery for it.
+- The outcomes of a resume are kept apart, and the chat's own transcript decides them.  A resume does not run the turn: it writes the wake's prompt into the chat's transcript (the
+  session's input history or its messages in `~/.zcode/cli/db/db.sqlite`), and the open chat
+  takes it from there.  So once the child is gone the store is asked, by the wake id, whether the prompt is
+  there.  A timeout is `unknown`: the turn may have run, so the wake is neither recorded as delivered
+  nor retried, and the receipt keeps it visible.  A prompt that is in the transcript is `sent` with an unconfirmed
+  acknowledgement however the child ended (its note says `zcode-prompt-persisted` and why the
+  child did not end well), and it is never repeated: a second prompt would be a second turn.  A
+  prompt that is in neither table is `failed`, because no turn started from it and the router's
+  bounded retry may run it again.  When the store cannot say (unreadable, or a runtime without those
+  tables) the exit decides as it used to: a turn that fails before any model response (the
+  runtime's own documented `project_token_login_failed`) is `failed` even when the process
+  exits 0, an exit 0 with nothing to show is `sent`, and any other exit is final (`refused`).  The
+  receipt never claims a confirmed delivery for a resume.
 - The turn never outlives its delivery.  The module keeps the child handle and stops and
   reaps it on every path, including a timeout and an interruption, so a turn can never keep
   running behind a session lock the delivery already holds.
@@ -261,7 +268,7 @@ router's module (`scripts/simple_tools/zcode_wake.py`).
   whose letter was retired or whose registration closed never wins, a session our own lock
   holds is left to finish (`session-busy`).
 
-## The one open decision:  the seat's model credential
+## The seat's model credential on the server
 
 Delivery runs a headless turn (`zcode --resume <session> -p <text>`).  The router's delivery for
 this seat is armed:  `WAKE_ROUTER_DELIVERY_ENABLED` is true and ZC is named in
@@ -270,12 +277,17 @@ router's `/health/ZC` answers `healthy` with delivery on.  The one local file f
 router, `~/.local/state/wake-router/config.json`, can only narrow that, never widen it, and the
 seat's own per-seat file is `~/.local/state/wake-router/zc/config.json`.
 
-What is still open is the seat's model credential on the server.  The headless run asks the
-Z.AI project-access token for the `zai` family, and the answer is
-`project_token_login_failed` (stage `resolve`), so the turn fails before any model response and
-the router's receipt says the wake was not delivered (`resume-exit-1`, status dead).  The fix
-is the seat's own login on the server (`zcode login zai`, in a browser), which is the owner's
-to do.  The older note about a dead MiniMax key in the desktop's provider order no longer
+What is still open is the seat's model credential for the headless leg on the server.  The headless run asks the Z.AI project-access token for the `zai` family, and the answer is
+`project_token_login_failed` (stage `resolve`), so the headless turn fails before any model
+response and the child exits 1.  The wake is delivered all the same when the prompt reaches the chat's transcript: an open
+chat runs it from there, and the receipt records the hand-over (`sent`, note
+`zcode-prompt-persisted:model-auth-login-failed`).  A closed chat has nothing to run the prompt; what it does with the prompt when it is opened
+has not been checked.
+
+A fresh sign-in is not the fix.  The owner signed in on the server on Nov 18, 2026, twice, and the mint failed the same way
+after each one, on releases 3.17.2 and 3.19.0 alike, while interactive chats kept working on
+the token the running app already held.  The defect is in the zcode runtime's project-token mint for this account, and it is the
+vendor's to fix.  Do not ask the owner to sign in again for it.  The older note about a dead MiniMax key in the desktop's provider order no longer
 describes what the headless run does:  the run asks the Z.AI account, and it never gets as far
 as a model.
 

@@ -17,6 +17,32 @@ import sys
 # read tools.  Everything else the hosted server lists under gr_ is a write for transport purposes:  write
 # uncertainty wording, identity injection and no-retry are the conservative defaults.
 WF_V1_READ_ACTIONS = [
+    "wf_secrets_org_actions",
+    "wf_secret_key_org_actions",
+    "wf_secret_repos_org_actions",
+    "wf_secrets_org_dependabot",
+    "wf_secret_key_org_dependabot",
+    "wf_secret_repos_org_dependabot",
+    "wf_secrets_org_codespaces",
+    "wf_secret_key_org_codespaces",
+    "wf_secret_repos_org_codespaces",
+    "wf_secrets_repo_actions",
+    "wf_secret_key_repo_actions",
+    "wf_secrets_repo_dependabot",
+    "wf_secret_key_repo_dependabot",
+    "wf_secrets_repo_codespaces",
+    "wf_secret_key_repo_codespaces",
+    "wf_secrets_env_actions",
+    "wf_secret_key_env_actions",
+    "wf_org_variables",
+    "wf_org_variable_repos",
+    "wf_hook_get",
+    "wf_hook_deliveries",
+    "wf_org_hooks",
+    "wf_org_hook_get",
+    "wf_deploy_key_get",
+    "wf_env_branch_policies",
+    "wf_env_variables",
     "wf_installation_metadata",
     "wf_pr_commits_page",
     "wf_pr_review_get",
@@ -116,11 +142,18 @@ READ_TOOLS = frozenset(
 
 # Per-action input byte limits (gr-workflow-v1.js WF_V1_INPUT_LIMITS; default 64 KiB).
 INPUT_LIMITS = {
+    "gr_wf_secret_put_org_actions": 98304,
+    "gr_wf_secret_put_org_dependabot": 98304,
+    "gr_wf_secret_put_org_codespaces": 98304,
+    "gr_wf_secret_put_repo_actions": 98304,
+    "gr_wf_secret_put_repo_dependabot": 98304,
+    "gr_wf_secret_put_repo_codespaces": 98304,
+    "gr_wf_secret_put_env_actions": 98304,
     "gr_wf_release_asset_upload_binary": 253952,
     "gr_wf_file_put": 6 * 1024 * 1024,
     "gr_wf_files_put": 6 * 1024 * 1024,
-    "gr_wf_git_blob_create": 212992,
-    "gr_wf_git_tree_create": 245760,
+    "gr_wf_git_blob_create": 6 * 1024 * 1024,
+    "gr_wf_git_tree_create": 6 * 1024 * 1024,
 }
 DEFAULT_INPUT_LIMIT = 65536
 
@@ -171,7 +204,7 @@ def main(argv):
         return 1
     json.dump(
         {
-            "provenance": "hosted simple-tools MCP tools/list, captured by the host's own seat 2026-10-31; "
+            "provenance": "hosted simple-tools MCP tools/list, captured by the host's own seat 2026-11-23 (P1 and P2 git tools); "
             "identity enum neutralized (caller-relative); list presence is not execution proof",
             "tools": catalog,
         },

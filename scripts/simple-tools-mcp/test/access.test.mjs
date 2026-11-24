@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verifyAccessJwt, clearCertCache } from "../src/access.js";
+import { verifyAccessJwt, clearCertCache, parseServiceClientIds } from "../src/access.js";
 
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
 const AUD = "b".repeat(64);
@@ -80,4 +80,30 @@ test("unconfigured Access or unreachable certs fail closed", async () => {
   assert.equal((await verify(token, { ...access, configured: false })).reason, "access_not_configured");
   const broken = await verifyAccessJwt(token, access, { fetchCerts: async () => { throw new Error("down"); }, now: NOW });
   assert.equal(broken.reason, "certs_unavailable");
+});
+
+test("a service token passes only where allowed and only for a listed client id", async () => {
+  clearCertCache();
+  const svc = { ...good(), email: undefined, common_name: "abcdef0123456789.access", type: "app" };
+  const ids = ["abcdef0123456789.access"];
+  const run = (claims, serviceClientIds, allowService) => sign(claims).then((t) => verifyAccessJwt(t, access, { fetchCerts, now: NOW, allowService, serviceClientIds }));
+  // Not allowed by the caller (every route but /admin/api/*):  refused even when the id is listed.
+  assert.deepEqual(await run(svc, ids, false), { ok: false, reason: "not_owner" });
+  assert.deepEqual(await run(svc, ids, undefined), { ok: false, reason: "not_owner" });
+  // Allowed and listed.
+  assert.deepEqual(await run(svc, ids, true), { ok: true, email: "", service: true, serviceTokenId: "abcdef0123456789.access" });
+  // Allowed but not listed, or no list at all (off by default).
+  assert.deepEqual(await run({ ...svc, common_name: "0000000000000000.access" }, ids, true), { ok: false, reason: "not_owner" });
+  assert.deepEqual(await run(svc, [], true), { ok: false, reason: "not_owner" });
+  // A service token still has to pass every other check.
+  assert.equal((await run({ ...svc, exp: nowS - 1 }, ids, true)).reason, "expired");
+  assert.equal((await run({ ...svc, aud: ["c".repeat(64)] }, ids, true)).reason, "bad_audience");
+  // An owner login is unchanged either way.
+  assert.deepEqual(await run(good(), ids, true), { ok: true, email: "mail@jays.services" });
+});
+
+test("the service client list parses only well formed ids and is off when empty", () => {
+  assert.deepEqual(parseServiceClientIds(undefined), []);
+  assert.deepEqual(parseServiceClientIds(""), []);
+  assert.deepEqual(parseServiceClientIds("abcdef0123456789.access, bad id,x"), ["abcdef0123456789.access"]);
 });

@@ -303,6 +303,15 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_operator_registry test_operator_export_attempts -v
+    # Operator provenance (AFC-412):  who may speak for a seat, checked against
+    # the structured sender fields rather than display names.
+    - name: Operator provenance tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_operator_provenance -v
+    # grok-acp MCP name to ACP object expansion.  No live serve.
+    - name: MCP catalog tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_mcp_catalog -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
@@ -546,6 +555,11 @@ jobs:
     - name: Zulip linkifier tests
       timeout-minutes: 10
       run: cd scripts && python3 -m unittest test_zulip_linkifiers -v
+    # Linear project codes as linkifiers (AFC-565), from Linear to Zulip and
+    # the repo files.  No network:  Linear, Zulip, Infisical and GitHub are faked.
+    - name: Linear project linkifier tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_linear_project_linkifiers -v
     # The Google Drive backup:  the File Provider-safe copy, the rule that a refused subtree is
     # reported rather than raised, and the retention that drops the dated backup folders beyond
     # the newest N.  Temp directories only, so nothing in Drive is read or written.
@@ -792,6 +806,11 @@ jobs:
       run: |
         python3 scripts/test_auto_merge_reusable.py
         python3 scripts/test_protected_merge_boundary.py
+    # The merge principal guard docs/AUTO-MERGE.md cites as its contract:  both
+    # actual shell paths, exercised without external writes.
+    - name: Merge principal guard tests
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_merge_principal_guard -v
     # Idempotent fleet hold-label provisioning (AFC-691).  No network:  the
     # transport is injected, and the workflow job is checked by reading the file.
     - name: Fleet hold label provisioning
@@ -860,6 +879,8 @@ jobs:
   mac-scripts:
     name: Mac scripts
     runs-on: macos-latest
+    # Bound the job so a stalled script cannot burn the 360-minute GitHub default.
+    timeout-minutes: 20
     steps:
     - uses: actions/checkout@v7
     # The maintenance scripts that run on Jay's Mac, and their contracts.
@@ -883,6 +904,8 @@ jobs:
   muster-macos-build:
     name: Muster macOS build
     runs-on: macos-latest
+    # Bound the job so a stalled build cannot burn the 360-minute GitHub default.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       # The interpreter FleetViewService runs, on the machine shape that has it.  The version is
