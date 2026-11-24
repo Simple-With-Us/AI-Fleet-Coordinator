@@ -767,7 +767,9 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     # The one optional origin key is not a seat or routine key. No primary or
     # container copy can replace this canonical secondary-source value.
     projection_values = {name: read_keys.pop(name, None) for name in OPTIONAL_PROJECTION_NAMES}
-    projection_conflicts = {name for name in OPTIONAL_PROJECTION_NAMES if name in found or name in operator_all}
+    projection_conflicts = {
+        name for name in OPTIONAL_PROJECTION_NAMES if name in found or name in operator_all
+    }
     # One home per name:  a routine key held by both projects is used from neither, so deleting one copy to
     # revoke it can never leave the other in service.
     conflicts = sorted(name for name in read_keys if name in found)
@@ -800,7 +802,14 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         if projection_ok:
             loaded_values[name] = value
             projection_loaded.append(name)
-    projection_note = "; review-origin read keys loaded from secondary /zulip: " + (str(len(projection_loaded)) + (" (optional capability held)" if len(projection_loaded) < len(OPTIONAL_PROJECTION_NAMES) else ""))
+    projection_note = "; review-origin read keys loaded from secondary /zulip: " + (
+        str(len(projection_loaded))
+        + (
+            " (optional capability held)"
+            if len(projection_loaded) < len(OPTIONAL_PROJECTION_NAMES)
+            else ""
+        )
+    )
     loaded = sorted(loaded_values)
     replaced = sum(1 for name in loaded if name in env)
     out.update(loaded_values)

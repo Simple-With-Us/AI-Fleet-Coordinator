@@ -55,7 +55,9 @@ class ReviewOriginProjection:
             or abs(self.clock() - int(stamp)) > 300
             or not isinstance(given, str)
             or not re.fullmatch(r"[0-9a-f]{64}", given)
-            or not hmac.compare_digest(signature(self.key, parts.query, stamp, path=self.path), given)
+            or not hmac.compare_digest(
+                signature(self.key, parts.query, stamp, path=self.path), given
+            )
         ):
             return 401, {"code": "unauthorized"}
         fields = parse_qsl(parts.query, keep_blank_values=True)

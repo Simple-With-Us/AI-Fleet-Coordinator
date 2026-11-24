@@ -257,12 +257,17 @@ class RegistryService:
         self.review_origin = ReviewOriginProjection(
             str(db_path), review_origin_read_key, clock=clock
         )
-        self.review_origin_zc = ReviewOriginProjection(str(db_path), review_origin_zc_read_key, clock=clock, platform="zcode")
-        if review_origin_zc_read_key and (review_origin_zc_read_key == review_origin_read_key or review_origin_zc_read_key in keys.values()):
-            raise ValueError("ZC review origin key must be dedicated")
-        self.has_review_origin_key = (isinstance(review_origin_zc_read_key, str) and len(review_origin_zc_read_key) >= 32) or (
-            isinstance(review_origin_read_key, str) and len(review_origin_read_key) >= 32
+        self.review_origin_zc = ReviewOriginProjection(
+            str(db_path), review_origin_zc_read_key, clock=clock, platform="zcode"
         )
+        if review_origin_zc_read_key and (
+            review_origin_zc_read_key == review_origin_read_key
+            or review_origin_zc_read_key in keys.values()
+        ):
+            raise ValueError("ZC review origin key must be dedicated")
+        self.has_review_origin_key = (
+            isinstance(review_origin_zc_read_key, str) and len(review_origin_zc_read_key) >= 32
+        ) or (isinstance(review_origin_read_key, str) and len(review_origin_read_key) >= 32)
         self.db_path = str(db_path)
         self.gone_report_max_share = float(gone_report_max_share)
         self.gone_report_window_minutes = int(gone_report_window_minutes)
