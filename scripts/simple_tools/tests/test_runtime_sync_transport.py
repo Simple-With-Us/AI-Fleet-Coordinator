@@ -111,9 +111,9 @@ class RuntimeSyncTransportTests(unittest.TestCase):
         self.assertEqual(len(not_approved), 2)
         branch = not_approved[1].split("fi")[0]
         self.assertIn('retrieval="origin"', branch)
-        self.assertIn("rgit fetch -q origin", branch)
+        self.assertIn("fetch -q origin", branch)
         # The origin transport exists nowhere else:  never as a fallback after a failure.
-        self.assertNotIn("rgit fetch -q origin", not_approved[0])
+        self.assertNotIn("fetch -q origin", not_approved[0])
 
     def test_the_public_source_transport_is_fixed_and_never_falls_back(self) -> None:
         """The approved transport is one fixed public source, and its failure does not fall back."""
@@ -124,12 +124,36 @@ class RuntimeSyncTransportTests(unittest.TestCase):
             text,
         )
 
-    def test_the_fallback_transport_never_waits_on_a_credential_prompt(self) -> None:
-        """A launchd run has no terminal, so the fallback must fail fast instead of blocking."""
+    def test_the_fallback_transport_never_waits_on_a_prompt(self) -> None:
+        """A launchd run has no terminal, so every interactive path must be closed.
+
+        Git's own prompt is one of several:  an SSH passphrase, an SSH host key and a
+        credential helper each ask on their own, and each one would hold the whole alarm
+        on every tick.  The fallback closes all of them at once.
+        """
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
-            "fetch_public_runtime() { GIT_TERMINAL_PROMPT=0 rgit fetch -q origin; }", text
+            "GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never "
+            "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' "
+            "rgit -c credential.helper= fetch -q origin;",
+            text,
         )
+        # Each guard is present on its own, so a later edit cannot drop one silently.
+        for guard in (
+            "GIT_TERMINAL_PROMPT=0",
+            "GCM_INTERACTIVE=never",
+            "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes'",
+            "rgit -c credential.helper= fetch -q origin",
+        ):
+            self.assertIn(guard, text)
+
+    def test_the_fallback_guards_exist_only_inside_the_not_approved_branch(self) -> None:
+        """The approved transport is fixed and never borrows the fallback's guards."""
+        text = SCRIPT.read_text(encoding="utf-8")
+        parts = text.split('if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then')
+        self.assertEqual(len(parts), 2)
+        self.assertIn("GIT_SSH_COMMAND", parts[1].split("fi")[0])
+        self.assertNotIn("GIT_SSH_COMMAND", parts[0])
 
     def test_the_script_parses(self) -> None:
         result = subprocess.run(

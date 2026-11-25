@@ -102,12 +102,14 @@ main() {
   # Explicit operator approval is required before enabling this fixed public-source mode, and
   # the mode is not a fallback when caller-authenticated simple-git refuses.  Until the approval
   # file exists the job stays on the transport it used before, so a host without the file keeps
-  # updating instead of standing still behind main with nothing but a log line.
+  # updating instead of standing still behind main with nothing but a log line.  That fallback
+  # disables every interactive path git and ssh can take, because a launchd run has no terminal
+  # to answer a prompt on and a stalled run holds the whole alarm on every tick.
   local retrieval="public-source"
   if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then
     retrieval="origin"
     log "PUBLIC-SOURCE-NOT-APPROVED  using the prior origin transport until the operator approves it"
-    fetch_public_runtime() { GIT_TERMINAL_PROMPT=0 rgit fetch -q origin; }
+    fetch_public_runtime() { GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' rgit -c credential.helper= fetch -q origin; }
   fi
 
   # One run at a time.  A lock older than 10 minutes belongs to a dead run.
