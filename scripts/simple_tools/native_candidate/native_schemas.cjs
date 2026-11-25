@@ -18,6 +18,7 @@ function schemas(z){
  const ack=z.object({commandId:command,status:z.enum(['accepted','rejected','stale','duplicate','noop','failed']),revisionAtDecision:z.number().int().nonnegative().safe(),reasonCode:z.string().regex(/^(fault|guard|proto)\.[A-Za-z0-9_.-]{1,120}$/).optional(),message:z.string().max(4096).optional(),result:result.optional(),memoryEnabled:z.boolean().optional(),ttftExcluded:z.literal('capacity').optional()}).strict();
  const key=z.object({sessionId:id,commandId:command}).strict();
  const query=z.object({results:z.array(z.object({key,result:z.union([ack,z.literal('unknown')]),turn:z.object({turnId:id,state:z.string().min(1).max(128)}).strict().optional()}).strict()).length(1)}).strict();
- return {binding,envelope,payload,ack,query,initialization:init};
+ const routing=z.object({workspace_identity:z.string().min(1).max(4096).refine(s=>s===s.trim()&&!/[\x00-\x1f]/.test(s)).nullable()}).strict();
+ return {routing,binding,envelope,payload,ack,query,initialization:init};
 }
 module.exports={schemas};

@@ -22,7 +22,7 @@ function connect({WebSocket,url,token,codec,frame,parser,timeoutMs=10000}){
   // Unexpected events are refused, not interpreted as command receipts.
   if(!pending||h[1]!==pending.id||![201,202,203].includes(h[0]))return close('response-mismatch');
   const p=pending;pending=null;clearTimeout(p.timer);
-  if(h[0]!==201)return p.reject(Error('rpc-refused'));
+  if(h[0]!==201){const error=Error('rpc-refused');const codes=new Set(['project.remote-project-required','project.host-mismatch','project.cwd-not-in-roots','project.session-lineage-invalid','project.remote-single-root-required']);if(b&&codes.has(b.message))error.nativeCode=b.message;return p.reject(error)}
   p.resolve(b);
  });
  ws.on('message',data=>{try{read(Buffer.from(data))}catch{close('decode-refused')}});

@@ -15,7 +15,8 @@ from pathlib import Path
 from .native_custody import fresh as custody_fresh
 from .native_evidence import alert_id, persist
 from .native_store import reconcile
-from .zcode_native import NativeDelivery, digest
+from .native_routing import route
+from .zcode_native import NativeDelivery, compact_diagnostic, digest
 
 
 class Driver:
@@ -23,10 +24,14 @@ class Driver:
         self.state, self.activation_epoch = Path(state), activation_epoch
         self.node, self.home = node, home
         self.context = threading.local()
-        self.journal = NativeDelivery(self.state / "native-commands", self.transport, self.verify)
+        self.journal = NativeDelivery(
+            self.state / "native-commands", self.transport, self.verify
+        )
 
     def verify(self, binding):
-        return bool(getattr(self.context, "verify", None) and self.context.verify(binding))
+        return bool(
+            getattr(self.context, "verify", None) and self.context.verify(binding)
+        )
 
     def __call__(self, binding, wake_key, text, *, fresh=False, verify, target=None):
         # Router's own predispatch pending record is authoritative, not fresh kwarg.
@@ -72,6 +77,16 @@ class Driver:
         return self(binding, wake_key, text, fresh=False, verify=verify)
 
     def transport(self, request):
+        # Derived routing selects only the existing protocol namespace. It never
+        # authorizes a session, freshness, generation or a second dispatch.
+        try:
+            routing, route_stamp = route(self.home, request["binding"])
+        except Exception:
+            return {
+                "ack": None,
+                "diagnostic": {"stage": "routing", "code": "routing-unavailable"},
+            }
+        request = {**request, "routing": routing}
         command = [self.node, str(Path(__file__).with_name("native_driver.cjs"))]
         child = subprocess.Popen(
             command,
@@ -86,7 +101,9 @@ class Driver:
         selector = selectors.DefaultSelector()
         selector.register(child.stdout, selectors.EVENT_READ)
         try:
-            child.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
+            child.stdin.write(
+                (json.dumps(request, separators=(",", ":")) + "\n").encode()
+            )
             child.stdin.flush()
             deadline = time.monotonic() + 35
             buffer = b""
@@ -104,15 +121,31 @@ class Driver:
                     line, buffer = buffer.split(b"\n", 1)
                     message = json.loads(line)
                     if "verify" in message:
-                        ok = message.get("binding") == request["binding"] and self.verify(
-                            request["binding"]
+                        ok = (
+                            message.get("binding") == request["binding"]
+                            and self.verify(request["binding"])
+                            and route(self.home, request["binding"])
+                            == (routing, route_stamp)
                         )
                         child.stdin.write(
-                            (json.dumps({"verify": message["verify"], "ok": ok}) + "\n").encode()
+                            (
+                                json.dumps({"verify": message["verify"], "ok": ok})
+                                + "\n"
+                            ).encode()
                         )
                         child.stdin.flush()
-                    elif set(message) == {"result"} and isinstance(message["result"], dict):
+                    elif set(message) == {"result"} and isinstance(
+                        message["result"], dict
+                    ):
                         return message["result"]
+                    elif (
+                        set(message) == {"error", "diagnostic"}
+                        and message["error"] == "native-driver-refused-or-uncertain"
+                    ):
+                        return {
+                            "ack": None,
+                            "diagnostic": compact_diagnostic(message["diagnostic"]),
+                        }
                     else:
                         raise ValueError("native-driver-unverified")
             raise TimeoutError()
