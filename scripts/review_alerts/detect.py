@@ -27,7 +27,7 @@ hears what blocks it without polling:
                  beside those and never alone:
                  a failed check is the CI event.  Keyed by the head and the
                  blockers, so one head alerts once per blocker set, and a
-                 conflict is only ever resolved by a new commit.
+                 conflict also includes the confirmed base commit in its identity.
 
 Semantic dedupe:  a head's completion is alerted once - a submitted review
 and a completed check on the SAME head are one round, not two.  Head binding
@@ -105,23 +105,39 @@ def check_name(run: dict) -> str:
     return name[:CHECK_NAME_CHARS]
 
 
-def in_conflict(pull: dict) -> bool | None:
-    """Whether the PR's current head has conflicting files;  None when GitHub has not said.
-
-    `mergeable_state` is the explicit answer ("dirty" is a conflict, every other state is
-    not).  A body without it (the relay's reduced read) is answered by `mergeable` alone.
-    GitHub computes both after a push and answers null and "unknown" until it has:  that is
-    None, not no, so the next cycle asks again.
-    """
-    state = str(pull.get("mergeable_state") or "")
-    if state and state != "unknown":
-        return state == "dirty"
-    mergeable = pull.get("mergeable")
-    if mergeable is True:
+def in_conflict(pull: dict) -> bool:
+    """A confirmed conflicting commit pair, never an unknown/protection hold."""
+    if pull.get("state") != "open" or pull.get("mergeable") is not False:
         return False
-    if mergeable is False:
-        return True
-    return None
+    if pull.get("mergeable_state") != "dirty":
+        return False
+    for field in ("head", "base"):
+        row = pull.get(field)
+        if not isinstance(row, dict) or not isinstance(row.get("sha"), str):
+            return False
+        if not re.fullmatch(r"[0-9a-f]{40}", row["sha"]):
+            return False
+    return True
+
+
+def merge_conflict(repo: str, number: int, pull: dict) -> list[dict]:
+    """Legacy inspection contract only. The cycle emits merge_blocked, not both."""
+    if not in_conflict(pull):
+        return []
+    head, base = pull["head"]["sha"], pull["base"]["sha"]
+    return [
+        dict(
+            repo=repo,
+            number=number,
+            kind="merge_conflict",
+            event_id=head + ":" + base,
+            actor="github",
+            head=head,
+            current_head=head,
+            head_matches=True,
+            summary="merge conflict: update the PR against its base branch",
+        )
+    ]
 
 
 def newest_runs(check_runs: list, current_head: str) -> dict[str, dict]:
@@ -384,14 +400,41 @@ def derive(
     # 5. What keeps the current head from merging.  Keyed by the head and the blockers:  one
     #    head alerts once per blocker set, and the store keeps a set from alerting twice.
     if current_head:
-        blockers = merge_blockers(pull, reviews, check_runs, current_head, exclude=(review_actor,))
+        known_requests = set(cursor.get("legacy_review_ids", []))
+        blocker_reviews = [
+            dict(row, state="DISMISSED")
+            if row.get("id") in known_requests and row.get("state") == "CHANGES_REQUESTED"
+            else row
+            for row in reviews
+        ]
+        blockers = merge_blockers(
+            pull, blocker_reviews, check_runs, current_head, exclude=(review_actor,)
+        )
+        base = pull["base"]["sha"] if "conflicts" in blockers else ""
+        # Legacy outcomes remain immutable, including unknown. Remove only facts
+        # already recorded, never a new gate, changed base, or newly failed run.
+        if current_head + ":" + base in cursor.get(
+            "legacy_conflict_pairs", []
+        ) or current_head in cursor.get("legacy_conflict_heads", []):
+            # Head-only #2510 records cannot establish a historical base. Keep
+            # their conflict outcome bounded to that head without inventing it.
+            blockers = [name for name in blockers if name != "conflicts"]
+        known_components = cursor.get("legacy_blocker_components", {}).get(current_head, [])
+        blockers = [name for name in blockers if name not in known_components]
+        if blockers == ["checks_failed"]:
+            blockers = []
         if blockers:
+            identity = "mb%s:%s%s" % (
+                current_head,
+                base + ":" if "conflicts" in blockers else "",
+                "+".join(blockers),
+            )
             events.append(
                 {
                     "repo": repo,
                     "number": number,
                     "kind": "merge_blocked",
-                    "event_id": "mb%s:%s" % (current_head, "+".join(blockers)),
+                    "event_id": identity,
                     "actor": "",
                     "head": current_head,
                     "current_head": current_head,

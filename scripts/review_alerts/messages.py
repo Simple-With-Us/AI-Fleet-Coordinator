@@ -100,6 +100,9 @@ class OperatorMessages:
             "review_submitted": "review completed",
             "review_completed": "review check completed",
             "findings_added": "new review findings",
+            "merge_conflict": "merge conflict with the base branch",
+            "check_failure": "a check failed on the current head",
+            "changes_requested": "changes were requested",
             "ci_failed": "CI checks failed on the current head",
             "merge_blocked": "the PR is blocked from merging",
         }.get(event.get("kind"))
