@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from collections import OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -170,6 +171,30 @@ def _tracked_tree(root, commit):
     return result
 
 
+_BLOB_CACHE = OrderedDict()
+_BLOB_CACHE_BYTES = 0
+_BLOB_CACHE_LIMIT = 64 * 1024 * 1024
+
+
+def _blob(root, commit, oid):
+    """Share immutable reads across discovery and rendering, bounded to 64 MiB."""
+    global _BLOB_CACHE_BYTES
+    key = (str(root), commit, oid)
+    if key in _BLOB_CACHE:
+        _BLOB_CACHE.move_to_end(key)
+        return _BLOB_CACHE[key]
+    data = git(root, "cat-file", "-p", oid)
+    if data is None:
+        raise GitInventoryError("tracked-git-blob-unavailable")
+    while _BLOB_CACHE and _BLOB_CACHE_BYTES + len(data) > _BLOB_CACHE_LIMIT:
+        _, removed = _BLOB_CACHE.popitem(last=False)
+        _BLOB_CACHE_BYTES -= len(removed)
+    if len(data) <= _BLOB_CACHE_LIMIT:
+        _BLOB_CACHE[key] = data
+        _BLOB_CACHE_BYTES += len(data)
+    return data
+
+
 @dataclass(frozen=True)
 class Repository:
     root: Path
@@ -182,10 +207,7 @@ class Repository:
         oid = _tracked_tree(self.root, self.commit).get(path)
         if oid is None:
             return None
-        data = git(self.root, "cat-file", "-p", oid)
-        if data is None:
-            raise GitInventoryError("tracked-git-blob-unavailable")
-        return data
+        return _blob(self.root, self.commit, oid)
 
 
 def discover_repositories(code_root):
@@ -348,6 +370,8 @@ def library_documents(
                     r"[0-9a-f]{40,64}", manifest.get("source_commit", "")
                 ):
                     raise ValueError("invalid-generated-manifest")
+                if not isinstance(manifest.get("owner_repo"), str):
+                    raise ValueError("invalid-generated-owner")
                 owner, name = manifest["owner_repo"].split("/")
                 if owner.casefold() not in APPROVED_OWNERS or name != child.name:
                     raise ValueError("invalid-generated-owner")
