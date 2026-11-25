@@ -32,6 +32,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from . import lkg, source, values
@@ -117,6 +119,7 @@ class _State:
         self.folders: dict[str, _Folder] = {}
         self.answers: dict[str, Knob] = {}
         self.force = False  # refresh():  fetch even inside the negative cache
+        self.status_fetcher = None
 
     def folder(self, path: str) -> _Folder:
         found = self.folders.get(path)
@@ -126,6 +129,24 @@ class _State:
 
 
 _state = _State()
+_status_state: ContextVar[_State | None] = ContextVar("fleet_knob_status_state", default=None)
+
+
+def _current_state() -> _State:
+    return _status_state.get() or _state
+
+
+@contextmanager
+def independent_status(fetcher):
+    """A scoped UI read cannot prime or suppress ordinary jobs' in-process reads."""
+    state = _State()
+    state.status_fetcher = fetcher
+    state.force = True
+    handle = _status_state.set(state)
+    try:
+        yield
+    finally:
+        _status_state.reset(handle)
 
 
 def reset_for_tests() -> None:
@@ -154,7 +175,7 @@ def _spec(name: str, kind: str | None) -> Spec:
 
 def _load(path: str = ROOT_FOLDER) -> _Folder:
     """Fetch one folder, once per process, and answer what was learned about it."""
-    st = _state
+    st = _current_state()
     with st.lock:
         fo = st.folder(path)
         if fo.loaded:
@@ -180,7 +201,8 @@ def _load(path: str = ROOT_FOLDER) -> _Folder:
             )
             return fo
         try:
-            live = source.fetch_named(names_in(path), project_id=source.PROJECT_ID, path=path)
+            fetcher = st.status_fetcher or source.fetch_named
+            live = fetcher(names_in(path), project_id=source.PROJECT_ID, path=path)
             _refuse_empty_export(live, previous)
             fo.live = live
             fo.fetch = "ok"
@@ -197,16 +219,17 @@ def _load(path: str = ROOT_FOLDER) -> _Folder:
                 fo.reason,
             )
             fo.lkg, fo.lkg_note = previous, previous_note
-            if fo.reason not in PROCESS_LOCAL_REASONS:
+            if st.status_fetcher is None and fo.reason not in PROCESS_LOCAL_REASONS:
                 try:
                     lkg.record_failure(fo.reason, folder=path)
                 except Exception:  # noqa: BLE001 - the marker is a convenience
                     pass
             return fo
-        try:
-            lkg.clear_failure(folder=path)
-        except Exception:  # noqa: BLE001 - the marker is a convenience
-            pass
+        if st.status_fetcher is None:
+            try:
+                lkg.clear_failure(folder=path)
+            except Exception:  # noqa: BLE001 - the marker is a convenience
+                pass
         try:
             _save_lkg(fo)
         except Exception as exc:  # noqa: BLE001 - the copy is a convenience
@@ -265,7 +288,7 @@ def _save_lkg(fo: _Folder) -> None:
     # Every secret this process holds, from any folder, so none can land in this copy.
     secrets = [
         f.live[s.name]
-        for f in _state.folders.values()
+        for f in _current_state().folders.values()
         for s in REGISTRY
         if s.secret and s.name in f.live
     ]
@@ -322,7 +345,7 @@ def resolve(
             raise KnobError(f"{name} is a secret and takes no local override")
         return _resolve_secret(spec)
     base_default = _coerce_default(spec, default)
-    st = _state
+    st = _current_state()
     fo = _load(spec.folder)
     with st.lock:
         knob = _from_sources(spec, fo, base_default)
@@ -374,7 +397,7 @@ def _apply_local(spec: Spec, knob: Knob, local: Any, stop: bool) -> Knob:
 
 
 def _resolve_secret(spec: Spec) -> Knob:
-    st = _state
+    st = _current_state()
     fo = _load(spec.folder)
     with st.lock:
         if fo.fetch != "ok":
@@ -422,7 +445,7 @@ def folder_status(path: str) -> dict[str, Any]:
     """What this process learned about one folder:  ``fetch`` (ok, failed or not-attempted),
     with ``fetch_reason`` when there is one.  It reads memory only and never fetches, so a
     reader whose knobs share one folder can ask whether that folder's fetch worked."""
-    st = _state
+    st = _current_state()
     with st.lock:
         found = st.folders.get(path)
         return _describe_folder(found) if found is not None else {"fetch": "not-attempted"}
@@ -439,7 +462,7 @@ def report() -> dict[str, Any]:
     failed (the root first).  A process that read only root knobs gets the same report as
     before folders existed;  one that read another folder also gets ``folders``, each folder's
     own fetch, reason and copy."""
-    st = _state
+    st = _current_state()
     with st.lock:
         tried = [st.folders[p] for p in sorted(st.folders, key=lambda p: (p != ROOT_FOLDER, p))]
         tried = [f for f in tried if f.fetch != "not-attempted"]
