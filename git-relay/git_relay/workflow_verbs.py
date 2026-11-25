@@ -1406,6 +1406,84 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
             raise Unknown("own App credential unavailable") from None
         return token
 
+    def _bearer_for_ref_move(self, repo, base_sha, head_sha):
+        """Bearer for a wf_branch_update ref move base_sha -> head_sha.
+
+        The default token is least permission. GitHub refuses a ref update that
+        changes .github/workflows/* unless the token also holds workflows:write, so
+        read what the move will change first and mint the extra scope only when that
+        touches the directory: the compare base...head, with a complete two-tree
+        diff when the compare itself is unverifiable. force=False makes the
+        provider accept only fast-forwards, so every tree the write can land lies
+        inside the audited base..head range. Fail closed: an unverifiable proof
+        writes nothing. Still bounded by the seat ceiling. A handle with no minter
+        keeps its own bearer.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+
+        def read(path):
+            try:
+                return self._get(path)
+            except RelayGitHubError as exc:
+                if exc.code == "response_too_large":
+                    # Size will not shrink on retry: a definite, non-retryable refusal,
+                    # unlike a transient pre-read failure. Fails closed, nothing written.
+                    raise Refused(TOO_LARGE_TO_VERIFY) from None
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise PreReadUnavailable(
+                        "ref move pre-read unavailable; no write attempted"
+                    ) from None
+                raise
+
+        # The compare files array is one response capped at 300 files, not
+        # paginated: one read, and a full-size array may be truncated so it is
+        # unverifiable. When the compare cannot prove the workflow-touch answer -
+        # too large to read, no files array, or a possibly-truncated full page
+        # without a touch - fall back to a complete two-tree diff.
+        try:
+            data = read(f"/repos/{repo}/compare/{base_sha}...{head_sha}")
+        except Refused as exc:
+            if str(exc) != TOO_LARGE_TO_VERIFY:
+                raise
+            data = None
+        files = data.get("files") if isinstance(data, dict) else None
+        touches = False
+        if not isinstance(files, list):
+            touches = self._base_changes_touch_workflows_via_trees(read, repo, head_sha, base_sha)
+        else:
+            for row in files:
+                if not isinstance(row, dict):
+                    raise RelayGitHubError(502, "compare files page unverifiable")
+                for key in ("filename", "previous_filename"):
+                    name = row.get(key)
+                    if isinstance(name, str) and name.startswith(".github/workflows/"):
+                        touches = True
+            if not touches and len(files) >= COMPARE_FILES_CAP:
+                touches = self._base_changes_touch_workflows_via_trees(
+                    read, repo, head_sha, base_sha
+                )
+        if not touches:
+            return self.bearer
+        required = dict(SPECS[self.action][0])
+        required["workflows"] = "write"
+        required.setdefault("metadata", "read")
+        if _perm_within_ceiling(required, ceiling):
+            raise CeilingDenied("seat permission ceiling insufficient")
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except RelayGitHubError as exc:
+            if exc.code == "repository_moved":
+                raise
+            raise Unknown("own App credential unavailable") from None
+        except AppTokenError:
+            raise
+        except Exception:
+            raise Unknown("own App credential unavailable") from None
+        return token
+
     @staticmethod
     def _tree_rows(read, repo, ref_sha):
         """{path: (sha, mode, type)} for every row of one whole-tree read.
@@ -4516,7 +4594,8 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
             raise Refused("ref changed")
         if _sub(prior, "object").get("sha") != expected_sha:
             raise Refused("ref changed")
-        data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=self.bearer)
+        bearer = self._bearer_for_ref_move(repo, expected_sha, sha)
+        data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=bearer)
         result = _obj(data)
         got_sha = _sub(result, "object").get("sha")
         if (
