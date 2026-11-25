@@ -1970,7 +1970,7 @@ def _wildcard_refused(exc: ApiError) -> bool:
 def _check_fleet_target(channel: str, topic: str) -> None:
     """`post --fleet` is the fleet-wide wake, and it is allowed in exactly one place."""
     if (
-        channel.casefold() != ROUTER.FLEET_WAKE_CHANNEL
+        channel.casefold() != ROUTER.FLEET_WAKE_CHANNEL.casefold()
         or topic.strip().casefold() != ROUTER.FLEET_WAKE_TOPIC
     ):
         raise UsageError(
