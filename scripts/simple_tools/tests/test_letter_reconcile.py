@@ -331,6 +331,19 @@ class ReconcileTests(Base):
         self.assertEqual(self.title_of("m-0019"), "Fix Login")
         self.assertNotIn("title_pending", self.note("m-0019"))
 
+    def test_a_label_the_assigner_did_not_name_is_not_taken_from_the_history(self) -> None:
+        # The assigner answers with the letters the record holds,  and with the one it holds now.  A label that is
+        # missing,  or that does not look like one,  is no label at all:  the pass must not pick a letter out of the
+        # history on its own,  for the answer about that letter is about another chat's letter.
+        with mock.patch.object(
+            PL,
+            "_call_api",
+            return_value={"record_id": "rec-1", "letters": ["YY", "AB"], "label": ""},
+        ):
+            answer = PL._reconcile_answer(self.env(), PM.SPEC, "mac", "m-0001")
+        self.assertEqual(answer["label"], "")
+        self.assertFalse(answer["holds_no_letter"])
+
     def test_an_assigner_that_does_not_answer_changes_nothing(self) -> None:
         self.add("m-0008", title="Fix Login")
         self.start("m-0008", at=self.old)

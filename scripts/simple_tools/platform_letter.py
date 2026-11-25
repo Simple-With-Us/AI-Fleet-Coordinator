@@ -5093,17 +5093,29 @@ def _reconcile_answer(
     record_id = str(answer.get("record_id") or "")
     if not record_id:
         return {"error": "the assigner named no record"}
-    letters = [text for text in _strings_in(answer.get("letters")) if LABEL_RE.fullmatch(text)]
+    raw = answer.get("letters")
+    raw_letters = _strings_in(raw)
+    letters = [text for text in raw_letters if LABEL_RE.fullmatch(text)]
     label = str(answer.get("label") or "")
     if LABEL_RE.fullmatch(label) and label not in letters:
         letters.insert(0, label)
     # The label the assigner answers with is the letter this chat holds NOW:  the newest generation it ever
     # held.  It is not the letter the chat's note remembers,  which may be behind a relabel.
+    #
+    # Only the assigner's own label is authoritative.  A label that is missing,  or that does not look like one,
+    # is no label at all:  the pass must never pick a letter out of the history on its own,  for the history is the
+    # record's own past and the letter it holds now is the only one the answer is about.  Asking about any other
+    # letter asks about another chat's,  and the answer would retire this one for a prefix that is not its own.
+    authoritative = label if LABEL_RE.fullmatch(label) else ""
+    # The assigner says this chat holds no letter at all:  its answer carries no letter and no label of its own.
+    # That is positive evidence,  and the prefix the title carries belongs to nobody.
+    holds_no_letter = isinstance(raw, list) and not raw_letters and not authoritative
     return {
         "registered": True,
         "record_id": record_id,
         "letters": letters,
-        "label": label if LABEL_RE.fullmatch(label) else (letters[0] if letters else ""),
+        "label": authoritative,
+        "holds_no_letter": holds_no_letter,
     }
 
 
