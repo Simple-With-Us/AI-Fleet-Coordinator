@@ -427,8 +427,16 @@ def cancel(doc_id, root=None):
                 "state": "source-deleted",
             },
         )
-        fd = os.open("cancelled-" + key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600, dir_fd=directory)
-        os.close(fd)
+        # The sentinel is a delete marker:  write it through a temp file and
+        # an atomic rename so a crash never leaves a torn marker behind.
+        sentinel_tmp = "cancelled-" + key + ".tmp-" + uuid.uuid4().hex
+        fd = os.open(sentinel_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(sentinel_tmp, "cancelled-" + key, src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
 
 
 def reconcile_coding(root=None, metadata_reader=None, limit=100):
@@ -477,7 +485,13 @@ def reconcile_coding(root=None, metadata_reader=None, limit=100):
         key = _key(doc_id)
         with _locked(root) as directory:
             pending = _read(directory, key + ".json")
-        if not pending or pending.get("cancelled"):
+        if (
+            not pending
+            or pending.get("cancelled")
+            or pending.get("delivery_state") == "permanent"
+        ):
+            # A permanently failed delivery must not block a later update to
+            # the same note from being enqueued again.
             enqueue_id(doc_id, root=root)
             queued += 1
         with _locked(root) as directory:
