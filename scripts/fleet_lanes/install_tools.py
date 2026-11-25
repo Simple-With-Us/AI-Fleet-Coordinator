@@ -5287,6 +5287,17 @@ def _makedirs_private(dirpath: str) -> None:
 # guard,  so a lock never appears in a platform's home as a file this tool does not own.
 LOCK_DIR_REL = ".local/state/fleet-lanes/locks"
 
+# The fleet's own directory inside the shared state directory.  The state directory and
+# the levels above it are shared with other applications,  so they keep the permissions a
+# plain mkdir gives them;  only the fleet's own levels below this one are owner-only.
+FLEET_STATE_DIR_REL = ".local/state/fleet-lanes"
+
+
+def _is_fleet_private_level(home: str, level: str) -> bool:
+    """True when this level is the fleet's own and may be created owner-only."""
+    private_root = os.path.join(home, *FLEET_STATE_DIR_REL.split("/"))
+    return level == private_root or level.startswith(private_root + os.sep)
+
 
 @contextlib.contextmanager
 def _target_lock(home: str, *targets: str):
@@ -5308,7 +5319,12 @@ def _target_lock(home: str, *targets: str):
         current = parent
     for level in reversed(missing):
         try:
-            os.mkdir(level, 0o700)
+            # A shared level keeps the permissions a plain mkdir gives it,  so the
+            # state directory other applications share is never locked down here.
+            if _is_fleet_private_level(home, level):
+                os.mkdir(level, 0o700)
+            else:
+                os.mkdir(level)
         except FileExistsError:
             pass
     handles = []

@@ -902,6 +902,23 @@ class InstallLockAndPrivateDirTests(World):
         finally:
             os.close(other)
 
+    def test_the_lock_leaves_the_shared_state_directory_alone(self) -> None:
+        """The state directory is shared with other applications.
+
+        The lock directory is the fleet's own,  so it is owner-only.  The state
+        directory above it is shared,  so a fresh install must leave it with the
+        permissions a plain mkdir gives it  and never lock it down.
+        """
+        state = self.home / ".local" / "state"
+        fleet = state / "fleet-lanes"
+        with T._target_lock(str(self.home), str(self.home / ".claude" / "hooks.toml")):
+            pass
+        mask = os.umask(0)
+        os.umask(mask)
+        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o777 & ~mask)
+        self.assertEqual(stat.S_IMODE(fleet.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((fleet / "locks").stat().st_mode), 0o700)
+
     def test_the_lock_file_is_not_left_in_the_platform_directory(self) -> None:
         platform = self.home / ".claude"
         platform.mkdir()
