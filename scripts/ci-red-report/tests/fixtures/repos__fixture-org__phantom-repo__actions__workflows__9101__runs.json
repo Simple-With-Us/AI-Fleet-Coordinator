@@ -1,0 +1,19 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "id": 9101,
+      "conclusion": "failure",
+      "head_sha": "aaa111",
+      "html_url": "https://github.com/fixture-org/phantom-repo/actions/runs/9101",
+      "created_at": "2026-11-20T12:00:00Z"
+    },
+    {
+      "id": 9100,
+      "conclusion": "success",
+      "head_sha": "bbb222",
+      "html_url": "https://github.com/fixture-org/phantom-repo/actions/runs/9100",
+      "created_at": "2026-11-19T12:00:00Z"
+    }
+  ]
+}

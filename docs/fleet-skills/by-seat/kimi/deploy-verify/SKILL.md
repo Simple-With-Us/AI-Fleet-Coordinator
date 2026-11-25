@@ -24,7 +24,7 @@ Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host 
 | `COOLIFY_SERVER_STATS` | Read-only.  App server-stats panels.  Infisical metrics token. |
 | `COOLIFY_AGENTS` | Full deploy/admin.  Agent ops only.  **Never** store this in Infisical as the app's `COOLIFY_API_TOKEN`. |
 
-Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`).  See `secret-handoff`.
+Load via env, not argv, and the environment carries only what the scoped read returned.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack), read from the consumer's own store and authoritative for its folder, through `scripts/fleet_infisical.py`;  the environment is never a source for it, the consumer's own store is the only source, the one bootstrap binding a host keeps to reach Infisical is a reader and not a copy of a value, and a hand-set environment value never replaces the reviewed, scope-limited grant;  there is no shared reader any more, and an operator reading one value by hand uses the read-only Infisical CLI session.  See `secret-handoff`.
 
 If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`.
 
@@ -112,7 +112,7 @@ Health URLs say nothing about a native app.  After a merge that touches an app'
 node ~/apps/ios-fleet/ios_testflight_freshness.mjs --app <key>    # or --repo <Repo>;  --json for the report
 ```
 
-App Store Connect credentials for this check are the owned read-only service token `ios-testflight-freshness-ro`, scoped to exactly Fleet-OPS prod `/asc` and verified before the call.  A missing binding or a grant that is not that scope exits 2.  The check does not fall back to `fleet-secrets` `/asc`, a machine identity, or a legacy key folder.  `--allow-legacy-asc-creds` or `IOS_TF_ALLOW_LEGACY_ASC_CREDS=1` is the only opt-in to that old helper fallback, and a deploy check does not use it.  The binding lives in `IOS_TF_FRESHNESS_INFISICAL_TOKEN`, a 0600 file named by `IOS_TF_FRESHNESS_INFISICAL_TOKEN_FILE`, or the login-keychain item `infisical-service-token` / `ios-testflight-freshness-ro`.  Full steps are in AFC `docs/ios-testflight-freshness.md`.
+App Store Connect credentials for this check are the owned read-only service token `ios-testflight-freshness-ro`, scoped to exactly Fleet-OPS prod `/asc` and verified before the call.  A missing binding or a grant that is not that scope exits 2.  The check does not fall back to a shared reader, a machine identity, or a legacy key folder.  There is no legacy opt-in:  the installed `asc-api.mjs` never runs with its own fallback, so environment `ASC_*` values, a standalone reader's `/asc` and a legacy key folder are never read.  The binding lives in `IOS_TF_FRESHNESS_INFISICAL_TOKEN`, a 0600 file named by `IOS_TF_FRESHNESS_INFISICAL_TOKEN_FILE`, or the login-keychain item `infisical-service-token` / `ios-testflight-freshness-ro`.  Full steps are in AFC `docs/ios-testflight-freshness.md`.
 
 Exit 0 means current, so the deploy is verified.  Exit 1 means not yet: `SHIPPING` or `PROCESSING` is a ship already in flight, so re-run it later; `BEHIND` names the missing commit and says why the automatic catch-up did not run, or (AFC-434) that an external TestFlight group serves a stale or empty build (group-only `BEHIND` does not trigger `--ship-behind` catch-up — fix groups in App Store Connect).  Exit 2 means the check itself failed.  App keys and native paths live in AFC `scripts/ios-fleet/testflight-apps.json`, and the full guide is AFC `docs/ios-testflight-freshness.md`.  With `--json`, each app may include `externalGroups` (per-group newest build, tester count, public link); see the doc for findings and `externalGroupsOnly`.  This post-merge check is report-only, so never pass `--ship-behind` here.  The LaunchAgent `com.jay.ios-testflight-freshness` runs the catch-up ships every two hours under the fleet gates.  Quote the verdict in the closeout.
 
@@ -123,7 +123,7 @@ After a ship, you may also run the read-only build-number audit when the change 
 **When the check says behind**, look before you change anything:
 
 1. **Ship workflow run.**  The relay tool `gr_wf_runs_page` (`repo` = `Simple-With-Us/<repo>`, `branch` = the merge branch, `status` = `completed`) lists the recent runs, and `gr_wf_run_get` (`repo`, `run_id`) opens one.  A run for the merge SHA that failed: read the failing step (archive, signing, upload, ensure-tf-ready).  No run at all: a merge made by `github-actions[bot]` with `GITHUB_TOKEN` fires no `push` workflows, so only the cron backstop or a `workflow_dispatch` ships it.
-2. **Runner.**  A run stuck queued has no runner.  Read the job's `runs-on`: most ship jobs use hosted `macos-latest`, Clutch and BotFleet use `xcode-27`.  Do not turn on a Mac PR-check runner (banned in FLEET-PROTOCOL.md § CI Runners) and do not run a local archive or `ship-testflight.sh` from a seat to catch up.  Re-ship through the repo's workflow.
+2. **Runner.**  A run stuck queued has no runner.  Read the job's `runs-on`: most ship jobs use hosted `macos-latest`, Clutch and BotFleet use `xcode-27`.  Do not turn on a Mac PR-check runner (banned; see the repository AGENTS.md § CI runners) and do not run a local archive or `ship-testflight.sh` from a seat to catch up.  Re-ship through the repo's workflow.
 3. **Rate gate.**  A skip for the per-app minimum interval or for an unchanged git HEAD exits 0 and looks green, so it is not a failure and not a reason to force anything.  Read the live interval from `DEFAULT_MIN_INTERVAL_SEC` in `~/apps/ios-fleet/ship-testflight.sh`, because the README table has disagreed with the script.  Never set `IOS_TF_MIN_INTERVAL_SEC` as a standing workflow value.  Never force a ship past the gate (FLEET-PROTOCOL.md); a per-run override is for when the owner says so for that run, preferably as a one-off `workflow_dispatch`.
 4. **Compile check.**  A red `ios-build.yml` on main usually means the archive fails too.  That is a code fix on main, not a ship fix.
 
@@ -134,7 +134,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 - **Autorotate** was retired from TestFlight on 2026-10-10 and the freshness check does not list it.  Its `testflight.yml` is dispatch-only with a signing-ready attestation; do not attest signing you have not verified.
 - **ContactLogo** `ios-testflight.yml` is the fleet pipeline (CL-204, 2026-10-17): push to `main` on `Apps/ContactLogoiOS/**`, `Sources/ContactLogoKit/**` or `project.yml`, a path-gated twice-hourly catch-up, and `workflow_dispatch`.  It needs no repository variable (`CL_IOS_TESTFLIGHT_ENABLED` and `CL_APPLE_ID` are retired) and takes no required dispatch input.
 
-**Rules that matter** (FLEET-PROTOCOL.md § Releases, Versioning, and Brand Assets):
+**Rules that matter** (the repository AGENTS.md working rules and FLEET-PROTOCOL.md § App Versions and Build Timestamps):
 
 - What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with a normal space before uppercase AM or PM and no zone abbreviation.  No seat, agent, or tool names, ever.
 - The build number is the time the build itself runs in `YYYYMMDDHHmm` Central Time (owner ruling updated November 15, 2026: every build, including rebuilds, takes its own run time), strictly increasing per app, so no build number is ever reused.  The marketing version follows the app's standing version rule (default `0.1.0`, CT `1.1.2`, or the app's current App Store rule), not the commit count.  Commit-count and UTC build stamps are retired.
@@ -149,7 +149,7 @@ Move the Linear issue to **Deployed** (the MCP tool `linear_status`, with `id` a
 - `~/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
 - `docs/protocols/production-deploys.md` — sanctioned deploy paths and Coolify tokens
-- `~/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
+- `~/apps/FLEET-PROTOCOL.md` — App Versions and Build Timestamps (owner copy)
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`

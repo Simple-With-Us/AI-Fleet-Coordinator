@@ -2,7 +2,12 @@
 
 Endpoints (all JSON in, JSON out):
     GET  /healthz
-    POST /v1/open_pr           {repo, base, head, title, body, draft?}  (owner token; read back)
+    POST /v1/open_pr           {repo, base, head, title, body, draft?,
+                                origin_session_claim?, origin_letter_claim?,
+                                origin_generation_claim?}              (owner token; read back)
+    POST /v1/service_read      {repo, number, verb, page?, sha?}      (dedicated
+                                service bearer; fixed read verbs, repo allowlist;
+                                narrowed one-repo App grant, never the token)
     POST /v1/edit_pr           {repo, number, title?, body?}        (seat's App)
     POST /v1/reply_thread      {repo, number, comment_id, body}     (seat's App)
     POST /v1/comment_pr        {repo, number, body}                 (seat's App)
@@ -35,7 +40,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import git_read
+from . import git_read, service_read
 from .app_tokens import AppTokenError, missing_app_credential
 from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
 from .github_client import (
@@ -53,6 +58,7 @@ from .policy import (
     auth_failure_response,
 )
 from .policy_input import seats_json_from_env
+from .pr_owners import PROwnerStore
 from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -63,10 +69,17 @@ BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
 # permission, scan budget or workflow verb is widened.
 MAX_FILE_REQUEST_BYTES = 6 * 1024 * 1024
 FILE_REQUEST_ACTIONS = frozenset({"wf_file_put", "wf_files_put"})
-# The opt-in large-text git creates carry up to 100,000 bytes of text; the
+# The opt-in large-text git creates carry up to 716,800 bytes of text (JSON escaping can expand it several times); the
 # envelope allowance stays narrow and the verb owns the exact text bound.
-MAX_LARGE_TEXT_REQUEST_BYTES = 256 * 1024
+MAX_LARGE_TEXT_REQUEST_BYTES = 6 * 1024 * 1024
 LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_create"})
+# Sealed secret values (up to 48 KiB, base64 plus envelope) exceed the default 64 KiB cap; the verb owns the exact bound.
+MAX_SECRET_PUT_REQUEST_BYTES = 128 * 1024
+SECRET_PUT_REQUEST_ACTIONS = frozenset(
+    a
+    for a in SeatPolicy.WORKFLOW_ACTIONS
+    if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
+)
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -99,6 +112,16 @@ MAX_TEXT_FIELD = 32 * 1024
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8471
+
+
+#: The fleet session-id shape (fleet-apps.json `sessionIds`;  session_ids.py parity copy
+#: is ^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$).  A claim is a caller's say-so only:  it is
+#: never sent upstream and never routes anything.  The only binding is the
+#: session's own registry row (bound_prs), checked live by the wake-router at
+#: delivery;  the relay itself verifies nothing about the claims.
+_SESSION_CLAIM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{3,127}")
+#: A fleet session letter is exactly two capitals (wake-router letter rule).
+_LETTER_CLAIM_RE = re.compile(r"[A-Z]{2}")
 
 
 def _text(value, field: str, required: bool = True) -> str | None:
@@ -145,6 +168,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
     if action == git_read.ACTION:
         raise ValueError("git_read has no JSON call;  it is served on the /git/ route")
+    if action == service_read.ACTION:
+        return service_read.validate(args)
     if action == "create_repo":
         return _validate_create_repo(args)
     specs: dict = {"repo": ("text", True)}
@@ -156,6 +181,12 @@ def _validate_args(action: str, args: dict) -> dict:
                 "title": ("clean", True),
                 "body": ("clean", True),
                 "draft": ("boolean", False),
+                # Untrusted caller claims:  recorded for the ownership index,
+                # never sent upstream.  The trusted binding is the session's own
+                # registry row (bound_prs), enforced by the wake-router.
+                "origin_session_claim": ("session_claim", False),
+                "origin_letter_claim": ("letter_claim", False),
+                "origin_generation_claim": ("generation_claim", False),
             }
         )
     elif action == "edit_pr":
@@ -200,6 +231,14 @@ def _validate_args(action: str, args: dict) -> dict:
     extra = sorted(set(args) - set(specs))
     if extra:
         raise ValueError(f"{action}: unexpected fields ({len(extra)})")
+    if action == "open_pr":
+        # The three creation-time native claims are all-or-none:  a caller
+        # that offers one claim offers all three, so a partial set can never
+        # be read as a complete attestation.  Each claim is shape-checked
+        # below, and an absent claim set stays absent.
+        offered = {name for name in args if name.startswith("origin_")}
+        if offered and offered != set(service_read.CLAIMS):
+            raise ValueError("native origin claims must be supplied together")
     canonical: dict = {}
     for field, (kind, required) in specs.items():
         value = args.get(field)
@@ -211,6 +250,13 @@ def _validate_args(action: str, args: dict) -> dict:
             value = _text(value, field, required=required)
             if not re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}", value):
                 raise ValueError("thread_id must be a pull request review thread id")
+        elif kind == "generation_claim":
+            if value is None and not required:
+                pass
+            else:
+                value = _number(value, field)
+                if value > 2147483647:
+                    raise ValueError(f"{field} must be a generation between 1 and 2147483647")
         elif kind == "number":
             value = _number(value, field)
         elif kind == "boolean":
@@ -219,6 +265,14 @@ def _validate_args(action: str, args: dict) -> dict:
             # False is the existing default and must retain the same outcome key.
             if value is False:
                 value = None
+        elif kind == "session_claim":
+            value = _text(value, field, required=required)
+            if value is not None and not _SESSION_CLAIM_RE.fullmatch(value):
+                raise ValueError(f"{field} is not a session id shape")
+        elif kind == "letter_claim":
+            value = _text(value, field, required=required)
+            if value is not None and not _LETTER_CLAIM_RE.fullmatch(value):
+                raise ValueError(f"{field} is not a session letter (two capitals)")
         elif kind == "method":
             if value is None:
                 value = "squash"
@@ -334,6 +388,9 @@ class Relay:
         outcomes: OutcomeStore | None = None,
         workflow_verbs_enabled: bool = False,
         typed_disarm_enabled: bool = False,
+        pr_owners: PROwnerStore | None = None,
+        service_read_token: str | None = None,
+        service_read_repos=frozenset(),
     ):
         # Off unless the operator turns it on: with it off every wf_ action is refused
         # as registered-not-wired, exactly as before the wiring existed.
@@ -345,6 +402,11 @@ class Relay:
         self._bootstrap_auditor = BootstrapDenialAuditor()
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
+        self.pr_owners = pr_owners
+        # The service-read lane:  a dedicated bearer (not a seat token) and the
+        # exact repos it may read.  None/empty keeps the lane closed.
+        self.service_read_token = service_read_token
+        self.service_read_repos = frozenset(service_read_repos)
         self.typed_gateway = None
         if typed_disarm_enabled:
             from .typed_gateway import TypedGateway
@@ -360,6 +422,18 @@ class Relay:
         *,
         operator_bootstrap: bool = False,
     ) -> tuple[int, dict]:
+        if action == "service_read" and self.service_read_token is not None:
+            # The alert service's read lane:  its own bearer, no seat policy,
+            # fixed verbs and an explicit repo allowlist.  It never mints for
+            # a caller-chosen scope and never returns a token.
+            #
+            # A configured lane owns the action outright:  the lane's own
+            # credential is the only one it accepts, and it answers every
+            # other bearer with its ordinary unauthenticated refusal.  A
+            # relay with no lane configured leaves the action to the normal
+            # policy path, where the seat's own grant, repository scope and
+            # quota apply.
+            return service_read.lane(self, token, args)
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.
         if self.typed_gateway is not None:
@@ -443,6 +517,8 @@ class Relay:
         # from key_for, the outcome store, or dispatch) can skip it or double it.
         outcome = "ok"
         detail: dict = {}
+        title_prefixed = False
+        key_title = None
         try:
             # Order is deliberate:  secret scan, full shape validation, then the
             # policy check (allowlist + hourly rate) ALL run before the
@@ -464,6 +540,8 @@ class Relay:
                     )
                 elif action in LARGE_TEXT_REQUEST_ACTIONS:
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
+                elif action in SECRET_PUT_REQUEST_ACTIONS:
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_SECRET_PUT_REQUEST_BYTES])
                 else:
                     scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
@@ -478,6 +556,24 @@ class Relay:
                     WorkflowVerbs.check_shape(action, canonical, canonical["repo"])
                 else:
                     canonical = _validate_args(action, args)
+                if action == "open_pr" or (
+                    action == "edit_pr" and canonical.get("title") is not None
+                ):
+                    # Jay's 2026-11-20 bracketed-heading convention:  the
+                    # seat's tag leads the title at creation, and a retitle
+                    # through edit_pr cannot strip it.  Applied to the
+                    # canonical args so the upstream write and the audit row
+                    # agree;  the idempotency key below still binds the seat's
+                    # ORIGINAL title, so a pre-convention pending/unknown row
+                    # matches its post-deploy retry instead of duplicating.
+                    key_title = canonical["title"]
+                    canonical["title"], title_prefixed = self.policy.apply_title_tag(
+                        seat, canonical["title"]
+                    )
+                    if len(canonical["title"]) > MAX_TEXT_FIELD:
+                        # The prefix itself may not push the field past the
+                        # bound _validate_args enforced on the original.
+                        raise ValueError("title exceeds the 32 KiB bound")
                 denial = self.policy.authorize(seat, action, canonical["repo"])
                 if denial:
                     raise PolicyDenied(denial)
@@ -501,7 +597,12 @@ class Relay:
                 # by persisting that credential in the store, which is worse) and
                 # a duplicate mint is benign - installation tokens expire within
                 # the hour and the minter's per-key lock dedups concurrent calls.
-                key = key_for(seat, action, canonical)
+                key_args = {k: v for k, v in canonical.items() if not k.startswith("origin_")}
+                key = key_for(
+                    seat,
+                    action,
+                    {**key_args, "title": key_title} if key_title is not None else key_args,
+                )
                 try:
                     attempt_corr = uuid.uuid4().hex
                     prior = self.outcomes.begin(
@@ -562,8 +663,25 @@ class Relay:
                         "retryable": False,
                     }
             try:
+                if action == "open_pr" and self.pr_owners is not None:
+                    # The creation fence is durable BEFORE the upstream
+                    # create, so even total disk failure after a known
+                    # create cannot hide a missing row across a restart.
+                    # The fence binds to the outcome row the idempotency
+                    # gate just wrote, so it uses that row's own
+                    # correlation id:  a second key computation could drift
+                    # from the key the gate used and would fence nothing.
+                    try:
+                        self.pr_owners.begin_creation(attempt_corr)
+                    except (OSError, ValueError):
+                        raise ServerUnavailable("creation index fence unavailable") from None
                 result = self._dispatch(
-                    seat, action, canonical, canonical["repo"], caller_token=token
+                    seat,
+                    action,
+                    canonical,
+                    canonical["repo"],
+                    caller_token=token,
+                    corr=attempt_corr,
                 )
             except PolicyDenied as exc:
                 self._release(key, "refused")
@@ -644,6 +762,17 @@ class Relay:
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
+                if key is None and exc.code in {"response_too_large", "response_invalid_unicode"}:
+                    # A bounded READ changed nothing. Retrying the same body cannot
+                    # make it fit. Writes still keep their unknown-outcome fence.
+                    outcome = "github_terminal"
+                    detail = {"status": exc.status, "github_code": exc.code}
+                    return 502, {
+                        "error": "github response failed deterministic validation",
+                        "github_status": exc.status,
+                        "github_code": exc.code,
+                        "retryable": False,
+                    }
                 if (
                     key is None
                     and exc.status in (0, 408, 429)
@@ -694,6 +823,13 @@ class Relay:
                     unconfirmed = getattr(exc, "unconfirmed_number", None)
                     if unconfirmed is not None:
                         detail["unconfirmed_number"] = unconfirmed
+                        if action == "open_pr":
+                            # The create's outcome is unknown:  record the
+                            # seat's claim on this number as unconfirmed so
+                            # the index can say so honestly.
+                            detail["owner_recorded"] = self._record_pr_owner(
+                                seat, canonical, unconfirmed, attempt_corr, confirmed=False
+                            )
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 502, payload
@@ -744,6 +880,13 @@ class Relay:
                 )
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
+            owner_recorded = None
+            if action == "open_pr" and type(result.get("number")) is int:
+                # Bind the returned PR to the authenticated seat in the
+                # queryable ownership index.
+                owner_recorded = self._record_pr_owner(
+                    seat, canonical, result["number"], attempt_corr, confirmed=True
+                )
             if action == "create_repo":
                 # The request description is never an audit field.  Neither is a token.
                 detail = {
@@ -755,6 +898,11 @@ class Relay:
                 detail = _workflow_audit_detail(canonical, result)
             else:
                 detail = {**canonical, **result}
+                if title_prefixed:
+                    # The seat sent no conforming heading;  the relay added it.
+                    detail["title_prefixed"] = True
+                if owner_recorded is not None:
+                    detail["owner_recorded"] = owner_recorded
             return 200, result
         except Exception as exc:
             # An unexpected relay failure:  whether GitHub was reached is
@@ -812,24 +960,89 @@ class Relay:
         if key is not None:
             self.outcomes.finish(key, state)
 
+    def _record_pr_owner(
+        self, seat: str, canonical: dict, number: int, corr: str | None, confirmed: bool
+    ) -> bool | None:
+        """Best-effort ownership-index write;  the audit row stays the source of truth.
+
+        Returns True or False when a store is wired, None when none is.
+        """
+        if self.pr_owners is None:
+            return None
+        try:
+            self.pr_owners.record(
+                seat=seat,
+                repo=canonical["repo"],
+                number=number,
+                head=canonical["head"],
+                base=canonical["base"],
+                corr=corr,
+                confirmed=confirmed,
+                origin_session_claim=canonical.get("origin_session_claim"),
+                origin_letter_claim=canonical.get("origin_letter_claim"),
+                origin_generation_claim=canonical.get("origin_generation_claim"),
+            )
+        except Exception:
+            # A failed index write never fails or reclassifies the creation:
+            # the PR exists at this point, the outcome row already finished
+            # "ok", and this attempt's audit row still binds it.  Any
+            # unexpected store failure (not just OSError/ValueError) degrades
+            # to owner_recorded False;  `python3 -m git_relay.pr_owners
+            # rebuild` repairs the index from the audit log.
+            return False
+        return True
+
     def _dispatch(
-        self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None
+        self,
+        seat: str,
+        action: str,
+        args: dict,
+        repo: str,
+        caller_token: str | None = None,
+        corr: str | None = None,
     ) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
+        if action == service_read.ACTION:
+            return service_read.dispatch(self, seat, args)
         if action in SeatPolicy.WORKFLOW_ACTIONS:
             return self._dispatch_workflow(seat, action, args, repo, caller_token=caller_token)
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         if action == "open_pr":
-            return self.client.open_pr(
-                repo,
-                base=_text(args.get("base"), "base"),
-                head=_text(args.get("head"), "head"),
-                title=_clean_text(args.get("title"), "title"),
-                body=_clean_text(args.get("body"), "body"),
-                **({"draft": args["draft"]} if "draft" in args else {}),
-            )
+            # The creation fence was already written by handle(), before
+            # this call:  the owner index is fenced durably before the
+            # upstream side effect, and no new origin is obtained on retry.
+            # The correlation id is the one the idempotency gate wrote, so
+            # the refusal below resolves exactly that fence.
+            try:
+                return self.client.open_pr(
+                    repo,
+                    base=_text(args.get("base"), "base"),
+                    head=_text(args.get("head"), "head"),
+                    title=_clean_text(args.get("title"), "title"),
+                    body=_clean_text(args.get("body"), "body"),
+                    **({"draft": args["draft"]} if "draft" in args else {}),
+                )
+            except RelayGitHubError as exc:
+                # Only the client's validated, un-followed repository move
+                # is additional no-create evidence. Generic redirects and
+                # post-create readback failures remain fenced as uncertain.
+                repository_moved = (
+                    exc.code == "repository_moved"
+                    and 300 <= exc.status < 400
+                    and exc.moved_repository_id is not None
+                )
+                if self.pr_owners is not None and (
+                    repository_moved or 400 <= exc.status < 500 and exc.status != 408
+                ):
+                    try:
+                        self.pr_owners.refuse_creation(corr)
+                    except (OSError, ValueError):
+                        # Retain the durable fence if cleanup fails. Refusal is
+                        # still a refusal; never issue a second upstream write.
+                        pass
+                raise
         # Every non-open_pr write is an APP_ACTION and never reaches here.
         raise ValueError(f"unknown owner-token action {action!r}")
 
@@ -841,6 +1054,44 @@ _REAPPLY_STATE_ACTIONS = frozenset(
     {
         "wf_repo_variable_update",
         "wf_repo_variable_delete",
+        "wf_secret_put_org_actions",
+        "wf_secret_delete_org_actions",
+        "wf_secret_repos_set_org_actions",
+        "wf_secret_put_org_dependabot",
+        "wf_secret_delete_org_dependabot",
+        "wf_secret_repos_set_org_dependabot",
+        "wf_secret_put_org_codespaces",
+        "wf_secret_delete_org_codespaces",
+        "wf_secret_repos_set_org_codespaces",
+        "wf_secret_put_repo_actions",
+        "wf_secret_delete_repo_actions",
+        "wf_secret_put_repo_dependabot",
+        "wf_secret_delete_repo_dependabot",
+        "wf_secret_put_repo_codespaces",
+        "wf_secret_delete_repo_codespaces",
+        "wf_secret_put_env_actions",
+        "wf_secret_delete_env_actions",
+        "wf_hook_create",
+        "wf_hook_update",
+        "wf_hook_delete",
+        "wf_hook_ping",
+        "wf_hook_test",
+        "wf_hook_redeliver",
+        "wf_org_hook_create",
+        "wf_org_hook_update",
+        "wf_org_hook_delete",
+        "wf_org_hook_ping",
+        "wf_deploy_key_add",
+        "wf_deploy_key_delete",
+        "wf_environment_put",
+        "wf_environment_delete",
+        "wf_env_branch_policy_create",
+        "wf_env_branch_policy_delete",
+        "wf_env_variable_set",
+        "wf_env_variable_delete",
+        "wf_org_variable_set",
+        "wf_org_variable_delete",
+        "wf_org_variable_repos_set",
         "wf_labels_add",
         "wf_label_update",
         "wf_issue_dependency_add",
@@ -973,6 +1224,8 @@ def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
 
 def _is_workflow_read(self, action: str) -> bool:
     """A wf_ verb that changes nothing upstream needs no idempotency key and holds no outcome."""
+    if action == service_read.ACTION:
+        return True
     if action not in SeatPolicy.WORKFLOW_ACTIONS:
         return False
     from .workflow_verbs import SPECS
@@ -1072,16 +1325,16 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         account = SeatPolicy.create_repo_account(owner)
         if account is None:
             raise ValueError("repository owner is not allowed")
-        token = None
+        app_token = None
         try:
-            token = self.app_minter.token_for_namespace(app_slug, account[0], account[1])
+            app_token = self.app_minter.token_for_namespace(app_slug, account[0], account[1])
             try:
                 return self.client.create_repo(
                     repo,
                     args["visibility"],
                     description=args.get("description"),
                     license_template=args.get("license_template"),
-                    bearer=token,
+                    bearer=app_token,
                     kind=account[1],
                 )
             except RelayGitHubError as exc:
@@ -1089,8 +1342,8 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
                     raise PreReadUnavailable() from None
                 raise
         finally:
-            if token is not None:
-                self.app_minter.revoke_installation_token(token)
+            if app_token is not None:
+                self.app_minter.revoke_installation_token(app_token)
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
     if action == "workflow_dispatch" and args.get("expected_head_sha"):
         required["contents"] = "read"
@@ -1205,7 +1458,7 @@ class _OperatorBootstrapRelay:
         return self._relay.handle(token, action, args, proof=proof, operator_bootstrap=True)
 
 
-def make_handler(relay: Relay, operator_bootstrap: bool = False):
+def make_handler(relay: Relay, operator_bootstrap: bool = False, service_read_only: bool = False):
     # Bootstrap admission is bound to the LISTENER, never to the peer
     # address:  the tunnel and any local client reach the public listener
     # alike, so remote_addr cannot distinguish an operator from the edge.
@@ -1234,7 +1487,7 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
             if self.path == "/healthz":
                 self._send(200, {"ok": True})
             elif git_read.is_git_path(self.path):
-                if operator_bootstrap:
+                if operator_bootstrap or service_read_only:
                     # The operator listener serves the v1 API only:  Git
                     # smart-HTTP needs the full Relay interface and is not
                     # part of bootstrap admission, so it is refused outright
@@ -1246,6 +1499,9 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if service_read_only and self.path != "/v1/service_read":
+                self._send(404, {"error": "not found"})
+                return
             if git_read.is_git_path(self.path):
                 if operator_bootstrap:
                     self._send(404, {"error": "not found"})
@@ -1272,6 +1528,8 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
                 if action in FILE_REQUEST_ACTIONS
                 else MAX_LARGE_TEXT_REQUEST_BYTES
                 if action in LARGE_TEXT_REQUEST_ACTIONS
+                else MAX_SECRET_PUT_REQUEST_BYTES
+                if action in SECRET_PUT_REQUEST_ACTIONS
                 else MAX_REQUEST_BYTES
             )
             if length < 1 or length > cap:
@@ -1298,6 +1556,7 @@ def make_handler(relay: Relay, operator_bootstrap: bool = False):
 
 DEFAULT_AUDIT_PATH = "git-relay-audit.jsonl"
 DEFAULT_OUTCOMES_PATH = "git-relay-outcomes.json"
+DEFAULT_PR_OWNERS_PATH = "git-relay-pr-owners.jsonl"
 # The state files were renamed along with the CLI (GHR -> git-relay).  The
 # outcome store is a write-idempotency ledger:  its pending/unknown rows are
 # the only thing that stops a replay of a write whose GitHub outcome was never
@@ -1459,7 +1718,7 @@ def _build_shared_verifier():
     verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
     if not verify_url:
         return None
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .app_tokens import AppTokenError, InfisicalSource
     from .shared_bearer import SharedBearerVerifier
 
     raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
@@ -1470,7 +1729,7 @@ def _build_shared_verifier():
             # Preserve the existing file selector, without claiming its grant covers /tools.
             # The canonical verifier requires exactly this one folder; the legacy two-folder
             # grant cannot satisfy it.  Activation needs the verified dedicated tools binding.
-            key_source=FleetSecretsSource(
+            key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
                     _credential_file_for(
@@ -1512,7 +1771,7 @@ def _build_assertion_verifier():
         raise SystemExit(
             "git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL"
         )
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .app_tokens import AppTokenError, InfisicalSource
     from .assertion import GrAssertionVerifier
 
     raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
@@ -1522,7 +1781,7 @@ def _build_assertion_verifier():
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
             # Same existing file selector and dedicated-binding activation gate as the bearer
             # verify key above; this source change neither widens nor proves a grant.
-            key_source=FleetSecretsSource(
+            key_source=InfisicalSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
                     _credential_file_for(
@@ -1587,7 +1846,7 @@ def from_env() -> Relay:
     outcome_capacity = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
         # The existing source uses the canonical bounded reader with its own token file.
-        from .app_tokens import AppTokenError, AppTokenMinter, FleetSecretsSource
+        from .app_tokens import AppTokenError, AppTokenMinter, InfisicalSource
 
         # The Fleet-OPS prod folder the App keys are read from.  Defaults to
         # /github-apps (their verified live location);  GIT_RELAY_SECRETS_PATH
@@ -1601,7 +1860,7 @@ def from_env() -> Relay:
                 "unset it to use /github-apps"
             )
         try:
-            app_source = FleetSecretsSource(
+            app_source = InfisicalSource(
                 path=(raw_secrets_path or "/github-apps").strip(),
                 credential_file=_credential_file_for(
                     "the App-credentials source",
@@ -1635,6 +1894,9 @@ def from_env() -> Relay:
         if "GIT_RELAY_OUTCOMES_PATH" in os.environ
         else adopt_legacy_state(DEFAULT_OUTCOMES_PATH)
     )
+    owners_path = os.environ.get("GIT_RELAY_PR_OWNERS_PATH") or os.path.join(
+        os.path.dirname(os.path.abspath(audit_path)), DEFAULT_PR_OWNERS_PATH
+    )
     audit = AuditLog(audit_path)
     # App-disabled legacy startup keeps the auth-free library default.
     outcomes = OutcomeStore(outcomes_path, max_entries=outcome_capacity)
@@ -1643,9 +1905,12 @@ def from_env() -> Relay:
         client,
         audit,
         app_minter=app_minter,
+        service_read_token=_service_read_token_from_file(),
+        service_read_repos=_service_read_repos_from_env(),
         outcomes=outcomes,
         workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
         typed_disarm_enabled=os.environ.get("GIT_RELAY_ENABLE_TYPED_DISARM") == "1",
+        pr_owners=PROwnerStore(owners_path),
     )
 
 
@@ -1688,9 +1953,9 @@ def _owner_token_from_cli() -> str:
     folder scope (_credential_file_for):  no ambient inheritance in
     production.
     """
-    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .app_tokens import AppTokenError, InfisicalSource
 
-    source = FleetSecretsSource(
+    source = InfisicalSource(
         path="/git-relay-owner",
         credential_file=_credential_file_for(
             "the /git-relay-owner source",
@@ -1704,8 +1969,84 @@ def _owner_token_from_cli() -> str:
         raise RuntimeError(f"git-relay config: owner token:  {exc}") from None
 
 
+def _report_pr_owner_binding(relay):
+    # Startup-only, nonsecret activation receipt. Bound by journald to this
+    # service invocation/PID; not an HTTP endpoint or an ownership backfill.
+    store = relay.pr_owners
+    owners_parent = os.path.dirname(os.path.abspath(store._path))
+    print(
+        json.dumps(
+            {
+                "event": "pr_owners_bound_v1",
+                "pid": os.getpid(),
+                "module": type(store).__module__,
+                "type": type(store).__name__,
+                "path": os.path.realpath(store._path),
+                "absolute": os.path.isabs(store._path),
+                "parent_writable": os.path.isdir(owners_parent)
+                and os.access(owners_parent, os.W_OK),
+                "load_error": store.load_error,
+            }
+        ),
+        flush=True,
+    )
+
+
+def _service_read_repos_from_env() -> frozenset:
+    """The service-read repo allowlist:  GIT_RELAY_SERVICE_READ_REPOS as a
+    comma list of owner/name;  empty means the lane answers 503 to all."""
+    out = set()
+    for part in os.environ.get("GIT_RELAY_SERVICE_READ_REPOS", "").split(","):
+        part = part.strip()
+        if part:
+            if not service_read.LANE_REPO.fullmatch(part):
+                raise SystemExit("git-relay config: bad repo in GIT_RELAY_SERVICE_READ_REPOS")
+            out.add(part)
+    return frozenset(out)
+
+
+def _service_read_token_from_file() -> str | None:
+    """The service lane's dedicated bearer, from its own credential file
+    (LoadCredential git-relay-service-read or GIT_RELAY_SERVICE_READ_CREDENTIAL_FILE);
+    never the process environment.  None when the lane is not configured."""
+    if not _service_read_repos_from_env():
+        return None
+    path = _credential_file_for(
+        "service-read", "GIT_RELAY_SERVICE_READ_CREDENTIAL_FILE", "git-relay-service-read"
+    )
+    try:
+        value = open(path, "r", encoding="utf-8").read().strip()
+    except OSError as exc:
+        raise SystemExit("git-relay config: service-read credential file unreadable") from exc
+    if len(value) < 32:
+        raise SystemExit("git-relay config: service-read credential is too short")
+    return value
+
+
+def _service_read_listener_address(env):
+    """Optional private bridge socket. Never wildcard, public or bootstrap-capable."""
+    import ipaddress
+
+    raw = env.get("GIT_RELAY_SERVICE_READ_BIND", "")
+    if not raw:
+        return None
+    try:
+        address = ipaddress.ip_address(raw)
+        allowed = address.is_loopback or any(
+            address in ipaddress.ip_network(net)
+            for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+        )
+        port = int(env.get("GIT_RELAY_SERVICE_READ_PORT", "8473"))
+        if not allowed or not 1024 <= port <= 65535:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise SystemExit("git-relay config: invalid private service-read listener") from None
+    return str(address), port
+
+
 def main() -> None:
     relay = from_env()
+    _report_pr_owner_binding(relay)
     host = os.environ.get("GIT_RELAY_HOST", DEFAULT_HOST)
     port = int(os.environ.get("GIT_RELAY_PORT", str(DEFAULT_PORT)))
     server = BoundedThreadingHTTPServer((host, port), make_handler(relay))
@@ -1729,9 +2070,24 @@ def main() -> None:
         )
         threading.Thread(target=operator_server.serve_forever, daemon=True).start()
         print(f"git-relay operator listener on 127.0.0.1:{operator_port}")
+    service_server = None
+    service_address = _service_read_listener_address(os.environ)
+    if service_address:
+        if not relay.service_read_token or not relay.service_read_repos:
+            raise SystemExit(
+                "git-relay config: service-read listener needs dedicated auth and repos"
+            )
+        service_server = BoundedThreadingHTTPServer(
+            service_address, make_handler(relay, service_read_only=True)
+        )
+        threading.Thread(target=service_server.serve_forever, daemon=True).start()
+        print("git-relay private service-read listener active")
     try:
         server.serve_forever()
     finally:
+        if service_server is not None:
+            service_server.shutdown()
+            service_server.server_close()
         if operator_server is not None:
             operator_server.shutdown()
             operator_server.server_close()

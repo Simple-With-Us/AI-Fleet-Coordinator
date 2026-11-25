@@ -28,7 +28,7 @@ states in its intro.  This mirrors the standing rule that a DeepSeek model insid
   CLIs are already on PATH and need no MCP.
 - Subagents inherit the parent model and effort, so fx cannot route a task to a cheaper sibling
   inside one session.  The 30% sister-model rule is waived for FX exactly as it is for Grok; the
-  rest of Delegation & model economics binds.
+  rest of the Delegation & model economics rule (`TEMPLATE-AGENTS.md`) binds.
 - Non-interactive use: `fx ask --json "<prompt>"`, `fx acp` for ACP clients (BotFleet-style
   engines), `FX_MODEL=<id>` to override the model for one process.
 
@@ -96,7 +96,7 @@ LAND EVERYTHING
   without the owner saying so in chat.
 
 SECRETS
-- Names only: fleet-secrets names.  One value: fleet-secrets get NAME (never echo it, no 2>&1).  Never cat,
+- Names only: the folder's own scoped Infisical read.  One value: a scoped Infisical read of NAME (never echo it, no 2>&1).  Never cat,
   read, or print a secrets file or a token; never grep one without -o.  Infisical is the runtime
   source of truth; never run bare infisical secrets.
 

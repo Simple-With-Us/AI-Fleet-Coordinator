@@ -7,7 +7,7 @@ run as its seat, checks custody of the seat's bearer file, and execs the
 transport (scripts/mcp-servers/assigned-hosted-stdio.py) with only the bearer,
 PATH and HOME in its environment.
 
-Seat rules (FLEET-PROTOCOL Identity Rules):
+Seat rules (FLEET-PROTOCOL Seats and Identity):
   * A launcher-assigned seat wins.  When AGENT_LAUNCHER is set, AGENT_LAUNCH_SEAT
     must be set and must be this launcher's seat, or the connection is refused.
   * With no AGENT_LAUNCHER, a shell-exported AGENT_SEAT or AGENT_TAG that differs

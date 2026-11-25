@@ -107,53 +107,60 @@ class PolicyTests(unittest.TestCase):
                 m.read_systemd_token(env, expected_uid=os.geteuid())
 
     def test_fetch_policy_scopes_auth_and_preserves_project_prod_metadata(self):
-        with tempfile.TemporaryDirectory() as d:
-            cli = Path(d) / "fleet-secrets"
-            cli.write_text("#!/bin/sh\nexit 0\n")
-            cli.chmod(0o700)
-            ambient = {
-                "FLEET_SECRETS_CLI": str(cli),
-                "INFISICAL_FLEET_OPS_PROJECT_ID": "project-id",
-                "INFISICAL_ENVIRONMENT": "prod",
-                "INFISICAL_ENV": "prod",
-                "INFISICAL_TOKEN": "ambient-token",
-                "INFISICAL_CLIENT_SECRET": "ambient-secret",
-                "INFISICAL_AUTOMATION_CLIENT_SECRET": "ambient-automation-secret",
-                "INFISICAL_UNRELATED": "discard-me",
-            }
-            completed = type("Completed", (), {"stdout": json.dumps(policy())})()
-            with (
-                mock.patch.dict(os.environ, ambient, clear=True),
-                mock.patch.object(m, "read_systemd_token", return_value="credential-token"),
-                mock.patch.object(m.subprocess, "run", return_value=completed) as run,
-            ):
-                self.assertEqual(m.fetch_policy(), policy())
-            argv = run.call_args.args[0]
-            child_env = run.call_args.kwargs["env"]
-            self.assertEqual(
-                argv, [str(cli), "get-verified", "CODING_RAM_POLICY", "--path", "/coding-memory"]
-            )
-            self.assertNotIn("credential-token", argv)
-            self.assertEqual(child_env["INFISICAL_TOKEN"], "credential-token")
-            self.assertEqual(child_env["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-id")
-            self.assertEqual(child_env["INFISICAL_ENVIRONMENT"], "prod")
-            self.assertEqual(child_env["INFISICAL_ENV"], "prod")
-            self.assertNotIn("INFISICAL_CLIENT_SECRET", child_env)
-            self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_SECRET", child_env)
-            self.assertNotIn("INFISICAL_UNRELATED", child_env)
+        ambient = {
+            "INFISICAL_FLEET_OPS_PROJECT_ID": "project-id",
+            "INFISICAL_ENVIRONMENT": "prod",
+            "INFISICAL_ENV": "prod",
+            "INFISICAL_TOKEN": "ambient-token",
+            "INFISICAL_CLIENT_SECRET": "ambient-secret",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET": "ambient-automation-secret",
+            "INFISICAL_UNRELATED": "discard-me",
+        }
 
-    def test_fetch_policy_without_systemd_credential_never_invokes_cli(self):
+        class FakeClient:
+            ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+
+            class SecretsError(Exception):
+                pass
+
+            def __init__(self):
+                self.calls = []
+
+            def fetch_verified(self, name, path, env, token=None, timeout=None):
+                self.calls.append((name, path, dict(env), token, timeout))
+                return json.dumps(policy())
+
+        client = FakeClient()
+        with (
+            mock.patch.dict(os.environ, ambient, clear=True),
+            mock.patch.object(m, "read_systemd_token", return_value="credential-token"),
+            mock.patch.object(m, "scoped_client", return_value=client),
+        ):
+            self.assertEqual(m.fetch_policy(), policy())
+        name, path, env, token, timeout = client.calls[0]
+        self.assertEqual((name, path), ("CODING_RAM_POLICY", "/coding-memory"))
+        self.assertEqual(token, "credential-token")
+        self.assertEqual(timeout, 20, "the caller's own timeout is forwarded to the read")
+        self.assertEqual(env["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-id")
+        self.assertEqual(env["INFISICAL_ENVIRONMENT"], "prod")
+        self.assertEqual(env["INFISICAL_ENV"], "prod")
+        self.assertEqual(env[client.ENV_READ_PATHS], "/coding-memory")
+        self.assertNotIn("INFISICAL_CLIENT_SECRET", env)
+        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_SECRET", env)
+        self.assertNotIn("INFISICAL_UNRELATED", env)
+
+    def test_fetch_policy_without_systemd_credential_never_reads(self):
         with (
             mock.patch.dict(
                 os.environ,
-                {"FLEET_SECRETS_CLI": "/bin/true", "INFISICAL_FLEET_OPS_PROJECT_ID": "project-id"},
+                {"INFISICAL_FLEET_OPS_PROJECT_ID": "project-id"},
                 clear=True,
             ),
-            mock.patch.object(m.subprocess, "run") as run,
+            mock.patch.object(m, "scoped_client") as client,
         ):
             with self.assertRaisesRegex(RuntimeError, "credential unavailable"):
                 m.fetch_policy()
-        run.assert_not_called()
+        client.assert_not_called()
 
 
 class DiscoveryTests(unittest.TestCase):

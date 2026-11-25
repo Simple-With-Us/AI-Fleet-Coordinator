@@ -332,6 +332,12 @@ class NotesQueue:
                 "code": str(error.get("code"))[:40],
                 "message": str(error.get("message") or "")[:400],
             }
+        # Keep only the session id from the request before it is dropped:  a write the
+        # lease sweep finishes as unknown can still be settled by a late definite
+        # report, and that second finish needs the session to offer the note link.
+        # The body itself is never retained.
+        if "request" in record:
+            record["session"] = (record.get("request") or {}).get("session")
         # the offer runs after the result lands and before the request body is dropped:
         # it reads both (the note id from the result, the session from the request)
         self._offer_note_link(record)
@@ -363,7 +369,9 @@ class NotesQueue:
             if not note_id:
                 return
             request = record.get("request") or {}
-            session = str(request.get("session") or "").strip()
+            # A late definite report re-finishes a write whose request was dropped
+            # by the lease sweep's unknown finish;  _finish kept the session id.
+            session = str(request.get("session") or record.get("session") or "").strip()
             try:
                 SI.check(session)
             except ValueError:

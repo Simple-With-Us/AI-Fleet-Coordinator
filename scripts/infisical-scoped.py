@@ -166,6 +166,11 @@ def _reason_token(message: str) -> str:
     return "read-failed"
 
 
+def _unavailable(exc) -> bool:
+    return (isinstance(exc, TimeoutError) or getattr(exc, "code", None) == 124
+            or getattr(exc, "failure_kind", None) == "unavailable")
+
+
 def _declared_context(args, folder: str):
     """Select one protected declaration and its exact existing Keychain account."""
     env, home = _environment()
@@ -219,6 +224,9 @@ def _declared_context(args, folder: str):
                 "expiresAt": declaration["expiresAt"],
             }
         )
+        required_account = getattr(args, "consumer_account", None)
+        if required_account is not None and declaration["tokenName"] != required_account:
+            raise ValueError
         if declaration["storage"] != {
             "kind": "mac-login-keychain",
             "service": FI.SCOPED_KEYCHAIN_SERVICE,
@@ -243,8 +251,9 @@ def _declared_context(args, folder: str):
         token, _status = FI.token_from_store(
             declaration["tokenName"], env, home, bounded_keychain=True
         )
-    except FI.SecretsError as exc:
-        raise ReaderError("consumer-binding-store-refused", 124 if exc.code == 124 else 4) from None
+    except (FI.SecretsError, TimeoutError) as exc:
+        raise ReaderError("consumer-binding-store-unavailable" if _unavailable(exc) else "consumer-binding-store-refused",
+                          124 if _unavailable(exc) else 4) from None
     if not token:
         raise ReaderError("consumer-binding-store-unavailable")
     # Only nonsecret project and exact scope metadata reaches the canonical reader.
@@ -285,9 +294,10 @@ def _declared_read(args, folder: str) -> int:
             if not found:
                 raise ReaderError("that folder holds no name", EXIT_ABSENT)
             sys.stdout.write("".join(name + "\n" for name in found))
-    except FI.SecretsError as exc:
+    except (FI.SecretsError, TimeoutError) as exc:
         raise ReaderError(
-            "consumer-binding-read-refused", EXIT_ABSENT if exc.code == 3 else 4
+            "consumer-binding-read-unavailable" if _unavailable(exc) else "consumer-binding-read-refused",
+            124 if _unavailable(exc) else EXIT_ABSENT if exc.code == 3 else 4
         ) from None
     except FI.UsageError:
         raise ReaderError("consumer-binding-read-refused") from None
@@ -320,7 +330,9 @@ def _declared_doctor(args) -> int:
             strict_records=True,
         )
         report.update(ok=True, fetch_names_ok=True, names_count=len(found))
-    except (ReaderError, FI.SecretsError, FI.UsageError):
+    except (ReaderError, FI.SecretsError, FI.UsageError, TimeoutError) as exc:
+        if _unavailable(exc):
+            raise ReaderError("consumer-binding-read-unavailable", 124) from None
         report["failure_reason"] = "consumer-binding-refused"
     sys.stdout.write(json.dumps(report) + "\n")
     return EXIT_OK
@@ -489,6 +501,7 @@ def _parser() -> argparse.ArgumentParser:
     for verb in (get, names, doctor):
         verb.add_argument("--consumer-binding", help="absolute protected nonsecret declaration")
         verb.add_argument("--consumer", help="the expected consumer identifier")
+        verb.add_argument("--consumer-account", help="the exact expected declared account")
     return parser
 
 
@@ -497,6 +510,8 @@ def main(argv: list[str]) -> int:
     try:
         if (args.consumer_binding is None) != (args.consumer is None):
             raise ReaderError("consumer-binding and consumer must be supplied together", EXIT_USAGE)
+        if args.consumer_account is not None and args.consumer_binding is None:
+            raise ReaderError("consumer-account requires a consumer binding", EXIT_USAGE)
         if args.verb == "doctor" and args.consumer_binding is None and args.folder != ROOT_FOLDER:
             raise ReaderError("doctor folder selection requires a consumer binding", EXIT_USAGE)
         if args.verb == "get":

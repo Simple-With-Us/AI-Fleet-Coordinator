@@ -2,7 +2,7 @@
 https origin, the principal's key, the signed client against a fake Operator, the wait, and the one `call` that
 simple-notes and the stdio tools share, on a Mac and off one.
 
-Nothing here reaches a network, Infisical or the real fleet-secrets:  the opener, the key runner and the clock are
+Nothing here reaches a network, Infisical or a real store:  the opener, the key runner and the clock are
 fakes, and the one test that needs real HTTP (a redirect is never followed) talks to a server on 127.0.0.1.
 
 Run:  cd scripts && python3 -m unittest simple_tools.tests.test_notes_client
@@ -223,19 +223,19 @@ class BaseUrlTests(unittest.TestCase):
             ("ops.example.test", None),
         ):
             with self.subTest(raw):
-                with mock.patch("fleet_knobs.knobs.resolve", side_effect=AssertionError("the knob is not read")), mock.patch.object(NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")):
+                with mock.patch("fleet_knobs.knobs.resolve", side_effect=AssertionError("the knob is not read")), mock.patch.object(NC, "scoped_read", side_effect=AssertionError("the store is not asked")):
                     self.assertEqual(NC.base_url({"OPERATOR_API_URL": raw}), expected)
 
     def test_without_the_variable_the_fleet_knob_is_read_first(self):
         from fleet_knobs import knobs
 
-        with mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "https://knob.example.test", "infisical")) as resolve, mock.patch.object(NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")):
+        with mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "https://knob.example.test", "infisical")) as resolve, mock.patch.object(NC, "scoped_read", side_effect=AssertionError("the store is not asked")):
             self.assertEqual(NC.base_url({}), "https://knob.example.test")
         self.assertEqual(resolve.call_args.args, ("OPERATOR_API_URL", "", "str"))
 
-    def test_with_no_knob_fleet_secrets_is_asked_and_a_failure_is_not_configured(self):
+    def test_with_no_knob_the_store_is_asked_and_a_failure_is_not_configured(self):
         # The server's agent shells:  fleet_knobs has no Infisical login there, so the knob is empty once its
-        # last-known-good copy lapses, and fleet-secrets (which logs in for itself) is asked for the same key.
+        # last-known-good copy lapses, and the store (which holds this client's own token) is asked for the same key.
         from fleet_knobs import knobs
 
         env = {"PATH": "/nowhere"}
@@ -245,12 +245,12 @@ class BaseUrlTests(unittest.TestCase):
             mock.patch.dict("sys.modules", {"fleet_knobs": None}),
         ):
             with self.subTest(knob=knob), knob:
-                with mock.patch.object(NC, "fleet_secrets_get", return_value="https://secrets.example.test") as get:
+                with mock.patch.object(NC, "scoped_read", return_value="https://secrets.example.test") as get:
                     self.assertEqual(NC.base_url(env), "https://secrets.example.test")
                 self.assertEqual(get.call_args.args[:3], ("OPERATOR_API_URL", "/", env))
-                with mock.patch.object(NC, "fleet_secrets_get", return_value=""):
+                with mock.patch.object(NC, "scoped_read", return_value=""):
                     self.assertIsNone(NC.base_url(env))
-                with mock.patch.object(NC, "fleet_secrets_get", return_value="http://secrets.example.test"):
+                with mock.patch.object(NC, "scoped_read", return_value="http://secrets.example.test"):
                     self.assertIsNone(NC.base_url(env), "the same https-origin rule applies")
 
     def test_the_url_is_read_directly_from_the_exact_project_root(self):
@@ -258,14 +258,28 @@ class BaseUrlTests(unittest.TestCase):
                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4,
                "INFISICAL_READ_PATHS": "/,/unrelated"}
         with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), \
+                mock.patch.object(NC.FI, "token_from_store", return_value=("st." + "synthetic-store-" * 2, "ok")), \
                 mock.patch.object(NC.FI, "fetch_project", return_value={"OPERATOR_API_URL": "https://secrets.example.test"}) as fetch:
             self.assertEqual(NC.base_url(env, runner=mock.Mock(side_effect=AssertionError("no subprocess"))), "https://secrets.example.test")
         self.assertEqual(fetch.call_args.args[:2], (env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"], "/"))
         self.assertEqual(fetch.call_args.args[2]["INFISICAL_READ_PATHS"], "/")
         self.assertEqual(fetch.call_args.kwargs["names"], ("OPERATOR_API_URL",))
+        # The read runs under the store's grant,  never under the environment copy.
+        self.assertEqual(fetch.call_args.kwargs["token"], "st." + "synthetic-store-" * 2)
+
+    def test_the_environment_copy_never_authenticates_this_read(self):
+        # The store is the authority:  a hand-set copy never stands in for the reviewed grant.
+        env = {"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": "11111111-2222-3333-4444-555555555555",
+               "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4}
+        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), \
+                mock.patch.object(NC.FI, "token_from_store", return_value=("", "no-token")) as store, \
+                mock.patch.object(NC.FI, "fetch_project") as fetch:
+            self.assertIsNone(NC.base_url(env, runner=mock.Mock(side_effect=AssertionError("no subprocess"))))
+        fetch.assert_not_called()
+        self.assertEqual(store.call_args.args[0], "notes-client-ro")
 
     def test_operator_client_is_not_configured_without_an_origin(self):
-        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), mock.patch.object(NC, "fleet_secrets_get", return_value=""):
+        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), mock.patch.object(NC, "scoped_read", return_value=""):
             with self.assertRaises(N.NotesError) as caught:
                 NC.operator_client({})
         self.assertEqual(caught.exception.code, "not_configured")
@@ -286,9 +300,15 @@ class KeySourceTests(unittest.TestCase):
         patcher = mock.patch.object(NC.FI, "fetch_project", side_effect=self.reader)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The store is the only source for this client's grant;  never the real one.
+        store = mock.patch.object(
+            NC.FI, "token_from_store", return_value=("st." + "synthetic-store-" * 2, "ok")
+        )
+        store.start()
+        self.addCleanup(store.stop)
 
-    def fake_secrets(self):
-        path = self.bin / "fleet-secrets"
+    def fake_reader(self):
+        path = self.bin / "infisical-scoped"
         path.write_text("#!/bin/sh\nexit 99\n")  # never run:  the runner below stands in for it
         path.chmod(0o700)
         return path
@@ -306,11 +326,31 @@ class KeySourceTests(unittest.TestCase):
                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4, **env}
         return NC.KeySource(W.SERVER, env, runner=mock.Mock(side_effect=AssertionError("no subprocess")), clock=lambda: self.now[0])
 
-    def test_the_environment_comes_first_and_quotes_are_dropped(self):
+    def test_the_environment_is_not_a_source_and_quotes_are_dropped(self):
+        # The store is the authority:  the key resolves from Infisical through this client's own
+        # grant,  and a value in the environment is never read.
         source = self.source({"OPERATOR_NOTES_SERVER_KEY": " '%s' " % TEST_KEY, "PATH": str(self.bin)})
         self.assertEqual(source.get(), TEST_KEY)
-        self.assertEqual(self.runs, [])
-        self.assertIsNone(self.source({"OPERATOR_NOTES_SERVER_KEY": "short", "PATH": str(self.bin)}).get(), "under 32 characters is no key")
+        self.assertEqual(
+            self.runs,
+            [
+                [
+                    "11111111-2222-3333-4444-555555555555",
+                    "/operator",
+                    ("OPERATOR_NOTES_SERVER_KEY",),
+                ]
+            ],
+        )
+        self.runs.clear()
+        # The environment never supplies the key:  a short value there is no key at all.
+        self.answer = {"OPERATOR_NOTES_SERVER_KEY": "short"}
+        self.assertIsNone(
+            self.source({"OPERATOR_NOTES_SERVER_KEY": "short", "PATH": str(self.bin)}).get(),
+            "under 32 characters is no key",
+        )
+        # The reader's own answer is trimmed of its quotes.
+        self.answer = {"OPERATOR_NOTES_SERVER_KEY": " '%s' " % TEST_KEY}
+        self.assertEqual(self.source({"PATH": str(self.bin)}).get(), TEST_KEY)
 
     def test_else_the_direct_reader_is_asked_once_and_the_answer_is_cached(self):
         env = {"PATH": str(self.bin), "HOME": self.tmp.name}
@@ -444,15 +484,38 @@ class ClientTests(unittest.TestCase):
         self.assertIn("this host's notes key", NC.answer_error(401, None).message)
 
     def test_a_401_drops_a_cached_key_so_a_rotation_is_picked_up(self):
-        source = NC.KeySource(W.SERVER, {"OPERATOR_NOTES_SERVER_KEY": TEST_KEY})
-        client = NC.OperatorClient("https://ops.example.test", W.SERVER, source, clock=lambda: NOW, opener=self.op)
-        self.op.answers[("GET", "/notes/v1/requests/CLAUDE/requestid-0001")] = (401, {"error": "unauthorized"})
-        source.get()
-        self.assertIsNotNone(source._value)
-        with self.assertRaises(N.NotesError) as caught:
-            client.record("CLAUDE", "requestid-0001")
-        self.assertEqual(caught.exception.code, "not_configured")
-        self.assertIsNone(source._value)
+        # The key resolves from the store, never from the environment:  the reader is faked and
+        # the store answers for the consumer's own account.
+        with (
+            mock.patch.object(
+                NC.FI, "token_from_store", return_value=("st." + "synthetic-store-" * 2, "ok")
+            ),
+            mock.patch.object(
+                NC.FI, "fetch_project", return_value={"OPERATOR_NOTES_SERVER_KEY": TEST_KEY}
+            ),
+        ):
+            source = NC.KeySource(
+                W.SERVER,
+                {
+                    "HOME": "/nonexistent",
+                    "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": (
+                        "11111111-2222-3333-4444-555555555555"
+                    ),
+                },
+            )
+            client = NC.OperatorClient(
+                "https://ops.example.test", W.SERVER, source, clock=lambda: NOW, opener=self.op
+            )
+            self.op.answers[("GET", "/notes/v1/requests/CLAUDE/requestid-0001")] = (
+                401,
+                {"error": "unauthorized"},
+            )
+            source.get()
+            self.assertIsNotNone(source._value)
+            with self.assertRaises(N.NotesError) as caught:
+                client.record("CLAUDE", "requestid-0001")
+            self.assertEqual(caught.exception.code, "not_configured")
+            self.assertIsNone(source._value)
 
     def test_no_key_network_failures_and_bodies_that_are_not_json(self):
         client = NC.OperatorClient("https://ops.example.test", W.SERVER, lambda: None, opener=self.op)
@@ -931,7 +994,7 @@ class HostTests(unittest.TestCase):
         ), mock.patch.object(
             NC.SR, "load", side_effect=AssertionError("the service reader is not asked")
         ), mock.patch.object(
-            NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")
+            NC, "scoped_read", side_effect=AssertionError("the store is not asked")
         ):
             host = NC.Host(
                 self.env,

@@ -3,9 +3,21 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args,parseWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
-const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
+const sv=readFileSync(new URL('../../../git-relay/git_relay/secret_verbs.py',import.meta.url),'utf8');
+const hv=readFileSync(new URL('../../../git-relay/git_relay/hook_verbs.py',import.meta.url),'utf8');
+const hookNames=[...hv.slice(hv.indexOf('HOOK_SPECS = {'),hv.indexOf('HOOK_READS')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
+const scopes=[...sv.matchAll(/^    "((?:org|repo|env)_[a-z]+)": \(/gm)].map(m=>m[1]);
+const secretNames=scopes.flatMap(s=>['wf_secrets_','wf_secret_key_','wf_secret_put_','wf_secret_delete_',...(s.startsWith('org_')?['wf_secret_repos_','wf_secret_repos_set_']:[])].map(p=>p+s)).concat(['wf_org_variables','wf_org_variable_set','wf_org_variable_delete','wf_org_variable_repos','wf_org_variable_repos_set']);
+const secretOnly=action=>{
+  const env=action.endsWith('_env_actions')?['environment']:[], org=/_org_/.test(action);
+  const k=action.replace(/_(org|repo|env)_[a-z]+$/,'');
+  const table={wf_secrets:['repo',...env,'per_page','page'],wf_secret_key:['repo',...env],wf_secret_put:['repo',...env,'name','encrypted_value','key_id',...(org?['visibility','selected_repository_ids']:[])],wf_secret_delete:['repo',...env,'name'],wf_secret_repos:['repo','name','per_page','page'],wf_secret_repos_set:['repo','name','selected_repository_ids'],
+    wf_org_variables:['repo','per_page','page'],wf_org_variable_set:['repo','name','value','visibility','selected_repository_ids'],wf_org_variable_delete:['repo','name'],wf_org_variable_repos:['repo','name','per_page','page'],wf_org_variable_repos_set:['repo','name','selected_repository_ids']};
+  return (table[action]||table[k]||null)&&(table[action]||table[k]).slice().sort();
+};
+const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('from .secret_verbs')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]).concat(secretNames,hookNames);
 const onlyOf=name=>{
-  const body=py.split(/\n    def /).find(b=>b.startsWith(name+'('));
+  const body=(py+hv).split(/\n    def /).find(b=>b.startsWith(name+'('));
   const m=body&&body.match(/_only\(\s*args,\s*\(([^)]*)\),?\s*\)/);
   return m?[...m[1].matchAll(/"([a-z0-9_]+)"/g)].map(x=>x[1]).sort():null;
 };
@@ -18,7 +30,7 @@ test('names equal the relay SPECS',()=>{
 test('argument sets equal the relay _only() sets',()=>{
   for(const t of WF_V1_TOOLS){
     const action=t.name.slice(3);
-    const want=['wf_run_rerun','wf_run_cancel','wf_run_approve'].includes(action)?['repo','run_id']:onlyOf(action);
+    const want=['wf_run_rerun','wf_run_cancel','wf_run_approve'].includes(action)?['repo','run_id']:(onlyOf(action)??secretOnly(action));
     assert.ok(want,action);
     assert.deepEqual(Object.keys(t.inputSchema.properties).sort(),want,action);
     assert.equal(t.inputSchema.additionalProperties,false);
@@ -1263,7 +1275,7 @@ test('v2: opt-in larger-text class',()=>{
   const big='x'.repeat(83854);
   assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:big}));
   assert.ok(validWfV1Args('wf_git_blob_create',{repo,text:big,allow_large_text:true}));
-  assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'x'.repeat(100001),allow_large_text:true}));
+  assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'x'.repeat(716801),allow_large_text:true}));
   assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:big,allow_large_text:'yes'}));
   const files=[0,1,2].map(i=>({path:'f'+i+'.txt',text:'y'.repeat(20000),mode:'100644'}));
   assert.ok(!validWfV1Args('wf_git_tree_create',{repo,base_tree:S40,files}));
@@ -1287,7 +1299,7 @@ test('v2: blob_create response size follows the allow_large_text opt-in',()=>{
   const mk=(size)=>({blob:{sha:S40b,size}});
   assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo,allow_large_text:true}),true);
   assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo}),false);
-  assert.equal(validWfV1Response('wf_git_blob_create',mk(100001),{repo,allow_large_text:true}),false);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(716801),{repo,allow_large_text:true}),false);
   assert.equal(validWfV1Response('wf_git_blob_create',mk(40000),{repo}),true);
 });
 test('v2: blob_create custody dispatch end-to-end follows the opt-in',async()=>{

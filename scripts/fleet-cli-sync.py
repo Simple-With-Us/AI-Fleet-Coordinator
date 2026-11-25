@@ -61,7 +61,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
 # the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-release.py carries the same number and the reason.
-MAX_FILES = 190
+# MiniMax catalog observation adds the 191st shipped file. Keep the matching
+# sender/receiver count budget bounded, with room for small additive modules.
+MAX_FILES = 200
 # Step 2 of the two-step cap raise:  ships at most 11 MiB, leaving at least 1 MiB under
 # fleet-cli-release.py MAX_BUNDLE_BYTES (12 MiB).  The receiver that runs is the published
 # scripts/fleet-cli-release.py blob from the same source commit, and receiver_policy()

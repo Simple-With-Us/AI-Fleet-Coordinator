@@ -480,26 +480,29 @@ final class SecretsDoctorPanelTests: XCTestCase {
     }
 
     func test_a_count_of_one_stays_a_count_and_unknown_keys_are_dropped() throws {
-        let json = #"{"ok": false, "names_count": 1, "unresolved_reference_count": 0, "fetch_names_ok": true, "unlisted_check": "xxxxxxxx","failure_reason": "consumer-binding-refused", "ai_fleet_coordinator_fetch_ok": false}"#
+        // The reader's report names the reader's own state.  A count of one stays a
+        // count, and every key it does not name is dropped, the CLI keys and the
+        // per-project keys included.
+        let json = #"{"ok": false, "names_count": 1, "unresolved_reference_count": 0, "fetch_names_ok": true, "unlisted_check": "xxxxxxxx","failure_reason": "Infisical login failed (exit 1)", "ai_fleet_coordinator_fetch_ok": false}"#
         let report = try FleetSecrets.parseDoctor(json)
         XCTAssertEqual(report["names_count"], "1")
-        XCTAssertNil(report["unresolved_reference_count"], "declared doctor reads names metadata only")
         XCTAssertEqual(report["fetch_names_ok"], "true")
-        XCTAssertEqual(report["failure_reason"], "consumer-binding-refused")
+        XCTAssertNil(report["failure_reason"], "arbitrary provider prose is not displayed")
         XCTAssertNil(report["unlisted_check"], "a key the panel does not name is dropped")
+        XCTAssertNil(report["unresolved_reference_count"], "this reader reports no unresolved references")
+        XCTAssertNil(report["ai_fleet_coordinator_fetch_ok"], "this reader reports no per-project rows")
         let rows = FleetSecrets.doctorRows(report)
         XCTAssertEqual(rows.first, SecretsDoctorRow(label: "Overall", value: "Problem Found"))
-        XCTAssertNil(report["ai_fleet_coordinator_fetch_ok"], "the doctor selects only Fleet-OPS root")
+        XCTAssertFalse(rows.contains(SecretsDoctorRow(label: "Ai Fleet Coordinator Read", value: "No")))
     }
 
     func test_a_doctor_that_found_a_problem_is_shown_not_hidden() throws {
         let fake = Commands()
-        fake.failure = CommandExitError(output: #"{"ok": false, "reader_configured": true}"#, status: 1)
-        let report = try FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example"),
-                                      engineRoot: URL(fileURLWithPath: "/test/engine"))
+        fake.failure = CommandExitError(output: #"{"ok": false, "reader_configured": false}"#, status: 1)
+        let report = try FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example"))
             .doctorReport()
         XCTAssertEqual(report["ok"], "false")
-        XCTAssertEqual(report["reader_configured"], "true")
+        XCTAssertEqual(report["reader_configured"], "false")
     }
 
     func test_a_missing_command_reads_as_not_installed() {

@@ -93,6 +93,7 @@ EXPLICIT_RULES = (
     ("BF", "pm2", "botfleet-mcp", True),
     # AI-Fleet-Coordinator's own LaunchAgents and units.
     ("AFC", "launchd", "com.jay.simple-tools-runtime-sync", True),
+    ("AFC", "launchd", "com.jay.fleet-bearer-status", True),
     ("AFC", "launchd", "com.jay.fleet-api-health", True),
     ("AFC", "launchd", "com.jay.fleet-gdrive-backup", True),
     ("AFC", "launchd", "com.jay.fleet-mac-services", True),
@@ -129,11 +130,15 @@ EXPLICIT_RULES = (
     ("AFC", "systemd", "fleet-vm-status.service", True),
     ("AFC", "systemd", "lane-placement-watch.service", True),
     ("AFC", "systemd", "operator-sheets-drain.service", True),
-    # OPS-1048:  the ZC seat's wake bridge (the template installs as
-    # afc-zc-wake-bridge.service, but the attribution matches the shipped file name).
-    ("AFC", "systemd", "zc-wake-bridge.service", True),
     # AFC-665:  the AG seat's wake bridge (the template installs as
     # afc-ag-wake-bridge.service, but the attribution matches the shipped file name).
+    # OPS-1048:  the ZC seat's wake bridge (the template installs as
+    # afc-zc-wake-bridge.service, but the attribution matches the shipped file name).
+    # Retired Nov 21, 2026:  the one wake router serves the seat and the bridge script
+    # and suite are deleted from the repo;  the row and the unit template stay while
+    # the live unit still runs so accounting keeps attributing it, and both go at the
+    # stop in one follow-up.
+    ("AFC", "systemd", "zc-wake-bridge.service", True),
     ("AFC", "systemd", "ag-wake-bridge.service", True),
     # The wake router for every platform (OPS-1048), a systemd --user unit installed under the
     # name it ships with.

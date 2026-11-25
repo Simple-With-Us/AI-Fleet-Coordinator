@@ -14,6 +14,179 @@ import time
 import urllib.error
 import urllib.request
 
+
+def native_origin_claims(env, identity, meta=None):
+    """Same-seat claims from runtime-owned per-call context and a private local note.
+
+    No startup-session fallback, registry call, signing key or post-open mutation.
+    Operator independently binds the protected relay receipt before effects.
+    """
+    if not isinstance(meta, dict):
+        return {}
+    if identity == "CODEX":
+        platform = "codex"
+        candidates = []
+        if "threadId" in meta:
+            candidates.append(meta["threadId"])
+        turn = meta.get("x-codex-turn-metadata")
+        if isinstance(turn, dict) and "thread_id" in turn:
+            candidates.append(turn["thread_id"])
+        if not candidates or any(not isinstance(x, str) for x in candidates):
+            return {}
+        sid = candidates[0]
+        if any(x != sid for x in candidates):
+            return {}
+        if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sid):
+            return {}
+    elif identity == "MM":
+        platform = "minimax"
+        context = meta.get("com.simplewithus/native-origin/1")
+        if (
+            not isinstance(context, dict)
+            or set(context) != {"version", "platform", "session_id", "turn_id", "tool_call_id"}
+            or type(context.get("version")) is not int
+            or context["version"] != 1
+            or context.get("platform") != platform
+            or not isinstance(context.get("session_id"), str)
+            or not re.fullmatch(r"mvs_[0-9a-f]{32}", context["session_id"])
+            or any(
+                not isinstance(context.get(name), str)
+                or not context[name].strip()
+                or len(context[name]) > 256
+                for name in ("turn_id", "tool_call_id")
+            )
+            or "threadId" in meta
+            or "x-codex-turn-metadata" in meta
+        ):
+            return {}
+        sid = context["session_id"]
+    else:
+        return {}
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        return {}
+    fd = None
+    try:
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in (".simple-tools", identity, "letters"):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                return {}
+        note_fd = os.open(sid + ".json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            info = os.fstat(note_fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077
+            ):
+                return {}
+            raw = os.read(note_fd, 262145)
+        finally:
+            os.close(note_fd)
+        if len(raw) > 262144:
+            return {}
+        note = json.loads(raw)
+        if (
+            not isinstance(note, dict)
+            or note.get("session_id") != sid
+            or note.get("platform") != platform
+            or note.get("state") != "open"
+            or not re.fullmatch(r"[A-Z]{2}", str(note.get("label") or ""))
+            or type(note.get("generation")) is not int
+            or note["generation"] < 1
+        ):
+            return {}
+        return {
+            "origin_session_claim": sid,
+            "origin_letter_claim": note["label"],
+            "origin_generation_claim": note["generation"],
+        }
+    except (OSError, ValueError, TypeError):
+        return {}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def origin_shape_once(env, identity, params):
+    """Default-off, host-armed one-shot for identities only. Never emits values.
+
+    An empty private MM/origin-identities-shape.once marker is consumed atomically
+    before fixed-field types/validity are printed. No request/response/body dump.
+    """
+    if identity != "MM" or not isinstance(params, dict) or params.get("name") != "identities":
+        return
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        return
+    directory = None
+    marker = None
+    try:
+        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in (".simple-tools", "MM"):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+            info = os.fstat(directory)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                return
+        name = "origin-identities-shape.once"
+        marker = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        info = os.fstat(marker)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or info.st_size != 0
+        ):
+            return
+        # Only the unlink winner emits, even across adapter processes.
+        os.unlink(name, dir_fd=directory)
+        meta = params.get("_meta")
+        context = meta.get("com.simplewithus/native-origin/1") if isinstance(meta, dict) else None
+
+        def kind(value):
+            if value is None:
+                return "missing-or-null"
+            if type(value) is bool:
+                return "boolean"
+            if type(value) is int:
+                return "integer"
+            if isinstance(value, str):
+                return "string"
+            if isinstance(value, dict):
+                return "object"
+            if isinstance(value, list):
+                return "array"
+            return "other"
+
+        fields = ("version", "platform", "session_id", "turn_id", "tool_call_id")
+        shape = {
+            "diagnostic": "mm-origin-identities-shape/1",
+            "tool": "identities",
+            "meta_type": kind(meta),
+            "context_type": kind(context),
+            "field_types": {
+                key: kind(context.get(key) if isinstance(context, dict) else None) for key in fields
+            },
+            "exact_context_keys": isinstance(context, dict) and set(context) == set(fields),
+            "private_note_claims_valid": bool(native_origin_claims(env, identity, meta)),
+        }
+        print(json.dumps(shape, sort_keys=True), file=sys.stderr)
+    except (OSError, ValueError, TypeError):
+        return
+    finally:
+        if marker is not None:
+            os.close(marker)
+        if directory is not None:
+            os.close(directory)
+
+
 ENDPOINT = "https://agents.simplewithus.com/mcp"
 MAX_BYTES = 4 * 1024 * 1024
 MAX_FILE_ARGS_BYTES = 6 * 1024 * 1024
@@ -288,7 +461,8 @@ def failure(message, code="outcome_unknown"):
 
 
 class Adapter:
-    def __init__(self, token, opener=None, cache_dir=None):
+    def __init__(self, token, opener=None, cache_dir=None, env=None):
+        self.env = dict(os.environ if env is None else env)
         self.identity = assigned_identity(token)  # A local guard, not server authentication.
         self.token = token
         self.opener = opener or urllib.request.build_opener(NoRedirect()).open
@@ -370,6 +544,26 @@ class Adapter:
                     **message,
                     "params": {**params, "arguments": {**args, "identity": self.identity}},
                 }
+        if (
+            message.get("method") == "tools/call"
+            and isinstance(params, dict)
+            and params.get("name") in ("gr_open_pr", "open_pr")
+        ):
+            args = message["params"].get("arguments")
+            if isinstance(args, dict):
+                claims = native_origin_claims(self.env, self.identity, params.get("_meta"))
+                args = {k: v for k, v in args.items() if not k.startswith("origin_")}
+                message = {
+                    **message,
+                    "params": {**message["params"], "arguments": {**args, **claims}},
+                }
+                if not claims:
+                    print(
+                        "assigned-hosted-stdio: review origin unavailable for this native context; alert held",
+                        file=sys.stderr,
+                    )
+        if method == "tools/call":
+            origin_shape_once(self.env, self.identity, message.get("params"))
         headers = {
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",

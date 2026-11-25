@@ -208,21 +208,6 @@ struct KnobRegistry {
     /// Every Infisical folder the knobs live in:  the root first,  then the rest in order.
     var folders: [String] { KnobReader.folders(of: knobs) }
 
-    /// Declared names only, independent of provider access or a value's configuration state.
-    struct DeclaredNameGroup: Equatable {
-        let path: String
-        let names: [String]
-    }
-
-    /// The existing registry is the catalog; no Infisical folder is listed for these names.
-    var declaredNonsecretNames: [DeclaredNameGroup] {
-        let visible = knobs.filter { !$0.isSecret }
-        return KnobReader.folders(of: visible).compactMap { folder in
-            let names = Set(visible.filter { $0.folder == folder }.map(\.name)).sorted()
-            return names.isEmpty ? nil : DeclaredNameGroup(path: folder, names: names)
-        }
-    }
-
     /// The knobs,  as the panel shows them.
     var rows: [Row] {
         knobs.map { knob in
@@ -431,7 +416,7 @@ struct KnobRegistry {
         case "service-token-required":
             return "Muster runs the knob engine without the knob reader's Infisical token, so it cannot read Infisical"
         case "scoped-reader-unavailable":
-            return "the fleet-secrets reader the engine needs is not installed on this Mac"
+            return "the scoped Infisical reader the engine needs is not installed on this Mac"
         case "timeout":
             return "Infisical did not answer within 8 seconds"
         case "scoped-read-failed":

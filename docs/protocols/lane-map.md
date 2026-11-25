@@ -118,6 +118,8 @@ The volume itself is private deployment inventory:  it is named in the environme
 
 **A symlinked root is one place, not a variation.**  `git`, `lsof` and `os.path.realpath` report the real path, so a lane on that host prints as the real path the volume holds, which is the one `FLEET_LANES_ROOT` names.  The lane tools resolve the roots before they judge a path: `make_roots` in `scripts/fleet_lanes/layout.py` reads `FLEET_CODE_ROOT`, `FLEET_APPS_ROOT` and `FLEET_LANES_ROOT` and falls back to the copies under the home, then takes the real path of each, so the volume spelling and the `~/` spelling are one place for the doctor, the guard and the janitor.  A host whose roots are symlinks into a volume is a sanctioned layout, not a deviation, and no tool may report such a path as outside the map.
 
+**A second name for the volume.**  A symlink at the filesystem root gives the volume a shorter name, so the lanes root spelled through that name and the lanes root spelled through the volume's canonical path are the same directory too.
+
 **The rule.**  A tool session starts in the lanes root, not in a project.  The agent then runs `lane new <app> <slug>` and works in the lane it made.  This is the same policy the Mac follows, where the OpenCode session directory is `~/apps/lanes`.
 
 **Where each tool's working directory is set on a server host.**

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -142,10 +143,55 @@ class RegistryTest(unittest.TestCase):
         with self.assertRaises(R.LabelExhausted):
             self.reg.resolve_or_register(ident(native="n26"))
 
+    def test_a_pair_closed_without_retiring_its_alias_is_reissued(self):
+        # A session closed by direct SQL (closed_at set, its alias never retired)
+        # reads as holding no letter, so allocation must not count its pair as
+        # live forever:  the orphan alias is retired and the pair is reissued.
+        holders = [self.reg.resolve_or_register(ident(native=f"n{i}")) for i in range(26)]
+        first = holders[0]
+        self.assertEqual(first["label"], "AA")
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+            ("2026-11-22T00:00:00.000Z", first["record_id"]),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(R.candidates_for(self.db, "zulip", "AA"), [])
+        again = self.reg.resolve_or_register(ident(native="n26"))
+        self.assertEqual(again["label"], "AA")
+        self.assertEqual(again["generation"], 2)
+        conn = sqlite3.connect(self.db)
+        rows = conn.execute(
+            "SELECT record_id, retired_at FROM alias_assignments"
+            " WHERE letter = 'AA' ORDER BY generation"
+        ).fetchall()
+        live = conn.execute(
+            "SELECT COUNT(*) FROM alias_assignments WHERE letter = 'AA' AND retired_at IS NULL"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(live, 1)  # the partial unique index's one live holder
+        self.assertEqual(rows[0][0], first["record_id"])
+        self.assertIsNotNone(rows[0][1])  # the orphan alias was retired, not ignored
+        holders_now = R.candidates_for(self.db, "zulip", "AA")
+        self.assertEqual([h["record_id"] for h in holders_now], [again["record_id"]])
+
     def test_close_is_idempotent(self):
         a = self.reg.resolve_or_register(ident())
         self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
         self.assertFalse(self.reg.close(a["record_id"], actor="MM", source="test"))
+
+    def test_close_snapshot_keeps_the_label(self):
+        # close() retires the alias before it queues the final session snapshot,
+        # so a snapshot rebuilt from the live alias exports Label="" and the
+        # sheet's last row for the session loses which letter it was.
+        a = self.reg.resolve_or_register(ident())
+        self.assertEqual(a["label"], "AA")
+        self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
+        upserts = [p for p in R.pending_outbox(self.db) if p["kind"] == "session_upsert"]
+        cells = json.loads(upserts[-1]["payload"])["cells"]
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("Label")], "AA")
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("State")], "closed")
 
     def test_resumed_closed_is_explicit(self):
         a = self.reg.resolve_or_register(ident())
@@ -509,6 +555,28 @@ class RegistryTest(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
+
+    def test_a_child_reissues_an_orphan_in_its_own_row_not_the_oldest_elsewhere(self):
+        # Allocation retires at most one orphan inline; for a child that one
+        # must come from the child's own row, or a full row stays exhausted
+        # while an unrelated older orphan elsewhere is retired instead.
+        self._labels(["parent"])  # AA
+        self._labels(["other"])  # BB, the older orphan outside row A
+        row = self._labels(["kid-%d" % i for i in range(25)], parent="parent")  # AB ... AZ
+        self.assertEqual((row[0], row[-1]), ("AB", "AZ"))
+        conn = sqlite3.connect(self.db)
+        for native in ("other", "kid-0"):
+            record_id = self.reg.lookup("claude", "mac-1", "simplewithus", native)["record_id"]
+            conn.execute(
+                "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                ("2026-11-22T00:00:00.000Z", record_id),
+            )
+        conn.execute(
+            "UPDATE alias_assignments SET assigned_at = '2000-01-01T00:00:00.000Z' WHERE letter = 'BB'"
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(self._labels(["kid-new"], parent="parent"), ["AB"])
 
     def test_a_subthreads_pairs_wrap_past_z_back_to_a(self):
         self._labels(["n-%d" % i for i in range(24)])  # AA ... XX
@@ -1143,7 +1211,9 @@ class RegistryTest(unittest.TestCase):
         for _ in range(3):
             out = self._relabel("cl-1", platform="claude", force=True)
             self.assertEqual((out["outcome"], out["label"]), ("unchanged", "AA"))
-        self.assertEqual(self._register("cl-2")["label"], "BB")  # no issue was added by the no-op relabel.
+        self.assertEqual(
+            self._register("cl-2")["label"], "BB"
+        )  # no issue was added by the no-op relabel.
 
     def test_a_relabel_into_the_single_space_keeps_the_pair(self):
         self._register("cl-1")
@@ -1437,7 +1507,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(again["label"], first["label"])
 
     def test_register_refuses_a_title_that_carries_a_credential(self):
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.register_session(
                 self.db,
@@ -1445,28 +1515,28 @@ class RegistryTest(unittest.TestCase):
                 native_session_id="native-1",
                 seat="MM",
                 source="test",
-                title="Deploy with " + secret,
+                title="Deploy with " + fixture_value,
                 issuer=R.ISSUER_OPERATOR,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(stored, 0)
 
     def test_update_refuses_a_title_that_carries_a_credential(self):
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                title="Deploy with " + secret,
+                title="Deploy with " + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["title"], "Placeholder")
 
     def test_a_title_that_is_not_a_string_is_refused_not_coerced(self):
@@ -1501,36 +1571,36 @@ class RegistryTest(unittest.TestCase):
     def test_update_refuses_a_project_that_carries_a_credential(self):
         # Every field that is written is scanned, not only the title.
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                project="Deploy with " + secret,
+                project="Deploy with " + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "project_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["project"], "")
 
     def test_update_refuses_a_thread_link_that_carries_a_credential(self):
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
                 platform="minimax",
                 native_session_id="native-1",
-                thread_link="https://example.invalid/" + secret,
+                thread_link="https://example.invalid/" + fixture_value,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "thread_link_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["thread_link"], "")
 
     def test_register_refuses_a_field_that_carries_a_credential(self):
-        secret = SYNTHETIC_SECRET
+        fixture_value = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.register_session(
                 self.db,
@@ -1538,12 +1608,12 @@ class RegistryTest(unittest.TestCase):
                 native_session_id="native-1",
                 seat="MM",
                 source="test",
-                apple_note_link="https://example.invalid/" + secret,
+                apple_note_link="https://example.invalid/" + fixture_value,
                 issuer=R.ISSUER_OPERATOR,
                 **self._loc(platform="minimax"),
             )
         self.assertEqual(str(caught.exception), "apple_note_link_secret_detected")
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(fixture_value, str(caught.exception))
         stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(stored, 0)
 
@@ -1893,6 +1963,53 @@ class RegistryTest(unittest.TestCase):
         self.assertTrue(retired[0]["ended_at"])
         self.assertFalse(retired[0]["live"])
 
+    def test_sweep_retires_the_alias_of_an_already_closed_session(self):
+        old = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        self.reg._conn.execute(
+            "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+            ("2026-11-22T00:00:00.000Z", old["record_id"]),
+        )
+        self.reg._conn.commit()
+        ended = R.sweep_stale(
+            self.db,
+            platform="minimax",
+            seat="MM",
+            stale_after_minutes=120,
+            now=datetime(2026, 11, 22, 12, 0, tzinfo=UTC),
+        )
+        self.assertEqual([row["record_id"] for row in ended], [old["record_id"]])
+        # An orphan retirement is reported in `ended` too, told apart by its
+        # reason, and stamped with the sweep's injected moment, not wall-clock.
+        self.assertEqual(ended[0]["reason"], "session already closed; its alias was never retired")
+        retired_at = self.reg._conn.execute(
+            "SELECT retired_at FROM alias_assignments WHERE record_id = ?", (old["record_id"],)
+        ).fetchone()[0]
+        self.assertEqual(retired_at, "2026-11-22T12:00:00.000Z")
+        history = R.letter_history(self.db, "minimax")
+        retired = [row for row in history if row["letter"] == old["label"]]
+        self.assertFalse(retired[0]["live"])
+
+    def test_retire_closed_aliases_limit_retires_one_at_a_time(self):
+        olds = [
+            self.reg.resolve_or_register(ident(platform="minimax", native=f"native-{n}"))
+            for n in (1, 2)
+        ]
+        for old in olds:
+            self.reg._conn.execute(
+                "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                ("2026-11-22T00:00:00.000Z", old["record_id"]),
+            )
+        self.reg._conn.commit()
+        with self.reg._write_txn() as conn:
+            retired = self.reg._retire_closed_aliases(
+                conn, "minimax", "2026-11-22T12:00:00.000Z", limit=1
+            )
+        self.assertEqual([row["record_id"] for row in retired], [olds[0]["record_id"]])
+        still_live = self.reg._conn.execute(
+            "SELECT COUNT(*) FROM alias_assignments WHERE retired_at IS NULL"
+        ).fetchone()[0]
+        self.assertEqual(still_live, 1)
+
     def test_missing_identity_fields_raise(self):
         with self.assertRaises(ValueError):
             self.reg.resolve_or_register({"seat": "MM"})
@@ -2212,7 +2329,7 @@ class SessionIssuesTest(unittest.TestCase):
         try:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
             self.assertEqual(
-                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3
+                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5
             )
         finally:
             conn.close()

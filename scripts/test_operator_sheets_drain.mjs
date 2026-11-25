@@ -722,6 +722,40 @@ function fakeSheet({ fail = {}, onWrite = () => {} } = {}) {
   return { adapter, appends };
 }
 
+test("drainOnce: one export trim runs after the passes and its counts are one log line", async () => {
+  const { bridge } = fakeRegistry(["r1"]);
+  const trims = [];
+  bridge.housekeeping = { trim: async () => { trims.push(1); return { attempts: 3, outbox: 2 }; } };
+  const logs = [];
+  const { adapter } = fakeSheet();
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(totals, { exported: 1, failed: 0 });
+  assert.equal(trims.length, 1, "the trim runs once, after the passes");
+  assert.deepEqual(
+    logs.filter((m) => m.includes("trimmed")),
+    [JSON.stringify({ trimmed: { attempts: 3, outbox: 2 } })],
+  );
+});
+
+test("drainOnce: a refused export trim is one fixed line and never fails the run", async () => {
+  const { bridge } = fakeRegistry(["r1"]);
+  bridge.housekeeping = { trim: async () => { throw new Error("registry unavailable"); } };
+  const logs = [];
+  const { adapter } = fakeSheet();
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(totals, { exported: 1, failed: 0 });
+  assert.ok(logs.some((m) => m.startsWith("export trim failed")), logs.filter((m) => m.includes("trim")));
+});
+
+test("drainOnce: a bridge without the trim verb skips it silently", async () => {
+  const { bridge } = fakeRegistry(["r1"]);
+  const logs = [];
+  const { adapter } = fakeSheet();
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(totals, { exported: 1, failed: 0 });
+  assert.equal(logs.filter((m) => m.includes("trim")).length, 0);
+});
+
 test("drainOnce: a failed row ends the run, so an uncertain write is never re-sent by the next pass", async () => {
   const { bridge, state } = fakeRegistry(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
   const uncertain = new OperatorSheetsError("transport_or_response_error", { uncertain: true });
@@ -746,6 +780,21 @@ test("drainOnce: passes repeat while every row exports, then stop when nothing i
   assert.deepEqual(passes.map((p) => p.exported), [2, 2, 1, 0]);
   assert.equal(appends.length, 5);
   assert.equal(state.marked.length, 5);
+});
+
+test("drainOnce: an invalid OPERATOR_SHEETS_PAGE_LIMIT refuses the run before anything drains", async () => {
+  // "0" would page zero rows a pass and report success forever; "abc" is NaN,
+  // which the registry CLI cannot take. Both must fail at startup instead.
+  for (const value of ["0", "abc"]) {
+    const { bridge, state } = fakeRegistry(["r1"]);
+    const { adapter, appends } = fakeSheet();
+    await assert.rejects(
+      drainOnce({ env: { ...RUN_ENV, OPERATOR_SHEETS_PAGE_LIMIT: value }, bridge, adapter, log: () => {} }),
+      /OPERATOR_SHEETS_PAGE_LIMIT must be an integer between 1 and 10000/,
+    );
+    assert.deepEqual(appends, [], value);
+    assert.deepEqual(state.marked, [], value);
+  }
 });
 
 test("drainOnce: the run deadline stops between rows and leaves the rest pending", async () => {

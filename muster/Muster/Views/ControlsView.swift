@@ -55,7 +55,7 @@ struct ControlsView: View {
                     writeBanner(registry)
                     summary(registry)
                     table(registry)
-                    SecretNamesPanel(knobCatalog: registry.declaredNonsecretNames)
+                    SecretNamesPanel(knobFolders: registry.folders)
                     RecallSettingsPanel()
                 } else {
                     problemBanner
@@ -816,17 +816,25 @@ private struct KnobEditSheet: View {
 }
 
 
-/// Fleet-OPS secret names and doctor status, separate from the declared nonsecret knob catalog.
-/// Catalog names come from the existing registry, never a provider folder listing.
+/// Secret names only,  grouped by path,  plus the doctor's checks.  No value can appear
+/// here:  the only verbs run are `names` and `doctor`.
+///
+/// The knobs live in another Infisical project from the fleet-ops root this panel lists
+/// first,  so their folders are listed on their own,  from the knobs' project,  one folder
+/// at a time:  a folder this Mac cannot read says why and hides no other folder.
 private struct SecretNamesPanel: View {
-    let knobCatalog: [KnobRegistry.DeclaredNameGroup]
+    /// Every folder the knob registry names,  the root first (`KnobRegistry.folders`).
+    let knobFolders: [String]
 
     @State private var groups: [SecretNameGroup] = []
+    @State private var knobGroups: [SecretNameGroup] = []
+    @State private var knobProblems: [String] = []
     @State private var doctor: [String: String] = [:]
     @State private var problem: String?
     @State private var doctorProblem: String?
     @State private var loading = false
-    /// Counts the loads started, so only the newest Refresh shows its results.
+    /// Counts the loads started,  so only the newest one shows its results:  the reload when
+    /// the folders change can start while a Refresh is still reading.
     @State private var loadGeneration = 0
 
     var body: some View {
@@ -836,7 +844,7 @@ private struct SecretNamesPanel: View {
                 Spacer()
                 Button("Refresh") { Task { await load() } }.disabled(loading)
             }
-            Text("Names only, from the top folder of the Fleet-OPS project in Infisical, read through this Mac's shared reader.\u{00A0} This name read returns no values and does not show whether a value is set.")
+            Text("Names only, from the top folder of the fleet-ops project in Infisical, read through this Mac's scoped Infisical reader.\u{00A0} This does not show whether a value is set, and values are never read here.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if loading { Text("Reading names\u{2026}").font(.callout).foregroundStyle(.secondary) }
@@ -855,11 +863,11 @@ private struct SecretNamesPanel: View {
                 }
             }
             if let problem { Text(problem).font(.caption).foregroundStyle(.orange) }
-            Text("Declared Knob Catalog").font(.subheadline.weight(.semibold))
-            Text("Nonsecret knob names and folders declared by this engine's registry.\(ApplyCopy.sentenceGap)This catalog does not contact Infisical or confirm that a name or value is configured there.\(ApplyCopy.sentenceGap)Current values and configuration status remain in the knob table above.")
+            Text("Knob Folders").font(.subheadline.weight(.semibold))
+            Text("Names only, from each folder the knob registry names, in the AI Fleet Coordinator project in Infisical, where the knobs live.\(ApplyCopy.sentenceGap)A folder this Mac's scoped reader cannot read says why.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(knobCatalog, id: \.path) { group in
+            ForEach(knobGroups, id: \.path) { group in
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(group.names, id: \.self) { name in
@@ -869,18 +877,21 @@ private struct SecretNamesPanel: View {
                         }
                     }
                 } label: {
-                    Text(group.names.count == 1 ? "1 declared name at \(group.path)" : "\(group.names.count) declared names at \(group.path)")
+                    Text(group.names.count == 1 ? "1 name at \(group.path)" : "\(group.names.count) names at \(group.path)")
                         .font(.callout)
                 }
             }
-            Text("Doctor: This Mac's Infisical Setup").font(.subheadline.weight(.semibold))
+            ForEach(knobProblems, id: \.self) { line in
+                Text(line).font(.caption).foregroundStyle(.orange)
+            }
+            Text("Doctor:  This Mac's Infisical Access").font(.subheadline.weight(.semibold))
             if let doctorProblem {
                 Text(doctorProblem).font(.caption).foregroundStyle(.orange)
             } else if doctor.isEmpty && !loading {
                 Text("The doctor has not answered.").font(.caption).foregroundStyle(.secondary)
             }
             if doctor["ok"] == "false" {
-                Label("The doctor found a problem with this Mac's Infisical setup.", systemImage: "exclamationmark.triangle")
+                Label("The doctor found a problem with this Mac's Infisical access.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -896,7 +907,8 @@ private struct SecretNamesPanel: View {
                 .accessibilityElement(children: .combine)
             }
         }
-        .task { await load() }
+        // Read again when the registry names another set of folders.
+        .task(id: knobFolders) { await load() }
     }
 
     private func load() async {
@@ -906,7 +918,7 @@ private struct SecretNamesPanel: View {
         func isCurrent() -> Bool { generation == loadGeneration && !Task.isCancelled }
         loading = true
         defer { if generation == loadGeneration { loading = false } }
-        let secrets = FleetSecrets.managed()
+        let secrets = FleetSecrets()
         do {
             let found = try await awaitOffThePool { try secrets.secretNamesGrouped(paths: ["/"]) }
             guard isCurrent() else { return }
@@ -916,6 +928,26 @@ private struct SecretNamesPanel: View {
             guard isCurrent() else { return }
             problem = error.localizedDescription
         }
+        // One folder at a time,  so a folder this Mac's reader is not granted is reported
+        // and the folders it can read are still listed.
+        var readGroups: [SecretNameGroup] = []
+        var readProblems: [String] = []
+        for folder in knobFolders {
+            do {
+                let found = try await awaitOffThePool {
+                    try secrets.secretNamesGrouped(paths: [folder], project: FleetSecrets.knobProject)
+                }
+                readGroups.append(contentsOf: found)
+            } catch {
+                // Each line names its folder,  so the owner can tell which folder was refused.
+                // The lines are keyed by their text,  and each folder is read once.
+                let line = "\(folder):  \(error.localizedDescription)"
+                if !readProblems.contains(line) { readProblems.append(line) }
+            }
+        }
+        guard isCurrent() else { return }
+        knobGroups = readGroups
+        knobProblems = readProblems
         // The doctor is asked on its own, and its failure is shown rather than hidden.
         do {
             let report = try await awaitOffThePool { try secrets.doctorReport() }
@@ -980,7 +1012,7 @@ private struct RecallSettingsPanel: View {
     private func load() async {
         loading = true; defer { loading = false }
         do {
-            rows = try await RecallSettingsClient.fetch(config: config, secrets: FleetSecrets.managed())
+            rows = try await RecallSettingsClient.fetch(config: config, secrets: FleetSecrets())
             problem = nil
             loadedAt = Date()
         } catch { problem = error.localizedDescription }

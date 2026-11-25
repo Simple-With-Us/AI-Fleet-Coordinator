@@ -34,17 +34,17 @@ Canonical inventory: [`../fleet-apps.json`](../fleet-apps.json).
 A new folder under `~/Code` is **not** a fleet app yet. Peers will not see it
 in Linear, the daily digest, Zulip skim-match, Apple Notes acronyms,
 or iOS ship tooling. Agents will also work in `~/Code/<App>` and collide with
-the integration tree. This procedure is the self-propagation rule from
-`FLEET-PROTOCOL.md`, expanded so the next app is not a scavenger hunt.
+the integration tree. This procedure is the fleet's self-propagation rule,
+expanded so the next app is not a scavenger hunt.
 
 Equally important: once an app **is** onboarded, no further top-level folder
 may be added to `~/Code/` — *except* the integration tree for another
 brand-new fleet app.  Per-seat worktrees, lane checkouts, scratch clones,
 and `*-wt-*` directories all belong in `~/apps/`, never under `~/Code/`.
-`code-main-keeper.sh` (PM2 daemon) scans `~/Code/*` every ~60s and logs a
-`STRAY-WORKTREE` line to `~/apps/logs/code-main-keeper.log` for any linked
-worktree it finds there.  See `FLEET-PROTOCOL.md` § *"Hard rule: `~/Code/` is
-for integration trees only"* (owner ruling 2026-09-25).
+The lane guard hook (`scripts/fleet_lanes/lane_guard_hook.py`) denies a new
+fleet-repo task worktree or scratch clone under `~/Code/`; `code-main-keeper.sh`
+is a mirror-only sync since OPS-1087 and no longer reports stray worktrees.
+(Owner ruling 2026-09-25.)
 
 ---
 
@@ -68,19 +68,20 @@ for integration trees only"* (owner ruling 2026-09-25).
    fleet-wide (Cursor cloud), not a lane in `fleet-apps.json`.
 4. **Do not wait for the owner to say commit.** Feature branch → PR → merge
    when CI is green.
-5. **Never paste secrets.** A secret the owner hands over is a `chmod 600` file path;  fleet keys already in Infisical Fleet-OPS are read with `fleet-secrets get NAME`.
+5. **Never paste secrets.** A secret the owner hands over is a `chmod 600` file path;  fleet keys already in Infisical Fleet-OPS are read with the consumer's own scoped service token.
    Runtime secrets go to Infisical (the app's own project, prod env).  **`prod` is the
    only Infisical environment** (owner decision 2026-10-10):  a new project is created with
    dev and staging, so delete both right away (Project Settings, Environments), and never set
    `INFISICAL_ENV` or `INFISICAL_ENVIRONMENT` to anything but `prod`, in a repo file or a script
    fallback.  `python3 scripts/check-infisical-env.py` flags the common mistakes and CI runs it.
    Never `grep` / `rg` a secrets file without `-o` — `grep '^[A-Z0-9_]+='`
-   prints **values**.  Names only: `fleet-secrets names`.  Never
+   prints **values**.  Names only: a names-only scoped Infisical read.  Never
    `cat` or Read a secrets file (the flat `~/.secrets/global-api-keys` is retired).  Never `od` / `xxd` /
    `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 6. **Light theme is the product default.** Dark is opt-in.
 7. **Two spaces between sentences** in every human-facing string, including
-   App Store listing and review notes.  See `FLEET-PROTOCOL.md` § Two spaces and
+   App Store listing and review notes (the sentence gap: a real U+00A0 plus a
+   normal space).  See `FLEET-PROTOCOL.md` § Sentence Gap and
    `FLEET-UI-COPY.md`.
 8. **New DNS-only app zones go on Cloudflare account Usage.Jays.Services.**
    That is an account name, not the hostname `usage.jays.services`.  Create a
@@ -197,7 +198,7 @@ If the repo's `.gitignore` ignores `AGENTS.md` (Grok / Replit leftover),
 **remove that line**. The fleet pointer must be tracked.
 
 `AGENTS.md` must include the Inter-agent coordination stanza from
-`FLEET-PROTOCOL.md` § "Onboarding a new app/repo", plus the DealDex-style
+`TEMPLATE-AGENTS.md` § Inter-Agent Coordination, plus the DealDex-style
 keepout table with **this** app's paths.
 
 Optional but expected before the app is "done" as a fleet citizen:
@@ -212,8 +213,8 @@ Optional but expected before the app is "done" as a fleet citizen:
 - iOS entry in `/Users/jay/apps/ios-fleet/apps.json` if there is a native app.
 - Native iOS onboarding file (`ios/CLAUDE.md`, `clients/ios/CLAUDE.md`, or
   `native/ios/CLAUDE.md`) with bundle ID, scheme, annotated file tree, and a
-  pointer to FLEET-PROTOCOL § iOS agent build loop (`xcodebuild` via bash is
-  pre-approved; do not stand up Xcode MCP).
+  pointer to the iOS agent build loop (`docs/protocols/ios-agent-build-loop.md`;
+  `xcodebuild` via bash is pre-approved; do not stand up Xcode MCP).
 - Claude iOS write-block hook: copy
   `scripts/block-xcode-project-writes.py` → `.claude/hooks/` and merge
   `github-workflows-template/claude-ios-settings.json` into

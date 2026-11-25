@@ -30,6 +30,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     case hosts
     case appProcesses
     case virtualMachines
+    case bearers
     case actionHistory
 
     var id: String { rawValue }
@@ -54,6 +55,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .hosts: return "Tools And Worker Health"
         case .appProcesses: return "App Processes"
         case .virtualMachines: return "Virtual Machines"
+        case .bearers: return "Bearers"
         case .actionHistory: return "Action History"
         }
     }
@@ -76,6 +78,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .hosts: return "rectangle.split.2x1"
         case .appProcesses: return "rectangle.stack"
         case .virtualMachines: return "cube"
+        case .bearers: return "key.horizontal"
         case .actionHistory: return "list.bullet.clipboard"
         }
     }
@@ -95,7 +98,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
             return .machine(.mac)
         case .serverStatus, .operator, .serverResourceLimits, .serverUpdates:
             return .machine(.server)
-        case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory:
+        case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .bearers, .actionHistory:
             return .acrossFleet
         }
     }
@@ -161,11 +164,12 @@ extension MusterDestination {
         case .serverResourceLimits: return ["server", "memory", "cpu", "limits", "policy", "resources"]
         case .serverUpdates: return ["server", "update", "allowlist", "upgrade", "apt"]
         case .appsAndWork: return ["apps", "work", "lanes", "pull requests", "prs", "claims", "linear"]
-        case .seats: return ["seats", "sessions", "presence", "agents", "last post"]
+        case .seats: return ["seats", "sessions", "agents", "last post"]
         case .controls: return ["knobs", "secrets", "infisical", "settings", "values"]
         case .hosts: return ["tools", "worker", "workers", "doctor", "versions", "hosts"]
         case .appProcesses: return ["processes", "scan", "doctor", "apps"]
         case .virtualMachines: return ["vm", "vms", "machines", "parallels"]
+        case .bearers: return ["bearer", "bearers", "mint", "rotate", "revoke", "tokens", "keys", "access"]
         case .actionHistory: return ["audit", "log", "actions", "ops", "history", "touch id"]
         }
     }
@@ -185,7 +189,7 @@ extension MusterDestination {
         case .operator: return 8
         case .serverResourceLimits: return 9
         case .serverUpdates, .appsAndWork, .seats, .controls, .hosts, .appProcesses,
-             .virtualMachines, .actionHistory:
+             .virtualMachines, .bearers, .actionHistory:
             return nil
         }
     }
@@ -266,8 +270,8 @@ extension MusterDestination {
         case .appsAndWork:
             return "The fleet's app list, with each seat's lanes, pull requests and claims."
         case .seats:
-            // Zulip refuses presence for bot users,  so the panel no longer reads it.
-            return "Mac seats come from the Mac's listener, server seats from the server's eavesdropper, and the last post from Zulip."
+            // The Mac's listener is retired,  so no seat's facts come from it.
+            return "Seats come from the server's eavesdropper, and the last post from Zulip."
         case .controls:
             return "Shared values in the fleet's secret store, as the Mac's copy shows them."
         case .hosts:
@@ -276,6 +280,8 @@ extension MusterDestination {
             return "The doctor's process scan of the Mac and the server, read on the Mac."
         case .virtualMachines:
             return "Each machine's own report, copied to the Mac."
+        case .bearers:
+            return "Each bearer as the Worker's status API reported it to the Mac.\(gap)Mint, rotate and revoke run its owner API."
         case .actionHistory:
             return "Actions started from the Mac, on the Mac or the server."
         }

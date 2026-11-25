@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Infisical is the fleet's only source of secrets, so no token is kept in a
 /// settings file:  a server host or a VM provider names its secret, and the
-/// value is read through the shared declared-consumer reader when a request needs it.
+/// value is read through the scoped Infisical reader when a request needs it.
 /// The value is never written anywhere and never shown.
 public protocol SecretResolving {
     func secret(named name: String) throws -> String
@@ -20,7 +20,7 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// calling a refusal "in time" sent the owner hunting a slow read that
     /// never happened (AFC-592).
     case refused(String)
-    /// The shared reader is not in the configured engine checkout.  Kept apart from
+    /// The reader is not where Muster looks for it.  Kept apart from
     /// `unavailable`, so a missing command never reads as a slow one.
     case notInstalled
 
@@ -31,11 +31,11 @@ public enum FleetSecretError: LocalizedError, Equatable {
         case .missing(let name):
             return "\(name) is not in Infisical.\u{00A0} Add it there:  Muster keeps no copy of it."
         case .unavailable(let name):
-            return "Infisical could not read \(name) in time."
+            return "The Infisical reader could not read \(name) in time."
         case .refused(let name):
-            return "The Infisical reader stopped with an error while reading \(name), so nothing is shown.\u{00A0} That can be a refusal or no network;  the doctor below says which when it can."
+            return "The Infisical reader stopped with an error while reading \(name), so nothing is shown.\u{00A0} The doctor below says which when it can."
         case .notInstalled:
-            return "The shared Infisical reader is unavailable in the configured engine checkout."
+            return "The Infisical reader is not installed on this Mac:  Muster looks for it in ~/apps/infisical-scoped/infisical-scoped.py."
         }
     }
 
@@ -48,9 +48,10 @@ public enum FleetSecretError: LocalizedError, Equatable {
         return ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOENT)
     }
 
-    /// Map a key-read failure: exit 3 is "absent", exit 124 is a timeout, any other
-    /// exit is a refusal, a command that is not there is not installed, and
-    /// anything else is the no-answer case.
+    /// Map a key-read failure:  the reader's exit 3 is "absent",  its exit 2 is
+    /// a refusal (the command line was wrong),  any other exit is a refusal too,
+    /// a reader that is not there is not installed,  and anything else is the
+    /// no-answer case.  A refusal is never reported as a timeout (AFC-592).
     static func from(_ error: Error, name: String) -> FleetSecretError {
         if let error = error as? FleetSecretError { return error }
         if let exit = error as? CommandExitError {
@@ -65,47 +66,32 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// an exit is a refusal, never "absent" — there is no key to be absent.
     static func fromNonKeyRead(_ error: Error, name: String) -> FleetSecretError {
         if let error = error as? FleetSecretError { return error }
-        if let exit = error as? CommandExitError {
-            return exit.status == 124 ? .unavailable(name) : .refused(name)
-        }
+        if let exit = error as? CommandExitError { return exit.status == 124 ? .unavailable(name) : .refused(name) }
         if isMissingCommand(error) { return .notInstalled }
         return .unavailable(name)
     }
 }
 
-/// Reads through the shared reader using Muster's own protected declaration.
-/// Construction never accesses a credential store; every initializer selects this consumer.
+/// The secrets the owner keeps in Infisical, read through the scoped reader.
 public struct FleetSecrets: SecretResolving {
     private let commands: CommandRunning
     private let home: URL
-    private let location: EngineLocation?
+    private let readerURL: URL
 
-    /// The reader has separate 30-second worker and five-second store budgets.
-    /// Leave room for process startup and cleanup without shortening either budget.
-    static let readerTimeout: TimeInterval = 45
-    static let consumer = "muster-data-reader"
+    /// Where the scoped reader is installed on this Mac.
+    ///
+    /// A menu bar app inherits no shell PATH,  so the reader is named by its full
+    /// path.  The repository's `scripts/` directory is not an install location:
+    /// the reader lives beside its siblings in `~/apps/infisical-scoped/`.
+    public static let readerRelativePath = "apps/infisical-scoped/infisical-scoped.py"
 
-    /// `engineRoot` and `interpreter` are source-test seams; production discovery ignores
-    /// engine environment overrides and always uses the system Python.
+    /// The reader's own path,  or another one for a test.
     public init(commands: CommandRunning = ProcessCommandRunner(),
                 home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                engineRoot: URL? = nil, interpreter: URL? = nil) {
+                reader: URL? = nil) {
         self.commands = commands
         self.home = home
-        let root = engineRoot ?? EngineLocator.locate(environment: [:], home: home)?.root
-        self.location = root.map {
-            EngineLocation(root: $0,
-                           interpreter: interpreter ?? URL(fileURLWithPath: EngineLocator.defaultInterpreter))
-        }
-    }
-
-    /// Explicit production spelling; the default initializer has the same managed contract.
-    public static func managed(
-        commands: CommandRunning = ProcessCommandRunner(),
-        home: URL = FileManager.default.homeDirectoryForCurrentUser,
-        engineRoot: URL? = nil, interpreter: URL? = nil
-    ) -> FleetSecrets {
-        FleetSecrets(commands: commands, home: home, engineRoot: engineRoot, interpreter: interpreter)
+        self.readerURL = reader ?? home.appendingPathComponent(Self.readerRelativePath)
     }
 
     /// True when the name is one a secret can have.
@@ -123,7 +109,9 @@ public struct FleetSecrets: SecretResolving {
         guard Self.isValidName(name) else { throw FleetSecretError.invalidName(name) }
         let value: String
         do {
-            value = try runReader(["get", name] + Self.scopeArguments)
+            value = try runReader(["get", name, "--folder", Self.valueFolder,
+                                   "--project", Self.valueProject],
+                                  project: Self.valueProject, folder: Self.valueFolder)
         } catch {
             if isCancellation(error) { throw CancellationError() }
             throw FleetSecretError.from(error, name: name)
@@ -135,7 +123,7 @@ public struct FleetSecrets: SecretResolving {
 
 /// Runs blocking work on a dispatch queue and awaits its result.
 ///
-/// A declared read has a bounded process timeout.  Run inline, it
+/// The reader's `get` can take up to its 20-second timeout.  Run inline, it
 /// would hold one of the cooperative pool's few threads for that long and
 /// stall every other fleet read;  a global queue thread is the one that
 /// waits instead.
@@ -172,7 +160,7 @@ public struct SecretNameGroup: Equatable {
 }
 
 public extension FleetSecrets {
-    /// True when a path is safe metadata for a names group.
+    /// True when a path is one the reader's `names --folder` may be asked for.
     static func isValidPath(_ path: String) -> Bool {
         guard path.hasPrefix("/"), path.count <= 128 else { return false }
         return path.unicodeScalars.allSatisfy {
@@ -206,56 +194,88 @@ public extension FleetSecrets {
         }
     }
 
-    /// This consumer has one exact approved purpose: Fleet-OPS prod root, read-only.
-    static let scopeArguments = ["--folder", "/", "--project", "fleet-ops"]
-
-    private var secretsEnvironment: [String: String] {
-        // An allowlist removes ambient authentication, API and folder markers, including
-        // empty ones.  The shared project resolver uses its existing approved metadata.
-        ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": home.path]
+    static let readerTimeout: TimeInterval = 45
+    static let consumer = "muster-data-reader"
+    /// The finite declaration is selected by operation and exact existing account.
+    /// These paths describe source contracts, not provisioned grants or Keychain items.
+    static func declaredAccount(project: String, folder: String) throws -> String {
+        switch (project, folder) {
+        case ("fleet-ops", "/"): return "muster-fleetops-ro"
+        case ("ai-fleet-coordinator", "/"): return "muster-afc-ro"
+        case ("ai-fleet-coordinator", "/code-mirrors"): return "muster-afc-code-mirrors-ro"
+        case ("ai-fleet-coordinator", "/wake-router"): return "muster-afc-wake-router-ro"
+        default: throw FleetSecretError.invalidName(folder)
+        }
     }
 
-    private func runReader(_ arguments: [String]) throws -> String {
-        guard let location else { throw FleetSecretError.notInstalled }
-        let reader = location.packageDirectory.appendingPathComponent("infisical-scoped.py").path
-        let declaration = home.appendingPathComponent(".config/infisical/muster.json").path
-        let selector = ["--consumer-binding", declaration, "--consumer", Self.consumer]
-        let missingEntryDiagnostics = ["can't open file '\(reader)': [Errno 2]",
-                                       "can't open file \"\(reader)\": [Errno 2]"]
+    private func runReader(_ arguments: [String], project: String, folder: String) throws -> String {
+        let account = try Self.declaredAccount(project: project, folder: folder)
+        let declaration = home.appendingPathComponent(".config/infisical/muster")
+            .appendingPathComponent(account + ".json").path
+        let args = ["-I", readerURL.path] + arguments + [
+            "--consumer-binding", declaration, "--consumer", Self.consumer,
+            "--consumer-account", account]
         do {
-            return try commands.run(location.interpreter.path, ["-I", reader] + arguments + selector,
-                                    environment: secretsEnvironment, timeout: Self.readerTimeout)
-        } catch let exit as CommandExitError where exit.status == 2
-            && missingEntryDiagnostics.contains(where: { exit.errorOutput.contains($0) }) {
-            // Match the exact immutable entry; the child diagnostic never reaches the UI.
+            return try commands.run("/usr/bin/python3", args,
+                                    environment: ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+                                    timeout: Self.readerTimeout)
+        } catch let exit as CommandExitError where exit.status == 2 &&
+            (exit.errorOutput.contains("can't open file '\(readerURL.path)': [Errno 2]") ||
+             exit.errorOutput.contains("can't open file \"\(readerURL.path)\": [Errno 2]")) {
             throw FleetSecretError.notInstalled
         }
     }
 
-    /// Names at the Fleet-OPS root, through the metadata-only `names` verb.
+    /// Names at one supported path, with the default Fleet-OPS project unchanged.
     func secretNames(path: String) throws -> [String] {
         try Self.parseNamesByPath([(path, try secretNamesText(path: path))]).first?.names ?? []
     }
 
-    /// Scope cannot widen through a caller-supplied folder or project.
-    static func namesArguments(path: String, project: String?) throws -> [String] {
-        guard path == "/" else { throw FleetSecretError.invalidName(path) }
-        guard project == nil || project == "fleet-ops" else {
-            throw FleetSecretError.invalidName(project ?? "")
-        }
-        return ["names"] + scopeArguments
+    /// The Infisical project the fleet's knobs live in,  by the name the reader's
+    /// `--project` takes.  It is `PROJECT_ID` in `scripts/fleet_knobs/source.py`,  AI Fleet
+    /// Coordinator,  not the fleet-ops project `names` lists by default.
+    static let knobProject = "ai-fleet-coordinator"
+
+    /// The projects the reader's `--project` takes.  Anything else is refused here
+    /// before a command runs.
+    static let listableProjects: Set<String> = ["fleet-ops", "ai-fleet-coordinator"]
+
+    /// Where the values the app reads live:  the recall admin token is an AI Fleet
+    /// Coordinator root secret.
+    ///
+    /// The read runs under Muster's own scoped service token,  read from Muster's own
+    /// store by the reader:  the token in the process environment is only a copy of that
+    /// same grant,  and it never replaces the reviewed,  scope-limited one.  This app
+    /// binds no credential of its own,  so the environment it hands the reader carries
+    /// no token at all.
+    static let valueProject = "ai-fleet-coordinator"
+    static let valueFolder = "/"
+    /// This app's own scoped service token, named here:  the read binds it explicitly
+    /// instead of leaving it to the reader's own table.
+    static let valueAccount = "muster-afc-ro"
+
+    /// Names grouped by path, for the Controls panel.
+    ///
+    /// With no project,  the reader lists its default project,  fleet-ops.
+    func secretNamesGrouped(paths: [String] = ["/"], project: String? = nil) throws -> [SecretNameGroup] {
+        try Self.parseNamesByPath(paths.map { ($0, try secretNamesText(path: $0, project: project)) })
     }
 
-    func secretNamesGrouped(paths: [String] = ["/"], project: String? = nil) throws -> [SecretNameGroup] {
-        // Validate every selector before starting any process.
-        for path in paths { _ = try Self.namesArguments(path: path, project: project) }
-        return try Self.parseNamesByPath(paths.map { ($0, try secretNamesText(path: $0, project: project)) })
+    /// The arguments for one `names` read:  the folder,  and the project when one is named.
+    static func namesArguments(path: String, project: String?) throws -> [String] {
+        guard isValidPath(path) else { throw FleetSecretError.invalidName(path) }
+        let selectedProject = project ?? "fleet-ops"
+        _ = try declaredAccount(project: selectedProject, folder: path)
+        guard let project else { return ["names", "--folder", path] }
+        guard listableProjects.contains(project) else { throw FleetSecretError.invalidName(project) }
+        return ["names", "--folder", path, "--project", project]
     }
 
     private func secretNamesText(path: String, project: String? = nil) throws -> String {
         let arguments = try Self.namesArguments(path: path, project: project)
-        do { return try runReader(arguments) }
-        catch {
+        do {
+            return try runReader(arguments, project: project ?? "fleet-ops", folder: path)
+        } catch {
             if isCancellation(error) { throw CancellationError() }
             throw FleetSecretError.fromNonKeyRead(error, name: path)
         }
@@ -331,15 +351,15 @@ public extension FleetSecrets {
 
     /// The doctor report as display rows (key to rendered boolean/count/token).
     ///
-    /// A nonzero result may still carry a masked report.  A timed-out operation is always
-    /// reported as unavailable, even if it printed a partial report before timing out.
+    /// The reader's doctor prints its report and says in it what is wrong,  so a report
+    /// that names a problem is that report:  the panel shows what is wrong rather than
+    /// hiding the doctor exactly when it matters.
     func doctorReport() throws -> [String: String] {
         let text: String
         do {
-            text = try runReader(["doctor"] + Self.scopeArguments)
+            text = try runReader(["doctor"], project: "fleet-ops", folder: "/")
         } catch let exit as CommandExitError {
-            if exit.status != 124,
-               let report = try? Self.parseDoctor(exit.output), !report.isEmpty { return report }
+            if exit.status != 124, let report = try? Self.parseDoctor(exit.output), !report.isEmpty { return report }
             throw FleetSecretError.fromNonKeyRead(exit, name: "doctor")
         } catch {
             if isCancellation(error) { throw CancellationError() }

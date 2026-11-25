@@ -15,7 +15,7 @@ from simple_tools import zulip as Z
 from simple_tools.tests.fake_zulip import BOT_EMAIL
 from simple_tools.tests.harness import TAG, Harness, write_rc
 
-FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
+FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"  # the retired CLI's stand-in, still the fixture the MCP harness uses
 FAKE_PROJECT_ID = "11111111-2222-3333-4444-555555555555"
 OTHER_FAKE_PROJECT_ID = "66666666-7777-8888-9999-000000000000"
 
@@ -237,7 +237,7 @@ class InfisicalFallbackTests(Harness):
             )
         self.assertNotIn("secret-looking", str(ctx.exception))
 
-    def fake_fleet_secrets(self, folder: dict, *, binary: Path | None = None) -> dict:
+    def fake_infisical(self, folder: dict, *, binary: Path | None = None) -> dict:
         """A direct-reader fake over a test-owned JSON fixture, with no subprocess or live Infisical."""
         data = self.tmp / "fake-fleet-secrets.json"
         data.write_text(json.dumps({"/zulip": folder}), encoding="utf-8")
@@ -260,6 +260,13 @@ class InfisicalFallbackTests(Harness):
         for cache in (Z._value_cache, Z._names_cache, Z._failures):
             cache.clear()
             self.addCleanup(cache.clear)
+        # The store is the authority:  the consumer's own account token comes from the host's
+        # approved store,  so the fake store answers for it and the environment is never a source.
+        store = mock.patch.object(
+            FI, "token_from_store", return_value=("st." + "synthetic-store-" * 3, "ok")
+        )
+        store.start()
+        self.addCleanup(store.stop)
         return {
             "HOME": str(self.home),
             "PATH": os.environ.get("PATH", ""),
@@ -271,41 +278,47 @@ class InfisicalFallbackTests(Harness):
             "FAKE_FLEET_SECRETS_FILE": str(data),
         }
 
-    def test_default_fetch_asks_fleet_secrets_for_only_these_names_in_one_call(self) -> None:
-        env = self.fake_fleet_secrets({"A": "1", "B": "2", "C": "3", "OTHER": "never"})
+    def test_default_fetch_asks_the_reader_for_only_these_names_in_one_call(self) -> None:
+        env = self.fake_infisical({"A": "1", "B": "2", "C": "3", "OTHER": "never"})
         self.assertEqual(
-            Z._fetch_from_fleet_secrets(("A", "B", "C"), env, self.home),
+            Z._fetch_from_infisical(("A", "B", "C"), env, self.home),
             {"A": "1", "B": "2", "C": "3"},
         )
 
     def test_default_fetch_is_cached_per_process_and_keeps_the_last_good_values(self) -> None:
-        env = self.fake_fleet_secrets({"A": "1", "B": "2"})
+        env = self.fake_infisical({"A": "1", "B": "2"})
         self.assertEqual(
-            Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+            Z._fetch_from_infisical(("A", "B"), env, self.home), {"A": "1", "B": "2"}
         )
         Path(env["FAKE_FLEET_SECRETS_FILE"]).write_text(
             "{}", encoding="utf-8"
         )  # Infisical now fails
         self.assertEqual(
-            Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+            Z._fetch_from_infisical(("A", "B"), env, self.home), {"A": "1", "B": "2"}
         )
         with mock.patch.object(
             Z, "INFISICAL_CACHE_TTL", 0.0
         ):  # stale:  refetch fails, the held values win
             self.assertEqual(
-                Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+                Z._fetch_from_infisical(("A", "B"), env, self.home), {"A": "1", "B": "2"}
             )
         with self.assertRaises(
             Z.CredentialError
         ) as ctx:  # never held:  fails closed with a reason token
-            Z._fetch_from_fleet_secrets(("C",), env, self.home)
+            Z._fetch_from_infisical(("C",), env, self.home)
         self.assertIn("key-absent", str(ctx.exception))
 
     def test_default_fetch_without_its_service_token_fails_before_a_request(self) -> None:
-        env = self.fake_fleet_secrets({})
+        env = self.fake_infisical({})
         del env[FI.ENV_TOKEN]
+        # The consumer's own scoped token is the fallback, so "no token" means none in the
+        # environment and none in the store.  A Mac's login keychain answers for every
+        # account, so the store is refused here rather than left to the host.
+        store = mock.patch.object(FI, "token_from_store", return_value=("", "absent"))
+        store.start()
+        self.addCleanup(store.stop)
         with self.assertRaises(Z.CredentialError) as ctx:
-            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+            Z._fetch_from_infisical(("A",), env, self.home)
         self.assertIn("service-token-required", str(ctx.exception))
         self.direct_fetch.assert_not_called()
 
@@ -326,8 +339,8 @@ class InfisicalFallbackTests(Harness):
             for part in ("EMAIL", "KEY", "SITE"):
                 if not (prefix == "HALF" and part == "SITE"):
                     folder["%s_ZULIP_%s" % (prefix, part)] = "v"
-        env = self.fake_fleet_secrets(folder)
-        with mock.patch.object(Z, "_default_infisical_names", Z._list_from_fleet_secrets):
+        env = self.fake_infisical(folder)
+        with mock.patch.object(Z, "_default_infisical_names", Z._list_from_infisical):
             self.assertEqual(
                 sorted(Z.infisical_seats(env, self.home)), ["BF-PLUMBER", "CLAUDE", "GROK"]
             )
@@ -336,28 +349,28 @@ class InfisicalFallbackTests(Harness):
     def test_an_infisical_outage_costs_one_names_fetch_for_every_identity_candidate(self) -> None:
         from simple_tools import identities as X
 
-        env = self.fake_fleet_secrets({})
+        env = self.fake_infisical({})
         self.direct_fetch.side_effect = FI.SecretsError("fetch-failed")
         self.direct_names.side_effect = FI.SecretsError("fetch-failed")
-        with mock.patch.object(Z, "_default_infisical_names", Z._list_from_fleet_secrets):
+        with mock.patch.object(Z, "_default_infisical_names", Z._list_from_infisical):
             found = X.allowed_identities(env, self.home)
             self.assertEqual(found, {})
             X.allowed_identities(env, self.home)  # again, inside the backoff:  still no new fetch
         self.assertEqual(self.direct_names.call_count, 1)
         with self.assertRaises(Z.CredentialError) as ctx:
-            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+            Z._fetch_from_infisical(("A",), env, self.home)
         self.assertIn("fetch-or-auth-failure", str(ctx.exception))
         with self.assertRaises(
             Z.CredentialError
         ) as ctx:  # the same values inside the backoff:  no new call
-            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+            Z._fetch_from_infisical(("A",), env, self.home)
         self.assertIn("not retried", str(ctx.exception))
         self.assertEqual((self.direct_names.call_count, self.direct_fetch.call_count), (1, 1))
 
     def test_an_outage_on_the_prefetch_fails_every_later_seat_at_once(self) -> None:
-        env = self.fake_fleet_secrets({})
+        env = self.fake_infisical({})
         self.direct_fetch.side_effect = FI.SecretsError("fetch-failed")
-        with mock.patch.object(Z, "_default_infisical_fetch", Z._fetch_from_fleet_secrets):
+        with mock.patch.object(Z, "_default_infisical_fetch", Z._fetch_from_infisical):
             Z.prefetch_infisical(
                 ("CLAUDE", "CODEX", "MM"), env, self.home
             )  # the daemon's one call fails
@@ -368,7 +381,7 @@ class InfisicalFallbackTests(Harness):
         self.assertEqual(self.direct_fetch.call_count, 1)
 
     def test_a_missing_key_does_not_block_other_seats(self) -> None:
-        env = self.fake_fleet_secrets(
+        env = self.fake_infisical(
             {
                 "CLAUDE_ZULIP_EMAIL": BOT_EMAIL,
                 "CLAUDE_ZULIP_KEY": self.key,
@@ -376,40 +389,40 @@ class InfisicalFallbackTests(Harness):
             }
         )
         with self.assertRaises(Z.CredentialError):
-            Z._fetch_from_fleet_secrets(Z.infisical_key_names("CODEX"), env, self.home)
-        got = Z._fetch_from_fleet_secrets(Z.infisical_key_names("CLAUDE"), env, self.home)
+            Z._fetch_from_infisical(Z.infisical_key_names("CODEX"), env, self.home)
+        got = Z._fetch_from_infisical(Z.infisical_key_names("CLAUDE"), env, self.home)
         self.assertEqual(sorted(got), sorted(Z.infisical_key_names("CLAUDE")))
 
     def test_one_binary_keeps_two_projects_apart(self) -> None:
-        # One `fleet-secrets` serves both the AFC /zulip the Notes service reads and the Fleet-OPS
+        # One reader serves both the AFC /zulip the Notes service reads and the Fleet-OPS
         # /zulip the seats read:  values, names and outages are keyed by project, never by binary.
-        env = self.fake_fleet_secrets({"SHARED": "from-fleet-ops", "ONLY_FLEET_OPS": "x"})
+        env = self.fake_infisical({"SHARED": "from-fleet-ops", "ONLY_FLEET_OPS": "x"})
         other = dict(env)
         other[Z.ENV_INFISICAL_PROJECT] = OTHER_FAKE_PROJECT_ID
         other_data = self.tmp / "other-project.json"
         other_data.write_text(json.dumps({"/zulip": {"SHARED": "from-afc", "ONLY_AFC": "y"}}))
         other["FAKE_FLEET_SECRETS_FILE"] = str(other_data)
-        self.assertEqual(Z._fetch_from_fleet_secrets(("SHARED",), env, self.home), {"SHARED": "from-fleet-ops"})
-        self.assertEqual(Z._fetch_from_fleet_secrets(("SHARED",), other, self.home), {"SHARED": "from-afc"})
-        self.assertEqual(sorted(Z._list_from_fleet_secrets(env, self.home)), ["ONLY_FLEET_OPS", "SHARED"])
-        self.assertEqual(sorted(Z._list_from_fleet_secrets(other, self.home)), ["ONLY_AFC", "SHARED"])
+        self.assertEqual(Z._fetch_from_infisical(("SHARED",), env, self.home), {"SHARED": "from-fleet-ops"})
+        self.assertEqual(Z._fetch_from_infisical(("SHARED",), other, self.home), {"SHARED": "from-afc"})
+        self.assertEqual(sorted(Z._list_from_infisical(env, self.home)), ["ONLY_FLEET_OPS", "SHARED"])
+        self.assertEqual(sorted(Z._list_from_infisical(other, self.home)), ["ONLY_AFC", "SHARED"])
         Path(env["FAKE_FLEET_SECRETS_FILE"]).write_text("{", encoding="utf-8")  # that store is down
         with mock.patch.object(Z, "INFISICAL_CACHE_TTL", 0.0):
             with self.assertRaises(Z.CredentialError) as ctx:  # never held:  it raises
-                Z._fetch_from_fleet_secrets(("NEVER_HELD",), env, self.home)
+                Z._fetch_from_infisical(("NEVER_HELD",), env, self.home)
             self.assertIn("fetch-or-auth-failure", str(ctx.exception))
             with self.assertRaises(Z.CredentialError) as ctx:
-                Z._fetch_from_fleet_secrets(("NEVER_HELD",), env, self.home)
+                Z._fetch_from_infisical(("NEVER_HELD",), env, self.home)
             self.assertIn("not retried", str(ctx.exception))
             # the healthy project's fetch is not refused by the other store's outage
-            self.assertEqual(Z._fetch_from_fleet_secrets(("SHARED",), other, self.home), {"SHARED": "from-afc"})
+            self.assertEqual(Z._fetch_from_infisical(("SHARED",), other, self.home), {"SHARED": "from-afc"})
 
     def test_an_unresolvable_project_fails_closed_and_is_never_cached(self) -> None:
-        env = self.fake_fleet_secrets({"A": "1"})
+        env = self.fake_infisical({"A": "1"})
         del env[Z.ENV_INFISICAL_PROJECT]  # and no ~/.simple-tools/fleet-ops-project-id
         for call in (
-            lambda: Z._fetch_from_fleet_secrets(("A",), env, self.home),
-            lambda: Z._list_from_fleet_secrets(env, self.home),
+            lambda: Z._fetch_from_infisical(("A",), env, self.home),
+            lambda: Z._list_from_infisical(env, self.home),
         ):
             with self.assertRaises(Z.CredentialError) as ctx:
                 call()

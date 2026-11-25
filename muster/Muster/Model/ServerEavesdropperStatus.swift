@@ -85,9 +85,38 @@ enum EavesdropperStatusText {
         value.map { String($0) } ?? notReported
     }
 
+    /// The existing listener reason codes, kept independently of the retired status envelope.
+    static func cause(_ code: String) -> String? {
+        switch code {
+        case "operator_credential_rejected":
+            return "Zulip refused the Operator's credential."
+        case "operator_owner_not_pinned":
+            return "The owner is not pinned in the listener's settings, so the Operator does not post."
+        case "operator_unavailable":
+            // The catch-all for any failed build of the Operator client:  an unreadable
+            // credential, not the pinned bot, or an identity it could not confirm.
+            return "The listener could not get the Operator ready to post."
+        default:
+            return nil
+        }
+    }
+
+    /// A time on the Chicago clock, with month and day when it is not today.
+    static func whenText(_ date: Date, now: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago") ?? .current
+        if calendar.isDate(date, inSameDayAs: now) {
+            return FleetTime.clock(date)
+        }
+        let parts = calendar.dateComponents([.month, .day], from: date)
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        let month = parts.month.map { months[max(0, min(11, $0 - 1))] } ?? ""
+        return "\(month) \(parts.day ?? 0), \(FleetTime.clock(date))"
+    }
+
     /// A time on Jay's clock, or Not reported.
     static func time(_ date: Date?, now: Date) -> String {
-        date.map { OperatorVoiceReading.whenText($0, now: now) } ?? notReported
+        date.map { EavesdropperStatusText.whenText($0, now: now) } ?? notReported
     }
 }
 
@@ -300,7 +329,7 @@ enum ServerOperatorVoice: Equatable {
     /// The cause in plain words for the listener's code, when Muster knows the code.
     var cause: String? {
         guard case .cannotPost(let code?, _) = self else { return nil }
-        return OperatorVoiceReading.cause(code)
+        return EavesdropperStatusText.cause(code)
     }
 }
 

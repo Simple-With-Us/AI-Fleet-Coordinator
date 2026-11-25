@@ -48,8 +48,6 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # dispatches for Muster's Seats panel.
 # The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
 # The 157th is simple_tools/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
-# The 158th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
-# unit template stays repo-only under simple_tools/server/).
 # The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
 # env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
@@ -73,7 +71,9 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # From here the cap is 190 (raised from 180 under AFC-789 once fleet_infisical_bootstrap.py plus
 # the canonical operator-settings modules reached 181 shipped files);
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
-MAX_FILES = 190
+# MiniMax catalog observation adds the 191st shipped file. Keep the matching
+# sender/receiver count budget bounded, with room for small additive modules.
+MAX_FILES = 200
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -106,7 +106,6 @@ RECALL_MODULES = (
 # `simple-notes` reads the OPERATOR_API_URL knob through these fleet_knobs modules (stdlib only;  the package's
 # tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
-SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
@@ -157,7 +156,6 @@ EXACT = frozenset(
         *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
         "scripts/fleet_lanes/placement-exceptions.json",
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
@@ -174,8 +172,6 @@ EXACT = frozenset(
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
-        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to).
-        "scripts/zc-wake-bridge",
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
     }
@@ -196,6 +192,76 @@ EXACT = frozenset(
 # A new module still ships by default:  this list only ever names a path that nothing runs.
 REPO_ONLY = frozenset(
     {
+        # Default-off native qualification candidate. Explicit private host staging only;
+        # never shipped or loaded by regular fleet CLI sync.
+        "scripts/simple_tools/native_candidate/PROVENANCE.md",
+        "scripts/simple_tools/native_candidate/QUALIFICATION-PLAN.md",
+        "scripts/simple_tools/native_candidate/README.md",
+        "scripts/simple_tools/native_candidate/REVISION1113.md",
+        "scripts/simple_tools/native_candidate/REVISION1122.md",
+        "scripts/simple_tools/native_candidate/REVISION1126.md",
+        "scripts/simple_tools/native_candidate/__init__.py",
+        "scripts/simple_tools/native_candidate/base-zcode_wake.py",
+        "scripts/simple_tools/native_candidate/candidate-dependencies.tar.gz",
+        "scripts/simple_tools/native_candidate/candidate-zcode_wake.py",
+        "scripts/simple_tools/native_candidate/connection-cleanup1041.json",
+        "scripts/simple_tools/native_candidate/dependencies-sha256.json",
+        "scripts/simple_tools/native_candidate/extract_assembler.py",
+        "scripts/simple_tools/native_candidate/extract_scope.cjs",
+        "scripts/simple_tools/native_candidate/extract_source_schemas.cjs",
+        "scripts/simple_tools/native_candidate/installed_connection_scope.js",
+        "scripts/simple_tools/native_candidate/installed_socket_scope.js",
+        "scripts/simple_tools/native_candidate/launcher_actual_package_fixture.py",
+        "scripts/simple_tools/native_candidate/native-bridge.patch",
+        "scripts/simple_tools/native_candidate/native_assembler.cjs",
+        "scripts/simple_tools/native_candidate/native_codec.cjs",
+        "scripts/simple_tools/native_candidate/native_consumer.py",
+        "scripts/simple_tools/native_candidate/native_custody.py",
+        "scripts/simple_tools/native_candidate/native_driver.cjs",
+        "scripts/simple_tools/native_candidate/native_evidence.py",
+        "scripts/simple_tools/native_candidate/native_flow.cjs",
+        "scripts/simple_tools/native_candidate/native_integration.py",
+        "scripts/simple_tools/native_candidate/native_path_custody.py",
+        "scripts/simple_tools/native_candidate/native_qualification.py",
+        "scripts/simple_tools/native_candidate/native_qualification_builder.py",
+        "scripts/simple_tools/native_candidate/native_qualification_launch.py",
+        "scripts/simple_tools/native_candidate/native_receipts.py",
+        "scripts/simple_tools/native_candidate/native_rpc.cjs",
+        "scripts/simple_tools/native_candidate/native_schemas.cjs",
+        "scripts/simple_tools/native_candidate/native_store.py",
+        "scripts/simple_tools/native_candidate/offline_source.json",
+        "scripts/simple_tools/native_candidate/prepare_candidate.cjs",
+        "scripts/simple_tools/native_candidate/prepare_dependencies.py",
+        "scripts/simple_tools/native_candidate/publication-files.json",
+        "scripts/simple_tools/native_candidate/schema-full1056.json",
+        "scripts/simple_tools/native_candidate/scope-callers1104.json",
+        "scripts/simple_tools/native_candidate/scope-provenance.json",
+        "scripts/simple_tools/native_candidate/snapshot_fixture.json",
+        "scripts/simple_tools/native_candidate/test_assembler.cjs",
+        "scripts/simple_tools/native_candidate/test_bridge.py",
+        "scripts/simple_tools/native_candidate/test_consumer.py",
+        "scripts/simple_tools/native_candidate/test_custody_store.py",
+        "scripts/simple_tools/native_candidate/test_failures.py",
+        "scripts/simple_tools/native_candidate/test_flow.cjs",
+        "scripts/simple_tools/native_candidate/test_host.cjs",
+        "scripts/simple_tools/native_candidate/test_integration.py",
+        "scripts/simple_tools/native_candidate/test_native.py",
+        "scripts/simple_tools/native_candidate/test_packaging.cjs",
+        "scripts/simple_tools/native_candidate/test_path_custody.py",
+        "scripts/simple_tools/native_candidate/test_qualification.py",
+        "scripts/simple_tools/native_candidate/test_qualification_builder.py",
+        "scripts/simple_tools/native_candidate/test_receipts.py",
+        "scripts/simple_tools/native_candidate/test_router_builder.py",
+        "scripts/simple_tools/native_candidate/test_schemas.cjs",
+        "scripts/simple_tools/native_candidate/test_scope.cjs",
+        "scripts/simple_tools/native_candidate/test_socket_scope.cjs",
+        "scripts/simple_tools/native_candidate/verify_provenance.cjs",
+        "scripts/simple_tools/native_candidate/wake_router_base.py",
+        "scripts/simple_tools/native_candidate/wake_service_base.py",
+        "scripts/simple_tools/native_candidate/wire-assembler-exact1045.json",
+        "scripts/simple_tools/native_candidate/wire-dependencies1046.json",
+        "scripts/simple_tools/native_candidate/wire-helpers1046.json",
+        "scripts/simple_tools/native_candidate/zcode_native.py",
         *(
             "scripts/simple_tools/" + name + ".py"
             for name in (
@@ -207,6 +273,9 @@ REPO_ONLY = frozenset(
             )
         ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
+        # Pinned one-shot host diagnostic, explicitly installed only after review.
+        # No fleet CLI imports or runs this launcher.
+        "scripts/simple_tools/minimax_supervised_exec.mjs",
         # The thread-registry exporter's node test:  the CI leg and local `node --test` run it from
         # the checkout; nothing installed loads it, so it stays repo-only like the fixtures above.
         "scripts/simple_tools/thread_registry_export.test.mjs",
@@ -266,7 +335,6 @@ TOOL_REQUIRED = frozenset(
         # Shared protected-custody helper for declared readers and interactive launchers.
         "scripts/fleet_infisical_bootstrap.py",
         # The direct command's writer requires the same retained intent ledger.
-        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/simple_tools/mcp/fleetlink-tools.json",

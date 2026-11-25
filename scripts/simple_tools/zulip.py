@@ -33,7 +33,6 @@ import ipaddress
 import json
 import os
 import re
-import shutil
 import stat
 import threading
 import time
@@ -74,7 +73,6 @@ __all__ = [
     "default_rc_path",
     "direct_recipient_sets",
     "env_credentials",
-    "fleet_secrets_bin",
     "infisical_credentials",
     "infisical_has",
     "infisical_key_names",
@@ -107,8 +105,16 @@ ENV_INFISICAL = "SIMPLE_TOOLS_INFISICAL"  # 0, false, off or no turns the Infisi
 ENV_INFISICAL_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 INFISICAL_PROJECT_FILE = ".simple-tools/fleet-ops-project-id"
 INFISICAL_PATH = "/zulip"
-# Compatibility names for callers still migrating; Zulip reads Infisical directly through the shared library.
-ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
+# The reader's own scoped service tokens:  one read-only grant per Infisical folder, each
+# named for the folder it covers and held in the consumer's own store (the owner's login
+# keychain on the Mac, a private file on a server).  The store is the authority for the
+# token:  a token in the environment is only a copy of that same grant, and it is used
+# when the store has none.
+INFISICAL_TOKEN_ACCOUNTS = {
+    INFISICAL_PATH: "zulip-ro",
+    "/zulip_operator": "zulip-operator-ro",
+    "/wake": "wake-ro",
+}
 FLEET_SECRETS_TIMEOUT = (
     15.0  # compatibility name: interactive commands bound one direct Infisical read
 )
@@ -591,17 +597,6 @@ def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
     return value
 
 
-def fleet_secrets_bin(env: Mapping[str, str], home: Path) -> str | None:
-    """Legacy helper for unmigrated callers; this module's credential readers never call it."""
-    explicit = (env.get(ENV_FLEET_SECRETS_BIN) or "").strip()
-    if explicit:
-        return os.path.expanduser(explicit)
-    candidate = home / ".local" / "bin" / "fleet-secrets"
-    if os.access(candidate, os.X_OK):
-        return str(candidate)
-    return shutil.which("fleet-secrets", path=env.get("PATH") or os.defpath)
-
-
 _cache_lock = threading.Lock()
 _value_cache: dict[
     tuple[str, str, str, str], tuple[float, str]
@@ -631,9 +626,35 @@ def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
     return None
 
 
+def _scoped_binding(scoped: Mapping[str, str], path: str, project: str | None = None) -> str:
+    """The token this read runs under:  this consumer's own scoped service token for that folder.
+
+    The store is the authority:  the consumer's own account token is read from the host's
+    approved store first, and it is the credential.  An environment binding is a second
+    source only when the token's own grant metadata proves it is this consumer's narrow
+    grant:  the workspace is the project, the permissions are exactly read, the granted
+    folder is exactly this one, and the token's own name is this account.  A general
+    binding scoped to "/" or to several folders fails that check, so it can no longer serve
+    a consumer, and a hand-set value never replaces the reviewed grant.
+
+    There is no other source:  no shared reader, no machine identity and no cached copy.  A
+    missing token, a locked keychain or an unreadable store yields nothing, and the refusal
+    names the account the consumer needs and which of those it was.
+    """
+    import fleet_infisical as FI
+
+    account = INFISICAL_TOKEN_ACCOUNTS.get(path)
+    if not account:
+        raise FI.SecretsError(f"service-token-required: no scoped token covers {path}")
+    if project is None:
+        project = _project_scope(scoped, FI.home_dir(scoped))
+    token, _source = FI.consumer_binding(account, path, scoped, project, home=FI.home_dir(scoped))
+    return token
+
+
 def _infisical_context(
     env: Mapping[str, str], home: Path, path: str
-) -> tuple[str, str, dict[str, str]]:
+) -> tuple[str, str, dict[str, str], str]:
     """The caller's explicit project binding and exact folder; no CLI or credential-store fallback."""
     import fleet_infisical as FI
 
@@ -641,26 +662,30 @@ def _infisical_context(
     scoped = dict(env, HOME=str(home))
     scoped[FI.ENV_READ_PATHS] = path
     try:
-        binding = FI.resolve_token(scoped)
-    except FI.SecretsError:
-        raise CredentialError(
-            "Infisical service-token-required: INFISICAL_TOKEN is not usable"
-        ) from None
+        binding = _scoped_binding(scoped, path, project)
+    except FI.SecretsError as exc:
+        # The refusal names the account the consumer needs and which refusal it was, so the
+        # operator knows what to provision:  the message holds no value.
+        raise CredentialError("Infisical %s" % exc.message) from None
     route = hashlib.sha256(
         (scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()
     ).hexdigest()
-    return project, route, scoped
+    # The binding is resolved once here and passed down:  a second resolution would
+    # ask the token store twice,  and on macOS that is two keychain subprocesses.
+    return project, route, scoped, binding
 
 
 def _direct_infisical_values(
-    wanted: tuple[str, ...], env: Mapping[str, str], home: Path, path: str
+    wanted: tuple[str, ...],
+    project: str,
+    scoped: Mapping[str, str],
+    path: str,
+    binding: str,
 ) -> dict[str, str]:
     """Read named values with verified service-token metadata and row provenance."""
     import fleet_infisical as FI
 
-    project, _route, scoped = _infisical_context(env, home, path)
     try:
-        binding = FI.resolve_token(scoped)
         values = FI.fetch_project(
             project, path, scoped, token=binding, names=wanted, timeout=FLEET_SECRETS_TIMEOUT
         )
@@ -676,7 +701,7 @@ def _direct_infisical_values(
     return values
 
 
-def _fetch_from_fleet_secrets(
+def _fetch_from_infisical(
     names: tuple[str, ...], env: Mapping[str, str], home: Path, path: str = INFISICAL_PATH
 ) -> Mapping[str, str]:
     """Just these names, through the shared direct Infisical reader.
@@ -689,7 +714,7 @@ def _fetch_from_fleet_secrets(
     by route, project and folder so one store's outage never refuses the other store's fetch.
     """
     wanted = tuple(sorted(set(names)))
-    project, route, scoped = _infisical_context(env, home, path)
+    project, route, scoped, binding = _infisical_context(env, home, path)
     now = time.monotonic()
     with _cache_lock:
         held = {n: _value_cache.get((route, project, path, n)) for n in wanted}
@@ -707,7 +732,7 @@ def _fetch_from_fleet_secrets(
                 "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
             )
         try:
-            got = _direct_infisical_values(wanted, scoped, home, path)
+            got = _direct_infisical_values(wanted, project, scoped, path, binding)
         except CredentialError as exc:
             _failures[failure_key] = (now, str(exc))
             if "key-absent" not in str(exc):
@@ -724,9 +749,9 @@ def _fetch_from_fleet_secrets(
         return got
 
 
-def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[str]:
+def _list_from_infisical(env: Mapping[str, str], home: Path) -> frozenset[str]:
     """The key names in the caller's exact /zulip folder, cached like values."""
-    project, route, scoped = _infisical_context(env, home, INFISICAL_PATH)
+    project, route, scoped, binding = _infisical_context(env, home, INFISICAL_PATH)
     now = time.monotonic()
     with _cache_lock:
         held = _names_cache.get((route, project))
@@ -741,7 +766,6 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
         try:
             import fleet_infisical as FI
 
-            binding = FI.resolve_token(scoped)
             names = FI.list_project_names(
                 project, INFISICAL_PATH, scoped, token=binding, timeout=FLEET_SECRETS_TIMEOUT
             )
@@ -769,8 +793,8 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
 
 
 # Compatibility function names remain for callers and test seams; both readers use the direct library.
-_default_infisical_fetch = _fetch_from_fleet_secrets
-_default_infisical_names = _list_from_fleet_secrets
+_default_infisical_fetch = _fetch_from_infisical
+_default_infisical_names = _list_from_infisical
 
 
 def infisical_names(
@@ -849,7 +873,7 @@ def prefetch_infisical(
     """Warm this process's cache with every listed seat's (and bot stem's) names in ONE fetch, so a
     daemon holding several seats makes one Infisical call at start, not one per seat.  Never raises;
     each seat still reports its own failure when it opens."""
-    if not infisical_enabled(env) or _default_infisical_fetch is not _fetch_from_fleet_secrets:
+    if not infisical_enabled(env) or _default_infisical_fetch is not _fetch_from_infisical:
         return
     names: list[str] = []
     for seat in seats:
@@ -859,7 +883,7 @@ def prefetch_infisical(
     if not names:
         return
     try:
-        _fetch_from_fleet_secrets(tuple(names), env, home)
+        _fetch_from_infisical(tuple(names), env, home)
     except Exception:
         pass
 

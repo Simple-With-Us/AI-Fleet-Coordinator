@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 
+from .patch_secretscan import scan as patch_scan
+
 _PATTERNS = (
     ("github_fine_grained_pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("github_token", re.compile(r"gh[opusr]_[A-Za-z0-9]{20,}")),
@@ -67,6 +69,82 @@ def find_secret(text: object) -> str | None:
         if pattern.search(text):
             return name
     return None
+
+
+_PATTERN_NAMES = frozenset(name for name, _ in _PATTERNS)
+
+# The patch scanner (patch_secretscan) names its categories in prose, and the
+# file-content gate (reviewed_fixtures.unreviewed_file_secret) returns those
+# labels alongside this module's pattern names.  A refusal names ONE stable
+# identifier from this closed vocabulary, so the labels map onto identifiers
+# here;  a category nobody mapped collapses to "credential".  A refusal never
+# carries scanner prose beyond this vocabulary, matched content or a snippet.
+_LABEL_CATEGORY_IDS = {
+    "private key block": "private_key_block",
+    "AWS access key": "aws_access_key_id",
+    "GitHub token": "github_token",
+    "Anthropic or OpenAI key": "anthropic_or_openai_key",
+    "Slack token": "slack_token",
+    "GitLab token": "gitlab_token",
+    "Google API key": "google_api_key",
+    "Stripe key": "stripe_key",
+    "Linear API key": "linear_api_key",
+    "Linear client secret": "linear_client_secret",
+    "Sentry token": "sentry_token",
+    "xAI key": "xai_key",
+    "Infisical service token": "infisical_service_token",
+    "Infisical credential": "infisical_credential",
+    "access token (JWT)": "jwt",
+    "Cloudflare token": "cloudflare_token",
+    "Coolify token": "coolify_token",
+    "assigned credential": "assigned_credential",
+    "assigned secret": "assigned_secret",
+    "bearer token": "bearer_credential",
+    "a Zulip-shaped API key": "zulip_api_key",
+    "a loaded credential": "loaded_credential",
+}
+
+
+def category_id(category: object) -> str:
+    """The stable identifier for a scanner category from either scanner."""
+    if category in _PATTERN_NAMES:
+        return category
+    return _LABEL_CATEGORY_IDS.get(category, "credential")
+
+
+# Every front vouches for the refusal shape with a field prefix of at most
+# 200 characters (gr-refusal.js, gr-tools.js, hosted-tools.js) and reads the
+# relay's error body under a 1000-character cap, so a refusal field must fit
+# the prefix bound with room to spare for the fixed tail.
+_FIELD_PREFIX_MAX = 200
+
+
+def _refusal_field(field: str) -> str:
+    """The field label a scanner refusal may carry.
+
+    The label is caller-shaped text (usually a repo path), and the refusal
+    text is persisted as an audit reason, so the label is echoed only when
+    it fits the fronts' vouched shape and no scanner reads the label itself
+    as a credential.  Anything else collapses to a fixed label:  the
+    category still names what matched, and no credential-shaped value is
+    written down.
+    """
+    if len(field) <= _FIELD_PREFIX_MAX and find_secret(field) is None and patch_scan(field) is None:
+        return field
+    return "args.path"
+
+
+def scan_refusal(field: str, category: object) -> str:
+    """The refusal text for a scanner hit in a verb-scanned field.
+
+    The same shape SecretInputError uses pre-dispatch, so the audit row and
+    every front read both scan paths identically:  the field and the category
+    identifier, never the matched content.
+    """
+    return (
+        f"{_refusal_field(field)} looks like it contains a credential "
+        f"({category_id(category)}); refusing to relay it"
+    )
 
 
 def first_secret_start(text: object) -> int | None:

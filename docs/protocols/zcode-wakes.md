@@ -21,7 +21,10 @@ one decision still open.
                 and hands the wake to the seat's platform module
                     zcode --cwd <workspace> --resume <session> -p "<[ZC·wake] ... thread link ...>"
 
-The legacy bridge chain, which is the fallback and not the live path any more:
+The legacy bridge chain, which was the fallback and retired on Nov 21, 2026 (its script and
+tests are deleted from the repo;  the unit template stays only until the live
+`afc-zc-wake-bridge.service` unit on the server stops at the owner's hand, and goes in the same
+follow-up):
 
     Zulip tag @ZC or DM zc-bot
       -> [seat.ZC] wake = "http"  POSTs simple-tools-wake/1, bearer-signed with ZC_ROUTINE_KEY
@@ -83,8 +86,11 @@ checks the directory the session reports, while the module runs the CLI with the
 workspace root the deployment names and refuses a session whose recorded directory
 lies outside it (`workspace-mismatch`), so the router can refuse a delivery the bridge would
 have attempted.  Both reach the same ZCode runtime and the same model
-credential, so both stop at the provider today.  The bridge stays up and keeps its
-own values, and it retires only after a real wake is delivered end to end.
+credential, so both stopped at the provider until the seat's own sign-in landed.  The
+retirement's own gate was a real wake delivered end to end, and that proof exists:  wakes
+routed through the router's front arrived in the seat's open chats and their turns ran
+(Nov 19-21, 2026, the seat's own receipts), so the bridge retired on Nov 21, 2026 (its
+script, unit template and tests deleted;  the live unit stops at the owner's hand).
 
 The cutover was done in these five steps, in this order.  The legacy bridge stays up as
 the seat's fallback until the router's own front has answered a real wake end to end, so a
@@ -99,12 +105,12 @@ cutover that does not work never leaves the seat without a route.
     other seat follows.  The bridge's own URL is governed in AFC prod `/zulip` under
     `ZC_BRIDGE_ROUTINE_URL`, so the seat's own name never serves the router's front and the
     bridge at the same time, and the operator reads that one through the approved route,
-    `fleet-secrets get ZC_BRIDGE_ROUTINE_URL --path /zulip --project ai-fleet-coordinator`,
-    captured into the write and never echoed.  The explicit project selector is part of that
-    route and not an extra on it:  the reader's default project is Fleet-OPS, the name is not
-    there, and the same read without the selector exits 3 with "key ZC_BRIDGE_ROUTINE_URL is
-    not in Infisical at /zulip" (checked on Nov 17, 2026), because the name lives in the AI
-    Fleet Coordinator project.  The bridge's own key is already in the loader's
+    the folder's own scoped service token reads `ZC_BRIDGE_ROUTINE_URL` in the AI Fleet
+    Coordinator `/zulip` folder,
+    captured into the write and never echoed.  The project is bound by that token and not an
+    extra on the route:  a Fleet-OPS-scoped token does not carry the name at all, and a read
+    without the right grant fails closed rather than answering, because the name lives in
+    the AI Fleet Coordinator project.  The bridge's own key is already in the loader's
     secondary read, so a rollback has a value to point at.  The
     environment is read once at the container's start, so the container is restarted after the
     name is minted.  The seat's own binding is named here, so the
@@ -146,10 +152,10 @@ cutover that does not work never leaves the seat without a route.
     operator reads from `ZC_BRIDGE_ROUTINE_URL` in the same folder and writes into that name
     without echoing it, and that is the one write the rollback needs outside the server:  that
     name carries the router's front today, so the write is what moves the seat back and not a
-    read of what the name holds.  That write has one named route, and it is not
-    `fleet-secrets set`:  the allowlist in `scripts/fleet_infisical.py` is code, and it covers
-    only `CACHE_*` names under `/linear` and the CLI-login names under `/cli-logins`, and the
-    writer writes the Fleet-OPS project, so `fleet-secrets set ZC_ROUTINE_URL --path /zulip`
+    read of what the name holds.  That write has one named route, and it is not the retired
+    reader's `set`:  the allowlist in `scripts/fleet_infisical.py` is code, and it covers
+    only `CACHE_*` names under `/linear` and the CLI-login names under `/cli-logins`, and it
+    writes the Fleet-OPS project, so a `ZC_ROUTINE_URL` write under `/zulip`
     exits 2 on the allowlist and could not reach this project anyway.  The write goes through
     the approved scoped Infisical consumer for that setting:  one service token whose grant
     is exactly the AI Fleet Coordinator project, `prod`, `/zulip`, with write permission, and
@@ -182,12 +188,16 @@ cutover that does not work never leaves the seat without a route.
     capture the seat had before the cutover comes back without any of that:  `wake = "inbox"`
     and a reload alone put the seat back on the live file's own binding, and it too is undone
     by the next apply until the sample says the same.
-Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
-`zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
-never run one session at the same time, and its dedupe ledger is replaced by the router's own
-receipts.  Until then it stays as it is, with the bridge's own URL governed in AFC prod
-`/zulip` under `ZC_BRIDGE_ROUTINE_URL` and its own key already in the loader's secondary read,
-and the sample keeps carrying the router's binding for this seat.
+Step 5 is proven and the legacy bridge (`scripts/zc-wake-bridge`, the unit
+`zc-wake-bridge.service`) has retired:  it held the same per-session lock, so the two paths
+could never run one session at the same time, and its dedupe ledger is replaced by the router's
+own receipts.  The proof that released it:  wakes routed through the router's front arrived in
+the seat's open chats and their turns ran (Nov 19-21, 2026).  The script and its suite were
+deleted on Nov 21, 2026;  the live `afc-zc-wake-bridge.service` unit on the server stops at the
+owner's hand, and the rollback names stay in place until it does:  the bridge's own URL is
+governed in AFC prod `/zulip` under `ZC_BRIDGE_ROUTINE_URL`, its own key is in the loader's
+secondary read, and restoring the bridge means restoring its deleted files from git history
+first.  The sample keeps carrying the router's binding for this seat.
 
 ## What the module guarantees
 
@@ -208,12 +218,19 @@ made explicit.
   router's own sentence.
 - A workspace path that begins with a dash is refused (`invalid-workspace`), so it can never be
   read as an option by the CLI.
-- The three outcomes of a turn are kept apart.  A timeout is `unknown`:  the turn may have run,
-  so the wake is neither recorded as delivered nor retried, and the receipt keeps it visible.  A
-  turn that fails before any model response (the runtime's own documented
-  `project_token_login_failed`) is `failed` even when the process exits 0, so it is never
-  recorded as a delivery.  An exit 0 with nothing to show is `sent` with an unconfirmed
-  acknowledgement, and the receipt never claims a confirmed delivery for it.
+- The outcomes of a resume are kept apart, and the chat's own transcript decides them.  A resume does not run the turn: it writes the wake's prompt into the chat's transcript (the
+  session's input history or its messages in `~/.zcode/cli/db/db.sqlite`), and the open chat
+  takes it from there.  So once the child is gone the store is asked, by the wake id, whether the prompt is
+  there.  A timeout is `unknown`: the turn may have run, so the wake is neither recorded as delivered
+  nor retried, and the receipt keeps it visible.  A prompt that is in the transcript is `sent` with an unconfirmed
+  acknowledgement however the child ended (its note says `zcode-prompt-persisted` and why the
+  child did not end well), and it is never repeated: a second prompt would be a second turn.  A
+  prompt that is in neither table is `failed`, because no turn started from it and the router's
+  bounded retry may run it again.  When the store cannot say (unreadable, or a runtime without those
+  tables) the exit decides as it used to: a turn that fails before any model response (the
+  runtime's own documented `project_token_login_failed`) is `failed` even when the process
+  exits 0, an exit 0 with nothing to show is `sent`, and any other exit is final (`refused`).  The
+  receipt never claims a confirmed delivery for a resume.
 - The turn never outlives its delivery.  The module keeps the child handle and stops and
   reaps it on every path, including a timeout and an interruption, so a turn can never keep
   running behind a session lock the delivery already holds.
@@ -225,6 +242,12 @@ made explicit.
   refused.
 
 ## What is built and tested (PR: OPS-1048)
+
+The bridge parts of this list retired on Nov 21, 2026:  `scripts/zc-wake-bridge` and its test
+file are deleted (the delivered-and-executed wake proof released them), and the unit template
+stays only until the live unit stops, then goes in the same follow-up.  The bullets below
+describe what was removed or is waiting for that stop.  The target rules live on in the
+router's module (`scripts/simple_tools/zcode_wake.py`).
 
 - `scripts/zc-wake-bridge`  the receiver, the dedupe, the target resolution and the delivery
   executor.  State under `~/.local/state/zc-wake/` (0700):  `routine-key` (0600, the only
@@ -245,7 +268,7 @@ made explicit.
   whose letter was retired or whose registration closed never wins, a session our own lock
   holds is left to finish (`session-busy`).
 
-## The one open decision:  the seat's model credential
+## The seat's model credential on the server
 
 Delivery runs a headless turn (`zcode --resume <session> -p <text>`).  The router's delivery for
 this seat is armed:  `WAKE_ROUTER_DELIVERY_ENABLED` is true and ZC is named in
@@ -254,27 +277,34 @@ router's `/health/ZC` answers `healthy` with delivery on.  The one local file f
 router, `~/.local/state/wake-router/config.json`, can only narrow that, never widen it, and the
 seat's own per-seat file is `~/.local/state/wake-router/zc/config.json`.
 
-What is still open is the seat's model credential on the server.  The headless run asks the
-Z.AI project-access token for the `zai` family, and the answer is
-`project_token_login_failed` (stage `resolve`), so the turn fails before any model response and
-the router's receipt says the wake was not delivered (`resume-exit-1`, status dead).  The fix
-is the seat's own login on the server (`zcode login zai`, in a browser), which is the owner's
-to do.  The older note about a dead MiniMax key in the desktop's provider order no longer
+What is still open is the seat's model credential for the headless leg on the server.  The headless run asks the Z.AI project-access token for the `zai` family, and the answer is
+`project_token_login_failed` (stage `resolve`), so the headless turn fails before any model
+response and the child exits 1.  The wake is delivered all the same when the prompt reaches the chat's transcript: an open
+chat runs it from there, and the receipt records the hand-over (`sent`, note
+`zcode-prompt-persisted:model-auth-login-failed`).  A closed chat has nothing to run the prompt; what it does with the prompt when it is opened
+has not been checked.
+
+A fresh sign-in is not the fix.  The owner signed in on the server on Nov 18, 2026, twice, and the mint failed the same way
+after each one, on releases 3.17.2 and 3.19.0 alike, while interactive chats kept working on
+the token the running app already held.  The defect is in the zcode runtime's project-token mint for this account, and it is the
+vendor's to fix.  Do not ask the owner to sign in again for it.  The older note about a dead MiniMax key in the desktop's provider order no longer
 describes what the headless run does:  the run asks the Z.AI account, and it never gets as far
 as a model.
 
-The legacy bridge's own switch is a different file on a different path:
-`~/.local/state/zc-wake/config.json` carries `delivery_enabled` for the bridge only, and the
-router never reads it.
+The retired bridge's own switch was a different file on a different path:
+`~/.local/state/zc-wake/config.json` carried `delivery_enabled` for the bridge only, and the
+router never read it.
 
-## Arming the legacy bridge (runbook, after the provider decision)
+## The retired legacy bridge (historical runbook)
+
+The bridge retired on Nov 21, 2026;  the steps below are kept as the record of how it was run,
+and restoring it means restoring its files from git history first.
 
 This is the legacy bridge's own setup, not the seat's routine:  the seat's routine is the
 one wake router's, and the names below are the bridge's.
 
-1.  Provision `ZC_ROUTINE_KEY` in Infisical Fleet-OPS `/zulip` (32+ characters) through an
-    approved Infisical admin session (`fleet-secrets` only writes `/linear` and `/cli-logins`);
-    never through chat text, never printed.
+1.  Mint `ZC_ROUTINE_KEY` into Infisical Fleet-OPS `/zulip` (32+ characters)  on the Mac,
+    the approved scoped writer writes it;  never through chat text, never printed.
 2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
 3.  Server listener:  the seat's block moves to the bridge's own binding, which is the shape
@@ -297,10 +327,8 @@ one wake router's, and the names below are the bridge's.
 
 ## Verification to date
 
-- Bridge suite:  10 tests (`cd scripts && python3 -m unittest simple_tools.tests.test_zc_wake_bridge`):
-  the contract and seat checks, bearer and key-file discipline (a group-readable key is a 503),
-  dedupe, delivery-disabled, topic-match over recency, the subagent/off-host/closed skips, and
-  one delivery through the CLI path with the launcher mark set.
+- The bridge's own suite retired with the bridge on Nov 21, 2026 (its 10 tests and the files
+  they tested are deleted).
 - `zcode --resume <session> -p` runs a real turn into an existing session (verified live,
-  Nov 7), which is what the delivery executor runs;  it fails today only on the dead provider
-  key above.
+  Nov 7;  interactive turns execute today), which is what the router's module runs;  a headless
+  resume still fails at the seat's own model credential mint until the provider fixes it.

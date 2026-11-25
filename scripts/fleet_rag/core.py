@@ -255,69 +255,130 @@ def _identity(prefix: str) -> tuple[None, None]:
 FLEET_SECRETS_TIMEOUT = 60
 
 
-def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
-    """Present named values from the consumer's explicit default Fleet-OPS root reader.
+def infisical_many(names: Iterable[str]) -> dict[str, str]:
+    """Values of `names` the recall reader's own scoped token can supply, from one fetch.
 
-    Missing binding, invalid input or a failed read returns an empty map; a named 404 omits
-    only that name.  The separate recall-project token is never a fallback for this route.
+    The read goes through the shared Infisical client, with the recall reader's own
+    read-only service token (the environment variable or its mode-600 file) against the
+    configured project's root.  A missing binding, a failure or an absent name just leaves
+    that name out;  values are never logged.
     """
-    source = {
-        key: value
-        for key in (
-            "INFISICAL_TOKEN",
-            "INFISICAL_FLEET_OPS_PROJECT_ID",
-            "FLEET_SECRETS_API",
-            "INFISICAL_ENVIRONMENT",
-            "INFISICAL_ENV",
-            "HOME",
-        )
-        if (value := os.environ.get(key)) is not None
-    }
-    token = (source.get("INFISICAL_TOKEN") or "").strip()
-    if not token:
+    wanted = [n for n in names if n]
+    if not wanted:
         return {}
+    try:
+        return infisical_fetch(wanted)
+    except Exception:
+        return {}
+
+
+# The Fleet-OPS root reader is a DIFFERENT route from the recall reader's own scoped
+# read.  The public fallback and the ingest heartbeat need names that live in
+# Fleet-OPS,  and the recall-project token is never a fallback for them:  the two
+# routes have different projects,  different folders and different grants.
+FLEET_OPS_PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
+# This reader's own account in the shared registry:  the token lives in the consumer's
+# own store,  and it is the only source this route reads.  No token name is carried
+# here:  a copy of this grant is allowed only under a variable named for this consumer,
+#  and the general ambient binding is a wider grant than this one,  so neither stands
+#  in for it.
+FLEET_OPS_TOKEN_ACCOUNT = "fleet-rag-fleetops-ro"
+# The folder this reader's own names live in.  The Fleet-OPS project root is an alias
+# layer:  a name at the root is a reference to a name in a subfolder,  and the raw
+# route returns the reference rather than the value,  so the read names the folder
+# where its literal is.
+FLEET_OPS_FOLDER = "/global-api-keys"
+FLEET_OPS_ENV_NAMES = (
+    FLEET_OPS_PROJECT_ENV,
+    # No API base name is carried:  this route's API base stays pinned to the
+    # shared client's default,  so an environment value cannot redirect the
+    # bearer-token read to another origin.
+    "INFISICAL_ENVIRONMENT",
+    "INFISICAL_ENV",
+    "HOME",
+)
+
+
+def fleet_ops_many(names: Iterable[str]) -> dict[str, str]:
+    """Present named values from this consumer's explicit Fleet-OPS reader.
+
+    The token is this reader's own scoped service token,  read from its own store and
+    from nowhere else:  the store is the keychain entry or the mode-600 file under the
+    consumer's own home,  and no environment value is read as a token,  so a hand-set
+    copy can never replace the reviewed grant.  The recall reader's own scoped token is
+    never a fallback for this route.  A missing binding, an invalid name or a failed
+    read returns an empty map,  and the unavailable source is named on standard error,
+    never a value.
+    """
+    wanted = [name for name in names if name]
+    if not wanted:
+        return {}
+    source = {
+        key: value for key in FLEET_OPS_ENV_NAMES if (value := os.environ.get(key)) is not None
+    }
     try:
         import fleet_infisical as secrets
     except ImportError:
+        eprint("fleet_rag: the shared Infisical client is not importable")
         return {}
-    error_type = getattr(secrets, "SecretsError", None)
-    default_project = getattr(secrets, "DEFAULT_PROJECT", None)
-    if (
-        not all(
-            callable(getattr(secrets, name, None))
-            for name in ("infisical_project_id", "home_dir", "bounded_fetch_project")
+    # The store is the authority for the token:  a hand-set environment value never
+    # replaces the reviewed,  scope-limited grant,  and the general ambient binding is
+    # a wider grant than this one,  so it never stands in for it either.
+    token, status = secrets.token_from_store(
+        FLEET_OPS_TOKEN_ACCOUNT, source, secrets.home_dir(source)
+    )
+    if not token:
+        eprint(
+            "fleet_rag: the Fleet-OPS reader has no usable token:  the "
+            f"{FLEET_OPS_TOKEN_ACCOUNT} service-token store is unavailable or refused "
+            f"({status})"
         )
-        or default_project != "fleet-ops"
-        or not isinstance(error_type, type)
-        or not issubclass(error_type, Exception)
-    ):
         return {}
+    # The API base is named in code and stays pinned to the shared client's own
+    # default;  no environment value is honoured here,  so the bearer-token read
+    # cannot be redirected to another origin.
     try:
-        project = secrets.infisical_project_id(source, secrets.home_dir(source), default_project)
-        # The shared API validates and bounds the iterator before starting its read-only worker.
-        # No ambient read-path declaration can widen this exact default-root consumer route.
+        project = secrets.infisical_project_id(source, secrets.home_dir(source), "fleet-ops")
         got = secrets.bounded_fetch_project(
             project,
-            "/",
+            FLEET_OPS_FOLDER,
             source,
             token=token,
-            names=(name for name in names if name),
+            names=wanted,
             timeout=FLEET_SECRETS_TIMEOUT,
+            api_base=secrets.API_BASE,
         )
-    except (error_type, OSError, TypeError, ValueError):
+    except TimeoutError:
+        eprint("fleet_rag: the Fleet-OPS read timed out")
+        return {}
+    except Exception as exc:
+        # The reason is the failure's own code,  never its message:  a message from an
+        # external call can carry a response body,  and that never reaches a log.
+        code = getattr(exc, "code", None)
+        reason = f"code {code}" if isinstance(code, int) else type(exc).__name__
+        eprint(f"fleet_rag: the Fleet-OPS root read failed: {reason}")
         return {}
     return {key: value for key, value in got.items() if isinstance(value, str) and value}
 
 
-def fleet_secret(name: str) -> str | None:
-    """One optional value through the shared default Fleet-OPS reader."""
-    return fleet_secrets_many([name]).get(name)
+def fleet_ops_secret(name: str) -> str | None:
+    """One optional value through the Fleet-OPS root reader, or None."""
+    if not name:
+        return None
+    return fleet_ops_many([name]).get(name)
 
 
-def fleet_secret_get(name: str) -> str | None:
-    """One optional named value, including INFISICAL_* names; strip surrounding whitespace."""
-    value = (fleet_secrets_many([name]).get(name) or "").strip()
-    return value or None
+def infisical_secret(name: str) -> str | None:
+    """One value through the recall reader's own scoped token, or None."""
+    return infisical_many([name]).get(name)
+
+
+def infisical_secret_get(name: str) -> str | None:
+    """One value through the recall reader's own scoped token, or None for a missing
+    binding, a failure or an absent name.  The value is never logged."""
+    if not name:
+        return None
+    return infisical_many([name]).get(name)
 
 
 class _ReadTokenError(FleetRagError):
@@ -341,7 +402,7 @@ class _ReadTokenError(FleetRagError):
 
 def _checked_read_token(value: str) -> str:
     try:
-        from fleet_secrets import core as secrets
+        import fleet_infisical as secrets
 
         return secrets.check_service_token(value)
     except (ImportError, ValueError, TypeError):
@@ -523,7 +584,7 @@ def read_token_binding(env: Mapping[str, str] | None = None) -> str | None:
 
 def infisical_login() -> str | None:
     """The explicit read-only service-token binding, without a login."""
-    from fleet_secrets import core as secrets
+    import fleet_infisical as secrets
 
     env = dict(os.environ)
     token = (read_token_binding() or "").strip()
@@ -546,7 +607,7 @@ def infisical_login() -> str | None:
 
 def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     """Read this configured project's root; never borrow Fleet-OPS credentials."""
-    from fleet_secrets import core as secrets
+    import fleet_infisical as secrets
 
     infisical_env()
     iterator = iter(wanted)

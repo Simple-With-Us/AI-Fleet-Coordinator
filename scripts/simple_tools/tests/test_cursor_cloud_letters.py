@@ -508,7 +508,7 @@ class UnitRunTests(unittest.TestCase):
 
     def test_the_unit_command_with_no_cursor_token_stops_before_any_cursor_call(self) -> None:
         # A missing env file or token line:  the run stops with service-token-required and never falls back to a key
-        # in the environment, `fleet-secrets get`, or any other credential route.
+        # in the environment, the shared Infisical client, or any other credential route.
         from simple_tools import cursor_chat_transport as CT
 
         env = dict(self.env)
@@ -594,7 +594,7 @@ class UnitRunTests(unittest.TestCase):
 
 
 class CursorKeyTests(unittest.TestCase):
-    """The Cursor key is read with the sweep's own token through fleet_secrets' scoped reader, and a failure names a
+    """The Cursor key is read with the sweep's own token through the shared Infisical client, and a failure names a
     reason token only."""
 
     class Core:

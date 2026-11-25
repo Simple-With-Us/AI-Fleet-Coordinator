@@ -510,6 +510,132 @@ class LocalFile(Settings):
             settings.load()
 
 
+class SeatHostFacts(Settings):
+    def test_shared_map_uses_governed_loader_not_legacy_widening_loader(self) -> None:
+        self.local(workspace="/shared/fleet",
+                   seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}})
+        with self.assertRaises(SystemExit):
+            WR.load_config(self.local_path, SVC.file_defaults())
+        settings = self.opencode()
+        self.assertEqual(settings["workspace"], "/native/opencode")
+        self.assertFalse(settings["delivery_enabled"])
+
+    def opencode(self) -> WS.WakeSettings:
+        from simple_tools import opencode_wake as OW
+
+        settings = WS.WakeSettings(
+            "OPENCODE", OW.DEFAULTS, self.local_path, file_defaults=SVC.file_defaults()
+        )
+        settings.load()
+        return settings
+
+    def test_only_named_seat_changes_and_every_sibling_keeps_global_fallback(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            pinned_profile="/profiles/codex",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        local = WS.read_local(self.local_path, SVC.file_defaults())
+        for seat, builder in SVC.BUILDERS.items():
+            with self.subTest(seat=seat):
+                defaults = importlib.import_module(builder.module).DEFAULTS
+                expected, _ = WS.narrowed(
+                    defaults,
+                    {"workspace": "/shared/fleet", "pinned_profile": "/profiles/codex"},
+                    seat,
+                )
+                actual, ignored = WS.narrowed(defaults, local, seat)
+                if seat == "OPENCODE":
+                    expected["workspace"] = "/native/opencode"
+                self.assertEqual(actual, expected)
+                self.assertEqual(ignored, [])
+
+    def test_per_seat_precedence_does_not_arm_delivery_or_change_caps(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            max_deliveries=2,
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        settings = self.opencode()
+        self.assertEqual(settings["workspace"], "/native/opencode")
+        self.assertFalse(settings["delivery_enabled"])
+        self.assertEqual(settings["max_deliveries"], 2)
+
+    def test_removal_restores_global_fallback_and_other_seat_is_ignored(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        settings = self.opencode()
+        self.local(workspace="/shared/fleet", seat_host_facts={"MM": {"workspace": "/native/mm"}})
+        self.assertTrue(settings.refresh())
+        self.assertEqual(settings["workspace"], "/shared/fleet")
+
+    def test_short_lived_reader_uses_the_same_precedence(self) -> None:
+        from simple_tools import opencode_wake as OW
+
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        self.assertEqual(
+            WS.read_once("OPENCODE", OW.DEFAULTS, self.local_path)["workspace"], "/native/opencode"
+        )
+
+    def test_malformed_maps_and_nested_governed_settings_refuse_startup(self) -> None:
+        bad = [
+            None,
+            [],
+            "OPENCODE",
+            {"opencode": {"workspace": "/native"}},
+            {"OPENCODE": []},
+            {"OPENCODE": {"workspace": None}},
+            {"OPENCODE": {"workspace": ""}},
+            {"OPENCODE": {"workspace": "  "}},
+            {"OPENCODE": {"workspace": 1}},
+            {"OPENCODE": {"workspace": {}}},
+            {"OPENCODE": {"unknown": "value"}},
+            {"OPENCODE": {"delivery_enabled": True}},
+            {"OPENCODE": {"max_deliveries": 64}},
+            {"OPENCODE": {"mac_ssh": "another-host"}},
+        ]
+        for value in bad:
+            with self.subTest(value=value):
+                self.local(seat_host_facts=value)
+                with self.assertRaises(SystemExit):
+                    self.opencode()
+
+    def test_bad_refresh_keeps_last_good_facts_even_when_fetch_succeeds(self) -> None:
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        settings = self.opencode()
+        self.local(workspace="/shared/fleet", seat_host_facts={"OPENCODE": {"workspace": ""}})
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings["workspace"], "/native/opencode")
+
+    def test_outage_applies_valid_fact_change_and_keeps_it_on_bad_file(self) -> None:
+        self.local(workspace="/shared/fleet")
+        settings = self.opencode()
+        self.fake.set(mode="fail")
+        self.local(
+            workspace="/shared/fleet",
+            seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}},
+        )
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings["workspace"], "/native/opencode")
+        self.local(seat_host_facts={"OPENCODE": {"workspace": None}})
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings["workspace"], "/native/opencode")
+
+    def test_absent_platform_module_does_not_refuse_named_fact(self) -> None:
+        self.local(seat_host_facts={"OPENCODE": {"workspace": "/native/opencode"}})
+        with mock.patch.object(SVC.importlib, "import_module", side_effect=ImportError):
+            defaults = SVC.file_defaults()
+        local = WS.read_local(self.local_path, defaults)
+        self.assertEqual(local[WS.SEAT_HOST_FACTS]["OPENCODE"]["workspace"], "/native/opencode")
+
 class Service(Settings):
     def test_a_read_touches_memory_only(self) -> None:
         settings = self.loaded(**ARMED)
@@ -689,6 +815,24 @@ class Service(Settings):
 
 
 class Wiring(Settings):
+    def test_start_quiesced_flag_is_forwarded_as_an_exact_boolean(self) -> None:
+        self.fake.set(secrets={})
+        for argv, expected in [(["serve"], False), (["serve", "--start-quiesced"], True)]:
+            with self.subTest(argv=argv):
+                seen = []
+
+                def serve(seats, bind, port, *, start_quiesced):
+                    seen.append(start_quiesced)
+                    return 0
+
+                with (
+                    mock.patch.object(CW, "state_dir", return_value=self.state),
+                    mock.patch.object(WR, "serve", side_effect=serve),
+                ):
+                    self.assertEqual(SVC.main(argv), 0)
+                self.assertEqual(len(seen), 1)
+                self.assertIs(seen[0], expected)
+
     def test_the_router_runs_on_the_knobs_and_not_the_file(self) -> None:
         self.local(delivery_enabled=True)
         self.fake.set(
@@ -701,7 +845,8 @@ class Wiring(Settings):
         seen = {}
         before = signal.getsignal(signal.SIGHUP)
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             seen.update(config=router.config, hup=signal.getsignal(signal.SIGHUP))
             seen.update(threads=refresh_threads(), attempts=router.config["max_attempts"])
@@ -730,7 +875,8 @@ class Wiring(Settings):
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             seen["key"] = router.routine_key()
             self.fake.set(mode="fail")
@@ -751,7 +897,8 @@ class Wiring(Settings):
         self.fake.set(secrets={})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             router = seats.routers[CW.SEAT]
             self.fake.set(secrets=ARMED)
             os.kill(os.getpid(), signal.SIGHUP)
@@ -772,7 +919,8 @@ class Wiring(Settings):
         self.fake.set(secrets={WS.DELIVERY_ENABLED: "true", WS.DELIVERY_SEATS: "ZC"})
         seen = {}
 
-        def serve(seats, bind, port):
+        def serve(seats, bind, port, *, start_quiesced):
+            self.assertIs(start_quiesced, False)
             seen.update(names=seats.names(), served=sorted(seats.routers))
             seen["delivery"] = seats.routers[CW.SEAT].config["delivery_enabled"]
             return 0
@@ -810,11 +958,41 @@ class Wiring(Settings):
         status, health = served.seats.health()
         self.assertEqual(status, 200)
         self.assertEqual(health["seats"]["MC"], {"healthy": False, "reason": "not-installed"})
-        self.assertEqual(health["seats"][CW.SEAT], {"healthy": True, "delivery": True})
-        self.assertEqual(health["seats"]["AG"], {"healthy": True, "delivery": False})
-        self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False})
+        # AFC-836:  a served seat also says whether the Mac route is configured (no destination
+        # is named in this test's Infisical, so it is not).
+        self.assertEqual(
+            health["seats"][CW.SEAT],
+            {"healthy": True, "delivery": True, "mac_route": WR.MAC_ROUTE_NONE},
+        )
+        # The Mac route is named by each of these platforms' settings, and by no destination.
+        self.assertEqual(health["seats"]["AG"], {"healthy": True, "delivery": False, "mac_route": WR.MAC_ROUTE_NONE})
+        self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False, "mac_route": WR.MAC_ROUTE_NONE})
         self.assertEqual(served.seats.seat_health("MC"), (503, {
             "seat": "MC", "healthy": False, "reason": "not-installed"}))
+
+    def test_a_served_seat_says_whether_the_mac_route_is_configured_and_never_names_the_mac(self) -> None:
+        # AFC-836:  through the real service, from the setting Infisical holds.
+        dest = "owner-mac-tailnet-alias"
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, **REGISTRY, WS.MAC_SSH: dest})
+        with mock.patch.object(CW, "state_dir", return_value=self.state):
+            served = SVC.build({"HOME": str(self.home)})
+        status, health = served.seats.health()
+        self.assertEqual(status, 200)
+        # Every platform whose settings name the Mac route says it is configured.
+        routed = [seat for seat, r in served.seats.routers.items() if "mac_ssh" in r.config]
+        self.assertIn(CW.SEAT, routed)
+        for seat in routed:
+            self.assertEqual(health["seats"][seat]["mac_route"], WR.MAC_ROUTE_CONFIGURED, seat)
+        self.assertEqual(
+            health["seats"][CW.SEAT],
+            {"healthy": True, "delivery": True, "mac_route": WR.MAC_ROUTE_CONFIGURED},
+        )
+        # Never the destination:  health needs no key, and the destination names a host.
+        self.assertNotIn(dest, json.dumps(health))
+        # A platform whose settings do not name the route (one that never uses it) says nothing.
+        for seat, r in served.seats.routers.items():
+            if "mac_ssh" not in r.config:
+                self.assertNotIn("mac_route", health["seats"][seat], seat)
 
     def test_muse_code_present_but_broken_disables_only_mc_and_fails_health(self) -> None:
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, **REGISTRY})
@@ -853,8 +1031,8 @@ class Wiring(Settings):
                     health["seats"]["MC"],
                     {"healthy": False, "reason": "seat-not-served:" + reason},
                 )
-                self.assertEqual(health["seats"][CW.SEAT], {"healthy": True, "delivery": True})
-                self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False})
+                self.assertEqual(health["seats"][CW.SEAT], {"healthy": True, "delivery": True, "mac_route": WR.MAC_ROUTE_NONE})
+                self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False, "mac_route": WR.MAC_ROUTE_NONE})
                 claude = served.seats.routers[CW.SEAT]
                 wake = WR.Wake(wake_id="w-%s" % reason, seat=CW.SEAT)
                 self.assertEqual(claude.accept(wake)[0], 202)

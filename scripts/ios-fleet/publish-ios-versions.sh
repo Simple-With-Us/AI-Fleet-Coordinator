@@ -38,8 +38,8 @@
 #
 # THE TOKEN:  the publish needs a credential with write access to
 # AI-Fleet-Coordinator.  The ship workflow passes the fleet's GH_PAT secret
-# as GH_TOKEN; a hand run reads GH_PAT through the shared direct Infisical reader.  A bare gh login
-# is never used.  The
+# as GH_TOKEN; a hand run reads GH_PAT from Infisical Fleet-OPS through this
+# script's own scoped read-only service token.  A bare gh login is never used.  The
 # workflow's own GITHUB_TOKEN is read-only by declaration and cannot write to
 # another repository, so it is never used for this and never arms auto-merge.
 #
@@ -97,6 +97,33 @@ done
 
 [[ -n "$BUNDLE_ID" && -n "$VERSION" ]] || { echo "need --bundle-id and --version" >&2; exit 2; }
 
+# The shared scoped reader is the one implementation of a scoped Infisical read:
+# the owner's shared client, the consumer's own service token, and the grant that
+# token actually holds.  It pins the API base,  checks the grant against the
+# folder asked for,  and checks the answer's own provenance,  so no token ever
+# reaches an argument list and no inherited API base can redirect it.
+INFISICAL_SCOPED_READER="${INFISICAL_SCOPED_READER:-}"
+# This consumer's own read-only service token, named here so the account is one
+# constant in the .gitleaks.toml allowlist, like every other consumer's.
+TOKEN_ACCOUNT="github-pat-ro"
+if [[ -z "$INFISICAL_SCOPED_READER" ]]; then
+  echo "INFISICAL_SCOPED_READER is not set:  name the shared scoped reader to read with" >&2
+  exit 2
+fi
+
+# One value on standard output.  The reader's own reason goes to standard error
+# and its exit code says whether the name was absent (3), the grant refused the
+# read (4) or the usage was wrong (2).
+_scoped_secret() {
+  local name="$1" folder="$2" account="$3"
+  [[ -x "$INFISICAL_SCOPED_READER" ]] || {
+    echo "the shared scoped reader is not installed at ${INFISICAL_SCOPED_READER}" >&2
+    return 4
+  }
+  /usr/bin/python3 -I "$INFISICAL_SCOPED_READER" get "$name" \
+    --folder "$folder" --project fleet-ops --account "$account"
+}
+
 # The token the publish uses.  GITHUB_TOKEN is the workflow's own token:  it is
 # read-only by declaration and it cannot write to another repository, so it is
 # refused here rather than failing later with an authorization error that reads
@@ -116,18 +143,26 @@ resolve_token() {
   fi
   # No token in the environment:  read the fleet GH_PAT from the shared CLI.  A bare gh login is
   # not used, because it may be a personal or read-only credential.
-  local pat=""
-  local scripts_dir="$(cd -- "${FLEET_DIR}/.." && pwd)"
-  local infisical_cli="${scripts_dir}/fleet_infisical_cli.py"
-  if [[ -f "$infisical_cli" ]]; then
-    pat="$(/usr/bin/python3 -I "$infisical_cli" get GH_PAT --path / --project fleet-ops 2>/dev/null || true)"
-  fi
+  #
+  # GH_PAT is a plain secret in the Fleet-OPS prod /global-api-keys folder;  the project
+  # root holds the same key as an alias reference, which the raw route does not expand.
+  # The account is one the token registry names for exactly that folder.  The registry
+  # carries no row for this consumer yet, so the read uses the account documented for
+  # that folder until the registry has one of its own for the iOS publish.
+  local pat="" reason=""
+  # GITHUB_PAT is the fleet's write-capable GitHub credential, in the Fleet-OPS
+  # prod /github folder, read with this consumer's own scoped service token.
+  local err_file=""
+  err_file="$(mktemp)"
+  pat="$(_scoped_secret GITHUB_PAT "/github" "${TOKEN_ACCOUNT}" 2>"$err_file")" || pat=""
+  reason="$(tr '\n' ' ' <"$err_file" 2>/dev/null || true)"
+  rm -f "$err_file"
   if [[ -z "$pat" ]]; then
-    echo "error: no GH_TOKEN and the shared Infisical reader could not return GH_PAT; cannot publish the manifest" >&2
+    echo "error: no GH_TOKEN and the github-pat-ro service token could not return GITHUB_PAT from Infisical Fleet-OPS prod /github through the shared scoped reader at ${INFISICAL_SCOPED_READER}${reason:+ (${reason})};  cannot publish the manifest" >&2
     return 1
   fi
   TOKEN="$pat"
-  TOKEN_SOURCE="infisical"
+  TOKEN_SOURCE="infisical-scoped-token"
 }
 
 # Read the manifest at a ref (branch or commit) into a file.  Sets FETCHED_SHA

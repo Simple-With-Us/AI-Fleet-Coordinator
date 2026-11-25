@@ -1,0 +1,19 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "name": "test",
+      "conclusion": "failure",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run unittests",
+          "conclusion": "failure"
+        }
+      ]
+    }
+  ]
+}

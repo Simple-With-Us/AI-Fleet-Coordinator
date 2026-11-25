@@ -165,9 +165,14 @@ It is an opt-in.  A platform takes part only by declaring `Platform.deliver_turn
 with the same rules as `deliver` (an exception is `failed`), and only while the setting
 `turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  1 is off, and unset counts as not set) is 2 or more;  the core
 never goes past TURN_MAX_WAKES.  Every other seat, and every wake that cannot ride, takes the path
-above, unchanged.  Only exact addresses ride (`certain`:  a letter, a reply or a session id) and
-only to the same session, letter, generation and host as the head, so a pick the router is not
-sure of is delivered alone, as before, and a turn never makes it certain.  The pick is the
+above, unchanged.  Only exact addresses ride (`certain`:  a letter, a reply, a session id or an
+exact-origin required session) and only to the same session, letter, generation and host as the
+head, so a pick the router is not sure of is delivered alone, as before, and a turn never makes
+it certain.  An exact-origin wake's attested constraints (its required session, and the letter,
+generation and PR binding it carries) are re-verified for every member against the one registry
+read made before the turn:  the head by the check before delivery, each rider when the turn is
+gathered (`_contracts_ok`), and a member whose constraints no longer hold stays pending and
+leads or rides a later turn, never delivered on an unproven claim.  The pick is the
 router's own, made on the addressing without the sender's own quoted tags, so a sender quoting
 itself never makes a wake ride.  A run is contiguous:  the walk from the head stops at the first
 wake of that chat that cannot ride, so one chat's wakes still run in the order they came.  A head
@@ -243,6 +248,16 @@ from . import registry_api, secretscan
 CONTRACT = "simple-tools-wake/1"
 MAX_BODY = 64 * 1024
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: The fleet session-id shape (fleet-apps.json `sessionIds`):  a `require_session` wake
+#: field must carry a full id in this shape, never a fragment.
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$")
+#: A `require_letter` wake field carries exactly the letter shape:  two capitals.
+REQUIRE_LETTER_RE = re.compile(r"^[A-Z]{2}$")
+#: A `require_pr` wake field names one pull request:  owner/name#number.  The origin
+#: registry row must carry that binding (the session's own seat-lane write).
+REQUIRE_PR_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}#[1-9][0-9]{0,8}$"
+)
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(["the", "and", "for", "with", "from", "this", "that", "ops", "afc"])
 NAME_CHARS = 200
@@ -300,6 +315,9 @@ DONE_KEEP_SECONDS = 30 * 86400
 REQUEST_TIMEOUT = 30
 # What `Seats.stop` allows past a seat's own shutdown wait before it stops waiting for that seat.
 STOP_MARGIN_SECONDS = 5.0
+#: How long a shutdown waits for the activation worker before it stops the seats anyway.
+#: A hung start must not hold SIGTERM past the unit's TimeoutStopSec.
+ACTIVATION_JOIN_TIMEOUT = 30.0
 OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused", "unknown")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
@@ -320,6 +338,13 @@ REGISTRY_UNAVAILABLE = "registry-unavailable"
 UNREADABLE_ANSWER = "registry-answer-unreadable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
+# The Mac route in a served seat's health (AFC-836):  whether chats on the Mac can be
+# reached from this router, as a token.  Never the destination itself:  health needs no key, and
+# the destination names a host.  It is the one shape the ssh route accepts (claude_wake.SSH_DEST_RE,
+# which a test keeps equal to this), and the setting is the platform's `mac_ssh` (wake_settings).
+MAC_ROUTE_CONFIGURED = "configured"
+MAC_ROUTE_NONE = "no-ssh-destination"
+MAC_SSH_DEST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]*")
 #: The name the note carries when the shared loader file itself could not be read:  the loader
 #: file is the one source a loader read can fail on, and it carries the same name on every host.
 #: It is a token the transport keeps.
@@ -375,6 +400,7 @@ NEVER_RAN = frozenset(
 # can vary is {issue}, and that has matched ISSUE_ID, so no Zulip text reaches a chat's prompt.
 UNSURE = "and the router is not sure this wake is meant for this chat."
 LINK_NOTES = {
+    "required-session": "This wake is for the exact originating session.",
     "letter": "The router linked this wake to this chat because the sender addressed its letter.",
     "reply": "This wake was linked by reply.",
     "session-id": "This wake was linked by session id.",
@@ -408,9 +434,10 @@ TURN_MAX_PROMPT_CHARS = 3500  # turn_text() with a prefix of up to TURN_PREFIX_M
 TURN_PREFIX_MAX = 40
 TURN_ID_RE = re.compile(r"^t-[0-9a-f]{16}$")
 MESSAGE_ID_MAX = 2**63 - 1
-# The picks that are exact addresses:  the sender or the listener named the chat.  Nothing the
+# The picks that are exact addresses:  the sender or the listener named the chat, or the origin
+# named it by full session id with attested constraints (a required-session pick).  Nothing the
 # router inferred (an issue, a topic, a tie, a decider, recency) rides.
-CERTAIN_REASONS = frozenset({"letter", "reply", "session-id"})
+CERTAIN_REASONS = frozenset({"letter", "reply", "session-id", "required-session"})
 # A turn ran and its answer cannot say which riders it carried.
 TURN_UNCONFIRMED = "turn-unconfirmed"
 # An answer that names riders as carried by a turn that ran nothing.
@@ -485,6 +512,14 @@ class Wake:
     session_fragments: tuple[str, ...] = ()
     sender_fragment: str = ""
     linked_by: str = ""  # "reply" when the listener says the letter came from a reply, else ""
+    # An exact-origin wake (the review-alert path) names one chat by full session id, with the
+    # letter and generation its creation attestation recorded as extra constraints.  It picks
+    # that chat or holds;  it never falls through to issue, topic or recency.
+    credential_scope: str = ""  # set by HTTP authentication, never parsed from payload
+    required_session: str = ""
+    require_letter: str = ""
+    require_generation: int = 0
+    require_pr: str = ""
 
 
 def workspace_root(configured: object) -> str:
@@ -995,6 +1030,14 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         session_fragments=fragments_in(unquoted(addressing)),
         sender_fragment=next(iter(fragments_in(sender_part)), ""),
         linked_by="reply" if payload.get("linked_by") == "reply" else "",
+        required_session=str(payload.get("require_session") or ""),
+        require_letter=str(payload.get("require_letter") or ""),
+        require_generation=(
+            payload.get("require_generation")
+            if type(payload.get("require_generation")) is int
+            else 0
+        ),
+        require_pr=str(payload.get("require_pr") or ""),
     )
 
 
@@ -1046,7 +1089,10 @@ def load_config(
     path: Path, defaults: Mapping[str, Any], *, required: bool = False
 ) -> dict[str, Any]:
     """The defaults overlaid with a JSON file.  It widens as freely as it narrows, so nothing that
-    runs a router reads its settings this way:  wake_settings lets a local file only narrow."""
+    runs a router reads its settings this way:  wake_settings lets a local file only narrow.
+    Shared service-file extensions such as delivery_seats and seat_host_facts are intentionally
+    not accepted here. Use wake_settings.read_local/read_once or WakeSettings for that file;
+    adding its map here without a seat and governed narrowing would not apply it safely."""
     return {**defaults, **read_local_config(path, defaults, required=required)}
 
 
@@ -1056,11 +1102,14 @@ def read_local_config(
     *,
     required: bool = False,
     seat_lists: Sequence[str] = (),
+    seat_fact_maps: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Only what a JSON file sets.  A file named explicitly must exist.  A file that is there must
     parse, name only known keys and match each default's type:  an unreadable or mistyped config is
     a refusal that names the path, never a quiet run on defaults.  A key in `seat_lists` is known
-    too, and its value must be a list of seat tags."""
+    too, and its value must be a list of seat tags.  `seat_fact_maps` names maps of seat tags
+    to explicitly allowed host facts, each a nonblank string.  Neither nested knobs nor
+    arbitrary objects are accepted through that exception."""
     config: dict[str, Any] = {}
     try:
         text = path.read_text(encoding="utf-8")
@@ -1079,6 +1128,21 @@ def read_local_config(
     if not isinstance(loaded, dict):
         raise SystemExit("wake-router: the config file %s is not a JSON object" % path)
     for key, value in loaded.items():
+        if key in (seat_fact_maps or {}):
+            allowed = seat_fact_maps[key]
+            if not isinstance(value, dict) or not all(
+                isinstance(seat, str)
+                and SEAT_RE.fullmatch(seat)
+                and isinstance(facts, dict)
+                and all(
+                    name in allowed and isinstance(fact, str) and bool(fact.strip())
+                    for name, fact in facts.items()
+                )
+                for seat, facts in value.items()
+            ):
+                raise SystemExit("wake-router: %s: %s has the wrong type" % (path, key))
+            config[key] = value
+            continue
         if key in seat_lists:
             if not isinstance(value, list) or not all(
                 isinstance(seat, str) and SEAT_RE.fullmatch(seat) for seat in value
@@ -1358,6 +1422,50 @@ def _turn_record(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+REVIEW_ALERT_SCOPE = "review-alerts"
+REVIEW_ALERT_CREDENTIAL = "wake-router-review-alerts"
+
+
+def review_alert_key(env: Mapping[str, str]) -> tuple[str, str]:
+    """Own optional credential, never a routine/registry key or ambient bearer.
+
+    A missing selector/credential leaves this capability disabled without
+    changing the existing routine lane. The protected file is read fresh so
+    rotation does not require keeping a second secret cache.
+    """
+    import stat
+
+    explicit = env.get("WAKE_ROUTER_REVIEW_ALERTS_CREDENTIAL_FILE", "")
+    directory = env.get("CREDENTIALS_DIRECTORY", "")
+    if not explicit and not directory:
+        return "", "not-configured"
+    path = Path(explicit) if explicit else Path(directory) / REVIEW_ALERT_CREDENTIAL
+    if not path.is_absolute():
+        return "", "credential-path"
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid not in (0, os.geteuid())
+            or info.st_mode & 0o077
+        ):
+            return "", "credential-custody"
+        raw = os.read(fd, 4097)
+        if len(raw) > 4096:
+            return "", "credential-size"
+        value = raw.decode("ascii").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", value):
+            return "", "credential-shape"
+        return value, ""
+    except (OSError, UnicodeError):
+        return "", "credential-unavailable"
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 class Router:
     """The pick, the durable queue, the workers and the receipts for one seat.  The service runs
     one per seat (`Seats`), and none shares a folder, a queue, a worker or a key with another."""
@@ -1372,6 +1480,7 @@ class Router:
         consult: Consult | None = None,
         clock: Callable[[], float] = time.time,
         never_ran: Iterable[str] = (),
+        review_key: KeySource | None = None,
     ) -> None:
         self.platform = platform
         # The refusals known to come before anything ran:  this module's, and the platform's own
@@ -1381,6 +1490,8 @@ class Router:
         self.config = config
         self.state = state
         self._key = key
+        self._review_key = review_key or (lambda: review_alert_key(self.env))
+        self._review_key_status = ""
         self.consult = consult
         self.clock = clock
         self._entries: dict[str, dict[str, Any]] = {}
@@ -1392,6 +1503,30 @@ class Router:
         # The latest read of the platform's history:  (open chats left out only because their row
         # names another seat, when it was read).  None until one has been read in this process.
         self.other_seat_scan: tuple[int, float] | None = None
+
+    def review_key(self) -> tuple[str, str]:
+        try:
+            key, why = self._review_key()
+        except Exception:
+            key, why = "", "credential-unavailable"
+        allowed = {
+            "not-configured",
+            "credential-path",
+            "credential-custody",
+            "credential-size",
+            "credential-shape",
+            "credential-unavailable",
+        }
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", key):
+            key, why = "", why if why in allowed else "credential-unavailable"
+        else:
+            why = "ready"
+        # Log transitions only, using fixed reason tokens, never file paths or values.
+        if why != self._review_key_status:
+            self._review_key_status = why
+            if why != "not-configured":
+                self._log("review-credential-" + why, "")
+        return key, "" if key else why
 
     def routine_key(self) -> tuple[str, str]:
         """(key, why) for this request:  the key, or "" and a reason token.  A source that fails
@@ -1411,6 +1546,20 @@ class Router:
 
     def _other_seat(self, row: Mapping[str, Any]) -> str:
         return other_seat(row, self.platform.seat, self.platform.target_re)
+
+    def mac_route(self) -> str | None:
+        """Whether this router can reach chats on the Mac (AFC-836):  `configured` when the
+        platform's `mac_ssh` setting names a destination in the one shape the ssh route accepts,
+        `no-ssh-destination` when it does not (such a wake is refused before anything ran), and
+        None for a platform whose settings have no `mac_ssh`.  A token and never the destination.
+        It says that a destination is named, not that the Mac's gate accepts this router's key:  only
+        a delivery or a dry run shows that."""
+        if "mac_ssh" not in self.config:
+            return None
+        dest = str(self.config.get("mac_ssh") or "").strip()
+        if MAC_SSH_DEST_RE.fullmatch(dest):
+            return MAC_ROUTE_CONFIGURED
+        return MAC_ROUTE_NONE
 
     def other_seat_health(self) -> dict[str, Any]:
         """What this seat's health says about the latest history read:  a count, never an id, a
@@ -1459,7 +1608,7 @@ class Router:
                 letter_other_seat=letter_other_seat,
             )
 
-        if wake.letter:
+        if wake.letter and not wake.required_session:
             answer = registry_api.call(
                 self.env,
                 "resolve",
@@ -1505,6 +1654,7 @@ class Router:
             )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
+        rows_by_sid: dict[str, Mapping[str, Any]] = {}
         row_issues: dict[str, list[tuple[str, float | None]]] = {}
         others: set[str] = set()  # open chats left out only because their row names another seat
         for row in answer.get("items") or []:
@@ -1520,6 +1670,7 @@ class Router:
             if target.session_id not in live:
                 live[target.session_id] = target
                 seen[target.session_id] = _row_time(row)
+                rows_by_sid[target.session_id] = row
                 row_issues[target.session_id] = _issues_of(row)
         # One assignment, so a health read on another thread sees a whole pair.
         self.other_seat_scan = (len(others - live.keys()), self.clock())
@@ -1531,6 +1682,47 @@ class Router:
             and not _is_sender(t, wake)
             and not any(_same_target_binding(t, rejected) for rejected in rejected_targets)
         ]
+        if wake.required_session:
+            # An exact-origin wake names one chat by full session id.  Like an
+            # addressed letter it is that chat or a hold:  falling through
+            # would wake a chat not addressed.  The attested letter and
+            # generation, when carried, are constraints on the live row:  a
+            # re-generated or re-lettered chat is not the chat that opened
+            # the PR, so the wake holds rather than follow it.
+            fits = [t for t in candidates if t.session_id == wake.required_session]
+            if len(fits) == 1:
+                target = fits[0]
+                if wake.require_generation and target.generation != wake.require_generation:
+                    return Pick(
+                        reason="required-generation-mismatch",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                if wake.require_letter and target.letter != wake.require_letter:
+                    return Pick(
+                        reason="required-letter-mismatch",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                if wake.require_pr and not _pr_bound(
+                    rows_by_sid.get(target.session_id), wake.require_pr, target.generation
+                ):
+                    # The origin row does not carry this PR binding:  the
+                    # claim is unbound and the wake holds rather than wake a
+                    # chat whose link to the PR is unproven.
+                    return Pick(
+                        reason="required-pr-unbound",
+                        retry=True,
+                        letter_other_seat=letter_other_seat,
+                    )
+                return chosen(target, "required-session", "required-session")
+            return Pick(
+                reason="required-session-ambiguous" if fits else "required-session-not-live",
+                retry=True,
+                letter_other_seat=letter_other_seat,
+                candidates=tuple(t.letter for t in fits),
+            )
+
         if not candidates:
             return Pick(
                 reason="no-live-session",
@@ -1627,9 +1819,13 @@ class Router:
         with self._cond:
             record = _read_json(self._done(wake.wake_id))
             if isinstance(record, dict):
+                if record.get("credential_scope", "") != wake.credential_scope:
+                    return 403, {"error": "wake scope mismatch"}
                 return 200, record
             held = self._entries.get(wake.wake_id)
             if held is not None:
+                if held["wake"].get("credential_scope", "") != wake.credential_scope:
+                    return 403, {"error": "wake scope mismatch"}
                 return 202, self._accepted(held)
             entry = {
                 "wake": asdict(wake),
@@ -1656,6 +1852,11 @@ class Router:
             "wake_id": entry["wake"]["wake_id"],
             "receipt_id": entry["receipt_id"],
             "status": "accepted",
+            **(
+                {"credential_scope": entry["wake"]["credential_scope"]}
+                if entry["wake"].get("credential_scope")
+                else {}
+            ),
         }
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
@@ -1689,6 +1890,8 @@ class Router:
         """Replay what a restart left pending, then start the workers."""
         self.replay()
         with self._cond:
+            if self._stopping:
+                return  # a shutdown in progress must not start workers
             for _ in range(int(self.config["workers"])):
                 self._add_worker()
 
@@ -1966,7 +2169,7 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            stale, stale_note = self._stale(pick.target)
+            stale, stale_note, stale_answer = self._stale(pick.target, wake)
             if stale == RELEASED:
                 self._released(entry, pick, wake)
                 return
@@ -1988,7 +2191,9 @@ class Router:
                 # disk before the head's commit (module docstring, Turns).  None, or a head
                 # whose chat has answered it busy, and the wake goes alone, exactly as below.
                 turn_id = "t-" + secrets.token_hex(8)
-                riders = self._board(self._gather(entry, pick, turn_id), wake.wake_id, turn_id)
+                riders = self._board(
+                    self._gather(entry, pick, turn_id, stale_answer), wake.wake_id, turn_id
+                )
                 if riders:
                     self._deliver_turn(entry, pick, wake, riders, turn_id)
                     return
@@ -2013,14 +2218,18 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _stale(self, target: Target) -> tuple[str, str]:
+    def _stale(
+        self, target: Target, wake: Wake | None = None
+    ) -> tuple[str, str, Mapping[str, Any] | None]:
         """The reason this chat must not be delivered to, and the note that says why.
 
         The reason is empty when the registry still has this letter on this session at the
         generation picked, else `RELEASED` when it says so, or the code of a bounded retry when
         it cannot be read or its row cannot be read as a chat of this seat.  Neither of those
         is a yes or a no.  The note names the variable that is missing, when the registry named
-        one, so the receipt of the failure says what to fix."""
+        one, so the receipt of the failure says what to fix.  The registry read itself is the
+        third element, so a turn gathered right after re-verifies every rider's attested
+        constraints against this same read instead of asking the registry again."""
         answer = registry_api.call(
             self.env,
             "resolve",
@@ -2029,11 +2238,22 @@ class Router:
         )
         if not isinstance(answer, Mapping) or "error" in answer:
             note = registry_note(answer.get("error")) if isinstance(answer, Mapping) else ""
-            return registry_trouble(answer), note
+            return registry_trouble(answer), note, None
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
-            return UNREADABLE_ROW, ""
-        return (RELEASED, "") if not held else ("", "")
+            return UNREADABLE_ROW, "", None
+        if not held:
+            return RELEASED, "", None
+        if (
+            wake is not None
+            and wake.require_pr
+            and not _pr_bound(answer, wake.require_pr, target.generation)
+        ):
+            # Delivery-time recheck:  the binding present at pick is gone (or
+            # its generation stamp went stale).  Do not deliver on a pick the
+            # registry no longer supports;  a bounded retry re-reads it.
+            return "required-pr-unbound", "", None
+        return "", "", answer
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -2250,12 +2470,20 @@ class Router:
             Wake(**entry["wake"]), picked=pick.picked, reason=pick.reason, link_note=pick.link_note
         )
 
-    def _gather(self, entry: dict[str, Any], pick: Pick, turn_id: str) -> list[dict[str, Any]]:
+    def _gather(
+        self,
+        entry: dict[str, Any],
+        pick: Pick,
+        turn_id: str,
+        answer: Mapping[str, Any] | None,
+    ) -> list[dict[str, Any]]:
         """The wakes that may ride with this head, marked running so no worker claims them:  the
         run of exact-address wakes for the same chat that comes next, in arrival order, within
         the caps.  An unpicked wake that could want this chat, or one of this chat that cannot
         ride, ends the run;  one addressed to another seat or letter is passed over like any
-        other chat's wake.  There is no deduplication by message id."""
+        other chat's wake.  There is no deduplication by message id.  An exact-origin wake may
+        head or ride:  its attested constraints were verified at its pick and are re-verified
+        here against `answer`, the registry read the head's check before delivery just made."""
         target = pick.target
         if not certain(pick) or not message_id_ok(entry["wake"]["message_id"]) or self._stopping:
             return []
@@ -2285,7 +2513,7 @@ class Router:
                     break
                 if _session_of(other) != session:
                     continue
-                if not self._may_ride(other, key, now) or len(riders) + 2 > cap:
+                if not self._may_ride(other, key, now, answer) or len(riders) + 2 > cap:
                     break
                 told = [self._told(rider) for rider in [*riders, other]]
                 text = turn_text(" " * TURN_PREFIX_MAX, head, told, turn_id)
@@ -2300,7 +2528,11 @@ class Router:
         return riders
 
     def _may_ride(
-        self, other: Mapping[str, Any], key: tuple[str, str, int, str], now: float
+        self,
+        other: Mapping[str, Any],
+        key: tuple[str, str, int, str],
+        now: float,
+        answer: Mapping[str, Any] | None,
     ) -> bool:
         """Whether this pending wake may ride a turn for the chat `key` names now."""
         if other.get("running") or other.get("receipt") is not None:
@@ -2314,6 +2546,7 @@ class Router:
             and turn_key(pick.target) == key
             and message_id_ok(other["wake"]["message_id"])
             and now - other["accepted_at"] < int(self.config["max_age_seconds"])
+            and _contracts_ok(other["wake"], pick.target, answer)
         )
 
     def _board(
@@ -2516,6 +2749,11 @@ class Router:
         target = pick.target
         receipt = {
             "receipt_id": entry["receipt_id"],
+            **(
+                {"credential_scope": wake["credential_scope"]}
+                if wake.get("credential_scope")
+                else {}
+            ),
             "wake_id": wake["wake_id"],
             "seat": self.platform.seat,
             "at": self.clock(),
@@ -3027,6 +3265,62 @@ def _named_session(wake: Wake, live: Mapping[str, Target]) -> str:
     return named.pop() if len(named) == 1 else ""
 
 
+def _pr_bound(row: Mapping[str, Any] | None, require_pr: str, generation: int = 0) -> bool:
+    """Whether the registry row binds this PR (repo#number) to its session.
+
+    The binding is written by the session's own seat lane (platform_letter's
+    bind-pr), never by the relay caller.  A malformed entry proves nothing.
+    An entry stamped with a generation counts only while the row is still on
+    that generation:  a binding written before a letter re-issue is stale.
+    """
+    if not isinstance(row, Mapping):
+        return False
+    repo, _, number = require_pr.partition("#")
+    for entry in row.get("bound_prs") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("repo") or "").casefold() != repo.casefold():
+            continue
+        try:
+            if int(entry.get("number") or 0) != int(number):
+                continue
+        except (TypeError, ValueError):
+            continue
+        # The generation stamp is mandatory:  an unstamped or malformed entry
+        # is not a wildcard, it proves nothing.
+        entry_generation = entry.get("generation")
+        if type(entry_generation) is not int or entry_generation != generation:
+            continue
+        return True
+    return False
+
+
+def _contracts_ok(
+    wake: Mapping[str, Any], target: Target, answer: Mapping[str, Any] | None
+) -> bool:
+    """A turn member's attested exact-origin constraints, re-verified at gather time.
+
+    The read is the one the head's check before delivery just made, so a turn adds no registry
+    traffic:  the required session is this chat, the attested letter and generation still match
+    the live row when the wake carries them, and the PR binding is stamped at the chat's live
+    generation (`_pr_bound`).  A wake with no contracts passes;  one whose constraints no longer
+    hold does not ride, it stays pending and leads or rides a later turn, never delivered on an
+    unproven claim."""
+    required_session = wake.get("required_session") or ""
+    if required_session and required_session != target.session_id:
+        return False
+    require_letter = wake.get("require_letter") or ""
+    if require_letter and require_letter != target.letter:
+        return False
+    require_generation = wake.get("require_generation") or 0
+    if require_generation and require_generation != target.generation:
+        return False
+    require_pr = wake.get("require_pr") or ""
+    if require_pr and not _pr_bound(answer, require_pr, target.generation):
+        return False
+    return True
+
+
 def _issues_of(row: Mapping[str, Any]) -> list[tuple[str, float | None]]:
     """A registry record's `issues`, as (id, seen_at).  A record may have none, and a malformed
     item is skipped."""
@@ -3100,9 +3394,10 @@ class Seats:
         return self.down.get(seat)
 
     def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
-        """One seat's state:  reason tokens, and for a served seat only the other-seat count
-        (`Router.other_seat_health`), never a value and never the time of the read:  health
-        needs no key, and that time would show when the seat was last woken."""
+        """One seat's state:  reason tokens, and for a served seat only the other-seat count
+        (`Router.other_seat_health`) and the Mac route (`Router.mac_route`), never a value, never
+        the destination and never the time of the read:  health needs no key, that time would show
+        when the seat was last woken, and the destination names a host."""
         router = self.routers.get(seat)
         if router is None:
             if seat in self.not_installed:
@@ -3112,6 +3407,12 @@ class Seats:
         delivery = router.config.get("delivery_enabled") is True
         # The other-seat count is a warning beside the answer:  it never changes `healthy`.
         answer: dict[str, Any] = {"seat": seat, "delivery": delivery, **router.other_seat_health()}
+        # The Mac route is a token beside the answer (AFC-836):  it never changes `healthy` either,
+        # and it is there for an unhealthy seat too, so a missing destination is seen whatever
+        # else is wrong.
+        route = router.mac_route()
+        if route is not None:
+            answer["mac_route"] = route
         key, why = router.routine_key()
         if not key:
             reason = "routine-key-unavailable:" + why
@@ -3132,7 +3433,10 @@ class Seats:
             every[seat] = state
         counted = [state for seat, state in every.items() if seat not in self.not_installed]
         healthy = bool(counted) and all(state["healthy"] for state in counted)
-        return (200 if healthy else 503), {"healthy": healthy, "seats": every}
+        answer = {"healthy": healthy, "seats": every}
+        if hasattr(self, "upgrade_quiesced"):
+            answer["upgrade_quiesced"] = self.upgrade_quiesced
+        return (200 if healthy else 503), answer
 
     def start(self) -> None:
         """Start each seat's router.  One that cannot start (its folder cannot be read, say) is
@@ -3235,19 +3539,27 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 self._answer(503, {"error": "the seat %s is not served (%s)" % (seat, reason)})
             return None
 
-        def _authorized(self, router: Router) -> bool:
-            """Checked against the bearer this seat's router asks its own KeySource for."""
+        def _authorized(self, router: Router) -> str:
+            """An authenticated capability, never a caller-selected scope."""
             key, why = router.routine_key()
-            if not key:
-                # Without the key nothing can be checked, so nothing is let in.
-                self._answer(503, {"error": "the routine key is unavailable (%s)" % why})
-                return False
+            service_key, _ = router.review_key()
             given = (self.headers.get("Authorization") or "").encode("utf-8")
-            # Constant time:  the bearer is the only thing between the network and a wake.
-            if not hmac.compare_digest(given, ("Bearer %s" % key).encode("utf-8")):
-                self._answer(401, {"error": "bad bearer"})
-                return False
-            return True
+            if service_key and hmac.compare_digest(given, ("Bearer " + service_key).encode()):
+                if key and hmac.compare_digest(key, service_key):
+                    self._answer(503, {"error": "service and routine credentials must differ"})
+                    return ""
+                return REVIEW_ALERT_SCOPE
+            if key and hmac.compare_digest(given, ("Bearer " + key).encode()):
+                return "routine"
+            self._answer(
+                401 if key or service_key else 503,
+                {
+                    "error": "bad bearer"
+                    if key or service_key
+                    else "the routine key is unavailable (%s)" % why
+                },
+            )
+            return ""
 
         def do_GET(self) -> None:
             path = self.path or ""
@@ -3266,9 +3578,17 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 self._answer(404, {"error": "not found"})
                 return
             router = self._router_for(found.group(1) or LEGACY_RECEIPT_SEAT)
-            if router is None or not self._authorized(router):
+            if router is None:
+                return
+            scope = self._authorized(router)
+            if not scope:
                 return
             record = router.receipt(found.group(2))
+            if scope == REVIEW_ALERT_SCOPE and (
+                record is None or record.get("credential_scope") != REVIEW_ALERT_SCOPE
+            ):
+                self._answer(404, {"error": "no such wake"})
+                return
             if record is None:
                 self._answer(404, {"error": "no such wake"})
             else:
@@ -3281,7 +3601,10 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 return
             seat = found.group(1)
             router = self._router_for(seat)
-            if router is None or not self._authorized(router):
+            if router is None:
+                return
+            scope = self._authorized(router)
+            if not scope:
                 return
             raw_length = (self.headers.get("Content-Length") or "").strip()
             if not raw_length.isdigit() or len(raw_length) > 9:
@@ -3309,7 +3632,46 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
             if not WAKE_ID_RE.fullmatch(str(payload.get("wake_id") or "")):
                 self._answer(400, {"error": "wake_id missing or malformed"})
                 return
+            require_session = str(payload.get("require_session") or "")
+            if require_session and not SESSION_ID_RE.fullmatch(require_session):
+                self._answer(400, {"error": "require_session malformed"})
+                return
+            require_letter = str(payload.get("require_letter") or "")
+            if require_letter and not REQUIRE_LETTER_RE.fullmatch(require_letter):
+                self._answer(400, {"error": "require_letter malformed"})
+                return
+            require_generation = payload.get("require_generation")
+            if require_generation is not None and (
+                type(require_generation) is not int or require_generation < 1
+            ):
+                self._answer(400, {"error": "require_generation malformed"})
+                return
+            require_pr = str(payload.get("require_pr") or "")
+            if require_pr and not REQUIRE_PR_RE.fullmatch(require_pr):
+                self._answer(400, {"error": "require_pr malformed"})
+                return
+            if getattr(seats, "upgrade_quiesced", False) and payload.get("test") is not True:
+                self._answer(503, {"error": "upgrade intake quiesced"})
+                return
+            reserved = str(payload.get("wake_id") or "").startswith("ra-")
+            if scope == REVIEW_ALERT_SCOPE:
+                if not (
+                    reserved
+                    and require_session
+                    and require_letter
+                    and type(require_generation) is int
+                    and require_generation > 0
+                    and require_pr
+                    and payload.get("channel") == REVIEW_ALERT_SCOPE
+                ):
+                    self._answer(403, {"error": "service requires exact-session generation wake"})
+                    return
+            elif reserved:
+                self._answer(403, {"error": "reserved service wake namespace"})
+                return
             wake = wake_from_payload(payload, router.platform.mention)
+            if scope == REVIEW_ALERT_SCOPE:
+                wake = replace(wake, credential_scope=REVIEW_ALERT_SCOPE)
             if payload.get("test") is True:
                 self._answer(200, router.test_answer(wake))
                 return
@@ -3319,7 +3681,7 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(target: Router | Seats, bind: str, port: int) -> int:
+def serve(target: Router | Seats, bind: str, port: int, *, start_quiesced: bool = False) -> int:
     """Run every seat's router on one port.  A seat starts without its routine key or its
     registry address, since both come from Infisical, which may be down at start.  Without the
     key it refuses its requests with 503;  without the registry it picks nothing (each wake is a
@@ -3341,11 +3703,36 @@ def serve(target: Router | Seats, bind: str, port: int) -> int:
         # shutdown() waits for serve_forever, which is this same thread, so it needs its own.
         threading.Thread(target=server.shutdown, daemon=True).start()
 
+    seats.upgrade_quiesced = start_quiesced
+    activation = threading.Event()
+    activation_stop = threading.Event()
+    expected_seats = set(seats.routers)
+
+    def activate(_signum, _frame):
+        activation.set()  # The signal handler never starts workers or mutates router state.
+
+    def activation_worker():
+        activation.wait()
+        if activation_stop.is_set() or not start_quiesced:
+            return
+        seats.start()  # This one thread runs once, even when multiple signals arrive.
+        ready = set(seats.routers) == expected_seats and not seats.down
+        if ready and seats.health()[0] == 200:
+            seats.upgrade_quiesced = False
+
+    activation_thread = threading.Thread(target=activation_worker, daemon=True)
+    if start_quiesced:
+        activation_thread.start()
+    prior_activation = signal.signal(signal.SIGUSR1, activate)
     previous = signal.signal(signal.SIGTERM, on_term)
     try:
-        seats.start()
+        if not start_quiesced:
+            seats.start()
         served = ", ".join(sorted(seats.routers)) or "none"
-        unserved = {**seats.down, **{seat: NOT_INSTALLED for seat in seats.not_installed}}
+        unserved = {
+            **seats.down,
+            **{seat: NOT_INSTALLED for seat in seats.not_installed},
+        }
         down = ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
         print(
             "wake-router listening on %s:%d for seats %s;  not served:  %s"
@@ -3357,6 +3744,21 @@ def serve(target: Router | Seats, bind: str, port: int) -> int:
         pass
     finally:
         server.server_close()
+        activation_stop.set()
+        activation.set()
+        if start_quiesced:
+            # Serialize shutdown after any replay/start, but bound the wait:  a hung start
+            # must not hold SIGTERM past the unit's TimeoutStopSec, and a late start adds
+            # no worker, because a router that is stopping starts none.
+            activation_thread.join(timeout=ACTIVATION_JOIN_TIMEOUT)
+            if activation_thread.is_alive():
+                print(
+                    f"wake-router: activation did not finish within {ACTIVATION_JOIN_TIMEOUT:g}s;"
+                    " shutdown continues",
+                    file=sys.stderr,
+                    flush=True,
+                )
         seats.stop()
         signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGUSR1, prior_activation)
     return 0

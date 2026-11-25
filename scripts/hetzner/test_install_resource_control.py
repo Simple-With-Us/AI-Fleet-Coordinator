@@ -17,8 +17,8 @@ from unittest import mock
 # Standalone discovery also needs the resolved repo-only fixture package.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from fleet_infisical_cli_tests.installed_writer_fixture import assert_installed_writer
 from fleet_knobs.tests._fake import ScopedReadAPI
-from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -88,9 +88,6 @@ class InstallerTests(unittest.TestCase):
             "simple_tools/__init__.py",
             "simple_tools/operator_github_state.py",
         }
-        expected.update(
-            "fleet_secrets/" + path.name for path in (SCRIPTS / "fleet_secrets").glob("*.py")
-        )
         actual = {
             str(path.relative_to(self.destination))
             for path in self.destination.rglob("*")
@@ -99,7 +96,6 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         for path in (
             self.destination,
-            self.destination / "fleet_secrets",
             self.destination / "hetzner",
             self.destination / "simple_tools",
         ):
@@ -130,10 +126,9 @@ class InstallerTests(unittest.TestCase):
         muster_imports = ",muster_approval,muster_trust_files" if has_cryptography else ""
         code = (
             "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,fleet_secrets.cli,fleet_infisical_cli,hetzner.fleet_coding_memory"
+            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_infisical,fleet_infisical_cli,hetzner.fleet_coding_memory"
             + muster_imports
-            + ";assert fleet_secrets.cli is fleet_infisical_cli;"
-            "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
+            + ";runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
         )
         result = subprocess.run(
             [sys.executable, "-I", "-c", code, str(self.destination)],
@@ -187,7 +182,7 @@ ctx = control.Context(
         "FLEET_OPS_CONTROL_INFISICAL_TOKEN", "INFISICAL_FLEET_OPS_PROJECT_ID",
         "FLEET_SECRETS_API", "INFISICAL_ENVIRONMENT", "INFISICAL_ENV",
     }},
-    http=lambda url, headers: calls.append(url) or 200,
+    http=lambda url, headers, method="GET": (calls.append(url) or 200, ""),
 )
 answer, status = control.check_token(ctx)
 print(json.dumps({
@@ -217,13 +212,13 @@ print(json.dumps({
             self.assertNotIn(api.token, " ".join(result.args))
             return json.loads(result.stdout)
 
-        # The consumer receives only a synthetic protected process binding.  This route uses
+        # The consumer receives only a synthetic protected process binding.  This route uses
         # the copied sibling source and the real disposable worker against the loopback fixture.
         self.install()
         with ScopedReadAPI(
-            {"COOLIFY_API_TOKEN": coolify_token},
+            {"COOLIFY_DEPLOY_ONLY": coolify_token},
             project=project,
-            path="/coolify",
+            path="/coolify-deploy-only-token",
         ) as api:
             api.record_override = {"secretValueHidden": False}
             success = invoke(api)
@@ -235,15 +230,15 @@ print(json.dumps({
                 api.requests,
                 [
                     "/api/v2/service-token",
-                    "/api/v3/secrets/raw/COOLIFY_API_TOKEN?workspaceId="
+                    "/api/v3/secrets/raw/COOLIFY_DEPLOY_ONLY?workspaceId="
                     + project
-                    + "&environment=prod&secretPath=%2Fcoolify&viewSecretValue=true"
+                    + "&environment=prod&secretPath=%2Fcoolify-deploy-only-token&viewSecretValue=true"
                     "&expandSecretReferences=false&recursive=false&include_imports=false",
                 ],
             )
 
         # A real read-only payload needs no compatibility package or writer ledger in either
-        # interpreter.  The bounded worker executes only this copied canonical source.
+        # interpreter.  The bounded worker executes only this copied canonical source.
         reader_only = self.root / "read-only-payload"
         if reader_only.is_symlink():
             raise ValueError(f"refusing symlink: {reader_only}")
@@ -253,7 +248,9 @@ print(json.dumps({
             target.write_bytes((self.destination / name).read_bytes())
             target.chmod(0o600)
         with ScopedReadAPI(
-            {"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify"
+            {"COOLIFY_DEPLOY_ONLY": coolify_token},
+            project=project,
+            path="/coolify-deploy-only-token",
         ) as api:
             api.record_override = {"secretValueHidden": False}
             isolated = invoke(api, reader_only)
@@ -265,7 +262,7 @@ print(json.dumps({
         # Bad scope is refused by the canonical grant verifier before the injected Coolify
         # request can observe any token.
         with ScopedReadAPI(
-            {"COOLIFY_API_TOKEN": coolify_token},
+            {"COOLIFY_DEPLOY_ONLY": coolify_token},
             project=project,
             path="/wrong-folder",
         ) as api:
@@ -281,7 +278,9 @@ print(json.dumps({
         try:
             reader.unlink()
             with ScopedReadAPI(
-                {"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify"
+                {"COOLIFY_DEPLOY_ONLY": coolify_token},
+                project=project,
+                path="/coolify-deploy-only-token",
             ) as api:
                 missing = invoke(api)
                 self.assertEqual(missing["status"], 1, missing)
@@ -290,9 +289,9 @@ print(json.dumps({
             reader.write_text("raise RuntimeError('broken copied reader')\n")
             reader.chmod(0o644)
             with ScopedReadAPI(
-                {"COOLIFY_API_TOKEN": coolify_token},
+                {"COOLIFY_DEPLOY_ONLY": coolify_token},
                 project=project,
-                path="/coolify",
+                path="/coolify-deploy-only-token",
             ) as api:
                 api.record_override = {"secretValueHidden": False}
                 broken = invoke(api)
@@ -569,7 +568,7 @@ print(json.dumps({
         (source / "muster_agent" / "muster_trust_files.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet-ops-eavesdropper-settings.json").write_text(SETTINGS)
-        (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)
+        (source / "hetzner").symlink_to(SCRIPTS / "hetzner", target_is_directory=True)
         with self.assertRaises(OSError):
             self.install(source)
         self.assertFalse(self.destination.exists())
@@ -591,7 +590,6 @@ print(json.dumps({
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet-ops-eavesdropper-settings.json").write_text(SETTINGS)
         for package, names in (
-            ("fleet_secrets", ("__init__.py", "core.py")),
             ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
             ("simple_tools", ("__init__.py", "operator_github_state.py")),
         ):
@@ -632,7 +630,7 @@ print(json.dumps({
         self.assertFalse(self.destination.exists())
 
     def minimal_source(self, trust_text="pass\n"):
-        """A small valid source tree.  `trust_text` None leaves out the `muster_agent` folder."""
+        """A small valid source tree.  `trust_text` None leaves out the `muster_agent` folder."""
         source = self.root / "source"
         source.mkdir()
         for name in (
@@ -651,7 +649,6 @@ print(json.dumps({
             (source / "muster_agent").mkdir()
             (source / "muster_agent" / "muster_trust_files.py").write_text(trust_text)
         for package, names in (
-            ("fleet_secrets", ("__init__.py", "core.py")),
             ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
             ("simple_tools", ("__init__.py", "operator_github_state.py")),
         ):

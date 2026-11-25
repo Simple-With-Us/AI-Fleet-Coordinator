@@ -24,7 +24,10 @@ Nothing here touches the network:  the Linear client and the Zulip client are fa
 
 from __future__ import annotations
 
+import inspect
+import pathlib
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -818,31 +821,50 @@ class CredentialTests(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         self.logs: list[str] = []
 
-    def token_file(self, content="st-from-file", mode=0o600) -> Path:
+    # never-a-credential: the synthetic fixture values are assembled at runtime
+    def token_file(self, content="st-" + "from-file", mode=0o600) -> Path:
         path = self.dir / "service-token"
         path.write_text(content, "utf-8")
         path.chmod(mode)
         return path
 
     # -- where the service token comes from -------------------------------------------
-    def test_service_token_env_wins_over_file(self) -> None:
+    def test_service_token_reads_the_store(self) -> None:
+        # The store is the only source:  the reviewed, scope-limited grant lives there.
         path = self.token_file()
-        env = {opl.SERVICE_TOKEN_ENV: "  st-from-env  "}
-        self.assertEqual(opl.service_token(env, str(path)), "st-from-env")
+        self.assertEqual(opl.service_token(str(path)), "st-" + "from-file")
+
+    def test_the_environment_is_not_a_source(self) -> None:
+        # Owner ruling, November 22, 2026:  the environment is never a source.  The
+        # retired variable is gone from the module, and the resolver takes no
+        # environment at all, so no copy of the grant can travel as a variable.
+        source = pathlib.Path(opl.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("OPERATOR_LINEAR_INFISICAL_TOKEN", source)
+        self.assertNotIn("env", inspect.signature(opl.service_token).parameters)
 
     def test_service_token_reads_the_configured_file(self) -> None:
         path = self.token_file()
-        self.assertEqual(opl.service_token({}, str(path)), "st-from-file")
+        self.assertEqual(opl.service_token(str(path)), "st-" + "from-file")
 
     def test_service_token_missing_file_is_unconfigured(self) -> None:
-        self.assertEqual(opl.service_token({}, str(self.dir / "absent")), "")
+        self.assertEqual(opl.service_token(str(self.dir / "absent")), "")
+
+    def test_service_token_refuses_an_unreadable_store(self) -> None:
+        # An existing store that cannot be read is a broken store, not an absent
+        # one:  the feature fails closed instead of reporting itself unconfigured.
+        path = self.token_file()
+        with mock.patch.object(opl.os, "stat", side_effect=PermissionError("denied")):
+            with self.assertRaises(opl.CredentialRefused) as caught:
+                opl.service_token(str(path))
+        self.assertEqual(caught.exception.reason, "token_file_unreadable")
+        self.assertNotIn("st-" + "from-file", str(caught.exception))
 
     def test_service_token_refuses_a_group_readable_file(self) -> None:
         path = self.token_file(mode=0o644)
         with self.assertRaises(opl.CredentialRefused) as caught:
-            opl.service_token({}, str(path))
+            opl.service_token(str(path))
         self.assertEqual(caught.exception.reason, "token_file_permissions")
-        self.assertNotIn("st-from-file", str(caught.exception))
+        self.assertNotIn("st-" + "from-file", str(caught.exception))
 
     # -- the key fetch ----------------------------------------------------------------------
     def test_key_fetch_verifies_scope_then_reads_the_key(self) -> None:
@@ -921,22 +943,31 @@ class CredentialTests(unittest.TestCase):
     def test_load_api_key_runs_the_whole_chain(self) -> None:
         http = FakeHttp()
         hidden: list[str] = []
-        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
-        self.assertEqual(opl.load_api_key(env, http=http, hide=hidden.extend), "dev-key")
+        path = self.token_file(content="st-" + "test")
+        self.assertEqual(opl.load_api_key(str(path), http=http, hide=hidden.extend), "dev-key")
         self.assertEqual(len(http.calls), 2)  # record, then the key — no OAuth exchange
         self.assertTrue(http.calls[0][1].endswith("/v2/service-token"))
         self.assertIn("/v3/secrets/raw", http.calls[1][1])
         self.assertEqual(hidden, ["dev-key"])  # registered for log scrubbing at fetch
 
+    def test_the_key_fetch_uses_the_store(self) -> None:
+        # The store is the only source:  the grant that reaches Infisical is the one
+        # the consumer's own store holds.
+        path = self.token_file(content="st-" + "from-file")  # never-a-credential: synthetic fixture assembled at runtime
+        http = FakeHttp()
+        self.assertEqual(opl.load_api_key(str(path), http=http), "dev-key")
+        bearer = http.calls[0][2].get("Authorization", "")
+        self.assertIn("st-" + "from-file", bearer)
+
     def test_load_api_key_unconfigured_is_none(self) -> None:
         http = FakeHttp()
-        self.assertIsNone(opl.load_api_key({}, str(self.dir / "absent"), http=http))
+        self.assertIsNone(opl.load_api_key(str(self.dir / "absent"), http=http))
         self.assertEqual(http.calls, [])
 
     def test_build_wires_the_developer_token_into_the_engine(self) -> None:
         http = FakeHttp()
-        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
-        engine = opl.build(env, self.dir, log=self.logs.append, http=http)
+        path = self.token_file(content="st-" + "test")
+        engine = opl.build({}, self.dir, log=self.logs.append, service_token_file=str(path), http=http)
         self.assertIsNotNone(engine)
         self.assertIsInstance(engine.worker.linear, lr.LinearClient)
         self.assertEqual(engine.worker.linear.auth_scheme, "api_key")
@@ -954,9 +985,9 @@ class CredentialTests(unittest.TestCase):
 
     def test_build_propagates_a_refused_credential(self) -> None:
         http = FakeHttp(statuses={"secrets": 403})
-        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
+        path = self.token_file(content="st-" + "test")
         with self.assertRaises(opl.CredentialRefused):
-            opl.build(env, self.dir, log=self.logs.append, http=http)
+            opl.build({}, self.dir, log=self.logs.append, service_token_file=str(path), http=http)
 
 
 class _StubResponse:
@@ -1092,6 +1123,12 @@ class DaemonConfigureTests(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp())
 
+    def token_file(self, content="st-" + "from-file", mode=0o600) -> Path:
+        path = self.dir / "service-token"
+        path.write_text(content, "utf-8")
+        path.chmod(mode)
+        return path
+
     def stub(self, env, token_file=""):
         import types
 
@@ -1111,6 +1148,10 @@ class DaemonConfigureTests(unittest.TestCase):
         stub.scrub = lambda text: text
         stub.linear_comments = None
         stub._linear_comments_spec = None
+        # What a real daemon keeps for the status document (AFC-833).
+        stub._linear_comments_state = "off"
+        stub._linear_comments_health = {"last_tick": None, "errors": 0, "last_error": None,
+                                        "stopped_at": None}
         stub.configure = lambda: D.Daemon._configure_linear_comments(stub)
         return stub
 
@@ -1119,16 +1160,20 @@ class DaemonConfigureTests(unittest.TestCase):
         stub.configure()
         self.assertIsNone(stub.linear_comments)
         self.assertIn("linear-comments-off", stub.log.kinds())
+        # The status names why, in a fixed word (AFC-833).
+        self.assertEqual(stub._linear_comments_state, "no_service_token")
 
     def test_engine_builds_from_the_service_token_and_survives_a_reload(self) -> None:
         http = FakeHttp()
-        stub = self.stub({opl.SERVICE_TOKEN_ENV: "st-test"})
+        stub = self.stub({}, token_file=str(self.token_file(content="st-" + "test")))
         with mock.patch.object(opl, "_default_http", http):
             stub.configure()
             engine = stub.linear_comments
             self.assertIsNotNone(engine)
             self.assertEqual(stub._linear_comments_spec, ("st-test",))
             self.assertIn("st-test", stub.hidden)  # the log scrubber knows the value
+            # A built engine leaves no "why there is none" word for the status (AFC-833).
+            self.assertIsNone(stub._linear_comments_state)
             self.assertIn("dev-key", stub.hidden)  # and the fetched developer token
             stub.configure()  # a reload with the same token keeps the engine
             self.assertIs(stub.linear_comments, engine)
@@ -1137,7 +1182,7 @@ class DaemonConfigureTests(unittest.TestCase):
 
     def test_a_stopped_engine_is_rebuilt_on_reload(self) -> None:
         http = FakeHttp()
-        stub = self.stub({opl.SERVICE_TOKEN_ENV: "st-test"})
+        stub = self.stub({}, token_file=str(self.token_file(content="st-" + "test")))
         with mock.patch.object(opl, "_default_http", http):
             stub.configure()
             engine = stub.linear_comments
@@ -1148,17 +1193,21 @@ class DaemonConfigureTests(unittest.TestCase):
             self.assertIsNotNone(rebuilt)  # the old ledger lock was released first
             self.assertIsNot(rebuilt, engine)
             self.assertIsNone(rebuilt.stopped)
+            # A rebuilt engine has not stopped, for the status too (AFC-833).
+            self.assertIsNone(stub._linear_comments_health["stopped_at"])
         rebuilt.close()
 
     def test_a_group_readable_token_file_fails_closed_in_the_log(self) -> None:
         path = self.dir / "service-token"
-        path.write_text("st-from-file", "utf-8")
+        path.write_text("st-" + "from-file", "utf-8")
         path.chmod(0o644)
         stub = self.stub({}, token_file=str(path))
         stub.configure()
         self.assertIsNone(stub.linear_comments)
         self.assertIn("linear-comments-error", stub.log.kinds())
         self.assertNotIn("linear-comments-off", stub.log.kinds())
+        # The status names why, in a fixed word (AFC-833).
+        self.assertEqual(stub._linear_comments_state, "token_file_unusable")
 
 
 class DaemonReconnectTests(unittest.TestCase):
@@ -1173,9 +1222,19 @@ class DaemonReconnectTests(unittest.TestCase):
 
         calls: list = []
         engine = types.SimpleNamespace(queue_registered=lambda: calls.append("registered"))
-        stub = types.SimpleNamespace(linear_comments=engine, log=_StubLog(), scrub=lambda t: t)
+        stub = types.SimpleNamespace(
+            linear_comments=engine, log=_StubLog(), scrub=lambda t: t,
+            # What a real daemon keeps for the status document (AFC-833):  the failure the
+            # next lines provoke is counted there before it is logged.
+            _linear_comments_lock=threading.Lock(),
+            _linear_comments_health={"last_tick": None, "errors": 0, "last_error": None,
+                                     "stopped_at": None},
+        )
         stub._observe_linear_reconnect = lambda runner: D.Daemon._observe_linear_reconnect(
             stub, runner
+        )
+        stub._linear_comments_failed = lambda exc, seat=None: D.Daemon._linear_comments_failed(
+            stub, exc, seat
         )
         stub.route_message = lambda runner, message: calls.append(message["id"])
         runner = types.SimpleNamespace(

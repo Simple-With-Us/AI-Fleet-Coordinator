@@ -2571,6 +2571,39 @@ class HookTests(Base):
         self.assertEqual(out["sessionTitle"], "%s: Fix Login" % label)
         self.assertIn("Operator session letter", out["additionalContext"])
 
+    def test_a_turn_end_retries_a_pending_title_once_then_respects_backoff(self) -> None:
+        attempts: list[tuple[str, str]] = []
+        allow = {"ok": False}
+
+        def writer(request: PL.TitleRequest) -> bool:
+            attempts.append((request.reason, request.title))
+            return allow["ok"]
+
+        spec = make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"}, title_in_output=False, title_writer=writer)
+        t0 = time.time()
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, spec=spec, now=t0)
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix login"},
+                  spec=spec, now=t0 + 2)
+        label = self.label("s-0001")
+        want = "%s: Fix Login" % label
+        self.assertTrue(self.note("s-0001")["pending"])
+        self.assertEqual(attempts, [("start", "%s: New Chat" % label), ("prompt", want)])
+        # First Stop retries once immediately even inside RETRY_SECONDS, then backs off on repeat failure.
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=t0 + 20)
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(self.note("s-0001")["pending"])
+        self.assertTrue(self.note("s-0001").get("turn_retried"))
+        # Second Stop inside backoff does not hammer the failing writer.
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=t0 + 40)
+        self.assertEqual(len(attempts), 3)
+        # Once backoff expires and the writer recovers, Stop clears pending and records shown.
+        allow["ok"] = True
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=t0 + 20 + PL.RETRY_SECONDS + 5)
+        self.assertEqual(len(attempts), 4)
+        self.assertFalse(self.note("s-0001")["pending"])
+        self.assertEqual(self.note("s-0001")["shown"], want)
+        self.assertNotIn("turn_retried", self.note("s-0001"))
+
     def request(self, *argv: str, env: dict | None = None, now: float | None = None) -> tuple[int, str]:
         out = io.StringIO()
         code = PL.request_main(list(argv), env if env is not None else self.server_env(), out, now=now,
@@ -2960,6 +2993,227 @@ class RepairCliTests(Base):
         self.assertIn("s-0202", out)
 
 
+class RestoreLetterTests(Base):
+    """A chat that holds a letter and whose title lost it gets the letter back (AFC-858):  the letter goes
+    where it was,  from the note's own label,  and the chat is never registered a second time."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.unlettered: list[str] = []
+        self.written: list[PL.TitleRequest] = []
+        self.titles: dict[str, str] = {}
+
+        def writer(request: PL.TitleRequest) -> bool:
+            self.written.append(request)
+            self.titles[request.session_id] = request.title
+            return True
+
+        def unlettered_sessions(env):
+            return list(self.unlettered)
+
+        def chat_payload(sid: str):
+            return {
+                "hook_event_name": "SessionStart",
+                "source": "resume",
+                "session_id": sid,
+                "title": self.titles.get(sid, ""),
+            }
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=unlettered_sessions,
+            chat_payload=chat_payload,
+            title_writer=writer,
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+
+    def start(self, sid: str) -> None:
+        out = io.StringIO()
+        code = PL.hook(
+            self.spec, self.server_env(), io.StringIO(json.dumps(
+                {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}
+            )), out, platform="linux", transport=Calls(self),
+        )
+        self.assertEqual(code, 0)
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def repair(self, sid: str, calls: Calls) -> dict:
+        self.unlettered.append(sid)
+        return PL.repair_unlettered(
+            self.spec, self.server_env(), "CODEX", "server", now=1000.0, transport=calls
+        )
+
+    def test_a_title_that_carries_its_letter_is_not_lost(self) -> None:
+        note = {"state": "open", "label": "AA"}
+        self.assertFalse(PL.letter_lost(note, "AA: Fix login"))
+        self.assertFalse(PL.letter_lost(note, "AA:"))
+        self.assertTrue(PL.letter_lost(note, "Fix login"))
+        self.assertTrue(PL.letter_lost(note, ""))
+        self.assertFalse(PL.letter_lost(note, "??: Fix login"))
+        self.assertFalse(PL.letter_lost({"state": "open", "label": "??"}, "Fix login"))
+        self.assertFalse(PL.letter_lost({"state": "failed", "label": "AA"}, "Fix login"))
+
+    def test_a_chat_whose_title_lost_its_letter_gets_it_back(self) -> None:
+        self.start("s-0300")
+        label = self.note("s-0300")["label"]
+        # The app put its own title over the lettered one.
+        self.titles["s-0300"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0300", calls)
+        self.assertEqual(done["repaired"], ["s-0300"])
+        # A restored letter is not a replay:  no start was replayed, so the chat is not a replay either.
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+        # The chat keeps the letter it holds:  no second registration,  so a letter the registry has
+        # since retired is never handed out again.
+        self.assertEqual(self.note("s-0300")["label"], label)
+        self.assertNotIn("register", calls.ops())
+
+    def test_a_chat_whose_title_still_carries_its_letter_is_left_alone(self) -> None:
+        self.start("s-0301")
+        label = self.note("s-0301")["label"]
+        calls = Calls(self)
+        done = self.repair("s-0301", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(self.note("s-0301")["label"], label)
+
+    def test_a_platform_with_no_title_writer_leaves_the_title_alone(self) -> None:
+        # A row with no writer cannot change the record the app shows,  so the letter stays where it
+        # is and the chat is not touched.
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=lambda env: list(self.unlettered),
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume",
+                                      "session_id": sid, "title": self.titles.get(sid, "")},
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+        self.start("s-0302")
+        self.titles["s-0302"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0302", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+
+
+    def write_note(self, sid: str, note: dict) -> None:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+    def test_a_writer_that_refuses_the_title_leaves_the_chat_alone(self) -> None:
+        # A writer that refuses the title (a name a person chose, or a chat with no descriptive name yet)
+        # leaves the chat as it is:  the pass does not count the chat as repaired, and the note keeps the
+        # pending stamp, so a later prompt tries the title again.
+        def refusing(request: PL.TitleRequest) -> bool:
+            self.written.append(request)
+            return False
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=lambda env: list(self.unlettered),
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume",
+                                      "session_id": sid, "title": self.titles.get(sid, "")},
+            title_writer=refusing,
+            current_title=lambda data, env: str(data.get("title") or ""),
+        )
+        self.start("s-0303")
+        label = self.note("s-0303")["label"]
+        self.titles["s-0303"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0303", calls)
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+        # The chat keeps the letter it holds, and the note keeps the pending stamp.
+        self.assertEqual(self.note("s-0303")["label"], label)
+        self.assertTrue(self.note("s-0303").get("pending"))
+
+    def test_a_corrupt_retry_stamp_does_not_stop_the_restore(self) -> None:
+        # A stamp that is not a number reads as due:  the restore tries the title again instead of
+        # failing the chat.
+        self.start("s-0307")
+        label = self.note("s-0307")["label"]
+        note = self.note("s-0307")
+        note["pending"] = True
+        note["want"] = label + ": Fix login"
+        note["retry_at"] = "not a number"
+        self.write_note("s-0307", note)
+        self.titles["s-0307"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0307", calls)
+        self.assertEqual(done["repaired"], ["s-0307"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_a_retry_stamp_written_as_a_string_still_waits_out_its_backoff(self) -> None:
+        # A stamp that holds a time holds a time, whichever way it was written:  a retry stamp in a
+        # string still keeps the restore off the writer until the backoff is over.
+        self.start("s-0308")
+        label = self.note("s-0308")["label"]
+        note = self.note("s-0308")
+        note["pending"] = True
+        note["want"] = label + ": Fix login"
+        note["retry_at"] = "4000"
+        self.write_note("s-0308", note)
+        self.titles["s-0308"] = "Fix login"
+        before = len(self.written)
+        calls = Calls(self)
+        done = self.repair("s-0308", calls)
+        self.assertEqual(done["repaired"], [])
+        self.assertEqual(done["asked"], [])
+        self.assertEqual(len(self.written), before)
+
+    def test_a_stored_title_that_carries_the_letter_is_not_prefixed_twice(self) -> None:
+        # A stored title that already carries the letter is the chat's own words, so the letter goes back
+        # once:  "AA: Fix login" and never "AA: AA: Fix login".
+        self.start("s-0306")
+        label = self.note("s-0306")["label"]
+        note = self.note("s-0306")
+        note["title"] = label + ": Fix login"
+        self.write_note("s-0306", note)
+        self.titles["s-0306"] = "Fix login"
+        calls = Calls(self)
+        done = self.repair("s-0306", calls)
+        self.assertEqual(done["repaired"], ["s-0306"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_a_name_in_another_script_is_not_adopted(self) -> None:
+        # Every title this fleet writes is English, so a name the app put there in another script is never
+        # adopted:  the letter goes back over the chat's own English words.
+        self.start("s-0304")
+        label = self.note("s-0304")["label"]
+        note = self.note("s-0304")
+        note["title"] = "Fix login"
+        self.write_note("s-0304", note)
+        self.titles["s-0304"] = "\u4fee\u590d\u767b\u5f55"
+        calls = Calls(self)
+        done = self.repair("s-0304", calls)
+        self.assertEqual(done["repaired"], ["s-0304"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+    def test_the_placeholder_is_not_a_topic_of_its_own(self) -> None:
+        # A chat with no descriptive name yet carries the placeholder, and the letter goes over the words
+        # the chat has of its own.
+        self.start("s-0305")
+        label = self.note("s-0305")["label"]
+        note = self.note("s-0305")
+        note["title"] = "Fix login"
+        self.write_note("s-0305", note)
+        self.titles["s-0305"] = PL.PLACEHOLDER
+        calls = Calls(self)
+        done = self.repair("s-0305", calls)
+        self.assertEqual(done["repaired"], ["s-0305"])
+        self.assertEqual(self.written[-1].title, label + ": Fix login")
+
+
 class GoneReportTests(Base):
     """Chats that are gone for good (a platform's app archived them) release their letters:  a chat's start reports
     them to the assigner in one `report-gone` call per host and platform, at most once a window, and nothing it does
@@ -3044,38 +3298,48 @@ class GoneReportTests(Base):
                 seen.append(timeout)
             return real(request, timeout)
 
-        self.start("s-0001", self.t0, spec=spec)  # the chat the adapter will name
+        with mock.patch.object(registry_api, "_open", capture):
+            self.start("s-0001", self.t0, spec=spec)  # the chat the adapter will name:  the report is due now
+        # The adapter names an archived chat, so the report is made at the first start:  the quiet hour does not
+        # hold an archived chat back, and the call carries the platform's own deadline.
+        self.assertEqual(seen, [2])
         self.start("s-0003", self.t0, spec=spec)
         with mock.patch.object(registry_api, "_open", capture):
-            self.start("s-0004", self.t0 + self.window + 1, spec=spec)  # the report is due
-        self.assertEqual(seen, [2])
+            self.start("s-0004", self.t0 + self.window + 1, spec=spec)  # the report is due again
+        self.assertEqual(seen, [2])  # the chat the adapter named is retired, so there is nothing left to report
 
     def test_a_start_reports_this_hosts_gone_chats_in_one_call(self) -> None:
         with self.reports() as sent:
             for sid in ("s-0001", "s-0002", "s-0003"):
                 self.start(sid, self.t0)
-            self.assertEqual((sent, self.asked), ([], []))  # no chat here has been quiet:  nobody is asked
+            self.assertEqual(sent, [])
+            # The adapter is asked about every lettered chat of this host, not only the quiet ones:  it has named
+            # nothing yet, so nothing was reported.
+            self.assertEqual(self.asked, [frozenset({"s-0001"})])
             self.gone = {"s-0001", "s-0002"}
             out = self.start("s-0004", self.t0 + self.window + 1)
-        # One call, in the assigner's own request shape:  the platform, this host, the scope and the ids.  No title.
+        # One call, in the assigner's own request shape:  the platform, this host, the scope and the ids.  No title.
         self.assertEqual(sent, [{"platform": "faux", "verified_host": "mac", "profile_scope": "default",
                                  "native_session_ids": ["s-0001", "s-0002"]}])
-        self.assertEqual(self.asked, [frozenset({"s-0001", "s-0002", "s-0003"})])
+        # The adapter was asked about every lettered chat of this host, the chat that just started among them.
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003", "s-0004"}))
         self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003", "s-0004")],
                          ["closed", "closed", "active", "active"])
         # The chat that started is answered as ever.
         self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.note("s-0004")["label"])
-        # A chat the report named is marked, so it is not named again, and its next touch is due.
+        # A chat the report named is retired:  it holds no letter any more, and it is not named again.
         for sid in ("s-0001", "s-0002"):
             note = self.note(sid)
             self.assertEqual((note["state"], note["gone_at"], note["touched_at"]),
-                             ("open", self.t0 + self.window + 1, 0))
+                             ("closed", self.t0 + self.window + 1, 0))
+            self.assertEqual(note["label"], "")
         self.assertNotIn("gone_at", self.note("s-0003"))
         self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1})
         with self.reports() as sent:
             self.start("s-0005", self.t0 + 2 * self.window + 5)
         self.assertEqual(sent, [])  # the adapter still calls them gone, and they are not reported every window
-        self.assertEqual(self.asked[-1], frozenset({"s-0003", "s-0004"}))
+        # The retired chats are not offered again:  the adapter is asked about the lettered chats that are left.
+        self.assertEqual(self.asked[-1], frozenset({"s-0003", "s-0004", "s-0005"}))
 
     def test_a_second_start_inside_the_window_sends_nothing(self) -> None:
         self.start("s-0001", self.t0)
@@ -3083,13 +3347,15 @@ class GoneReportTests(Base):
         self.gone = {"s-0001", "s-0002"}
         with self.reports() as sent:
             self.start("s-0003", self.t0 + self.window - 5)  # the stamp of the first start still holds
-            self.assertEqual((sent, self.asked), ([], []))
-            self.start("s-0004", self.t0 + self.window + 1)  # due:  s-0001 and s-0002 have been quiet an hour
+            self.assertEqual(sent, [])  # inside the window:  nothing is sent
+            self.assertEqual(len(self.asked), 1)  # and the adapter was asked once, at the first start
+            self.start("s-0004", self.t0 + self.window + 1)  # due:  the window has passed
             self.assertEqual(len(sent), 1)
             self.gone = {"s-0003"}
+            asked = len(self.asked)
             self.start("s-0005", self.t0 + 2 * self.window)  # inside the window of that report
             self.assertEqual(len(sent), 1)
-            self.assertEqual(len(self.asked), 1)  # the adapter is not even asked
+            self.assertEqual(len(self.asked), asked)  # the adapter is not even asked
             self.start("s-0006", self.t0 + 2 * self.window + 2)
             self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"], ["s-0003"]])
 
@@ -3099,10 +3365,11 @@ class GoneReportTests(Base):
             self.start("s-0002", self.t0 + self.window + 1)
             self.start("s-0003", self.t0 + self.window + 2)
         self.assertEqual(sent, [])
-        self.assertEqual(self.asked, [frozenset({"s-0001"})])
+        # The adapter is asked about every lettered chat of this host and names none of them:  nothing is reported.
+        self.assertEqual(self.asked, [frozenset({"s-0001"}), frozenset({"s-0001", "s-0002"})])
         self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1})
 
-    def test_only_this_hosts_own_quiet_lettered_chats_of_the_platform_are_candidates(self) -> None:
+    def test_only_this_hosts_own_lettered_chats_of_the_platform_are_candidates(self) -> None:
         self.start("s-0001", self.t0)
         self.start("c-0001", self.t0, spec=make_spec())  # another platform's chat, in the same seat's notes
         self.start("s-0002", self.t0, platform="linux", location_flag="server")  # registered at another location
@@ -3115,13 +3382,19 @@ class GoneReportTests(Base):
         self.assertEqual(self.note("s-0004")["state"], "closed")
         self.start("s-0005", self.t0)
         self.prompt("s-0005", self.t0 + self.window - 600)  # its hook ran ten minutes before the hour was up
-        # The adapter names everything it is asked about, and more:  only what was asked counts.
-        self.gone = {"s-0001", "s-0002", "s-0003", "s-0004", "s-0005", "c-0001", "s-9999"}
+        # The adapter names one of the chats it was asked about, and more:  only what was asked counts.
+        self.gone = {"s-0001", "s-0002", "s-0003", "s-0004", "c-0001", "s-9999"}
         with self.reports() as sent:
             self.start("s-0009", self.t0 + self.window + 1)
-        self.assertEqual(self.asked[-1], frozenset({"s-0001"}))
+        # The adapter is asked about every lettered chat of this host and platform:  s-0003 holds no letter,
+        # s-0004 ended, s-0002 is at another location and c-0001 belongs to another platform.
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0005", "s-0009"}))
+        # Only the chats the adapter names are gone for good, and the assigner closes their rows.
         self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001"]])
-        self.assertEqual(self.row_state("s-0005"), "active")
+        self.assertEqual(self.row_state("s-0001"), "closed")
+        self.assertEqual(self.note("s-0001")["label"], "")  # and the retired chat holds no letter
+        self.assertEqual(self.row_state("s-0005"), "active")  # a candidate the adapter did not name is left alone
+        self.assertNotEqual(self.note("s-0005")["label"], "")
         self.assertEqual(self.row_state("s-0002", "server"), "active")
         self.assertEqual(self.lookup("c-0001", "mac")["state"], "active")
 
@@ -3133,7 +3406,8 @@ class GoneReportTests(Base):
         self.gone = {"s-0001", "s-0002"}
         with self.reports() as sent:
             self.start("s-0004", self.t0 + self.window + 1)
-        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003"}))
+        # The adapter is asked about every lettered chat of this host, the chat that just started among them.
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003", "s-0004"}))
         self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"]])  # longest quiet first
         self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003")],
                          ["closed", "closed", "active"])
@@ -3232,7 +3506,10 @@ class GoneReportTests(Base):
         with self.reports() as sent:
             self.start("s-0001", self.t0 + self.window + 1, source="compact")
             self.start("c-0001", self.t0 + self.window + 2, spec=make_spec())
-        self.assertEqual((sent, self.asked), ([], []))
+        self.assertEqual(sent, [])
+        # The adapter was asked about the lettered chats of this host, but a compact start reports nothing and a
+        # platform with no accessor names no gone chats at all.
+        self.assertEqual(self.asked, [frozenset({"s-0001"})])
         self.assertFalse(os.path.exists(PL.gone_stamp_path(self.env(), "CODEX", "codex", "mac")))
         self.assertIsNone(make_spec().gone_sessions)  # no platform reports gone chats unless its adapter says how
 
@@ -3332,10 +3609,13 @@ class GoneReportTests(Base):
         code, answer = self.registry("close", "--platform", "faux", "--location", "mac", "--session-id", "s-0001")
         self.assertEqual(code, 0, answer)
         self.gone = {"s-0001"}
+        label = self.note("s-0001")["label"]  # the letter the chat held, read before the report retires it
         code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 5)
         self.assertEqual(code, 0, out)
-        self.assertIn("not open Faux %s (s-0001, mac)" % self.note("s-0001")["label"], out)
+        self.assertIn("not open Faux %s (s-0001, mac)" % label, out)
         self.assertIn("1 gone, 0 closed now", out)
+        # The report retires the chat locally:  its note holds no letter any more.
+        self.assertEqual(self.note("s-0001")["label"], "")
         self.assertEqual(self.verb("--platform", "faux", at=self.t0 + self.window + 9)[1].splitlines()[0],
                          "Faux gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)")
 

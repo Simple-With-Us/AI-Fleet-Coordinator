@@ -24,6 +24,8 @@ MAX_BODY = 1024 * 1024
 # so the 1 MiB bound refused ordinary pages (BotFleet page 11 at per_page 50) as unreadable.  Fifty
 # rows of GitHub's largest objects (65,536-character bodies) stay well under this.
 MAX_PAGE_BODY = 8 * 1024 * 1024
+# Complete immutable tree proofs may exceed1MiB; never widen ordinary reads or compares.
+MAX_RECURSIVE_TREE_BODY = 2 * 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
 # open_pr's read-back runs after the create already answered, inside the same caller wait.
@@ -303,16 +305,19 @@ def _retry_after_seconds(headers) -> int | None:
 # A compare answer pages only its commits:  the whole file list, patches included, comes with every
 # page, so ``per_page`` does not bound it and it keeps the plain bound.
 _COMPARE_ROUTE = re.compile(r"/repos/[^/?]+/[^/?]+/compare/")
+_RECURSIVE_TREE_ROUTE = re.compile(r"/repos/[^/?#]+/[^/?#]+/git/trees/[0-9a-f]{40}")
 
 
 def response_limit(method: str, path: str) -> int:
-    """The response bound for one call:  MAX_PAGE_BODY for a paged GET, else MAX_BODY.
+    """2MiB for exact immutable recursive trees,8MiB paged GETs, else1MiB.
 
     Paged means ``per_page`` is a key of the query after the first ``?``.  A file name that
     contains ``per_page=`` sits in the path (``?`` is quoted there), so it never widens a read.
     """
     if method == "GET":
         route, _, query = path.partition("?")
+        if query == "recursive=1" and _RECURSIVE_TREE_ROUTE.fullmatch(route):
+            return MAX_RECURSIVE_TREE_BODY
         if not _COMPARE_ROUTE.match(route) and any(
             key == "per_page" for key, _ in parse_qsl(query, keep_blank_values=True)
         ):
@@ -322,6 +327,48 @@ def response_limit(method: str, path: str) -> int:
 
 class DispatchPreReadUnavailable(Exception):
     """Dispatch source read failed before any write was attempted."""
+
+
+MAX_RESPONSE_DEPTH = 128
+MAX_RESPONSE_NODES = 100_000
+
+
+def _reject_surrogates(node, *, max_nodes=MAX_RESPONSE_NODES):
+    """Validate decoded bodies with runtime-independent work/depth limits.
+
+    Parser recursion behavior differs across Python versions. Keep outcome status
+    unknown after an upstream write if any decoded body exceeds these bounds.
+    Iterator frames keep auxiliary memory proportional to depth, not array width.
+    """
+    stack = [(iter((node,)), 0)]
+    nodes = 0
+    while stack:
+        items, depth = stack[-1]
+        try:
+            item = next(items)
+        except StopIteration:
+            stack.pop()
+            continue
+        nodes += 1
+        if nodes > max_nodes or depth > MAX_RESPONSE_DEPTH:
+            raise RelayGitHubError(
+                0, "github response exceeded structure bound", code="response_too_large"
+            )
+        if isinstance(item, str):
+            if not item.isascii():
+                try:
+                    item.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise RelayGitHubError(
+                        0,
+                        "github response carried invalid unicode",
+                        code="response_invalid_unicode",
+                    ) from exc
+        elif isinstance(item, list):
+            stack.append((iter(item), depth + 1))
+        elif isinstance(item, dict):
+            stack.append((iter(item.keys()), depth + 1))
+            stack.append((iter(item.values()), depth + 1))
 
 
 def _redirected(exc: RelayGitHubError) -> bool:
@@ -421,7 +468,7 @@ class GitHubClient:
                 if allow_empty_object and expected_status in (201, 202):
                     try:
                         completion_body_ok = not raw or json.loads(raw) == {}
-                    except (ValueError, UnicodeError):
+                    except (ValueError, RecursionError):
                         completion_body_ok = False
                 if expected_status is not None and (
                     resp.status != expected_status or not completion_body_ok
@@ -481,9 +528,33 @@ class GitHubClient:
         if not raw:
             return {}
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
+            data = json.loads(raw)
+        except RecursionError as exc:
+            raise RelayGitHubError(
+                0, "github response exceeded structure bound", code="response_too_large"
+            ) from exc
+        except ValueError as exc:
+            # Every failure of the decode itself must be RelayGitHubError, not
+            # a raw ValueError:  Relay.handle reads ValueError as a local
+            # refusal and releases the outcome key, allowing a duplicate write
+            # after the upstream call landed.  That covers JSONDecodeError,
+            # UnicodeDecodeError, the int-conversion digit limit (a valid
+            # long numeric token) - without
+            # loosening Python's safety limits.  A 200 with a body the relay
+            # cannot read means the write may have landed:  outcome UNKNOWN.
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
+        # Immutable recursive trees already have a dedicated finite byte budget.
+        # Count keys and values within that budget without imposing the smaller
+        # generic node cap on otherwise supported tree proofs. No write or other
+        # GET route receives this allowance; depth and Unicode checks are unchanged.
+        route, _, query = path.partition("?")
+        recursive_tree = (
+            method == "GET" and query == "recursive=1" and _RECURSIVE_TREE_ROUTE.fullmatch(route)
+        )
+        _reject_surrogates(
+            data, max_nodes=MAX_RECURSIVE_TREE_BODY if recursive_tree else MAX_RESPONSE_NODES
+        )
+        return data
 
     def _read_until(self, resp, size: int, deadline) -> bytes:
         """Read up to size bytes in pieces, giving up once the clock passes the deadline.

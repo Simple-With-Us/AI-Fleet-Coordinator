@@ -446,5 +446,209 @@
   ],
   "wf_merge_guarded": [
     "/repos/{...}/pulls/{...}/merge"
+  ],
+  "wf_secrets_org_actions": [
+    "/orgs/{...}/actions/secrets?per_page={...}&page={...}"
+  ],
+  "wf_secret_key_org_actions": [
+    "/orgs/{...}/actions/secrets/public-key"
+  ],
+  "wf_secret_put_org_actions": [
+    "/orgs/{...}/actions/secrets/{...}"
+  ],
+  "wf_secret_delete_org_actions": [
+    "/repos/{...}",
+    "/orgs/{...}/actions/secrets/{...}"
+  ],
+  "wf_secret_repos_org_actions": [
+    "/orgs/{...}/actions/secrets/{...}/repositories?per_page={...}&page={...}"
+  ],
+  "wf_secret_repos_set_org_actions": [
+    "/orgs/{...}/actions/secrets/{...}/repositories"
+  ],
+  "wf_secrets_org_dependabot": [
+    "/orgs/{...}/dependabot/secrets?per_page={...}&page={...}"
+  ],
+  "wf_secret_key_org_dependabot": [
+    "/orgs/{...}/dependabot/secrets/public-key"
+  ],
+  "wf_secret_put_org_dependabot": [
+    "/orgs/{...}/dependabot/secrets/{...}"
+  ],
+  "wf_secret_delete_org_dependabot": [
+    "/repos/{...}",
+    "/orgs/{...}/dependabot/secrets/{...}"
+  ],
+  "wf_secret_repos_org_dependabot": [
+    "/orgs/{...}/dependabot/secrets/{...}/repositories?per_page={...}&page={...}"
+  ],
+  "wf_secret_repos_set_org_dependabot": [
+    "/orgs/{...}/dependabot/secrets/{...}/repositories"
+  ],
+  "wf_secrets_org_codespaces": [
+    "/orgs/{...}/codespaces/secrets?per_page={...}&page={...}"
+  ],
+  "wf_secret_key_org_codespaces": [
+    "/orgs/{...}/codespaces/secrets/public-key"
+  ],
+  "wf_secret_put_org_codespaces": [
+    "/orgs/{...}/codespaces/secrets/{...}"
+  ],
+  "wf_secret_delete_org_codespaces": [
+    "/repos/{...}",
+    "/orgs/{...}/codespaces/secrets/{...}"
+  ],
+  "wf_secret_repos_org_codespaces": [
+    "/orgs/{...}/codespaces/secrets/{...}/repositories?per_page={...}&page={...}"
+  ],
+  "wf_secret_repos_set_org_codespaces": [
+    "/orgs/{...}/codespaces/secrets/{...}/repositories"
+  ],
+  "wf_secrets_repo_actions": [
+    "/repos/{...}/actions/secrets?per_page={...}&page={...}"
+  ],
+  "wf_secret_key_repo_actions": [
+    "/repos/{...}/actions/secrets/public-key"
+  ],
+  "wf_secret_put_repo_actions": [
+    "/repos/{...}/actions/secrets/{...}"
+  ],
+  "wf_secret_delete_repo_actions": [
+    "/repos/{...}",
+    "/repos/{...}/actions/secrets/{...}"
+  ],
+  "wf_secrets_repo_dependabot": [
+    "/repos/{...}/dependabot/secrets?per_page={...}&page={...}"
+  ],
+  "wf_secret_key_repo_dependabot": [
+    "/repos/{...}/dependabot/secrets/public-key"
+  ],
+  "wf_secret_put_repo_dependabot": [
+    "/repos/{...}/dependabot/secrets/{...}"
+  ],
+  "wf_secret_delete_repo_dependabot": [
+    "/repos/{...}",
+    "/repos/{...}/dependabot/secrets/{...}"
+  ],
+  "wf_secrets_repo_codespaces": [
+    "/repos/{...}/codespaces/secrets?per_page={...}&page={...}"
+  ],
+  "wf_secret_key_repo_codespaces": [
+    "/repos/{...}/codespaces/secrets/public-key"
+  ],
+  "wf_secret_put_repo_codespaces": [
+    "/repos/{...}/codespaces/secrets/{...}"
+  ],
+  "wf_secret_delete_repo_codespaces": [
+    "/repos/{...}",
+    "/repos/{...}/codespaces/secrets/{...}"
+  ],
+  "wf_secrets_env_actions": [
+    "/repositories/{...}/environments/{...}/secrets?per_page={...}&page={...}"
+  ],
+  "wf_secret_key_env_actions": [
+    "/repos/{...}",
+    "/repositories/{...}/environments/{...}/secrets/public-key"
+  ],
+  "wf_secret_put_env_actions": [
+    "/repos/{...}",
+    "/repositories/{...}/environments/{...}/secrets/{...}"
+  ],
+  "wf_secret_delete_env_actions": [
+    "/repos/{...}",
+    "/repositories/{...}/environments/{...}/secrets/{...}"
+  ],
+  "wf_org_variables": [
+    "/orgs/{...}/actions/variables?per_page={...}&page={...}"
+  ],
+  "wf_org_variable_set": [
+    "/orgs/{...}/actions/variables/{...}",
+    "/orgs/{...}/actions/variables"
+  ],
+  "wf_org_variable_delete": [
+    "/repos/{...}",
+    "/orgs/{...}/actions/variables/{...}"
+  ],
+  "wf_org_variable_repos": [
+    "/orgs/{...}/actions/variables/{...}/repositories?per_page={...}&page={...}"
+  ],
+  "wf_org_variable_repos_set": [
+    "/orgs/{...}/actions/variables/{...}/repositories"
+  ],
+  "wf_hook_get": [
+    "/repos/{...}/hooks/{...}"
+  ],
+  "wf_hook_create": [
+    "/repos/{...}/hooks"
+  ],
+  "wf_hook_update": [
+    "/repos/{...}/hooks/{...}"
+  ],
+  "wf_hook_delete": [
+    "/repos/{...}/hooks/{...}"
+  ],
+  "wf_hook_ping": [
+    "/repos/{...}/hooks/{...}/pings"
+  ],
+  "wf_hook_test": [
+    "/repos/{...}/hooks/{...}/tests"
+  ],
+  "wf_hook_deliveries": [
+    "/repos/{...}/hooks/{...}/deliveries?per_page={...}"
+  ],
+  "wf_hook_redeliver": [
+    "/repos/{...}/hooks/{...}/deliveries/{...}/attempts"
+  ],
+  "wf_org_hooks": [
+    "/orgs/{...}/hooks?per_page={...}&page={...}"
+  ],
+  "wf_org_hook_get": [
+    "/orgs/{...}/hooks/{...}"
+  ],
+  "wf_org_hook_create": [
+    "/orgs/{...}/hooks"
+  ],
+  "wf_org_hook_update": [
+    "/orgs/{...}/hooks/{...}"
+  ],
+  "wf_org_hook_delete": [
+    "/orgs/{...}/hooks/{...}"
+  ],
+  "wf_org_hook_ping": [
+    "/orgs/{...}/hooks/{...}/pings"
+  ],
+  "wf_deploy_key_get": [
+    "/repos/{...}/keys/{...}"
+  ],
+  "wf_deploy_key_add": [
+    "/repos/{...}/keys"
+  ],
+  "wf_deploy_key_delete": [
+    "/repos/{...}/keys/{...}"
+  ],
+  "wf_environment_put": [
+    "/repos/{...}/environments/{...}"
+  ],
+  "wf_environment_delete": [
+    "/repos/{...}/environments/{...}"
+  ],
+  "wf_env_branch_policies": [
+    "/repos/{...}/environments/{...}/deployment-branch-policies?per_page={...}&page={...}"
+  ],
+  "wf_env_branch_policy_create": [
+    "/repos/{...}/environments/{...}/deployment-branch-policies"
+  ],
+  "wf_env_branch_policy_delete": [
+    "/repos/{...}/environments/{...}/deployment-branch-policies/{...}"
+  ],
+  "wf_env_variables": [
+    "/repos/{...}/environments/{...}/variables?per_page={...}&page={...}"
+  ],
+  "wf_env_variable_set": [
+    "/repos/{...}/environments/{...}/variables/{...}",
+    "/repos/{...}/environments/{...}/variables"
+  ],
+  "wf_env_variable_delete": [
+    "/repos/{...}/environments/{...}/variables/{...}"
   ]
 }

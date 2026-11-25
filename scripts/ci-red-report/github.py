@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.error
@@ -51,6 +52,26 @@ class GitHubClient:
             query = "?" + urllib.parse.urlencode(params)
         url = API_ROOT + path + query
         return self._request_json("GET", url)
+
+    def get_text_file(self, repo_path: str, file_path: str, *, ref: str) -> str:
+        """GET one file's decoded UTF-8 text from the contents API at a ref.
+
+        repo_path is the /repos/{owner}/{repo} prefix; file_path is relative
+        to the repository root without a leading slash.  Each path segment is
+        percent-encoded separately (slashes stay separators), so workflow
+        paths with spaces or reserved characters fetch the right resource.
+        """
+        params: dict[str, str] | None = {"ref": ref} if ref else None
+        encoded = "/".join(urllib.parse.quote(part, safe="") for part in file_path.split("/"))
+        data = self.get_json(f"{repo_path}/contents/{encoded}", params=params)
+        if not isinstance(data, dict) or data.get("encoding") != "base64":
+            raise GitHubError("contents response does not carry base64 file content")
+        try:
+            return base64.b64decode(data.get("content") or b"", validate=False).decode(
+                "utf-8", errors="replace"
+            )
+        except (ValueError, TypeError) as exc:
+            raise GitHubError("contents response could not be decoded") from exc
 
     def paginate(
         self,

@@ -310,7 +310,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "da3cae7d8afaac0e")
+        self.assertEqual(seat_policy.digest(SEATS), "563e840d323f25fa")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -513,15 +513,15 @@ class _OkMinter:
 
 class _MissingApp:
     def token_for(self, slug, repo, perms):
-        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_ID")
+        raise AppTokenError("there is no value for GH_APP_SWU_ZC_ID")
 
     def installation_metadata(self, slug, repo):
-        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_PRIVATE_KEY")
+        raise AppTokenError("there is no value for GH_APP_SWU_ZC_PRIVATE_KEY")
 
 
 class _TimeoutApp:
     def token_for(self, slug, repo, perms):
-        raise AppTokenError("fleet-secrets lookup timed out for GH_APP_SWU_ZC_ID")
+        raise AppTokenError("the store lookup failed for GH_APP_SWU_ZC_ID")
 
 
 class _SuspendedApp:

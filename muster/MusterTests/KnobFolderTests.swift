@@ -66,24 +66,6 @@ final class KnobFolderTests: XCTestCase {
 
     // MARK: Reading each folder's copy
 
-    func test_declared_catalog_needs_no_live_read_or_configuration_receipt() throws {
-        let (root, home) = try makeRepo()
-        var registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
-        let expected = [
-            KnobRegistry.DeclaredNameGroup(path: "/", names: ["FLEET_AUTOPUSH_MODE"]),
-            KnobRegistry.DeclaredNameGroup(path: "/wake-router", names: ["WAKE_ROUTER_WORKERS"]),
-        ]
-        XCTAssertNil(registry.live)
-        XCTAssertFalse(registry.copyIsReadable)
-        XCTAssertEqual(registry.declaredNonsecretNames, expected)
-        XCTAssertTrue(try knob(registry, "WAKE_ROUTER_CLAUDE_KEY").isSecret)
-        XCTAssertFalse(registry.declaredNonsecretNames.flatMap(\.names).contains("WAKE_ROUTER_CLAUDE_KEY"))
-        // A current reading changes the table, never the declared catalog or its meaning.
-        registry.knobs[0].current = .current("report")
-        XCTAssertEqual(registry.declaredNonsecretNames, expected)
-        XCTAssertEqual(registry.rows.first?.now, "report")
-    }
-
     /// A `/wake-router` knob is read from `lkg-wake-router.json`,  never from the root copy.
     func test_a_wake_router_knob_is_read_from_its_own_copy() throws {
         let (root, home) = try makeRepo()
@@ -253,10 +235,10 @@ final class KnobFolderTests: XCTestCase {
         XCTAssertEqual(KnobReader.folder(fromNote: "in folder without an end"), "/")
     }
 
-    // MARK: Declared catalog folders
+    // MARK: The folder list the Secret Names panel reads
 
-    /// The registry orders declared folders with the root first and the rest once each.
-    /// These labels do not request a provider listing.
+    /// The panel reads every folder the registry names:  the root first,  always,  then the
+    /// rest once each and in order.  A folder the engine would refuse is never asked for.
     func test_the_folders_are_the_root_first_then_the_rest_in_order() throws {
         let (root, home) = try makeRepo()
         XCTAssertEqual(KnobReader.read(repoRoot: root, home: home, identity: identity).folders,
@@ -306,20 +288,25 @@ final class KnobFolderTests: XCTestCase {
         XCTAssertEqual(fallback.knobs.map(\.folder), registry.knobs.map(\.folder))
     }
 
-    /// Declared knob folders never expand Muster's Fleet-OPS root reader grant.
-    func test_knob_folder_names_cannot_be_read_from_the_provider() throws {
-        XCTAssertEqual(try FleetSecrets.namesArguments(path: "/", project: nil),
-                       ["names", "--folder", "/", "--project", "fleet-ops"])
-        XCTAssertThrowsError(try FleetSecrets.namesArguments(path: "/wake-router", project: "ai-fleet-coordinator"))
+    /// The knob folders' names are read from the knobs' own project,  through `names`.
+    func test_knob_folder_names_are_read_from_the_knobs_project() throws {
+        XCTAssertEqual(try FleetSecrets.namesArguments(path: "/", project: nil), ["names", "--folder", "/"])
+        XCTAssertEqual(
+            try FleetSecrets.namesArguments(path: "/wake-router", project: FleetSecrets.knobProject),
+            ["names", "--folder", "/wake-router", "--project", "ai-fleet-coordinator"]
+        )
         XCTAssertThrowsError(try FleetSecrets.namesArguments(path: "/wake-router", project: "--other"))
         XCTAssertThrowsError(try FleetSecrets.namesArguments(path: "wake-router", project: nil))
 
         let fake = FolderNamesCommands()
-        let secrets = FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example", isDirectory: true),
-                                   engineRoot: URL(fileURLWithPath: "/test/engine"))
-        XCTAssertThrowsError(try secrets.secretNamesGrouped(paths: ["/", "/wake-router"]))
-        XCTAssertThrowsError(try secrets.secretNamesGrouped(project: "ai-fleet-coordinator"))
-        XCTAssertTrue(fake.calls.isEmpty, "all selectors must be refused before starting a read")
+        fake.reply = "WAKE_ROUTER_CLAUDE_KEY\n"
+        let secrets = FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example", isDirectory: true))
+        let groups = try secrets.secretNamesGrouped(paths: ["/wake-router"], project: FleetSecrets.knobProject)
+        XCTAssertEqual(groups, [SecretNameGroup(path: "/wake-router", names: ["WAKE_ROUTER_CLAUDE_KEY"])])
+        XCTAssertEqual(fake.calls.map(\.1), [["-I", "/Users/example/apps/infisical-scoped/infisical-scoped.py",
+            "names", "--folder", "/wake-router", "--project", "ai-fleet-coordinator",
+            "--consumer-binding", "/Users/example/.config/infisical/muster/muster-afc-wake-router-ro.json",
+            "--consumer", "muster-data-reader", "--consumer-account", "muster-afc-wake-router-ro"]])
     }
 }
 

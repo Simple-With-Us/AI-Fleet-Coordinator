@@ -1,3 +1,5 @@
+import { resolveNativeOriginClaims } from "./native-origin-context.js";
+import { nativeOriginResolverFromSecrets } from "./native-origin-client.js";
 import { withServiceTitle } from "./tool-titles.js";
 import { isSingleThread } from "./session-ids.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
@@ -87,7 +89,7 @@ import {
   GR_UNAVAILABLE_REASON,
   grNotConfiguredMessage,
 } from "./gr-tools.js";
-import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
+import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, isScanCategory, movedRepository, refusalReasonText, repositoryMovedText, scanCategoryFromError } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
@@ -552,7 +554,7 @@ export class HostedTools {
   // ---------------------------------------------------------------- entry
 
   /** Run one tool.  Returns a CallToolResult.  Throws UnknownTool. */
-  async call(name, rawArgs) {
+  async call(name, rawArgs, invocation = null) {
     const spec = Object.hasOwn(HOSTED_TOOLS_BY_NAME, name) ? HOSTED_TOOLS_BY_NAME[name] : null;
     if (!spec) {
       await this.safely(() => this.auditRow(this.gate, {
@@ -627,7 +629,7 @@ export class HostedTools {
         ? callLinearMcp(this, publicName, preparedArgs, audit)
         : Object.hasOwn(LINEAR_NAMED_BY_NAME, publicName)
           ? callNamedLinear(this, publicName, preparedArgs, audit)
-          : this[`tool_${legacyZulipName}`](preparedArgs, audit), gapNotices);
+          : this[`tool_${legacyZulipName}`](preparedArgs, audit, invocation), gapNotices);
       // AFC-722 review:  a gap the server could not write is reported, never dropped silently.
       if (gapNotices.length && Array.isArray(result?.content)) {
         result = { ...result, content: [...result.content, ...gapNotices.map((text) => ({ type: "text", text }))] };
@@ -1652,6 +1654,9 @@ export class HostedTools {
         // A reason is trusted only from the closed vocabulary (gr-refusal.js);
         // callWorkflow is the only producer on the workflow path.
         reason: z.enum(REFUSAL_REASONS).optional(),
+        // Same rule for the scan category:  read as a bounded string here,
+        // trusted only when isScanCategory accepts it below.
+        scan_category: z.string().max(60).optional(),
         github_status: z.unknown().optional(),
       }).safeParse(body);
       if (!refusalShape.success) throw new ToolError("relay_refused", "refused");
@@ -1672,7 +1677,21 @@ export class HostedTools {
         || (typeof refusalError === "string"
           && /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
       if (credentialRefusal) {
-        throw new ToolError("refused_secret", "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
+        // The matched scan category rides along when the relay named one:
+        // callWorkflow already validated it into the body on the workflow
+        // path, and the seven-action path carries it in the vouched anchored
+        // shape.  A closed-vocabulary member only, never relay prose - and
+        // no category at all when the relay named none, exactly as before.
+        const scanCategory = isScanCategory(refusalShape.data.scan_category)
+          ? refusalShape.data.scan_category
+          : scanCategoryFromError(refusalError);
+        throw new ToolError(
+          "refused_secret",
+          scanCategory
+            ? `git-relay refused the write:  the content looks like it contains a credential (${scanCategory}).  Remove or reword the credential-shaped content and send it again.  Nothing was written.`
+            : "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.",
+          scanCategory ? { extra: { scan_category: scanCategory } } : {},
+        );
       }
       // Every other refusal keeps relay_refused but names its cause class when
       // the relay's exact fixed string (or its numeric github_status) maps to
@@ -1715,7 +1734,19 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_open_pr(args, _extra, invocation) {
+    // Missing context retains explicit-claim compatibility, not verified per-call custody.
+    // Claims still require the protected creation receipt and independent canonical binder.
+    if (this.seat === "ZC" || (this.seat === "CODEX" && invocation && invocation.state !== "missing")) {
+      const origin = await resolveNativeOriginClaims(this.seat, invocation, nativeOriginResolverFromSecrets(this.workerEnv));
+      if (origin.state !== "resolved") throw new ToolError("origin_held", "Native PR origin could not be verified. Nothing was created.");
+      if (Object.entries(origin.claims).some(([name, value]) => Object.hasOwn(args, name) && args[name] !== value)) {
+        throw new ToolError("origin_held", "Native PR origin conflicts with the current thread. Nothing was created.");
+      }
+      args = { ...args, ...origin.claims };
+    }
+    return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) }));
+  }
   async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }

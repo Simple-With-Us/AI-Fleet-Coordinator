@@ -141,6 +141,11 @@ export function makeRegistryBridge({ container, db, exec = run, timeoutMs = REGI
         await call(args);
       },
     },
+    housekeeping: {
+      // Exported rows and their audit attempts age out (AFC-822);  the verb deletes past the
+      // window and vacuums in the same call when it deleted anything.
+      trim: () => call(["trim-export-rows", "--db", db]),
+    },
   };
 }
 
@@ -501,6 +506,9 @@ export async function drainOnce({
     db: env.OPERATOR_REGISTRY_DB || "/data/operator/registry.sqlite3",
   });
   const limit = Number(env.OPERATOR_SHEETS_PAGE_LIMIT || 1000);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000) {
+    throw new Error("OPERATOR_SHEETS_PAGE_LIMIT must be an integer between 1 and 10000");
+  }
   const profile = workbookProfileFromEnv(env);
   // One paced adapter for the whole run, so the write spacing holds across passes.  The
   // token provider is named first so the property line is not credential-shaped to the
@@ -555,6 +563,20 @@ export async function drainOnce({
   if (stopReason !== null) {
     log(`stopping early (${stopReason}): remaining rows stay pending for the next run`);
     totals.stopped = stopReason;
+  }
+  // Exported rows and their audit attempts age out (AFC-822):  one trim after the passes,
+  // whatever the passes did.  It never fails the run -- a refused trim leaves the rows for
+  // the next pass, and one fixed line says so;  a bridge without the verb (an older fake)
+  // skips it silently.
+  if (typeof registry.housekeeping?.trim === "function") {
+    try {
+      const trimmed = await registry.housekeeping.trim();
+      if (trimmed && (trimmed.attempts > 0 || trimmed.outbox > 0)) {
+        log(JSON.stringify({ trimmed }));
+      }
+    } catch (err) {
+      log(`export trim failed (left for the next run): ${err?.message ?? err}`);
+    }
   }
   return totals;
 }

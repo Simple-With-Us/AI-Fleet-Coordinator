@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  API_BASE, ASC_NAMES, AscCredentialError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, LEGACY_ASC_ENV,
+  API_BASE, ASC_NAMES, AscCredentialError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE,
   PROJECT_ENV, SECRET_PATH, TOKEN_ENV, TOKEN_FILE_ENV, resolveFreshnessAscCredentials,
 } from "./asc_scoped_creds.mjs";
 import { EXIT_FAILED, main, makeDeps, parseArgs } from "./ios_testflight_freshness.mjs";
@@ -207,28 +207,53 @@ test("a token whose scope is not exactly prod:/asc read is refused before any se
   }
 });
 
-test("legacy flag and env refuse before credential I/O or any child spawn", async () => {
+test("the legacy folder and unscoped route stay unused:  there is no opt-in", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "asc-legacy-opt-"));
-  try {
-    fs.writeFileSync(path.join(dir, "testflight_asc_service.mjs"), "// fixture\n");
-    const base = { HOME: dir, PATH: "/usr/bin:/bin", IOS_FLEET_DIR: dir };
-    for (const [env, options] of [
-      [{ ...base, [LEGACY_ASC_ENV]: "1" }, {}], [base, { allowLegacyAsc: true }],
-    ]) {
-      let io = 0;
-      const deps = makeDeps(env, { ...options,
-        fetchImpl() { io++; throw new Error("network"); },
-        execFileImpl() { io++; throw new Error("keychain"); },
-        readFileImpl() { io++; throw new Error("file"); },
-        runCmd() { io++; throw new Error("spawn"); },
-      });
-      await assert.rejects(deps.prepareAsc(), /legacy ASC credentials unsupported/);
-      await assert.rejects(deps.asc("/v1/apps"), /legacy ASC credentials unsupported/);
-      assert.equal(io, 0);
-    }
-    assert.equal(parseArgs(["--allow-legacy-asc-creds"]).allowLegacyAsc, true);
-    assert.equal(parseArgs([]).allowLegacyAsc, false);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  fs.writeFileSync(path.join(dir, "asc-api.mjs"), "// fixture\n");
+  const base = { HOME: dir, PATH: "/usr/bin:/bin", IOS_FLEET_DIR: dir };
+  const spawned = [];
+  let fetched = false;
+  const deps = makeDeps(base, {
+    fetchImpl() {
+      fetched = true;
+      throw new Error("scoped fetch");
+    },
+    execFileImpl() {
+      throw new Error("keychain");
+    },
+    runCmd(_cmd, args, opts) {
+      spawned.push({ args, env: opts.env });
+      return Promise.resolve('{"data":[]}\n');
+    },
+  });
+  await assert.rejects(() => deps.asc("/v1/apps"), /does not fall back|keychain/);
+  assert.equal(fetched, false);
+  assert.equal(spawned.length, 0, "the legacy helper never runs");
+  // The opt-in is gone:  the scoped token is the only credential source.
+  assert.throws(() => parseArgs(["--allow-legacy-asc-creds"]), /unknown argument/);
+  assert.equal("allowLegacyAsc" in parseArgs([]), false);
+  // The retired environment opt-in cannot bring it back:  it fails before any
+  // credential read and before any child process is spawned.
+  const legacyEnv = { ...base, IOS_TF_ALLOW_LEGACY_ASC_CREDS: "1" };
+  let legacyFetched = false;
+  const legacySpawned = [];
+  const legacyDeps = makeDeps(legacyEnv, {
+    fetchImpl() {
+      legacyFetched = true;
+      throw new Error("scoped fetch");
+    },
+    execFileImpl() {
+      throw new Error("keychain");
+    },
+    runCmd(_cmd, args, opts) {
+      legacySpawned.push({ args, env: opts.env });
+      return Promise.resolve('{"data":[]}\n');
+    },
+  });
+  await assert.rejects(() => legacyDeps.asc("/v1/apps"), /does not fall back|keychain/);
+  assert.equal(legacyFetched, false);
+  assert.equal(legacySpawned.length, 0, "the legacy helper never runs");
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test("a group-readable token file is refused and its contents are not sent", async () => {

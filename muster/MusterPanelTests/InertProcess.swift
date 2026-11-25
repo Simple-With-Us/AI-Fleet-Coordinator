@@ -9,8 +9,8 @@ import Foundation
 /// the API the app uses.  `run()` never starts anything:  it records the executable and throws,
 /// so every reader takes its own launch-failure path and its panel shows that state.
 ///
-/// That covers each live reader a panel starts from `.task`: shared Infisical `names` and
-/// `doctor` (Secrets), the recall read that comes before the recall request (Recall
+/// That covers each live reader a panel starts from `.task`:  `infisical-scoped.py names` and
+/// `doctor` (Secrets), the recall token read that comes before the recall request (Recall
 /// Settings), `ssh` for `eavesdropper-status --plan` (`ServerEavesdropperStatusReader`), the
 /// Seats panel's sources (`SeatActivityReader`), the listener, engine, identity, config and
 /// Fleet View readers, and `StartupPolicy`'s commands.
@@ -23,21 +23,10 @@ final class Process: @unchecked Sendable {
     }
 
     private static let lock = NSLock()
-    struct Attempt {
-        let executable: String
-        let arguments: [String]
-        let environment: [String: String]
-    }
-
-    nonisolated(unsafe) private static var attempts: [Attempt] = []
+    nonisolated(unsafe) private static var attempts: [String] = []
 
     /// Every executable a panel tried to start since the last call, in order.
     static func takeAttempts() -> [String] {
-        takeInvocations().map(\.executable)
-    }
-
-    /// Captures the actual process-boundary inputs without allowing a child to start.
-    static func takeInvocations() -> [Attempt] {
         lock.lock(); defer { lock.unlock() }
         let taken = attempts
         attempts = []
@@ -61,7 +50,7 @@ final class Process: @unchecked Sendable {
     func run() throws {
         let executable = executableURL?.path ?? "(none)"
         Self.lock.lock()
-        Self.attempts.append(Attempt(executable: executable, arguments: arguments ?? [], environment: environment ?? [:]))
+        Self.attempts.append(executable)
         Self.lock.unlock()
         throw Blocked(executable: executable)
     }

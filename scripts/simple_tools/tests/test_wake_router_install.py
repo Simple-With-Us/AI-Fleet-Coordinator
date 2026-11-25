@@ -727,6 +727,16 @@ class CanaryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('"other_seat_rows": 3', result.stdout)
 
+    def test_health_may_carry_the_mac_route(self) -> None:
+        # AFC-836:  a token beside the answer, which the canary passes through and needs nothing for.
+        health = {"seat": SEAT, "healthy": True, "delivery": True, "mac_route": "no-ssh-destination"}
+        answer = receipt("w-1", status="test", test=True, delivered=False)
+        router = FakeRouter(self, {"/health/" + SEAT: [(200, health)],
+                                   "/wake/" + SEAT: [(200, answer)]})
+        result = self.run_canary(router, "--test")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('"mac_route": "no-ssh-destination"', result.stdout)
+
     def test_session_prefix_must_match(self) -> None:
         accept = (202, {"wake_id": "w-1", "receipt_id": "r1", "status": "accepted"})
         for prefix, code in (("0123abcd", 0), ("ffffffff", 6)):

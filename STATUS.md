@@ -16,7 +16,7 @@ One check-then-apply command, `scripts/fleet-agent-config`, compares skills, Lan
 
 ## 2026-11-02 MC — Muster live-pass fixes (AFC-592)
 
-Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
+Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  (That reader was retired on Nov 17, 2026:  the CLI and its installer are gone, and the route is now a scoped Infisical service token.)  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
 
 ## 2026-11-01 MC — Muster Fleet Overhaul Sweep
 
@@ -85,7 +85,7 @@ file now describe Zulip (`https://simplewithus.zulipchat.com`) instead of Slack:
 `simple-chat` CLI (`~/.local/bin/simple-chat`), the `[SEAT·session8]` tag, and posting by
 channel plus topic.  The retired Slack path — `slack-sync.sh`, `consumer.mjs`, the
 `slack-collab` MCP, and the Slack tokens they read — is no longer instructed anywhere in
-those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Chat: The Zulip Contract and
+those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Posting and
 `docs/protocols/zulip-fleet-guide.md`.  Entries below are dated history and describe Slack
 as it was at the time; they are not rewritten.
 

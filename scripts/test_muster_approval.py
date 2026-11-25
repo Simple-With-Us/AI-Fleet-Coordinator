@@ -6002,7 +6002,7 @@ class PlannerBytesTests(Checks):
                 "redeploy",
                 REDEPLOY_UUID,
                 UID,
-                [["coolify", "GET", f"/api/v1/deploy?uuid={REDEPLOY_UUID}"]],
+                [["coolify", "POST", f"/api/v1/deploy?uuid={REDEPLOY_UUID}"]],
                 "My App",
             ),
         )
@@ -6075,9 +6075,9 @@ class PlannerBytesTests(Checks):
             ),
             "redeploy": (
                 b'{"action":"redeploy","auditTarget":"My App","commands":'
-                b'[["coolify","GET","/api/v1/deploy?uuid=abc123def456"]],'
+                b'[["coolify","POST","/api/v1/deploy?uuid=abc123def456"]],'
                 b'"contract":"fleet-ops-plan/1","scope":"server","target":"abc123def456"}',
-                "ce5e692a2960a5a0842d1f90795abcca59de05c54e4982fe1a35ab8b92cb1260",
+                "3d81053f2269dab72ab41d9813c183400c2088c037453a40d00799e2ab60ba0e",
             ),
         }
         for name, verb, target, uid, commands, audit_target in self.cases():
@@ -7157,22 +7157,33 @@ class UnknownOutcomeTests(Checks):
                 env, f"server redeploy {REDEPLOY_UUID} --yes", stdin_of(document), NOW, ctx=ctx
             )
 
-    def test_a_get_that_may_have_been_sent_and_got_no_answer_is_unknown(self):
-        answer, code, _, rows = self.run_redeploy(lambda url, headers: foc.NoAnswer(0))
+    def test_a_post_that_may_have_been_sent_and_got_no_answer_is_unknown(self):
+        answer, code, _, rows = self.run_redeploy(
+            lambda url, headers, method="GET": (foc.NoAnswer(0), "")
+        )
         self.assertEqual((code, answer["kind"]), (1, "result"), answer)
         self.assertEqual(answer["body"]["outcome"], "unknown")
         self.assertEqual([row["result"] for row in rows], ["unknown"])
         self.assertEqual(answer["body"]["auditId"], rows[0]["id"])
 
-    def test_a_get_that_never_left_or_that_was_answered_badly_is_failed(self):
-        for name, status in (("never sent", 0), ("answered 500", 500), ("answered 404", 404)):
+    def test_a_post_that_never_left_or_that_was_refused_is_failed(self):
+        for name, status in (("never sent", 0), ("answered 404", 404)):
             with self.subTest(case=name):
-                answer, code, _, rows = self.run_redeploy(lambda url, headers, s=status: s)
+                answer, code, _, rows = self.run_redeploy(
+                    lambda url, headers, s=status, method="GET": (s, "")
+                )
                 self.assertEqual((code, answer["body"]["outcome"]), (1, "failed"))
                 self.assertEqual([row["result"] for row in rows], ["failed"])
 
-    def test_a_get_that_was_accepted_is_submitted(self):
-        answer, code, _, rows = self.run_redeploy(lambda url, headers: 202)
+    def test_a_post_answered_with_a_server_error_is_unknown(self):
+        # The redeploy is a POST, so a 5xx can follow a deploy that was already applied:
+        # the action had begun or may have, so the outcome is `unknown`, never `failed`.
+        answer, code, _, rows = self.run_redeploy(lambda url, headers, method="GET": (500, ""))
+        self.assertEqual((code, answer["body"]["outcome"]), (1, "unknown"))
+        self.assertEqual([row["result"] for row in rows], ["unknown"])
+
+    def test_a_post_that_was_accepted_is_submitted(self):
+        answer, code, _, rows = self.run_redeploy(lambda url, headers, method="GET": (202, ""))
         self.assertEqual((code, answer["body"]["outcome"]), (0, "submitted"))
         self.assertEqual([row["result"] for row in rows], ["submitted"])
 
@@ -7213,11 +7224,11 @@ class UnknownOutcomeTests(Checks):
         probe.bind(("127.0.0.1", 0))
         refused_port = probe.getsockname()[1]
         probe.close()
-        status = foc.http_get(f"http://127.0.0.1:{refused_port}/x", {}, timeout=2)
+        status, _body = foc.http_get(f"http://127.0.0.1:{refused_port}/x", {}, timeout=2)
         self.assertEqual(status, 0)
         self.assertFalse(getattr(status, "sent", False))
         # A URL that cannot be a request was never sent either.
-        status = foc.http_get("not a url", {}, timeout=1)
+        status, _body = foc.http_get("not a url", {}, timeout=1)
         self.assertEqual(status, 0)
         self.assertFalse(getattr(status, "sent", False))
 
@@ -7226,7 +7237,7 @@ class UnknownOutcomeTests(Checks):
             connection.recv(4096)
             time.sleep(1.5)
 
-        status = foc.http_get(f"http://127.0.0.1:{self.serve(silent)}/x", {}, timeout=0.4)
+        status, _body = foc.http_get(f"http://127.0.0.1:{self.serve(silent)}/x", {}, timeout=0.4)
         self.assertEqual(status, 0)
         self.assertTrue(getattr(status, "sent", False))
 
@@ -7235,7 +7246,7 @@ class UnknownOutcomeTests(Checks):
             connection.recv(4096)
             connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
 
-        status = foc.http_get(f"http://127.0.0.1:{self.serve(reset)}/x", {}, timeout=2)
+        status, _body = foc.http_get(f"http://127.0.0.1:{self.serve(reset)}/x", {}, timeout=2)
         self.assertEqual(status, 0)
         self.assertTrue(getattr(status, "sent", False))
 
@@ -7243,7 +7254,7 @@ class UnknownOutcomeTests(Checks):
         def hang_up(connection):
             connection.recv(4096)
 
-        status = foc.http_get(f"http://127.0.0.1:{self.serve(hang_up)}/x", {}, timeout=2)
+        status, _body = foc.http_get(f"http://127.0.0.1:{self.serve(hang_up)}/x", {}, timeout=2)
         self.assertEqual(status, 0)
         self.assertTrue(getattr(status, "sent", False))
 
@@ -7255,7 +7266,7 @@ class UnknownOutcomeTests(Checks):
                 connection.recv(4096)
                 connection.sendall(answer)
 
-            status = foc.http_get(f"http://127.0.0.1:{self.serve(respond)}/x", {}, timeout=2)
+            status, _body = foc.http_get(f"http://127.0.0.1:{self.serve(respond)}/x", {}, timeout=2)
             self.assertEqual(status, expected)
             self.assertFalse(getattr(status, "sent", False))
 
@@ -7536,7 +7547,7 @@ class EnvironmentOrderTests(Checks):
         self.assertIn("OPENSSL_CONF", text)
         self.assertIn("env -i", text)
         self.assertIn("SSH_ORIGINAL_COMMAND", text)
-        fetch = inspect.getdoc(foc.http_get)
+        fetch = inspect.getdoc(foc.http_request)
         self.assertIn("hashlib", fetch)
         self.assertNotIn("because it loads `ssl`, and OpenSSL reads", fetch)
         module = inspect.getdoc(ma)
@@ -8825,7 +8836,7 @@ class FixtureGeneratedEntryTests(Checks):
         self.assertEqual(plan["auditTarget"], "Caf? App")
         self.assertEqual(plan["auditTarget"], foc.printable_ascii("Café App"))
         self.assertEqual(
-            plan["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={make.APPLICATION}"]]
+            plan["commands"], [["coolify", "POST", f"/api/v1/deploy?uuid={make.APPLICATION}"]]
         )
         report = self.entries()["redeployPlanNonAscii"]["setup"]["report"]
         self.assertEqual(report[0]["name"], "Café App", "the row keeps the real name")
