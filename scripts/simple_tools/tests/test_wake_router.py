@@ -3353,6 +3353,29 @@ class Http(Base):
             ("gated", CW.GATE_REFUSED),
         )
 
+    def test_a_fresh_route_check_answer_is_served_without_a_second_ssh(self) -> None:
+        # Within the debounce the kept answer serves, so a slow Mac is not
+        # re-probed per caller;  past it the next check probes again.
+        calls = []
+        probe = SimpleNamespace(
+            returncode=CW.GATE_REFUSED, stdout="", stderr="x " + CW.GATE_REFUSED_LINE
+        )
+
+        def runner(*argv, **kwargs):
+            calls.append(argv)
+            return probe
+
+        router = self.router(route_runner=runner)
+        router.config["mac_ssh"] = "owner-mac-tailnet-alias"
+        now = [1770000000.0]
+        router.clock = lambda: now[0]
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(len(calls), 1)
+        now[0] += WR.ROUTE_CHECK_DEBOUNCE_S + 1
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(len(calls), 2)
+
     def test_the_answer_does_not_wait_for_the_delivery(self) -> None:
         release = threading.Event()
 
@@ -6108,6 +6131,14 @@ class RegistryNotConfigured(Base):
             with self.subTest(source=source):
                 self.assertIn('from="<server-ip>"', CW.router_key_line(source))
 
+    def test_the_key_line_placeholds_a_checkout_path_with_a_space(self) -> None:
+        # A space in the checkout path would word-split inside the forced
+        # command sshd runs:  the line names the placeholder instead.
+        with mock.patch.object(CW, "gate_script", lambda: "/tmp/with space/simple-chat"):
+            line = CW.router_key_line("mac-host")
+        self.assertIn('command="<absolute path of scripts/simple-chat> ', line)
+        self.assertNotIn("/tmp/with space", line)
+
     def test_the_key_line_and_the_parents_gate_read_the_same_shape(self) -> None:
         # platform-letter's `parent-key-line` and this key line each name ssh-safe sources:  one
         # address alone fits both, and this line's comma lists keep every part inside it.
@@ -6213,7 +6244,7 @@ class RegistryNotConfigured(Base):
             ),
             "the Mac asks for an update": (
                 WR.Delivery("failed", "ssh", code="remote-needs-update"),
-                "no-answer",
+                "failed",
             ),
             "a route the local host took": (
                 WR.Delivery("sent", "socket", code=""),

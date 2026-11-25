@@ -369,6 +369,9 @@ ROUTE_ANSWERS = (ROUTE_ANSWERED, ROUTE_UNREACHABLE, ROUTE_REFUSED, ROUTE_NO_ANSW
 # answer each one is.  A test drives each of the sender's paths through `route_answer`.
 ROUTE_NOT_ASKED = frozenset({"no-ssh-destination", "bad-session-id", "unknown-platform"})
 ROUTE_UNREACHABLE_CODES = frozenset({"ssh-preflight-timeout", "ssh-unreachable", "ssh-dropped"})
+#: How long a gate check's answer serves further route checks (seconds):  the
+#: probe is one ssh, and a slow Mac must not hold every caller behind it.
+ROUTE_CHECK_DEBOUNCE_S = 30.0
 #: The name the note carries when the shared loader file itself could not be read:  the loader
 #: file is the one source a loader read can fail on, and it carries the same name on every host.
 #: It is a token the transport keeps.
@@ -674,6 +677,11 @@ def route_answer(delivery: Delivery) -> str | None:
         return ROUTE_UNREACHABLE
     if code.startswith("ssh-preflight-exit-"):
         return ROUTE_REFUSED
+    if code == "remote-needs-update":
+        # The old-Mac refusal (claude_wake.OLD_MAC_REFUSAL):  the far side
+        # answered and nothing executed, so this is a failure, not a
+        # may-have-run no-answer.
+        return ROUTE_FAILED
     if code.startswith(("ssh-timeout", "ssh-error-", "remote-")):
         return ROUTE_NO_ANSWER
     return ROUTE_FAILED
@@ -1572,6 +1580,8 @@ class Router:
         self._route_last: str | None = None
         self._route_streak = 0
         self._route_check: dict[str, Any] | None = None
+        self._route_check_stamp: float | None = None
+        self._route_check_exit: int | None = None
         self._route_checking = False
         self._route_runner = route_runner or subprocess.run
 
@@ -1665,13 +1675,21 @@ class Router:
         gate refuses what the check sends, and only a key with no forced command would run it.  The
         answer is the seat, the Mac route token and `check`:  one word of claude_wake.ROUTE_CHECKS
         with the exit status.  It is kept for the seat's health (`route_check_health`).  While one
-        check runs another is refused with 429, so no caller opens ssh to the Mac in a loop."""
+        check runs another is refused with 429, and a check answered within
+        ROUTE_CHECK_DEBOUNCE_S is served from the kept answer, so no caller opens ssh to the Mac
+        in a loop or holds this handler on a slow Mac."""
         from . import claude_wake as CW  # imported here:  claude_wake imports this module
 
         answer: dict[str, Any] = {"seat": self.platform.seat, "mac_route": self.mac_route()}
         with self._route_lock:
             if self._route_checking:
                 return 429, {**answer, "error": "a route check is already running"}
+            if (
+                self._route_check is not None
+                and self._route_check_stamp is not None
+                and self.clock() - self._route_check_stamp < ROUTE_CHECK_DEBOUNCE_S
+            ):
+                return 200, {**answer, "check": {**self._route_check, "exit": self._route_check_exit}}
             self._route_checking = True
         try:
             dest = str(self.config.get("mac_ssh") or "").strip()
@@ -1684,6 +1702,8 @@ class Router:
         kept = {"answer": check["answer"], "at": _iso_utc(self.clock())}
         with self._route_lock:
             self._route_check = kept
+            self._route_check_stamp = self.clock()
+            self._route_check_exit = check.get("exit")
         return 200, {**answer, "check": {**kept, "exit": check.get("exit")}}
 
     def other_seat_health(self) -> dict[str, Any]:
