@@ -334,8 +334,9 @@ static int mp_js_str_eq(const unsigned char *t, size_t span, size_t slen, const 
 
 /* Response-id equality:  string ids compare decoded, so an escaped spelling of the same
  * id still matches its response instead of discarding a valid result.  Other values
- * compare raw;  canonical payloads give numbers a single spelling.  A string id beyond
- * the decode bound falls back to raw equality, keeping long ids on the old path. */
+ * compare raw;  canonical payloads give numbers a single spelling.  String ids beyond
+ * the stack bound compare fully decoded on the heap (span length bounds decoded
+ * length), so a long escaped id still matches its own response. */
 static int mp_js_id_eq(const unsigned char *t1, size_t s1, size_t l1,
                        const unsigned char *t2, size_t s2, size_t l2) {
     if (l1 && l2 && t1[s1] == '"' && t2[s2] == '"') {
@@ -344,6 +345,19 @@ static int mp_js_id_eq(const unsigned char *t1, size_t s1, size_t l1,
         long lb = mp_key_decode(t2, s2, l2, b, MP_MAX_KEY_BYTES);
         if (la >= 0 && lb >= 0)
             return la == lb && !memcmp(a, b, (size_t)la);
+        if (la < 0 && lb < 0) {
+            unsigned char *ha = malloc(l1 + 4), *hb = malloc(l2 + 4);
+            if (!ha || !hb) { free(ha); free(hb); return 0; }
+            la = mp_key_decode(t1, s1, l1, ha, l1);
+            lb = mp_key_decode(t2, s2, l2, hb, l2);
+            int eq = la >= 0 && lb >= 0 && la == lb && !memcmp(ha, hb, (size_t)la);
+            mp_wipe(ha, l1 + 4);
+            mp_wipe(hb, l2 + 4);
+            free(ha);
+            free(hb);
+            return eq;
+        }
+        return 0;  /* one side decoded and the other did not:  never the same id */
     }
     return l1 == l2 && !memcmp(t1 + s1, t2 + s2, l1);
 }
@@ -572,7 +586,16 @@ static const char *mp_credentials_present(const unsigned char *frame, size_t len
         size_t start = p;
         if (!mp_js_string(frame, len, &p)) { found = "credential_refused_scan"; break; }
         long n = mp_key_decode(frame, start, p - start, decoded, MP_MAX_BYTES);
-        if (n < 0 || memchr(decoded, 0, (size_t)n)) { found = "credential_refused_scan"; break; }
+        if (n < 0) {  /* decoded output never exceeds the span:  wipe what may be written */
+            mp_wipe(decoded, p - start);
+            found = "credential_refused_scan";
+            break;
+        }
+        if (memchr(decoded, 0, (size_t)n)) {
+            mp_wipe(decoded, (size_t)n);
+            found = "credential_refused_scan";
+            break;
+        }
         decoded[n] = 0;
         int rc = regexec(&rx, (const char *)decoded, 0, NULL, 0);
         if (rc != REG_NOMATCH) found = rc == 0 ? mp_credential_field(frame, len, start) : "credential_refused_scan"; /* match or scanner failure */
