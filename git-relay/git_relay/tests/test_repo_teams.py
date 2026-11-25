@@ -66,7 +66,7 @@ class RepositoryTeamsTests(unittest.TestCase):
     def test_malformed_receipt(self):
         bad = []
         for key, values in [
-            ("id", [True, 0, -1, "1"]),
+            ("id", [True, 0, -1, "1", 9007199254740992]),
             ("slug", ["", "bad/slug", "a" * 101]),
             ("name", ["", "a" * 257, "bad\nname"]),
             ("privacy", ["public", [], True]),

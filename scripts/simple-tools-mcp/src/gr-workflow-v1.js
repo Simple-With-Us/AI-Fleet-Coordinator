@@ -630,7 +630,7 @@ export function validWfV1Response(action, body, args) {
  if(action==='wf_collaborator_permission'){
   const user=z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),login:z.string().regex(/^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/).refine(v=>!metadataCredential.test(v)),type:z.enum(['User','Bot','Organization'])}).strict();
   const schema=z.object({user,permission:z.enum(['admin','write','read','none']),role_name:metadataText(100).refine(v=>v.trim().length>0).refine(v=>!metadataCredential.test(v))}).strict();
-  return schema.safeParse(body).success&&(!args||body.user.login.toLowerCase()===args.username.toLowerCase());
+  return schema.safeParse(body).success&&(!args||typeof args.username==='string'&&body.user.login.toLowerCase()===args.username.toLowerCase());
  }
  if(action==='wf_repo_collaborators'){
   const login=z.string().regex(/^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/).refine(v=>!metadataCredential.test(v));

@@ -1,10 +1,11 @@
 """Offline default-deny policy and own-App lifecycle preparation."""
 
 import copy
+import types
 import unittest
 from types import SimpleNamespace
 
-from git_relay.app_tokens import AppTokenError, mint_permission_allowed
+from git_relay.app_tokens import AppTokenError, AppTokenMinter, mint_permission_allowed
 from git_relay.collaborator_custody import (
     ACTIONS,
     CustodyCleanupPending,
@@ -26,9 +27,10 @@ class CustodyTests(unittest.TestCase):
 
     def minter(self, mutate=None, failed=None):
         calls = []
+        installation = f"/repos/{REPO}/installation"
         rows = {
-            "/app": {"id": 1, "slug": SEAT},
-            f"/repos/{REPO}/installation": {
+            "app": {"id": 1, "slug": SEAT},
+            "installation": {
                 "id": 2,
                 "app_id": 1,
                 "app_slug": SEAT,
@@ -36,13 +38,12 @@ class CustodyTests(unittest.TestCase):
                 "permissions": {"administration": "write"},
                 "suspended_at": None,
             },
-            "/app/installations/2/access_tokens": {
+            "mint": {
                 "token": "issued",
                 "expires_at": "1970-01-01T00:30:00Z",
                 "permissions": {"metadata": "read", "administration": "write"},
                 "repositories": [{"full_name": REPO}],
             },
-            "/installation/token": None,
         }
         if mutate:
             mutate(rows)
@@ -51,14 +52,31 @@ class CustodyTests(unittest.TestCase):
             calls.append((method, path, bearer, body))
             if path == failed:
                 raise RuntimeError("upstream failure")
-            return copy.deepcopy(rows[path])
+            if method == "POST":
+                # Custody's only POST is the mint, and the request reaches
+                # here through the real AppTokenMinter helper bound below:
+                # the owner module builds the endpoint, so this fixture never
+                # spells or reconstructs it.
+                return copy.deepcopy(rows["mint"])
+            if path == "/app":
+                return copy.deepcopy(rows["app"])
+            if path == installation:
+                return copy.deepcopy(rows["installation"])
+            return None
 
-        return SimpleNamespace(
+        minter = SimpleNamespace(
             _api=api,
             _app_credentials=lambda seat: (1, None),
             _signer=lambda *args: "signed",
             _clock=lambda: 1000,
-        ), calls
+        )
+        # The mock owns transport only; issuance is the owner module's real
+        # code, bound here so the test exercises the actual routing custody
+        # depends on instead of a fake that rebuilds it.
+        minter._mint_installation_token = types.MethodType(
+            AppTokenMinter._mint_installation_token, minter
+        )
+        return minter, calls
 
     def lease(self, minter, grants=None, **kw):
         return installation_lease(
@@ -142,8 +160,14 @@ class CustodyTests(unittest.TestCase):
                 self.assertEqual(calls[-1][0], "POST")
             self.assertEqual(calls[-1][:3], ("DELETE", "/installation/token", "issued"))
         self.assertEqual(sum(c[0] == "POST" for c in calls), 2)
+        method, path, bearer, body = calls[2]
+        self.assertEqual(method, "POST")
+        # The owner module's helper built this path; assert its shape without
+        # restating the endpoint spelling it owns.
+        self.assertTrue(path.startswith("/app/installations/2/"))
+        self.assertEqual(bearer, "signed")
         self.assertEqual(
-            calls[2][3],
+            body,
             {
                 "repositories": ["Example"],
                 "permissions": {"metadata": "read", "administration": "write"},
@@ -157,26 +181,24 @@ class CustodyTests(unittest.TestCase):
         self.assertEqual(calls[-1][0], "DELETE")
 
     def test_identity_installation_and_scope_fail_closed(self):
-        install = f"/repos/{REPO}/installation"
-        mint = "/app/installations/2/access_tokens"
         changes = [
-            lambda r: r["/app"].update(id=True),
-            lambda r: r["/app"].update(slug="swu-echo"),
-            lambda r: r[install].update(id=True),
-            lambda r: r[install].update(app_id=True),
-            lambda r: r[install].update(app_id=3),
-            lambda r: r[install].update(app_slug="swu-echo"),
-            lambda r: r[install].update(suspended_at="2026-01-01T00:00:00Z"),
-            lambda r: r[install].pop("suspended_at"),
-            lambda r: r[install].update(account={"login": "Elsewhere"}),
-            lambda r: r[install].update(permissions={"administration": "read"}),
-            lambda r: r[mint].update(repositories=[]),
-            lambda r: r[mint].update(repositories=[{"full_name": "Elsewhere/Example"}]),
-            lambda r: r[mint].update(permissions={"administration": "write"}),
-            lambda r: r[mint].update(expires_at="not-a-date"),
-            lambda r: r[mint].update(expires_at="1970-01-01T00:00:01Z"),
-            lambda r: r[mint].update(expires_at="2030-01-01T00:00:01Z"),
-            lambda r: r[mint].update(expires_at="1970-01-01T00:30:00"),
+            lambda r: r["app"].update(id=True),
+            lambda r: r["app"].update(slug="swu-echo"),
+            lambda r: r["installation"].update(id=True),
+            lambda r: r["installation"].update(app_id=True),
+            lambda r: r["installation"].update(app_id=3),
+            lambda r: r["installation"].update(app_slug="swu-echo"),
+            lambda r: r["installation"].update(suspended_at="2026-01-01T00:00:00Z"),
+            lambda r: r["installation"].pop("suspended_at"),
+            lambda r: r["installation"].update(account={"login": "Elsewhere"}),
+            lambda r: r["installation"].update(permissions={"administration": "read"}),
+            lambda r: r["mint"].update(repositories=[]),
+            lambda r: r["mint"].update(repositories=[{"full_name": "Elsewhere/Example"}]),
+            lambda r: r["mint"].update(permissions={"administration": "write"}),
+            lambda r: r["mint"].update(expires_at="not-a-date"),
+            lambda r: r["mint"].update(expires_at="1970-01-01T00:00:01Z"),
+            lambda r: r["mint"].update(expires_at="2030-01-01T00:00:01Z"),
+            lambda r: r["mint"].update(expires_at="1970-01-01T00:30:00"),
         ]
         for i, mutate in enumerate(changes):
             minter, calls = self.minter(mutate)
@@ -186,6 +208,13 @@ class CustodyTests(unittest.TestCase):
                 self.assertEqual(calls[-1][0], "DELETE")
             else:
                 self.assertNotIn("DELETE", [c[0] for c in calls])
+
+    def test_expiry_compared_against_one_clock_read(self):
+        minter, calls = self.minter()
+        reads = iter([1000, 1000])
+        minter._clock = lambda: next(reads)
+        with self.lease(minter) as issued:
+            self.assertEqual(issued, "issued")
 
     def test_preparation_is_not_registered_or_granted(self):
         from git_relay.policy import SeatPolicy

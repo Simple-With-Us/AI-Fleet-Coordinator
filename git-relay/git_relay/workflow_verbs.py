@@ -2051,7 +2051,7 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
             ident, slug, name = item.get("id"), item.get("slug"), item.get("name")
             if (
                 type(ident) is not int
-                or ident <= 0
+                or not 1 <= ident <= 9007199254740991
                 or ident in seen
                 or not isinstance(slug, str)
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", slug)

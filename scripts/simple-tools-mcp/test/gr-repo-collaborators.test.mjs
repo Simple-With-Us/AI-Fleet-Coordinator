@@ -26,5 +26,7 @@ test('permission read binds one exact username and projects only effective role'
  assert.ok(validWfV1Args(a,{repo,username:'helper[bot]'}));assert.ok(validWfV1Response(a,body,args));
  for(const username of ['../other','bad/name','',true])assert.ok(!validWfV1Args(a,{repo,username}));
  assert.ok(!validWfV1Response(a,{...body,user:{...body.user,login:'other'}},args));
+ assert.ok(!validWfV1Response(a,body,{repo}));
+ assert.ok(!validWfV1Response(a,body,{repo,username:1}));
  assert.ok(!validWfV1Response(a,{...body,permission:'maintain'},args));
 });

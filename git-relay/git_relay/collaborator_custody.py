@@ -157,15 +157,18 @@ def installation_lease(minter, grants, seat, app_slug, action, repo):
             or permissions.get("administration") != "write"
         ):
             raise AppTokenError("collaborator installation unverifiable")
-        minted = api(
-            "POST",
-            f"/app/installations/{installation['id']}/access_tokens",
-            bearer,
-            {
-                "repositories": [name],
-                "permissions": {"metadata": "read", "administration": "write"},
-            },
-        )
+        try:
+            # Mint through the owning module: app_tokens is the one path that
+            # may reach the installation-token endpoint, so custody asks for
+            # the issuance instead of addressing the endpoint itself.
+            minted = minter._mint_installation_token(
+                installation["id"],
+                bearer,
+                [name],
+                {"metadata": "read", "administration": "write"},
+            )
+        except Exception:
+            raise AppTokenError("collaborator custody upstream unavailable") from None
         # Capture before checking the rest so a malformed token response can
         # still be revoked. No token enters the generic minter cache.
         candidate = minted.get("token") if isinstance(minted, dict) else None
@@ -187,7 +190,10 @@ def installation_lease(minter, grants, seat, app_slug, action, repo):
             expiry = expires_at.timestamp() if expires_at.tzinfo is not None else 0
         except (ValueError, TypeError, AttributeError, OverflowError):
             raise AppTokenError("collaborator mint expiry unverifiable") from None
-        if not minter._clock() < expiry <= minter._clock() + 3600:
+        # Read the clock once: two reads could straddle an expiry boundary and
+        # accept a mint that no single instant accepts.
+        now = minter._clock()
+        if not now < expiry <= now + 3600:
             raise AppTokenError("collaborator mint expiry unverifiable")
         yield issued
     finally:
