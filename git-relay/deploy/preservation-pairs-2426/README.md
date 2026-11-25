@@ -6,12 +6,14 @@ authorizes no execution; every step below is a separate owner-executed gate.
 
 The fixed transaction family preservation-pairs-2426 replaces only
 `git_relay/reviewed_preservation.py` from
-`f84708ceb6def508441af18770da5a91547c724ffda11e5e9d18a16b5455f132` (the
-image installed before this release, byte-identical to the pre-#2424
-`origin/main` blob) to
 `3f72088feb8e69b29431fb8811a4a29d3c0e5c51cbed947de34cecf2783323a3` (the
-reviewed module of main after #2513: the #2424 AFC-797 tuple, the AFC-793
-ingest pair, and the renewed recall pair in place of the retired Nov 21 one).
+image installed by the Nov 24, 2026 transaction, byte-identical to the
+`origin/main` blob after #2513) to
+`97cac773211630c55e8bf507b47cd6ee6b7c2167505721388c73ad3849437fb0` (the
+reviewed module carrying the exact-pair admission fix: a registered record
+admits its own owner-approved result bytes, which the AFC-793 recall pair
+requires).  The registry content is unchanged: the #2424 AFC-797 tuple, the
+AFC-793 ingest pair, and the renewed recall pair.
 No other module, policy, seat, Worker deployment or old transaction replay is
 included.
 

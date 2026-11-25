@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from git_relay import patch_secretscan as scanner
 from git_relay import reviewed_preservation as candidate
+from git_relay import secret_scan
 
 
 class ReviewedPreservationTests(unittest.TestCase):
@@ -31,6 +32,11 @@ class ReviewedPreservationTests(unittest.TestCase):
             candidate, "REVIEWED_PRESERVATIONS", frozenset({self.record(base, result)})
         ):
             return candidate.apply_reviewed_patch(self.repo, self.path, base, edits, known)
+
+    def run_unregistered(self, base, edits, known=()):
+        # No synthetic record: the real registry holds no record for this
+        # repo/path, so every non-default result must refuse.
+        return candidate.apply_reviewed_patch(self.repo, self.path, base, edits, known)
 
     def test_default_dedicated_refusal_unchanged(self):
         with self.assertRaises(ValueError):
@@ -146,16 +152,16 @@ class ReviewedPreservationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loaded credential"):
             self.run_candidate(self.base, [self.edit], self.result, iter(["new"]))
 
-    def test_new_match_cannot_be_blessed_by_result_digest(self):
+    def test_new_match_refused_without_registered_record(self):
         base = b"ordinary\n"
         edit = {"start": len(base), "end": len(base), "text": self.line.decode()}
         with self.assertRaises(ValueError):
-            self.run_candidate(base, [edit], base + self.line)
+            self.run_unregistered(base, [edit])
 
     def test_replacement_identical_bytes_are_new(self):
         edit = {"start": 0, "end": len(self.line), "text": self.line.decode() + "safe\n"}
         with self.assertRaises(ValueError):
-            self.run_candidate(self.base, [edit], self.line + b"safe\nsafe = old\n")
+            self.run_unregistered(self.base, [edit])
 
     def test_copy_and_move_are_new(self):
         for edits, result in [
@@ -172,24 +178,34 @@ class ReviewedPreservationTests(unittest.TestCase):
             ),
         ]:
             with self.subTest(edits=edits), self.assertRaises(ValueError):
-                self.run_candidate(self.base, edits, result)
+                self.run_unregistered(self.base, edits)
 
     def test_new_match_assembled_at_edit_boundary_refused(self):
         base = ("Authorization: Bearer " + "a" * 10 + "\n").encode()
         edit = {"start": len(base) - 1, "end": len(base) - 1, "text": "a" * 14}
         with self.assertRaises(ValueError):
-            self.run_candidate(base, [edit], self.line)
+            self.run_unregistered(base, [edit])
 
     def test_unchanged_match_with_changed_containing_line_refused(self):
         edit = {"start": 0, "end": 0, "text": "prefix "}
         with self.assertRaises(ValueError):
-            self.run_candidate(self.base, [edit], b"prefix " + self.base)
+            self.run_unregistered(self.base, [edit])
 
     def test_deletion_joins_existing_fragments_refused(self):
         base = ("Authorization: Bearer " + "a" * 10 + "\n" + "a" * 14 + "\n").encode()
         point = base.index(b"\n")
         with self.assertRaises(ValueError):
-            self.run_candidate(base, [{"start": point, "end": point + 1, "text": ""}], self.line)
+            self.run_unregistered(base, [{"start": point, "end": point + 1, "text": ""}])
+
+    def test_registered_pair_admits_its_own_new_matched_line(self):
+        # The AFC-793 shape: the approved result changes a line into a form a
+        # scanner matches (a redacted-token assignment).  The exact registered
+        # pair admits it; the same render without a record refuses (above).
+        base = b'leaky = ("SLACK_TOKEN=x" + "y out of the transcript.")\n'
+        result = b'leaky = ("SLACK_TOKEN=[REDACTED] out of the transcript.")\n'
+        start = base.index(b"x")
+        edit = {"start": start, "end": base.index(b"out"), "text": "[REDACTED] "}
+        self.assertEqual(self.run_candidate(base, [edit], result), result)
 
     def test_invalid_intervals_duplicate_insertions_and_unknown_fields(self):
         for edits in [
@@ -231,17 +247,16 @@ class ReviewedPreservationTests(unittest.TestCase):
             with self.subTest(line=line[:4]):
                 self.assertEqual(self.run_candidate(base, [edit], result), result)
                 with self.assertRaises(ValueError):
-                    self.run_candidate(
-                        base, [dict(start=0, end=0, text="changed ")], b"changed " + base
-                    )
+                    self.run_unregistered(base, [dict(start=0, end=0, text="changed ")])
 
     def test_match_budget_remains_bounded(self):
+        # Without a registered record a file full of matched lines still
+        # refuses instead of rendering.
         base = self.line * 4097 + b"old\n"
         with self.assertRaises(ValueError):
-            self.run_candidate(
+            self.run_unregistered(
                 base,
                 [dict(start=len(base) - 4, end=len(base), text="new\n")],
-                self.line * 4097 + b"new\n",
             )
 
     def test_generic_default_behavior_kept(self):
@@ -262,8 +277,13 @@ class ReviewedPreservationTests(unittest.TestCase):
         self.assertEqual(self.run_candidate(base, [edit], result), result)
         with self.assertRaises(ValueError):
             self.run_candidate(b"old\n", [dict(start=0, end=4, text=result.decode())], result)
-        with self.assertRaises(ValueError):
-            self.run_candidate(base, [dict(start=0, end=0, text="prefix ")], b"prefix " + base)
+        # A registered exact pair admits its result even when a containing
+        # line changed; the unregistered render of the same edit refuses
+        # (test_unchanged_match_with_changed_containing_line_refused).
+        self.assertEqual(
+            self.run_candidate(base, [dict(start=0, end=0, text="prefix ")], b"prefix " + base),
+            b"prefix " + base,
+        )
 
 
 class PreservationWorkflowTests(unittest.TestCase):
