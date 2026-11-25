@@ -207,6 +207,7 @@ class EventStore:
         ci_ids: set = set()
         legacy_conflict_pairs: set = set()
         legacy_conflict_heads: set = set()
+        legacy_blocker_components: dict[str, set] = {}
         legacy_review_ids: set = set()
         completed_heads: set = set()
         with self._lock:
@@ -243,6 +244,9 @@ class EventStore:
                         # This historical format did not record a base. Do not
                         # invent one or resend an unknown outcome on adoption.
                         legacy_conflict_heads.add(parts[0])
+                        legacy_blocker_components.setdefault(parts[0], set()).update(
+                            parts[1].split("+")
+                        )
                 elif kind == "ci_failed" and str(event_id).startswith("ci"):
                     ci_ids.update(
                         int(token) for token in str(event_id)[2:].split("+") if token.isdigit()
@@ -258,6 +262,9 @@ class EventStore:
             "ci_ids": sorted(ci_ids),
             "legacy_conflict_pairs": sorted(legacy_conflict_pairs),
             "legacy_conflict_heads": sorted(legacy_conflict_heads),
+            "legacy_blocker_components": {
+                head: sorted(names) for head, names in legacy_blocker_components.items()
+            },
             "legacy_review_ids": sorted(legacy_review_ids),
             "ci_floor": ci_floor,
             "completed_heads": sorted(completed_heads),

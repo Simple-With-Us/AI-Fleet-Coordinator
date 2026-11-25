@@ -419,6 +419,8 @@ def derive(
             # Head-only #2510 records cannot establish a historical base. Keep
             # their conflict outcome bounded to that head without inventing it.
             blockers = [name for name in blockers if name != "conflicts"]
+        known_components = cursor.get("legacy_blocker_components", {}).get(current_head, [])
+        blockers = [name for name in blockers if name not in known_components]
         if blockers == ["checks_failed"]:
             blockers = []
         if blockers:

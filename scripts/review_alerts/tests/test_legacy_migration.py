@@ -151,3 +151,17 @@ class LegacyMigration(unittest.TestCase):
             self.assertEqual(svc.store.get(REPO, 7, "merge_blocked", key)["status"], "unknown")
             svc.gh._pr["head"] = {"sha": "d" * 40}
             self.assertEqual(svc.cycle()["submitted"], 1)
+
+    def test_old_composite_components_are_not_resent_but_a_new_component_is(self):
+        with tempfile.TemporaryDirectory() as d:
+            svc, router = self.setup_service(d, checks=[ci_run(55, "merge-gate")])
+            key = "mb" + HEAD + ":conflicts+merge_gate"
+            self.legacy(svc, "merge_blocked", key)
+            svc.store = events.EventStore(svc.store._path)
+            self.assertEqual(svc.cycle()["events"], 0)
+            svc.gh._reviews.append(review(88, "someone", "CHANGES_REQUESTED"))
+            self.assertEqual(svc.cycle()["submitted"], 1)
+            self.assertIn("changes requested", router.submitted[0]["topic"])
+            self.assertNotIn("merge gate", router.submitted[0]["topic"])
+            self.assertEqual(svc.cycle()["events"], 0)
+            self.assertEqual(svc.store.get(REPO, 7, "merge_blocked", key)["status"], "unknown")
