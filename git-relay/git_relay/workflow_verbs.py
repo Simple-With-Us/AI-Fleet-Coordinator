@@ -8366,68 +8366,93 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
             or self._provider_token_text(message)
         ):
             raise Refused("invalid patch message")
-        repo_info = _obj(self._get(f"/repos/{repo}"))
-        default = repo_info.get("default_branch")
-        if _is_default_branch(branch, default):
-            raise Refused("default branch is not writable")
-        ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
-        prior_ref = _obj(self._get(ref_path))
-        provider_branch = _provider_ref_branch(prior_ref)
-        if provider_branch is None or _is_default_branch(provider_branch, default):
-            raise Refused("default branch is not writable")
-        if provider_branch != branch:
-            raise Refused("provider branch does not match the requested branch")
-        if _sub(prior_ref, "object").get("sha") != head:
-            raise Refused("branch head moved")
-        base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
-        tree = _sub(base_commit, "tree").get("sha")
-        if base_commit.get("sha") != head or not isinstance(tree, str) or not _SHA.fullmatch(tree):
-            raise Refused("base commit unverifiable")
-        # Contents receipt pins path AND commit; caller's blob id is only a check.
-        content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
-        if (
-            content.get("type") != "file"
-            or content.get("path") != path
-            or content.get("sha") != blob_sha
-            or content.get("encoding") != "base64"
-        ):
-            raise Refused("base file unverifiable")
-        finding = None
         try:
-            raw = base64.b64decode("".join(content["content"].split()), validate=True)
+            repo_info = _obj(self._get(f"/repos/{repo}"))
+            default = repo_info.get("default_branch")
+            if _is_default_branch(branch, default):
+                raise Refused("default branch is not writable")
+            ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+            prior_ref = _obj(self._get(ref_path))
+            provider_branch = _provider_ref_branch(prior_ref)
+            if provider_branch is None or _is_default_branch(provider_branch, default):
+                raise Refused("default branch is not writable")
+            if provider_branch != branch:
+                raise Refused("provider branch does not match the requested branch")
+            if _sub(prior_ref, "object").get("sha") != head:
+                raise Refused("branch head moved")
+            base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
+            tree = _sub(base_commit, "tree").get("sha")
             if (
-                len(raw) > MAX_FILE_RAW
-                or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
-                != blob_sha
+                base_commit.get("sha") != head
+                or not isinstance(tree, str)
+                or not _SHA.fullmatch(tree)
             ):
-                raise ValueError()
-            # Only immutable, reviewed source/output fixture pairs can preserve
-            # dedicated source lines. Records require owner policy approval.
-            preserve = reviewed_base(repo, path, raw)
-            # Scan every complete input, even an eligible reviewed fixture. A
-            # finding may be retained only after exact output/origin validation.
-            base_finding = find_secret(raw.decode("utf-8"))
-            if base_finding and not preserve:
-                finding = base_finding
-                raise ValueError()
-            if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode("utf-8"):
-                raise ValueError()
-            result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
-            result_finding = find_secret(result.decode("utf-8"))
-            if result_finding and not preserve:
-                finding = result_finding
-                raise ValueError()
-            if self._provider_token_text(result.decode("utf-8")) or (
-                self.bearer and self.bearer in result.decode("utf-8")
+                raise Refused("base commit unverifiable")
+            # Contents receipt pins path AND commit; caller's blob id is only a check.
+            content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
+            if (
+                content.get("type") != "file"
+                or content.get("path") != path
+                or content.get("sha") != blob_sha
             ):
-                raise ValueError()
-        except (ValueError, TypeError, KeyError, UnicodeError):
-            if finding:
-                raise Refused(scan_refusal(path, finding)) from None
-            raise Refused("credential-shaped or invalid patch content") from None
-        mode = self._entry_mode(repo, tree, path, {})
-        if mode not in ("100644", "100755"):
-            raise Refused("patch supports existing regular files only")
+                raise Refused("base file unverifiable")
+            encoded = content.get("content")
+            if content.get("encoding") != "base64" or not isinstance(encoded, str):
+                # The contents API withholds content over 1 MB (encoding "none"):
+                # fetch the same pinned blob through Git Data.  The path/commit pin
+                # above still binds it;  the bytes are re-hashed and re-scanned below.
+                blob = _obj(self._get(f"/repos/{repo}/git/blobs/{blob_sha}"))
+                if (
+                    blob.get("sha") != blob_sha
+                    or blob.get("encoding") != "base64"
+                    or not isinstance(blob.get("content"), str)
+                ):
+                    raise Refused("base file unverifiable")
+                encoded = blob["content"]
+            finding = None
+            try:
+                raw = base64.b64decode("".join(encoded.split()), validate=True)
+                if (
+                    len(raw) > MAX_FILE_RAW
+                    or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                    != blob_sha
+                ):
+                    raise ValueError()
+                # Only immutable, reviewed source/output fixture pairs can preserve
+                # dedicated source lines. Records require owner policy approval.
+                preserve = reviewed_base(repo, path, raw)
+                # Scan every complete input, even an eligible reviewed fixture. A
+                # finding may be retained only after exact output/origin validation.
+                base_finding = find_secret(raw.decode("utf-8"))
+                if base_finding and not preserve:
+                    finding = base_finding
+                    raise ValueError()
+                if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode(
+                    "utf-8"
+                ):
+                    raise ValueError()
+                result = apply_reviewed_patch(
+                    repo, path, raw, args.get("edits"), known=[self.bearer]
+                )
+                result_finding = find_secret(result.decode("utf-8"))
+                if result_finding and not preserve:
+                    finding = result_finding
+                    raise ValueError()
+                if self._provider_token_text(result.decode("utf-8")) or (
+                    self.bearer and self.bearer in result.decode("utf-8")
+                ):
+                    raise ValueError()
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                if finding:
+                    raise Refused(scan_refusal(path, finding)) from None
+                raise Refused("credential-shaped or invalid patch content") from None
+            mode = self._entry_mode(repo, tree, path, {})
+            if mode not in ("100644", "100755"):
+                raise Refused("patch supports existing regular files only")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("patch pre-read unavailable; no write attempted") from None
+            raise
         if mode == "100755":
             return self._patch_executable(
                 repo, branch, head, tree, path, result, message, repo_info
