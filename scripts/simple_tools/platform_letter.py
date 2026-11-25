@@ -190,6 +190,11 @@ REPAIR_MAX_CHATS = 5
 #: same moment set off one run between them.  A claim older than this is a holder that died, and is taken over.
 REPAIR_LOCK_SECONDS = 30
 REPAIR_SPAWN_CLAIM_SECONDS = 300
+#: The reconcile pass asks the assigner about this host's lettered chats,  so it has a window of its own.
+RECONCILE_SWEEP_SECONDS = 3600
+#: How many chats one reconcile pass asks about.  The quietest go first,  so a backlog of stale titles is drained
+#: from the oldest end and a host with many chats never spends a pass on all of them at once.
+RECONCILE_MAX_CHATS = 50
 # The enrollment of a lettered chat's own sub-thread children (`enroll_children`), on the turn-end event of the
 # chat that started them:  a platform that runs no hook inside a sub-agent (ZCode) would otherwise leave every
 # child unlettered, so the parent - whose turn end already runs - enrolls its own.  At most CHILD_ENROLL_MAX
@@ -3598,6 +3603,7 @@ def _run_hook(
         code = on_start(chat, data, out, home)
         if _text(data.get("source")) != "compact":
             _report_gone_after_start(chat, stdout)
+            reconcile_after_start(chat)
             repair_after_start(chat)
         return code
     if event == "prompt":
@@ -4213,6 +4219,13 @@ def repair_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: s
     seat's letter notes, under a name no session id can have (a session id never starts with a dot)."""
     folder = os.path.dirname(note_path(env, seat, "stamp"))
     return os.path.join(folder, ".repair-%s-%s" % (platform, where))
+
+
+def reconcile_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: str) -> str:
+    """Where a host keeps the time of its last letter reconcile for one platform and location:  beside the
+    seat's letter notes, under a name no session id can have (a session id never starts with a dot)."""
+    folder = os.path.dirname(note_path(env, seat, "stamp"))
+    return os.path.join(folder, ".reconcile-%s-%s" % (platform, where))
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -5057,6 +5070,278 @@ def repair_unlettered(
     return {"asked": asked, "repaired": repaired, "failures": failures, "recorded": recorded}
 
 
+def _reconcile_answer(
+    env: Mapping[str, str], spec: PlatformSpec, where: str, sid: str, timeout: int = 0
+) -> dict[str, Any]:
+    """What the assigner says about one chat:  whether it still holds a registration,  and which record it is.
+
+    The question is asked about the CHAT,  by the chat's own identity,  and never by the letter string:  the chat
+    that legitimately holds a letter is the one the answer is about,  so a letter that has been given to another
+    chat can never make this one look like the holder.
+
+    A chat the assigner holds no registration for is answered `registered: False`:  nothing backs the letter in
+    its title.  A call that was not answered at all is an error,  and an error is no answer:  the caller leaves
+    the title alone."""
+    identity = {"platform": spec.platform, "location": where, "scope": SCOPE, "session_id": sid}
+    answer = _call_api(env, "held", identity, timeout=timeout)
+    if "error" in answer:
+        if answer.get("code") == "not_registered" or _NOT_REGISTERED_MARK in str(
+            answer.get("error") or ""
+        ):
+            return {"registered": False, "record_id": "", "letters": []}
+        return {"error": str(answer.get("error") or "the assigner did not answer")}
+    record_id = str(answer.get("record_id") or "")
+    if not record_id:
+        return {"error": "the assigner named no record"}
+    raw = answer.get("letters")
+    raw_letters = _strings_in(raw)
+    letters = [text for text in raw_letters if LABEL_RE.fullmatch(text)]
+    label = str(answer.get("label") or "")
+    if LABEL_RE.fullmatch(label) and label not in letters:
+        letters.insert(0, label)
+    # The label the assigner answers with is the letter this chat holds NOW:  the newest generation it ever
+    # held.  It is not the letter the chat's note remembers,  which may be behind a relabel.
+    #
+    # Only the assigner's own label is authoritative.  A label that is missing,  or that does not look like one,
+    # is no label at all:  the pass must never pick a letter out of the history on its own,  for the history is the
+    # record's own past and the letter it holds now is the only one the answer is about.  Asking about any other
+    # letter asks about another chat's,  and the answer would retire this one for a prefix that is not its own.
+    authoritative = label if LABEL_RE.fullmatch(label) else ""
+    # The assigner says this chat holds no letter at all:  its answer carries no letter and no label of its own.
+    # That is positive evidence,  and the prefix the title carries belongs to nobody.
+    holds_no_letter = isinstance(raw, list) and not raw_letters and not authoritative
+    return {
+        "registered": True,
+        "record_id": record_id,
+        "letters": letters,
+        "label": authoritative,
+        "holds_no_letter": holds_no_letter,
+    }
+
+
+def _letter_holder(
+    env: Mapping[str, str], spec: PlatformSpec, letter: str, timeout: int = 0
+) -> tuple[str, str]:
+    """The record that holds a letter now:  ("live", record id),  ("another-seat", "") when the letter is live
+    under another seat,  ("not-live", "") when it is not live any more,  and ("unknown", "") when the assigner did
+    not answer.
+
+    The letter is asked about by its own string,  but only to learn WHICH record holds it:  the answer is
+    compared with the record the chat itself is,  and a letter held by any other record is not this chat's.  A
+    letter under another seat is refused with "forbidden" rather than named,  and that refusal is an answer:  the
+    letter is live and it is not ours."""
+    answer = _call_api(
+        env, "resolve", {"platform": spec.platform, "letter": letter}, timeout=timeout
+    )
+    if "error" in answer:
+        if str(answer.get("error") or "") == "forbidden":
+            return ("another-seat", "")
+        return ("unknown", "")
+    if answer.get("found") is False:
+        return ("not-live", "")
+    record_id = str(answer.get("record_id") or "")
+    if not record_id:
+        return ("unknown", "")
+    return ("live", record_id)
+
+
+def _walk_from(
+    rows: list[dict[str, Any]], cursor: str, limit: int
+) -> tuple[list[dict[str, Any]], str]:
+    """The next `limit` rows to examine,  starting just after the cursor's row,  and the cursor to leave behind.
+
+    The pass walks the list round.  A chat whose letter is still live takes no write and keeps its place in the
+    order,  so a fixed slice would offer the same chats for ever,  and a chat behind them would never be examined
+    at all.  Starting after the last chat examined moves the walk on,  and a list shorter than the limit wraps back
+    to its beginning.
+
+    A cursor that names no row in the list (the chat is gone,  or the list has changed under it) starts the walk at
+    the beginning."""
+    ids = [str(row.get("session_id") or "") for row in rows]
+    start = 0
+    if cursor and cursor in ids:
+        start = ids.index(cursor) + 1
+    walked = rows[start:] + rows[:start]
+    batch = walked[:limit]
+    following = str(batch[-1].get("session_id") or "") if batch else cursor
+    return batch, following
+
+
+def reconcile_letters(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    where: str,
+    *,
+    now: float,
+    transport: Transport | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Retire the letter prefix of a chat whose letter the assigner no longer holds (AFC-898).
+
+    The retire path covers a chat the PLATFORM says is gone for good.  It does not cover a chat whose
+    registration the assigner's own stale sweep closed:  that chat never enters the gone path,  so its title
+    keeps the letter prefix until the chat has its next event,  and the sidebar shows a letter the registry has
+    already given to another chat.
+
+    This pass asks the assigner about each of this host's lettered chats,  by the chat's own identity,  and
+    retires the ones the assigner no longer holds.  It is read-only against the registry:  it changes no row,
+    issues no letter and retires no letter there,  and it only ever writes the chat's OWN title and note.
+
+    The rules it holds to:
+
+    - a chat whose letter is still live is left completely alone,  and so is the chat that legitimately holds a
+      reused letter:  the question is asked about the chat,  and the letter's holder is compared by record;
+    - a title a person chose is left exactly as it is (the retire path's own writer refuses it);
+    - a chat that ran since the scan is left alone (it is in use,  not stale);
+    - an assigner that did not answer,  or answered about the wrong chat,  changes nothing:  an unanswered
+      question is never a "retire".
+
+    The pass is throttled by its own stamp beside the notes,  and one pass asks about at most
+    RECONCILE_MAX_CHATS chats,  the quietest first.  It walks that list round from a cursor it keeps in its own
+    stamp,  so a chat that is always live cannot hold the same chats from being offered for ever."""
+    if spec.title_writer is None or not seat or where not in LOCATIONS:
+        return {"skipped": "this platform writes no title, or this host names no location"}
+    adopt = isinstance(spec.seat, str) and spec.seat == seat
+    path = reconcile_stamp_path(env, seat, spec.platform, where)
+    lock = path + ".lock"
+    if not _claim(lock, REPAIR_LOCK_SECONDS):
+        return {"skipped": "another pass holds the stamp"}
+    try:
+        stamp = _read_json(path)
+        if (
+            not force
+            and "at" in stamp
+            and 0 <= now - _seconds(stamp["at"]) < RECONCILE_SWEEP_SECONDS
+        ):
+            return {"skipped": "not due"}
+        if not _save_json(path, {"at": now}):
+            return {"skipped": "the stamp could not be saved", "recorded": False}
+    finally:
+        _release(lock)
+    candidates, _, owed = _lettered_chats(
+        env,
+        seat,
+        spec.platform,
+        where,
+        now,
+        adopt=adopt,
+        rewrite=True,
+        floor=GONE_QUIET_SECONDS,
+        limit=GONE_SCAN_ALL,
+    )
+    # The cursors are this pass's own,  in its own stamp:  where it stopped last time,  for the chats it asks
+    # about and for the chats whose title write is owed.  A chat that is always live takes no write and keeps its
+    # place in the order,  so a fixed slice would offer the same chats for ever and a chat behind them would never
+    # be examined.
+    outcome_state = stamp.get("outcome") if isinstance(stamp.get("outcome"), dict) else {}
+    cursor = str(outcome_state.get("cursor") or "")
+    owed_cursor = str(outcome_state.get("owed_cursor") or "")
+    batch, following = _walk_from(list(candidates.values()), cursor, RECONCILE_MAX_CHATS)
+    owed_batch, owed_following = _walk_from(list(owed.values()), owed_cursor, RECONCILE_MAX_CHATS)
+    asked = 0
+    retired: list[str] = []
+    failures: list[dict[str, str]] = []
+    for row in batch:
+        sid = row["session_id"]
+        # One chat's failure never stops the pass:  the rest of the host's chats are still worth retiring,  and
+        # the failure is recorded with its session id and the exception's type,  never with anything it carries.
+        try:
+            chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+            note = chat.read()
+            if not lettered(note):
+                continue
+            label = str(note.get("label") or "")
+            if not LABEL_RE.fullmatch(label):
+                continue
+            if _seconds(note.get("updated_at")) != row["seen"]:
+                continue  # the chat ran since the scan:  it is in use,  not stale
+            current_title = _platform_title(chat)
+            source = current_title or str(note.get("shown") or "")
+            if not source or bare(source, held(note)) == source:
+                continue  # the title carries no letter of its own:  there is no prefix to take off
+            asked += 1
+            held_answer = _reconcile_answer(env, spec, where, sid)
+            if "error" in held_answer:
+                continue  # no answer:  the title is left as it is
+            if not held_answer["registered"]:
+                # The assigner holds no registration for this chat:  the letter in its title is nobody's.
+                if chat.write(_retire(chat, note, now)):
+                    retired.append(sid)
+                continue
+            # The letter to ask about is the one the REGISTRY says this chat holds,  not the one the note
+            # remembers:  a chat the registry relabelled in place holds its new letter,  and the note's old label
+            # is simply behind.  Asking about the note's label would retire an alive chat for a prefix its own
+            # title happens to carry.
+            current = str(held_answer.get("label") or "")
+            if not LABEL_RE.fullmatch(current):
+                if held_answer.get("holds_no_letter"):
+                    # The registry holds this chat and no letter for it:  the prefix in its title is nobody's.
+                    if chat.write(_retire(chat, note, now)):
+                        retired.append(sid)
+                # Otherwise the assigner named no letter this pass can trust:  no evidence,  no change.
+                continue
+            state, record_id = _letter_holder(env, spec, current)
+            if state == "unknown":
+                continue  # the assigner did not answer about the letter:  no evidence,  no change
+            if state == "live" and record_id == held_answer["record_id"]:
+                continue  # the chat still holds its letter
+            # The letter is not this chat's:  it is not live,  or it is live under another record.
+            if chat.write(_retire(chat, note, now)):
+                retired.append(sid)
+        except Exception as exc:  # noqa: BLE001 - one chat's failure never stops the pass
+            failures.append({"sid": sid, "error": type(exc).__name__})
+            continue
+    # The chats whose title write is still owed.  A retire path that could not write the title leaves the mark
+    # that says so,  and the title still carries the prefix.  The pass retries that write here,  so a chat whose
+    # letter is already gone does not wait for the gone sweep to notice it.  No assigner call is made for these:
+    # their registration is closed already,  and the retire path is the one that owes the title.
+    for row in owed_batch:
+        sid = row["session_id"]
+        try:
+            chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+            note = chat.read()
+            if not note.get("title_pending"):
+                continue
+            if _seconds(note.get("updated_at")) != row["seen"]:
+                continue  # the chat ran since the scan:  it is in use,  not stale
+            # A write that lands is a retire,  and it is counted as one:  the callers read this list,  and a
+            # prefix that came off without being in it would be invisible.
+            if chat.write(_retire(chat, note, now)):
+                retired.append(sid)
+        except Exception as exc:  # noqa: BLE001 - one chat's failure never stops the pass
+            failures.append({"sid": sid, "error": type(exc).__name__})
+            continue
+    recorded = _record_outcome(
+        path,
+        now,
+        {
+            "asked": asked,
+            "retired": len(retired),
+            "failed": len(failures),
+            "cursor": following,
+            "owed_cursor": owed_following,
+        },
+    )
+    if not recorded:
+        recorded = _record_outcome(
+            path,
+            now,
+            {
+                "error": "the outcome could not be saved",
+                "cursor": following,
+                "owed_cursor": owed_following,
+            },
+        )
+    return {
+        "asked": asked,
+        "retired": sorted(retired),
+        "failures": failures,
+        "cursor": following,
+        "recorded": recorded,
+    }
+
+
 def repair_main(
     argv: list[str],
     env: Mapping[str, str] | None = None,
@@ -5144,6 +5429,85 @@ def repair_main(
     return 0
 
 
+def reconcile_main(
+    argv: list[str],
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+    *,
+    now: float | None = None,
+    platform: str = sys.platform,
+    transport: Transport | None = None,
+) -> int:
+    """`reconcile [--platform P] [--location L] [--force]`:  retire the letter prefix of a chat whose letter the
+    assigner no longer holds (AFC-898).  One line per chat names the first 8 characters of its session id and
+    whether its prefix was retired,  never a title.  The stamp beside the notes throttles the pass to once per
+    RECONCILE_SWEEP_SECONDS unless --force.  Exit 0,  2 for bad arguments."""
+    env = os.environ if env is None else env
+    stdout = stdout or sys.stdout
+    force = "--force" in argv
+    try:
+        flags = _flags([word for word in argv if word != "--force"], ("--platform", "--location"))
+    except ValueError:
+        stdout.write(RECONCILE_USAGE)
+        return 2
+    where = location(env, platform, flags.get("location", ""))
+    if where is None:
+        stdout.write("letter reconcile:  %s\n" % NO_LOCATION)
+        return 2
+    specs: list[PlatformSpec] = []
+    if "platform" in flags:
+        name = flags["platform"]
+        spec = load_spec(name) if valid_platform(name) else None
+        if spec is None:
+            stdout.write("letter reconcile:  no adapter for the platform %r\n" % name)
+            return 2
+        specs.append(spec)
+    else:
+        for name in adapter_platforms():
+            try:
+                spec = load_spec(name)
+            except Exception:  # noqa: BLE001 - an adapter that cannot load has nothing to reconcile
+                continue
+            if spec is not None:
+                specs.append(spec)
+    if not specs:
+        stdout.write("letter reconcile:  no platform here names its chats\n")
+        return 0
+    stamp = time.time() if now is None else now
+    for spec in specs:
+        seat = spec.seat_for({}, env)
+        if not seat:
+            continue
+        try:
+            done = reconcile_letters(
+                spec, env, seat, where, now=stamp, transport=transport, force=force
+            )
+        except Exception as exc:  # noqa: BLE001 - the verb reports,  it never fails the caller's job
+            stdout.write(
+                "%s letter reconcile, %s:  could not run (%s)\n"
+                % (spec.display, where, type(exc).__name__)
+            )
+            continue
+        head = "%s letter reconcile, %s:  " % (spec.display, where)
+        if "skipped" in done:
+            stdout.write(head + "skipped (%s)\n" % done["skipped"])
+            if done.get("recorded") is False:
+                sys.stderr.write(head + "the pass's outcome could not be recorded\n")
+            continue
+        for sid in done.get("retired") or []:
+            stdout.write(head + "%s prefix retired\n" % sid[:8])
+        for failed_chat in done.get("failures") or []:
+            stdout.write(head + "%s failed (%s)\n" % (failed_chat["sid"][:8], failed_chat["error"]))
+        stdout.write(
+            head
+            + "%d asked, %d retired\n"
+            % (int(done.get("asked") or 0), len(done.get("retired") or []))
+        )
+        if done.get("recorded") is False:
+            sys.stderr.write(head + "the pass's outcome could not be recorded\n")
+    return 0
+
+
 def _record_outcome(path: str, now: float, outcome: Mapping[str, Any]) -> bool:
     """Merge a pass's outcome into the repair stamp without moving its `at` backward.  Two passes may overlap
     (the `--force` path ignores the throttle on purpose), and a stamp written with the older pass's `at` would
@@ -5220,6 +5584,54 @@ def repair_after_start(
     return started
 
 
+def reconcile_command(platform: str, where: str) -> list[str]:
+    """The detached run a chat's start sets off:  this checkout's own `platform-letter reconcile` for one platform
+    and location, under the interpreter the hook itself runs on."""
+    script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "platform-letter"
+    )
+    return [sys.executable, "-B", script, "reconcile", "--platform", platform, "--location", where]
+
+
+def reconcile_after_start(
+    chat: Chat, spawn: Callable[[list[str], Mapping[str, str]], bool] | None = None
+) -> bool:
+    """Set off the letter reconcile for the chat's platform and location, after the chat's own answer is out, when
+    the reconcile stamp says one is due (RECONCILE_SWEEP_SECONDS):  one detached `platform-letter reconcile` run,
+    which takes the stamp itself and spends its own time, never the chat's.
+
+    The pass asks the assigner about every lettered chat of this host,  so it must never run inside a chat's start:
+    a hook has a budget,  and a run of API calls across many candidates does not fit in one.  Nothing is started for
+    a platform that writes no title,  for a host that does not say where it is,  or for a caller that brought its own
+    registry transport or its own environment mapping (a test,  an embedding caller):  the child reads this
+    process's own settings,  so it could not reach the registry that caller meant.  Before it spawns,  the start
+    takes a spawn claim beside the stamp (an exclusive create,  held REPAIR_SPAWN_CLAIM_SECONDS),  so several chats
+    starting in the same moment set off one run.  True when a run was started."""
+    spec = chat.spec
+    if spec.title_writer is None or chat.location not in LOCATIONS or not chat.seat:
+        return False
+    if chat.transport is not None or chat.env is not os.environ:
+        return False
+    path = reconcile_stamp_path(chat.env, chat.seat, spec.platform, chat.location)
+    stamp = _read_json(path)
+    if "at" in stamp and 0 <= chat.now - _seconds(stamp["at"]) < RECONCILE_SWEEP_SECONDS:
+        return False
+    if not _claim(path + ".spawn", REPAIR_SPAWN_CLAIM_SECONDS):
+        return False  # another chat's start set off this window's run moments ago
+    try:
+        started = bool(
+            (spawn or _spawn_detached)(reconcile_command(spec.platform, chat.location), chat.env)
+        )
+    except Exception:  # noqa: BLE001 - a reconcile never blocks a chat
+        # Nothing was started:  give the claim back,  so the next start is not held off
+        # for the whole claim TTL by a run that never existed.
+        _release(path + ".spawn")
+        return False
+    if not started:
+        _release(path + ".spawn")
+    return started
+
+
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
     """The gone reports a chat's start makes, after the chat's own answer is out:  this host's own chats, then the
     chats the platform's app runs at each other location.  Nothing here reaches the chat:  whatever goes wrong is
@@ -5252,6 +5664,7 @@ def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
 
 GONE_USAGE = "usage: platform-letter gone [--platform P] [--location L] [--apply]\n"
 REPAIR_USAGE = "usage: platform-letter repair [--platform P] [--location L] [--force]\n"
+RECONCILE_USAGE = "usage: platform-letter reconcile [--platform P] [--location L] [--force]\n"
 
 
 def gone_main(
@@ -6304,6 +6717,8 @@ def main(
         return gone_main(argv[1:], env, stdout, transport=transport)
     if argv[0] == "repair":
         return repair_main(argv[1:], env, stdout, transport=transport)
+    if argv[0] == "reconcile":
+        return reconcile_main(argv[1:], env, stdout, transport=transport)
     stderr.write(USAGE)
     return 2
 
