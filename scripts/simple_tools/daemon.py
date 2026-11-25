@@ -6673,8 +6673,9 @@ class Daemon:
         `off` when [linear_comments] is switched off;  a word for an engine that could not be
         built (module_missing, token_file_unusable, no_service_token, credential_refused,
         ledger_refused, build_error, unconfigured);  `running` or `stopped` once one exists, with
-        when the last tick returned, how many calls raised since the daemon started, and the code
-        for the class of the last one (_snake).  The engine is read without its lock:  that lock
+        when the last tick returned, how many calls raised since the daemon started, the code
+        for the class of the last one (_snake), and how many comments the worker has created
+        and updated since it was built.  The engine is read without its lock:  that lock
         is held across Linear calls, and the status must never wait on one.  Nothing here is a
         message from the engine;  the log has those."""
         health = self._linear_comments_health
@@ -6685,10 +6686,13 @@ class Daemon:
             return {"state": state if state in LINEAR_COMMENT_STATES else "unconfigured"}
         with self._linear_comments_lock:
             row = dict(health)
+        worker = getattr(engine, "worker", None)
         seen = {
             "last_tick": row["last_tick"],
             "errors": row["errors"],
             "last_error": row["last_error"],
+            "created": getattr(worker, "comments_created", None),
+            "updated": getattr(worker, "comments_updated", None),
         }
         if getattr(engine, "stopped", None) is None:
             return {"state": "running", **seen}
