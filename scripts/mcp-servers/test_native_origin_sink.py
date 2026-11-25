@@ -222,6 +222,37 @@ class ShapeSink(unittest.TestCase):
             self.assertFalse(list(folder.glob(SINK + ".tmp-*")))
             self.assertEqual(fd_count(), before)
 
+    def test_close_error_preserves_stderr_and_temp_cleanup(self):
+        for fail_write in (False, True):
+            with self.subTest(fail_write=fail_write), tempfile.TemporaryDirectory() as d:
+                folder = self.arm(d, "AG")
+                before = fd_count()
+                real_close = os.close
+                closed = []
+
+                def close_with_report(fd):
+                    real_close(fd)
+                    closed.append(fd)
+                    raise OSError("simulated delayed close failure")
+
+                original_sink = M._write_shape_sink
+
+                def sink_with_close_error(dir_fd, line):
+                    with mock.patch.object(os, "close", side_effect=close_with_report):
+                        if fail_write:
+                            with mock.patch.object(os, "write", side_effect=OSError("full")):
+                                original_sink(dir_fd, line)
+                        else:
+                            original_sink(dir_fd, line)
+
+                with mock.patch.object(M, "_write_shape_sink", side_effect=sink_with_close_error):
+                    line = self.emit(d, "AG", self.params(threadId="t"))
+                self.assertEqual(json.loads(line)["diagnostic"], "origin-call-shape/1")
+                self.assertEqual(len(closed), 1)
+                self.assertFalse((folder / SINK).exists())
+                self.assertFalse(list(folder.glob(SINK + ".tmp-*")))
+                self.assertEqual(fd_count(), before)
+
     def test_sink_never_carries_values_or_unknown_names(self):
         with tempfile.TemporaryDirectory() as d:
             folder = self.arm(d, "AG")

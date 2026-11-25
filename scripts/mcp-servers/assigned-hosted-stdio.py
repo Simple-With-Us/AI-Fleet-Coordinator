@@ -281,8 +281,8 @@ def _write_shape_sink(directory, line):
             if count <= 0:
                 raise OSError("short write")
             written += count
-        os.close(fd)
-        fd = None
+        closing, fd = fd, None
+        os.close(closing)
         os.link(
             temp,
             "origin-call-shape.json",
@@ -294,7 +294,10 @@ def _write_shape_sink(directory, line):
         return
     finally:
         if fd is not None:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         # Only remove a temp this invocation actually created:  after a
         # failed exclusive open the name may belong to someone else.
         if created:
