@@ -2,7 +2,6 @@
 
 import tempfile
 import unittest
-
 from review_alerts import events
 from review_alerts.tests import test_review_alerts as fixtures
 from review_alerts.tests.test_review_alerts import (
@@ -10,8 +9,8 @@ from review_alerts.tests.test_review_alerts import (
     REPO,
     FakeRead,
     FakeRouter,
-    ci_run,
     claimed_owner,
+    ci_run,
     pull,
     review,
 )
@@ -135,3 +134,19 @@ class LegacyMigration(unittest.TestCase):
             svc.gh._reviews.append(review(89, "someone", "CHANGES_REQUESTED"))
             self.assertEqual(svc.cycle()["submitted"], 1)
             self.assertEqual(svc.store.get(REPO, 7, "changes_requested", "88")["status"], "unknown")
+
+    def test_head_only_2510_unknown_is_not_resent_or_assigned_an_invented_base(self):
+        with tempfile.TemporaryDirectory() as d:
+            svc, router = self.setup_service(d)
+            key = "mb" + HEAD + ":conflicts"
+            self.legacy(svc, "merge_blocked", key)
+            svc.store = events.EventStore(svc.store._path)
+            self.assertEqual(svc.cycle()["events"], 0)
+            svc.gh._pr["base"] = {"sha": "c" * 40}
+            self.assertEqual(svc.cycle()["events"], 0)  # Old format has no historical base.
+            svc.gh._checks = [ci_run(55, "merge-gate")]
+            self.assertEqual(svc.cycle()["submitted"], 1)
+            self.assertIn("merge gate", router.submitted[0]["topic"])
+            self.assertEqual(svc.store.get(REPO, 7, "merge_blocked", key)["status"], "unknown")
+            svc.gh._pr["head"] = {"sha": "d" * 40}
+            self.assertEqual(svc.cycle()["submitted"], 1)

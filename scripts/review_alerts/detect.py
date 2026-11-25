@@ -413,7 +413,11 @@ def derive(
         base = pull["base"]["sha"] if "conflicts" in blockers else ""
         # Legacy outcomes remain immutable, including unknown. Remove only facts
         # already recorded, never a new gate, changed base, or newly failed run.
-        if current_head + ":" + base in cursor.get("legacy_conflict_pairs", []):
+        if current_head + ":" + base in cursor.get(
+            "legacy_conflict_pairs", []
+        ) or current_head in cursor.get("legacy_conflict_heads", []):
+            # Head-only #2510 records cannot establish a historical base. Keep
+            # their conflict outcome bounded to that head without inventing it.
             blockers = [name for name in blockers if name != "conflicts"]
         if blockers == ["checks_failed"]:
             blockers = []

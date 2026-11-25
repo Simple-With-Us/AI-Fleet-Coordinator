@@ -206,6 +206,7 @@ class EventStore:
         ci_floor = 0
         ci_ids: set = set()
         legacy_conflict_pairs: set = set()
+        legacy_conflict_heads: set = set()
         legacy_review_ids: set = set()
         completed_heads: set = set()
         with self._lock:
@@ -236,6 +237,12 @@ class EventStore:
                     legacy_review_ids.add(int(event_id))
                 elif kind == "merge_conflict":
                     legacy_conflict_pairs.add(str(event_id))
+                elif kind == "merge_blocked" and str(event_id).startswith("mb"):
+                    parts = str(event_id)[2:].split(":")
+                    if len(parts) == 2 and "conflicts" in parts[1].split("+"):
+                        # This historical format did not record a base. Do not
+                        # invent one or resend an unknown outcome on adoption.
+                        legacy_conflict_heads.add(parts[0])
                 elif kind == "ci_failed" and str(event_id).startswith("ci"):
                     ci_ids.update(
                         int(token) for token in str(event_id)[2:].split("+") if token.isdigit()
@@ -250,6 +257,7 @@ class EventStore:
             "check_id": checks,
             "ci_ids": sorted(ci_ids),
             "legacy_conflict_pairs": sorted(legacy_conflict_pairs),
+            "legacy_conflict_heads": sorted(legacy_conflict_heads),
             "legacy_review_ids": sorted(legacy_review_ids),
             "ci_floor": ci_floor,
             "completed_heads": sorted(completed_heads),
