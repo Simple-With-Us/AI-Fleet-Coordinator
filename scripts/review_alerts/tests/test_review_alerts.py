@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -597,8 +598,11 @@ class CredentialResolution(unittest.TestCase):
             self.assertEqual(load(), "first-" + "a" * 32)
             # Unchanged mtime:  the cached value answers without a re-read.
             self.assertEqual(load(), "first-" + "a" * 32)
-            # Rotation:  a new value lands and the next call picks it up.
+            # Rotation:  a new value lands and the next call picks it up.  Force a
+            # distinct mtime so the test never flakes on a coarse-grained clock.
             path.write_text("rotated-" + "b" * 32)
+            stamp = path.stat().st_mtime_ns + 2_000_000_000
+            os.utime(path, ns=(stamp, stamp))
             self.assertEqual(load(), "rotated-" + "b" * 32)
             # An environment value is a fixed binding:  it wins over the file forever.
             pinned = service.credential_loader(
@@ -610,6 +614,27 @@ class CredentialResolution(unittest.TestCase):
                 "RA_SERVICE_TOKEN_FILE",
             )
             self.assertEqual(pinned(), "from-env-" + "c" * 24)
+
+    def test_a_transient_read_failure_never_poisons_the_cache(self):
+        # A credential file is never legitimately empty:  a read that comes back empty
+        # (a transient open failure reads as "") keeps the last good value and the old
+        # mtime, so the next call retries instead of serving empty until the file changes.
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "relay.key"
+            path.write_text("good-" + "a" * 36)
+            load = service.credential_loader(
+                {"RA_SERVICE_TOKEN_FILE": str(path)}, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"
+            )
+            self.assertEqual(load(), "good-" + "a" * 36)
+            stamp = path.stat().st_mtime_ns + 2_000_000_000
+            path.write_text("")
+            os.utime(path, ns=(stamp, stamp))
+            self.assertEqual(load(), "good-" + "a" * 36, "an empty read keeps the last good value")
+            # A later real value still lands.
+            path.write_text("recovered-" + "b" * 30)
+            stamp2 = stamp + 2_000_000_000
+            os.utime(path, ns=(stamp2, stamp2))
+            self.assertEqual(load(), "recovered-" + "b" * 30)
 
     def test_the_operator_loop_holds_when_neither_credential_source_has_a_value(self):
         held = []

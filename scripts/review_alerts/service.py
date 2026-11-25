@@ -135,10 +135,15 @@ def credential_loader(env: dict, value_name: str, file_name: str):
         try:
             mtime = os.stat(path).st_mtime_ns
         except OSError:
-            return ""
+            return cache["value"]
         if cache["mtime"] != mtime:
-            cache["value"] = _credential_from_file(path)
-            cache["mtime"] = mtime
+            fresh = _credential_from_file(path)
+            # A failed or empty read keeps the last good value and the old mtime, so the
+            # next call retries instead of serving an empty credential until the file
+            # changes again.  A credential file is never legitimately empty.
+            if fresh:
+                cache["value"] = fresh
+                cache["mtime"] = mtime
         return cache["value"]
 
     return load
