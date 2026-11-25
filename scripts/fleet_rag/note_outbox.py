@@ -13,7 +13,6 @@ import os
 import re
 import shutil
 import stat
-import sys
 import tempfile
 import time
 import uuid
@@ -30,6 +29,39 @@ PENDING = re.compile(r"^[0-9a-f]{64}\.json$")
 
 class OutboxError(RuntimeError):
     pass
+
+
+class DeliveryError(OutboxError):
+    """Only fixed diagnostic codes cross the delivery boundary."""
+    def __init__(self, category, code):
+        self.category = category if category in {"retryable", "permanent", "outcome-unknown"} else "outcome-unknown"
+        self.code = code if code in {"provider-contract-invalid", "delivery-http-retryable", "delivery-http-permanent", "delivery-outcome-unknown", "note-secret-gate-refused"} else "delivery-outcome-unknown"
+        super().__init__(self.code)
+
+
+def delivery_failure(error):
+    if isinstance(error, DeliveryError):
+        return error
+    pending = [error]
+    seen = set()
+    for _ in range(8):
+        if not pending:
+            break
+        current_error = pending.pop(0)
+        if id(current_error) in seen:
+            continue
+        seen.add(id(current_error))
+        for field in ("status", "code"):
+            status = getattr(current_error, field, None)
+            if type(status) is int and (status in (408, 429) or 500 <= status <= 599):
+                return DeliveryError("retryable", "delivery-http-retryable")
+            if type(status) is int and 400 <= status <= 499:
+                return DeliveryError("permanent", "delivery-http-permanent")
+        for field in ("__cause__", "__context__"):
+            nested = getattr(current_error, field, None)
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return DeliveryError("outcome-unknown", "delivery-outcome-unknown")
 
 
 def default_root():
@@ -118,6 +150,8 @@ def _pending_record(name, record):
         "queued_at",
         "cancelled",
         "state",
+        "failure_code",
+        "delivery_state",
     }
     if not isinstance(record, dict) or set(record) - allowed or record.get("schema") != 2:
         raise OutboxError("invalid-outbox-record")
@@ -179,10 +213,20 @@ def prepare_document(document):
     from .scrub import gitleaks_flagged, scrub
 
     data = asdict(document)
+    original = [data]
+    while original:
+        value = original.pop()
+        if isinstance(value, str):
+            # JSON escaping changes newlines and can hide header/assignment
+            # patterns, so inspect each exact original string before encoding.
+            if scan(value):
+                raise DeliveryError("permanent", "note-secret-gate-refused")
+        elif isinstance(value, dict):
+            original.extend(value.keys())
+            original.extend(value.values())
+        elif isinstance(value, (list, tuple)):
+            original.extend(value)
     data.pop("extra", None)
-    raw_serialized = json.dumps(data, sort_keys=True, ensure_ascii=False)
-    if scan(raw_serialized) or shutil.which("gitleaks") is None:
-        raise OutboxError("note-secret-gate-unavailable-or-refused")
     for name, value in data.items():
         if isinstance(value, str):
             data[name] = scrub(value)[0]
@@ -190,7 +234,7 @@ def prepare_document(document):
         raise OutboxError("invalid-note-document")
     _key(data["doc_id"])
     serialized = json.dumps(data, sort_keys=True, ensure_ascii=False)
-    if scan(serialized):
+    if scan(serialized) or shutil.which("gitleaks") is None:
         raise OutboxError("note-secret-gate-unavailable-or-refused")
     # The existing gitleaks interface needs a private staged file; only scrubbed text reaches it.
     with tempfile.TemporaryDirectory(prefix="fleet-note-scan-") as temporary:
@@ -220,6 +264,10 @@ def enqueue_id(doc_id, root=None, now=None):
         "queued_at": stamp,
     }
     with _locked(root) as directory:
+        try:
+            os.unlink("cancelled-" + key, dir_fd=directory)
+        except FileNotFoundError:
+            pass
         entries = os.listdir(directory)
         cancelled_keys = {entry[10:] for entry in entries if entry.startswith("cancelled-")}
         names = []
@@ -233,10 +281,6 @@ def enqueue_id(doc_id, root=None, now=None):
         if len(names) >= MAX_PENDING or size + len(json.dumps(record).encode()) > MAX_SPOOL:
             raise OutboxError("note-outbox-full")
         _atomic(directory, key + ".json", record)
-        try:
-            os.unlink("cancelled-" + key, dir_fd=directory)
-        except FileNotFoundError:
-            pass
     return {"state": "queued", "key": key, "version": version}
 
 
@@ -271,6 +315,8 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
     root = default_root() if root is None else Path(root)
     stamp = time.time() if now is None else now
     quarantined = 0
+    item_failed = 0
+    permanent = 0
     if only_key is not None and not re.fullmatch(r"[0-9a-f]{64}", only_key):
         raise OutboxError("invalid-outbox-key")
     with _locked(root) as directory:
@@ -284,16 +330,33 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
             try:
                 record = _pending_record(name, _read(directory, name))
             except (OSError, ValueError, TypeError, OutboxError):
-                _quarantine(directory, name)
-                quarantined += 1
+                try:
+                    _quarantine(directory, name)
+                    quarantined += 1
+                except Exception:
+                    item_failed += 1
                 continue
-            if record and not record.get("cancelled") and record.get("next_attempt", 0) <= stamp:
+            except Exception:
+                item_failed += 1
+                continue
+            if record and record.get("cancelled"):
+                try:
+                    os.unlink(name, dir_fd=directory)
+                    os.fsync(directory)
+                except Exception:
+                    item_failed += 1
+                continue
+            if record and record.get("delivery_state") == "permanent":
+                permanent += 1
+            if record and record.get("delivery_state") != "permanent" and record.get("next_attempt", 0) <= stamp:
                 pending.append((name, record))
             if len(pending) >= limit:
                 break
-    from .scrub import scrub
-
     result = {"verified": 0, "pending": 0, "superseded": 0, "quarantined": quarantined}
+    if item_failed:
+        result["item_failed"] = item_failed
+    if permanent:
+        result["permanent"] = permanent
     for name, record in pending:
         key = name[:-5]
         try:
@@ -301,20 +364,12 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
                 if not current(root, key, record["version"]):
                     result["superseded"] += 1
                     continue
-                permanent_failure = False
+                failure = None
                 try:
                     verified = deliver(record) is True
-                except Exception as exc:
+                except Exception as error:
+                    failure = delivery_failure(error)
                     verified = False
-                    status = getattr(exc, "status", None)
-                    if status is None:
-                        status = getattr(exc, "code", None)
-                    if isinstance(status, int) and 400 <= status < 500 and status not in (408, 429):
-                        permanent_failure = True
-                    print(
-                        f"note_outbox: delivery error for {key}: {scrub(str(exc))[0]}",
-                        file=sys.stderr,
-                    )
                 with _locked(root) as directory:
                     latest = _read(directory, name)
                     if not latest or latest.get("version") != record.get("version"):
@@ -336,10 +391,11 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
                         os.unlink(name, dir_fd=directory)
                         os.fsync(directory)
                         result["verified"] += 1
-                    elif permanent_failure:
-                        _quarantine(directory, name)
-                        result["quarantined"] += 1
                     else:
+                        if failure is not None:
+                            record["failure_code"] = failure.code
+                            record["delivery_state"] = failure.category
+                            result[failure.category] = result.get(failure.category, 0) + 1
                         record["attempts"] = min(int(record.get("attempts", 0)) + 1, 1000)
                         record["next_attempt"] = stamp + min(
                             3600, 30 * 2 ** min(record["attempts"] - 1, 7)
@@ -348,14 +404,10 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
                         result["pending"] += 1
         except BlockingIOError:
             result["pending"] += 1
-        except OSError:
-            raise
-        except Exception as exc:
-            print(
-                f"note_outbox: drain item error for {key}: {scrub(str(exc))[0]}",
-                file=sys.stderr,
-            )
+        except Exception:
+            # Fixed metadata only; an arbitrary exception may contain provider bodies or secrets.
             result["pending"] += 1
+            result["item_failed"] = result.get("item_failed", 0) + 1
     return result
 
 
@@ -375,7 +427,8 @@ def cancel(doc_id, root=None):
                 "state": "source-deleted",
             },
         )
-        _atomic(directory, "cancelled-" + key, {"cancelled": True})
+        fd = os.open("cancelled-" + key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600, dir_fd=directory)
+        os.close(fd)
 
 
 def reconcile_coding(root=None, metadata_reader=None, limit=100):
