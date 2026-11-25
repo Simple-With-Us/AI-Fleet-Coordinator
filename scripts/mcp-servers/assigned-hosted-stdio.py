@@ -112,6 +112,108 @@ def native_origin_claims(env, identity, meta=None):
             os.close(fd)
 
 
+#: Per-call metadata keys a native client can authenticate.  Only these names
+#: are ever reported by the capability probe; unknown keys are counted, never
+#: named, and no value of any key is emitted.
+KNOWN_META_KEYS = (
+    "com.simplewithus/native-origin/1",
+    "com.zcode/request-context",
+    "threadId",
+    "x-codex-turn-metadata",
+)
+
+#: The only tool names the probe may emit.  A caller-controlled name can carry
+#: secret text or an unbounded body, so anything else reports as "other".
+PROBE_TOOL_LABELS = ("identities", "gr_open_pr", "open_pr")
+
+
+def call_shape_once(env, identity, params):
+    """Default-off, host-armed one-shot capability probe for any identity.
+
+    An empty private <identity>/origin-call-shape.once marker is consumed
+    atomically, then one JSON line reports the next tool call's metadata
+    SHAPE:  the tool label (allowlisted names only), the _meta type, the type
+    of each known context key, and the count of other keys.  Never a value,
+    never an unknown key name, never a request or response body.
+
+    Arm at most one marker per identity at a time and never rearm while a
+    consumption may still be in flight:  open/fstat/unlink is not
+    inode-bound, so a racing rearm could be consumed by an earlier reader.
+    One armed generation emits at most one line, even across processes."""
+    if (
+        not isinstance(identity, str)
+        or not re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{0,31}", identity)
+        or not isinstance(params, dict)
+    ):
+        return
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        return
+    directory = None
+    marker = None
+    try:
+        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in (".simple-tools", identity):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+            info = os.fstat(directory)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                return
+        name = "origin-call-shape.once"
+        marker = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        info = os.fstat(marker)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or info.st_size != 0
+        ):
+            return
+        # Only the unlink winner emits, even across adapter processes.
+        os.unlink(name, dir_fd=directory)
+        meta = params.get("_meta")
+
+        def kind(value):
+            if value is None:
+                return "missing-or-null"
+            if type(value) is bool:
+                return "boolean"
+            if type(value) is int:
+                return "integer"
+            if isinstance(value, str):
+                return "string"
+            if isinstance(value, dict):
+                return "object"
+            if isinstance(value, list):
+                return "array"
+            return "other"
+
+        keys = meta.keys() if isinstance(meta, dict) else ()
+        tool = params.get("name")
+        shape = {
+            "diagnostic": "origin-call-shape/1",
+            "tool": tool
+            if tool in PROBE_TOOL_LABELS
+            else ("other" if isinstance(tool, str) else None),
+            "meta_type": kind(meta),
+            "known_keys": {
+                key: kind(meta.get(key)) if isinstance(meta, dict) else "missing-or-null"
+                for key in KNOWN_META_KEYS
+            },
+            "other_key_count": sum(1 for key in keys if key not in KNOWN_META_KEYS),
+        }
+        print(json.dumps(shape, sort_keys=True), file=sys.stderr)
+    except (OSError, ValueError, TypeError):
+        return
+    finally:
+        if marker is not None:
+            os.close(marker)
+        if directory is not None:
+            os.close(directory)
+
+
 def origin_shape_once(env, identity, params):
     """Default-off, host-armed one-shot for identities only. Never emits values.
 
@@ -564,6 +666,7 @@ class Adapter:
                     )
         if method == "tools/call":
             origin_shape_once(self.env, self.identity, message.get("params"))
+            call_shape_once(self.env, self.identity, message.get("params"))
         headers = {
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",
