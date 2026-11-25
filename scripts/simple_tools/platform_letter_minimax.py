@@ -297,6 +297,9 @@ GONE_BATCH = 200
 # the chat says when the fleet last addressed it:  a chat the store does not know and that nobody has
 # addressed for an hour is gone for good.
 
+#: How many chunks of ids the known-check reads.  The client offers at most GONE_REPORT_IDS (500) chats,  so
+#: the cap never bites in practice,  and it bounds the work on the hook path whatever a caller hands over.
+KNOWN_CHUNKS = 4
 #: How many chats the gone path asks about for the note probes.  The client offers the longest quiet chats
 #: first,  so the bound keeps the ones most likely to be gone,  and the rest wait for the next report.
 #: One probe is one file read,  and the gone path runs on a chat's start,  where every millisecond is the
@@ -335,8 +338,10 @@ def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[s
 
     The probes are bounded (ABSENT_PROBE_LIMIT),  and the order of the ids is kept:  the client offers the
     longest quiet chats first,  so the bound keeps the ones most likely to be gone,  and the rest wait for
-    the next report.  The store is asked about every id first,  so a chat it knows does not spend the
-    budget:  a first run of chats the store knows must not starve the chats it does not."""
+    the next report.  The store is asked about the ids first,  so a chat it knows does not spend the budget:
+    a first run of chats the store knows must not starve the chats it does not.  The check itself is
+    bounded (KNOWN_CHUNKS),  and it stops as soon as the budget is full,  so the hook path pays for a few
+    queries and not for the length of the list."""
     path = store_file(env)
     if not path or not os.path.isfile(path):
         return set()
@@ -348,23 +353,29 @@ def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[s
             ordered.append(sid)
     if not ordered:
         return set()
+    scanned = ordered[: KNOWN_CHUNKS * GONE_BATCH]
     known: set[str] = set()
     try:
         conn = _read_only(path)
         try:
-            for start in range(0, len(ordered), GONE_BATCH):
-                chunk = ordered[start : start + GONE_BATCH]
+            for start in range(0, len(scanned), GONE_BATCH):
+                chunk = scanned[start : start + GONE_BATCH]
                 rows = conn.execute(
                     "SELECT session_id FROM local_runtime_sessions WHERE session_id IN (%s)"
                     % ",".join("?" * len(chunk)),
                     chunk,
                 ).fetchall()
                 known.update(str(row[0]) for row in rows)
+                # The budget is spent on the chats the store does not know,  so the scan stops as soon as it
+                # has them:  a first run of chats the store knows must not starve the chats it does not,  and
+                # a long list must not cost a query per chunk of it.
+                if len([sid for sid in scanned if sid not in known]) >= ABSENT_PROBE_LIMIT:
+                    break
         finally:
             conn.close()
     except sqlite3.Error:
         return set()
-    unknown = [sid for sid in ordered if sid not in known][:ABSENT_PROBE_LIMIT]
+    unknown = [sid for sid in scanned if sid not in known][:ABSENT_PROBE_LIMIT]
     now = time.time()
     gone: set[str] = set()
     for sid in unknown:

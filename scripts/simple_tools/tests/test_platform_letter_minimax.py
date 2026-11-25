@@ -558,6 +558,35 @@ class AbsentChatTests(MachineRunBase):
         self.assertEqual(len(gone), PM.ABSENT_PROBE_LIMIT)
         self.assertEqual(gone, set(ids[: PM.ABSENT_PROBE_LIMIT]))
 
+    def test_the_known_check_is_bounded_and_stops_early(self) -> None:
+        # The check reads the store in chunks and stops as soon as it has the budget it needs,  so a long
+        # list does not cost a query per chunk of it.
+        ids = ["m-%05d" % n for n in range(2000)]
+        for sid in ids[:120]:
+            self.write_note(sid, 7200)
+        seen: list[str] = []
+        real_connect = sqlite3.connect
+
+        class Recording:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, params=()):
+                seen.append(sql)
+                return self._conn.execute(sql, params)
+
+            def close(self):
+                self._conn.close()
+
+        def connect(*args, **kwargs):
+            return Recording(real_connect(*args, **kwargs))
+
+        with mock.patch.object(PM.sqlite3, "connect", side_effect=connect):
+            gone = PM.absent_sessions(self.env(), ids)
+        queries = [sql for sql in seen if "IN (" in sql]
+        self.assertLessEqual(len(queries), PM.KNOWN_CHUNKS)
+        self.assertEqual(len(gone), PM.ABSENT_PROBE_LIMIT)
+
     def test_a_store_that_cannot_be_read_names_nothing(self) -> None:
         self.write_note("m-0001", 7200)
         with open(self.store, "wb") as fh:
