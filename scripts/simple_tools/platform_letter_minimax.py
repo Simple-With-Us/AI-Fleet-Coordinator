@@ -355,6 +355,7 @@ def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[s
         return set()
     scanned = ordered[: KNOWN_CHUNKS * GONE_BATCH]
     known: set[str] = set()
+    queried = 0
     try:
         conn = _read_only(path)
         try:
@@ -366,16 +367,19 @@ def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[s
                     chunk,
                 ).fetchall()
                 known.update(str(row[0]) for row in rows)
+                queried = start + len(chunk)
                 # The budget is spent on the chats the store does not know,  so the scan stops as soon as it
                 # has them:  a first run of chats the store knows must not starve the chats it does not,  and
-                # a long list must not cost a query per chunk of it.
-                if len([sid for sid in scanned if sid not in known]) >= ABSENT_PROBE_LIMIT:
+                # a long list must not cost a query per chunk of it.  Only the ids the store has been asked
+                # about count:  an id it has not been asked about is not known to be absent,  and naming it
+                # would free the letter of a chat the store holds.
+                if len([sid for sid in scanned[:queried] if sid not in known]) >= ABSENT_PROBE_LIMIT:
                     break
         finally:
             conn.close()
     except sqlite3.Error:
         return set()
-    unknown = [sid for sid in scanned if sid not in known][:ABSENT_PROBE_LIMIT]
+    unknown = [sid for sid in scanned[:queried] if sid not in known][:ABSENT_PROBE_LIMIT]
     now = time.time()
     gone: set[str] = set()
     for sid in unknown:

@@ -558,6 +558,19 @@ class AbsentChatTests(MachineRunBase):
         self.assertEqual(len(gone), PM.ABSENT_PROBE_LIMIT)
         self.assertEqual(gone, set(ids[: PM.ABSENT_PROBE_LIMIT]))
 
+    def test_only_the_ids_the_store_was_asked_about_are_named(self) -> None:
+        # An id the store has not been asked about is not known to be absent:  naming it would free the
+        # letter of a chat the store holds.
+        known = ["k-%04d" % n for n in range(200)]
+        for sid in known:
+            self.add(sid, workspace=OWNER)
+            self.write_note(sid, 7200)
+        unknown = ["m-%04d" % n for n in range(100)]
+        for sid in unknown:
+            self.write_note(sid, 7200)
+        gone = PM.absent_sessions(self.env(), known + unknown)
+        self.assertEqual(gone, set(unknown[: PM.ABSENT_PROBE_LIMIT]))
+
     def test_the_known_check_is_bounded_and_stops_early(self) -> None:
         # The check reads the store in chunks and stops as soon as it has the budget it needs,  so a long
         # list does not cost a query per chunk of it.
