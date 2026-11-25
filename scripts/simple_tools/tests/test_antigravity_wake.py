@@ -432,6 +432,42 @@ class TestAntigravityDeliverLocal(BaseTest):
             )
         self.assertEqual(delivery.outcome, "sent")
 
+    def test_data_probe_only_reads_the_matched_root(self) -> None:
+        # Another product root holding data says nothing about this
+        # conversation:  only the root whose database holds the row is probed.
+        self._insert(SID_VALID)
+        other = self.root / "other-product"
+        (other / "implicit").mkdir(parents=True)
+        (other / "implicit" / "99999999-9999-4999-8999-999999999999.pb").write_bytes(b"x")
+        root = self.root
+        self.assertFalse(AGW.conversation_data_missing(self.env, SID_VALID, root))
+        # And with the matched root itself populated for other ids, it refuses.
+        (root / "implicit").mkdir(exist_ok=True)
+        (root / "implicit" / "99999999-9999-4999-8999-999999999999.pb").write_bytes(b"x")
+        self.assertTrue(AGW.conversation_data_missing(self.env, SID_VALID, root))
+
+    def test_data_probe_brain_stray_file_is_not_data(self) -> None:
+        # A stray file under brain/ is not a conversation:  only directories
+        # (or the per-conversation files) make the root understood.
+        self._insert(SID_VALID)
+        brain = self.root / "brain"
+        brain.mkdir()
+        (brain / "lockfile").write_bytes(b"x")
+        self.assertFalse(
+            AGW.conversation_data_missing(self.env, SID_VALID, self.root)
+        )
+        (brain / "99999999-9999-4999-8999-999999999999").mkdir()
+        self.assertTrue(
+            AGW.conversation_data_missing(self.env, SID_VALID, self.root)
+        )
+
+    def test_data_probe_unreadable_root_fails_closed(self) -> None:
+        self._insert(SID_VALID)
+        with mock.patch("os.scandir", side_effect=PermissionError("denied")):
+            self.assertTrue(
+                AGW.conversation_data_missing(self.env, SID_VALID, self.root)
+            )
+
     def test_conversation_not_found(self) -> None:
         delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_ABSENT, self.wake())
         self.assertEqual((delivery.outcome, delivery.code), ("refused", "conversation-not-found"))

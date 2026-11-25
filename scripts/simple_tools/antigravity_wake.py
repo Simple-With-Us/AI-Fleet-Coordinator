@@ -47,6 +47,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sqlite3
 import subprocess
 import threading
@@ -198,22 +199,61 @@ def find_conversation_record(
     return None, None
 
 
-def _data_here(root: Path, session_id: str) -> tuple[bool, bool]:
-    """(this conversation's data is under `root`, `root` holds any conversation data).
+def _matching_root(env: Mapping[str, str], session_id: str) -> Path | None:
+    """The product root whose summaries database holds this conversation's row.
+
+    The data check probes only this root (AFC-840 review):  another product's
+    store says nothing about whether this conversation can be loaded."""
+    for db in store_paths(env):
+        if not db.is_file():
+            continue
+        try:
+            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=1.0)
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError):
+            continue
+        if row is not None:
+            return db.parent
+    return None
+
+
+def _data_here(root: Path, session_id: str) -> tuple[bool, bool, bool]:
+    """(mine, understood, unreadable) for one product root.
 
     The shapes are the ones the letter library already trusts a product root to
     hold (`platform_letter_antigravity._root_knows_conversation`), plus the
-    implicit protobuf this host's CLI store keeps (`implicit/<id>.pb`)."""
-    mine = (
-        (root / "annotations" / ("%s.pbtxt" % session_id)).is_file()
-        or (root / "brain" / session_id).is_dir()
-        or (root / "conversations" / ("%s.db" % session_id)).is_file()
-        or (root / "conversations" / ("%s.pb" % session_id)).is_file()
-        or (root / "implicit" / ("%s.pb" % session_id)).is_file()
+    implicit protobuf this host's CLI store keeps (`implicit/<id>.pb`).  A root
+    that cannot be read (permission) is unreadable, never empty."""
+    specs = (
+        (root / "annotations" / ("%s.pbtxt" % session_id), False),
+        (root / "brain" / session_id, True),
+        (root / "conversations" / ("%s.db" % session_id), False),
+        (root / "conversations" / ("%s.pb" % session_id), False),
+        (root / "implicit" / ("%s.pb" % session_id), False),
     )
+    mine = False
+    unreadable = False
+    for path, want_dir in specs:
+        try:
+            st = path.stat()
+        except PermissionError:
+            unreadable = True
+            continue
+        except OSError:
+            continue
+        if want_dir and stat.S_ISDIR(st.st_mode):
+            mine = True
+        elif not want_dir and stat.S_ISREG(st.st_mode):
+            mine = True
     if mine:
-        return True, True
-    any_data = False
+        return True, True, unreadable
+    understood = False
     for folder, suffix in (
         ("annotations", ".pbtxt"),
         ("conversations", ".db"),
@@ -221,37 +261,54 @@ def _data_here(root: Path, session_id: str) -> tuple[bool, bool]:
         ("implicit", ".pb"),
     ):
         try:
-            if any(name.endswith(suffix) for name in os.listdir(root / folder)):
-                any_data = True
-                break
+            with os.scandir(root / folder) as it:
+                for entry in it:
+                    if entry.name.endswith(suffix):
+                        understood = True
+                        break
+        except PermissionError:
+            unreadable = True
         except OSError:
             continue
-    if not any_data:
+        if understood:
+            break
+    if not understood:
         try:
-            any_data = any(True for _ in os.scandir(root / "brain"))
+            with os.scandir(root / "brain") as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir():
+                            understood = True
+                            break
+                    except OSError:
+                        continue
+        except PermissionError:
+            unreadable = True
         except OSError:
-            any_data = False
-    return False, any_data
+            pass
+    return False, understood, unreadable
 
 
-def conversation_data_missing(env: Mapping[str, str], session_id: str) -> bool:
-    """True when a summaries row exists but the conversation's data does not (AFC-840).
+def conversation_data_missing(
+    env: Mapping[str, str], session_id: str, root: Path | None
+) -> bool:
+    """True when the matched root holds no data for this conversation (AFC-840).
 
-    A summary row alone is not proof the CLI can load the conversation:  with the
-    data gone it prints `conversation "<id>" not found` and runs the turn in a new
-    chat.  The refusal is made only when a candidate product root is understood
-    — it holds conversation data for other ids in a known shape — yet holds none
-    for this one.  A root with no data artifacts at all cannot be told apart
-    from a database-resident layout, so it never refuses:  the post-hoc
-    `resume-new-chat` naming (PR 2320) stays the guard there."""
-    roots = {db.parent for db in store_paths(env)}
-    understood = False
-    for root in roots:
-        mine, any_data = _data_here(root, session_id)
-        if mine:
-            return False
-        understood = understood or any_data
-    return understood
+    A summary row alone is not proof the CLI can load the conversation:  with
+    the data gone it prints `conversation "<id>" not found` and runs the turn in
+    a new chat.  The refusal is made only for the root whose summaries database
+    holds the row, and only when that root is understood — it holds conversation
+    data for other ids in a known shape — yet holds none for this one, or when
+    it cannot be read at all (fail closed).  A root with no data artifacts at
+    all, or no matched root, cannot be told apart from a database-resident
+    layout and never refuses:  the post-hoc `resume-new-chat` naming (PR 2320)
+    stays the guard there."""
+    if root is None:
+        return False
+    mine, understood, unreadable = _data_here(root, session_id)
+    if mine:
+        return False
+    return unreadable or understood
 
 
 def _excluded_ids(stores: list[Path], sids: list[str]) -> set[str]:
@@ -615,7 +672,7 @@ def deliver_local(
 
             # Strict before launch (AFC-840):  a summary row whose conversation
             # data is gone would make the CLI run the turn in a new chat.
-            if conversation_data_missing(env, session_id):
+            if conversation_data_missing(env, session_id, _matching_root(env, session_id)):
                 return WR.Delivery("refused", "resume", code="conversation-data-missing")
 
             child_env = _child_env(env)
