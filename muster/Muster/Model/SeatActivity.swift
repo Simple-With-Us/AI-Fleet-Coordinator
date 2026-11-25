@@ -687,6 +687,28 @@ struct SeatRowNote: Identifiable, Equatable, Sendable {
     var id: String { column + "\u{1F}" + text }
 }
 
+/// What the server's current reading says a server seat is doing:  how many of its sessions
+/// are alive,  and how many jobs (wakes) it is running.
+struct ServerSeatActivity: Equatable, Sendable {
+    let liveSessions: Int
+    let jobs: Int
+
+    init(liveSessions: Int, jobs: Int) {
+        self.liveSessions = liveSessions
+        self.jobs = jobs
+    }
+
+    init(_ facts: ServerSeatFacts) {
+        self.init(
+            liveSessions: facts.sessions.filter { $0.alive == true }.count,
+            jobs: max(facts.jobs ?? 0, 0)
+        )
+    }
+
+    /// A live session or a running job.
+    var isWorking: Bool { liveSessions > 0 || jobs > 0 }
+}
+
 /// One seat's row.
 struct SeatActivityRow: Identifiable, Equatable, Sendable {
     /// The seat tag.
@@ -711,6 +733,10 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
     let quotaReason: String?
     /// The seat's last Zulip post.
     let lastPost: SeatFact<SeatLastPost>
+    /// What the server's current reading says the seat is doing,  or nil when the seat is not
+    /// the server's or the reading is not current.  It counts only toward working and toward
+    /// the Working and With Sessions filters:  the Mac columns still say they are not read here.
+    let serverActivity: ServerSeatActivity?
 
     var id: String { seat }
 
@@ -725,7 +751,8 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
         lastEvent: Date? = nil,
         quota: SeatFact<SeatQuotaReading> = .known(.notReported),
         quotaReason: String? = nil,
-        lastPost: SeatFact<SeatLastPost>
+        lastPost: SeatFact<SeatLastPost>,
+        serverActivity: ServerSeatActivity? = nil
     ) {
         self.seat = seat
         self.botName = botName
@@ -738,6 +765,7 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
         self.quota = quota
         self.quotaReason = quotaReason
         self.lastPost = lastPost
+        self.serverActivity = serverActivity
     }
 
     /// Whether the seat's last post says,  in its own words,  that the seat is at quota.
@@ -748,10 +776,12 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
         lastPost.value?.isAtQuota ?? false
     }
 
-    /// Whether the seat is working:  a live session on the Mac,  or a wake running now.
+    /// Whether the seat is working:  a live session or a running job in the server's current
+    /// reading,  a live session on the Mac,  or a wake running now.
     var isWorking: Bool {
         if runningWake { return true }
         if case .known(let count) = openSessions, count > 0 { return true }
+        if serverActivity?.isWorking == true { return true }
         return false
     }
 
@@ -841,7 +871,7 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
         case .attention:
             guard needsAttention else { return false }
         case .withSessions:
-            let hasCount = (openSessions.value ?? 0) > 0
+            let hasCount = (openSessions.value ?? 0) > 0 || (serverActivity?.liveSessions ?? 0) > 0
             guard !sessions.isEmpty || hasCount else { return false }
         }
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1226,7 +1256,9 @@ enum SeatActivityBuilder {
             lastEvent: nil,
             quota: macColumn(place),
             quotaReason: nil,
-            lastPost: sources.lastPosts[seat] ?? .unknown(SeatActivityBuilder.noPostReason)
+            lastPost: sources.lastPosts[seat] ?? .unknown(SeatActivityBuilder.noPostReason),
+            // Only a current reading says what a seat is doing now (Sentry on #2535).
+            serverActivity: sources.server?.seat(seat, now: sources.readAt).facts.map { ServerSeatActivity($0) }
         )
     }
 
