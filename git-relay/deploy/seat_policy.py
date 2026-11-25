@@ -150,7 +150,10 @@ def _title_tags(seats: dict) -> dict:
 
     seat_tags: dict[str, str] = {}
     for slug, seat in seats.items():
-        tag = effective_title_tag(slug, seat.get("title_tag"))
+        try:
+            tag = effective_title_tag(slug, seat.get("title_tag"))
+        except PolicyError as exc:
+            raise PolicyFileError(str(exc)) from None
         if not TITLE_TAG.fullmatch(tag):
             raise PolicyFileError(
                 f"seat {seat.get('identity')!r}: title tag {tag!r} must be 1-32 chars of "
@@ -182,6 +185,11 @@ def render(doc: dict) -> dict:
         identity, slug, profile = row.get("identity"), row.get("app_slug"), row.get("profile")
         if not identity or not slug or not profile:
             raise PolicyFileError("every seat needs identity, app_slug and profile")
+        # A malformed row is refused here, on this module's own error path:  a
+        # non-string field would reach the title-tag derivation and crash it.
+        for field, value in (("identity", identity), ("app_slug", slug), ("profile", profile)):
+            if not isinstance(value, str):
+                raise PolicyFileError(f"seat {identity!r}: {field} must be a string")
         if slug in seats:
             raise PolicyFileError(f"App {slug!r} is listed twice")
         if identity in identities:

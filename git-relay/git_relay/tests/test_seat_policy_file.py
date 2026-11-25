@@ -329,6 +329,17 @@ class SeatPolicyFile(unittest.TestCase):
             with self.assertRaisesRegex(seat_policy.PolicyFileError, message):
                 seat_policy.render(doc)
 
+    def test_render_refuses_a_seat_whose_fields_are_not_strings(self):
+        """A malformed row is refused on the documented error path, not a crash."""
+        for field in ("identity", "app_slug", "profile"):
+            with self.subTest(field=field):
+                doc = json.loads(json.dumps(DOC))
+                doc["seats"][0][field] = 7
+                with self.assertRaisesRegex(
+                    seat_policy.PolicyFileError, f"{field} must be a string"
+                ):
+                    seat_policy.render(doc)
+
     def test_root_refuses_a_copy_another_account_can_write(self):
         target = Path("/tmp/fixture/deploy/seat_policy.py")
         root_dir = fake_stat(0, stat.S_IFDIR | 0o755)

@@ -43,7 +43,13 @@ _LEADING_BRACKET = re.compile(r"^\[([^\[\]]{1,64})\]")
 
 
 def _derived_title_tag(seat: str) -> str:
-    """The default bracket tag for a seat:  swu-echo -> ECHO."""
+    """The default bracket tag for a seat:  swu-echo -> ECHO.
+
+    A seat name that is not a string (a number in the policy file, say) is refused
+    with this module's own PolicyError, never an AttributeError from removeprefix.
+    """
+    if not isinstance(seat, str):
+        raise PolicyError(f"seat {seat!r}: the seat name must be a string")
     name = seat.removeprefix("swu-")
     return name.upper()[:32]
 

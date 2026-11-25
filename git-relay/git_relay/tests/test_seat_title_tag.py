@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from git_relay.policy import PolicyError, SeatPolicy
+from git_relay.policy import PolicyError, SeatPolicy, effective_title_tag
 from git_relay.policy_input import seats_json_from_env
 
 RELAY = Path(__file__).resolve().parents[2]
@@ -89,6 +89,20 @@ class SeatTitleTagTests(unittest.TestCase):
                 with self.assertRaises(seat_policy.PolicyFileError) as error:
                     seat_policy.render(doc)
                 self.assertIn("extends", str(error.exception))
+
+    def test_a_seat_whose_app_slug_is_not_a_string_is_refused(self):
+        """A malformed policy file is refused on the documented error path."""
+        doc = seat_policy.load()
+        doc["seats"][0]["app_slug"] = 7
+        with self.assertRaises(seat_policy.PolicyFileError) as error:
+            seat_policy.render(doc)
+        self.assertIn("app_slug must be a string", str(error.exception))
+
+    def test_the_derivation_refuses_a_seat_name_that_is_not_a_string(self):
+        """The runtime's own derivation raises PolicyError, never an AttributeError."""
+        with self.assertRaises(PolicyError) as error:
+            effective_title_tag(7)
+        self.assertNotIsInstance(error.exception, AttributeError)
 
     def test_the_rendered_policy_is_one_the_relay_accepts(self):
         """What renders is what the runtime loads:  the same tag rules, one place."""
