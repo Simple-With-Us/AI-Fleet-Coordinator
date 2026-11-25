@@ -54,13 +54,17 @@ EVENT_FIELDS = (
     "target_generation",
 )
 
+#: The event kinds.  The first three are review activity;  `ci_failed` and `merge_blocked`
+#: are states of the PR itself, which block it as surely as a finding does.
 KINDS = (
     "review_submitted",
     "review_completed",
     "findings_added",
+    "ci_failed",
+    "merge_blocked",
     "merge_conflict",
-    "changes_requested",
     "check_failure",
+    "changes_requested",
 )
 TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
@@ -204,10 +208,21 @@ class EventStore:
 
     def cursor(self, repo: str, number: int) -> dict:
         """The high-water marks and alerted completion heads derived from the
-        seed and stored events (ids only grow;  heads only accumulate)."""
+        seed and stored events (ids only grow;  heads only accumulate).
+
+        `ci_ids` are the failed check runs a CI event already named, one by
+        one:  a slow run may fail after a fast one and carry the lower id, so
+        a high-water mark would lose it.  `ci_floor` is the seed's own check
+        watermark, the runs that completed before the PR was registered."""
         reviews = 0
         comments = 0
         checks = 0
+        ci_floor = 0
+        ci_ids: set = set()
+        legacy_conflict_pairs: set = set()
+        legacy_conflict_heads: set = set()
+        legacy_blocker_components: dict[str, set] = {}
+        legacy_review_ids: set = set()
         completed_heads: set = set()
         with self._lock:
             seed = self._seeds.get((repo, int(number)))
@@ -219,10 +234,7 @@ class EventStore:
                     comments = int(parts[1])
                 if len(parts) >= 3 and parts[2].isdigit():
                     checks = int(parts[2])
-            # The first-sight baselines, before any event-derived maximum:
-            # detection passes that must not assume numeric completion order
-            # filter on these and leave repeats to the event store.
-            review_seed, check_seed = reviews, checks
+                    ci_floor = checks
             for (r, n, kind, event_id), row in self._by_key.items():
                 if r != repo or n != int(number):
                     continue
@@ -234,6 +246,25 @@ class EventStore:
                     tail = str(event_id)[1:]
                     if tail.isdigit():
                         comments = max(comments, int(tail))
+                elif kind == "check_failure" and str(event_id).isdigit():
+                    ci_ids.add(int(event_id))
+                elif kind == "changes_requested" and str(event_id).isdigit():
+                    legacy_review_ids.add(int(event_id))
+                elif kind == "merge_conflict":
+                    legacy_conflict_pairs.add(str(event_id))
+                elif kind == "merge_blocked" and str(event_id).startswith("mb"):
+                    parts = str(event_id)[2:].split(":")
+                    if len(parts) == 2 and "conflicts" in parts[1].split("+"):
+                        # This historical format did not record a base. Do not
+                        # invent one or resend an unknown outcome on adoption.
+                        legacy_conflict_heads.add(parts[0])
+                        legacy_blocker_components.setdefault(parts[0], set()).update(
+                            parts[1].split("+")
+                        )
+                elif kind == "ci_failed" and str(event_id).startswith("ci"):
+                    ci_ids.update(
+                        int(token) for token in str(event_id)[2:].split("+") if token.isdigit()
+                    )
                 if kind in ("review_submitted", "review_completed"):
                     head = str(row.get("head") or "")
                     if head:
@@ -242,8 +273,14 @@ class EventStore:
             "review_id": reviews,
             "comment_id": comments,
             "check_id": checks,
-            "review_seed": review_seed,
-            "check_seed": check_seed,
+            "ci_ids": sorted(ci_ids),
+            "legacy_conflict_pairs": sorted(legacy_conflict_pairs),
+            "legacy_conflict_heads": sorted(legacy_conflict_heads),
+            "legacy_blocker_components": {
+                head: sorted(names) for head, names in legacy_blocker_components.items()
+            },
+            "legacy_review_ids": sorted(legacy_review_ids),
+            "ci_floor": ci_floor,
             "completed_heads": sorted(completed_heads),
         }
 
