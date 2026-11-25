@@ -66,6 +66,122 @@ class Queue:
     event_types: tuple[str, ...] = ("message",)
 
 
+class _ChannelNames(dict):
+    """Channel names to stream ids, matched without regard to case, as Zulip matches them.
+
+    The realm shows the coordination channel as Work-In-Progress and a seat may type it in any
+    case (AFC-482), so a lookup finds the name the realm already has before it adds a new one.
+    Every path that reads, writes, removes or copies a name goes through `_known`, so no spelling
+    of a channel can raise KeyError or add a second entry for it (Kody review on AFC-482).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        dict.__init__(self)
+        self.update(*args, **kwargs)
+
+    def _known(self, name: Any) -> Any:
+        if dict.__contains__(self, name):
+            return name
+        folded = str(name).casefold()
+        return next((known for known in dict.keys(self) if known.casefold() == folded), name)
+
+    def __contains__(self, name: object) -> bool:
+        return dict.__contains__(self, self._known(name))
+
+    def __getitem__(self, name: Any) -> Any:
+        return dict.__getitem__(self, self._known(name))
+
+    def __setitem__(self, name: Any, value: Any) -> None:
+        dict.__setitem__(self, self._known(name), value)
+
+    def __delitem__(self, name: Any) -> None:
+        dict.__delitem__(self, self._known(name))
+
+    def get(self, name: Any, default: Any = None) -> Any:
+        return dict.get(self, self._known(name), default)
+
+    def setdefault(self, name: Any, default: Any = None) -> Any:
+        return dict.setdefault(self, self._known(name), default)
+
+    def pop(self, name: Any, *default: Any) -> Any:
+        return dict.pop(self, self._known(name), *default)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        if len(args) > 1:
+            raise TypeError("update expected at most 1 argument, got %d" % len(args))
+        if args:
+            other = args[0]
+            pairs = ((key, other[key]) for key in other.keys()) if hasattr(other, "keys") else other
+            for key, value in pairs:
+                self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
+
+    def copy(self) -> "_ChannelNames":
+        return _ChannelNames(self)
+
+    def __or__(self, other: Any) -> "_ChannelNames":
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def __ior__(self, other: Any) -> "_ChannelNames":
+        self.update(other)
+        return self
+
+
+class _ChannelSet(set):
+    """A set of channel names, matched without regard to case like `_ChannelNames`."""
+
+    def __init__(self, names: Any = ()) -> None:
+        set.__init__(self)
+        self.update(names)
+
+    def _known(self, name: Any) -> Any:
+        folded = str(name).casefold()
+        return next((known for known in set.__iter__(self) if known.casefold() == folded), None)
+
+    def __contains__(self, name: object) -> bool:
+        return self._known(name) is not None
+
+    def add(self, name: Any) -> None:
+        if self._known(name) is None:
+            set.add(self, name)
+
+    def discard(self, name: Any) -> None:
+        known = self._known(name)
+        if known is not None:
+            set.discard(self, known)
+
+    def remove(self, name: Any) -> None:
+        known = self._known(name)
+        if known is None:
+            raise KeyError(name)
+        set.remove(self, known)
+
+    def update(self, *others: Any) -> None:
+        for other in others:
+            for name in other:
+                self.add(name)
+
+    def copy(self) -> "_ChannelSet":
+        return _ChannelSet(self)
+
+    def __or__(self, other: Any) -> "_ChannelSet":
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def __ior__(self, other: Any) -> "_ChannelSet":
+        self.update(other)
+        return self
+
+
+def _by_name(name: str) -> str:
+    """The sort key for channel names:  case folded, so a capital letter does not move a name up."""
+    return name.casefold()
+
+
 FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the real fleet's
 # the fake realm's channel:  these suites pin SIMPLE_TOOLS_CHANNEL to it, so they keep
 # exercising their own name instead of the runtime default (which follows the realm).
@@ -114,8 +230,8 @@ class FakeZulip:
             user(15, "minimax-bot@zulip.test", "MiniMax", True),
         ]
         self.keys: dict[str, dict[str, Any]] = {key: self.me}  # API key -> the bot it belongs to
-        self.streams = {DEFAULT_CHANNEL: 7, FAKE_CHANNEL: 7, "other": 8, "sandbox": 9}
-        self.subscribed = {FAKE_CHANNEL, DEFAULT_CHANNEL, "other"}
+        self.streams = _ChannelNames({DEFAULT_CHANNEL: 7, FAKE_CHANNEL: 7, "other": 8, "sandbox": 9})
+        self.subscribed = _ChannelSet({FAKE_CHANNEL, DEFAULT_CHANNEL, "other"})
         self.subscription_properties: list[dict[str, Any]] = []
         self.user_groups: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
@@ -218,7 +334,7 @@ class FakeZulip:
         first name that maps to the id wins everywhere the realm is asked.
         """
         stream_id = self.streams.get(channel)
-        for name, ident in sorted(self.streams.items()):
+        for name, ident in sorted(self.streams.items(), key=lambda item: _by_name(item[0])):
             if ident == stream_id:
                 return name
         return channel
@@ -558,7 +674,7 @@ class FakeZulip:
             return 200, {**ok, "members": copy.deepcopy(self.users)}
         if key == ("GET", "users/me/subscriptions"):
             subs, seen = [], set()
-            for n in sorted(self.subscribed):
+            for n in sorted(self.subscribed, key=_by_name):
                 stream_id = self.streams[n]
                 if stream_id in seen:
                     continue
@@ -577,7 +693,7 @@ class FakeZulip:
                          "already_subscribed": {caller["email"]: old} if old else {}}
         if key == ("GET", "streams"):
             streams, seen = [], set()
-            for n, i in sorted(self.streams.items()):
+            for n, i in sorted(self.streams.items(), key=lambda item: _by_name(item[0])):
                 if i in seen:
                     continue
                 seen.add(i)
@@ -689,7 +805,8 @@ class FakeZulip:
             if mode == "change_all" and "stream_id" not in params:
                 self.rename_topic(channel, found["subject"], params["topic"])
                 return 200, ok
-            same = [m for m in self.messages if m["type"] == "stream" and m["display_recipient"] == channel
+            same = [m for m in self.messages if m["type"] == "stream"
+                    and str(m["display_recipient"]).casefold() == str(channel).casefold()
                     and m["subject"].casefold() == found["subject"].casefold()]
             moved = same if mode == "change_all" else [m for m in same if m["id"] >= found["id"]] \
                 if mode == "change_later" else [found]

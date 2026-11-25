@@ -18,9 +18,14 @@ export const REALM = "https://simplewithus.zulipchat.com";
 // same stream so fixtures written against it still address the same place).
 // The stream ids are synthetic on purpose:  a fake must not carry a production resource id, and
 // nothing here depends on the number matching the realm.
-export const DEFAULT_CHANNEL = "work-in-progress";
+export const DEFAULT_CHANNEL = "Work-In-Progress";
 export const STREAMS = { [DEFAULT_CHANNEL]: 900001, "simple-tools": 900001, sandbox: 900002, other: 999001, design: 700001 };
 export const PRIVATE_STREAMS = Object.freeze([STREAMS.other]);
+
+/** Two channel names that Zulip treats as one:  it matches a channel name without regard to case. */
+function sameChannel(a, b) {
+  return String(a).toLowerCase() === String(b).toLowerCase();
+}
 export const OWNER_ID = 1211974;
 export const BOT_EMAIL = "grok-web-bot@simplewithus.zulipchat.com";
 
@@ -84,9 +89,16 @@ export class FakeZulip {
     return this.users[0];
   }
 
-  /** A stream id from its current name (or an old STREAMS key). */
+  /**
+   * A stream id from its current name (or an old STREAMS key), matched without regard to case as
+   * Zulip matches it, the same way as the Python fake (scripts/simple_tools/tests/fake_zulip.py):
+   * the golden fixtures are shared, so one spelling has to resolve the same in both (AFC-482).
+   */
   streamId(name) {
-    return this.streams.find((s) => s.name === name)?.stream_id ?? STREAMS[name];
+    const stream = this.streams.find((s) => sameChannel(s.name, name));
+    if (stream) return stream.stream_id;
+    const key = Object.keys(STREAMS).find((k) => sameChannel(k, name));
+    return key === undefined ? undefined : STREAMS[key];
   }
 
   /** Add a stream ({name, stream_id, invite_only}). */
@@ -344,7 +356,7 @@ export class FakeZulip {
       const names = JSON.parse(params.subscriptions);
       const removed = [];
       for (const name of names) {
-        const stream = this.streams.find((s) => s.name === name);
+        const stream = this.streams.find((s) => sameChannel(s.name, name));
         if (stream && !this.unsubscribed.has(stream.stream_id)) {
           this.unsubscribed.add(stream.stream_id);
           removed.push(name);
