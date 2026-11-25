@@ -89,7 +89,8 @@ def _status(args, out) -> int:
             # Asked for by name, like the values:  when this was read, and whether a write
             # could run here (the token's shape only, never its value).
             doc["checked_epoch"] = int(time.time())
-            doc["folders"] = rep.get("folders", {"/": knobs.folder_status("/")})
+            if getattr(args, "muster", False):
+                doc["folders"] = rep.get("folders", {"/": knobs.folder_status("/")})
             doc["write_token"] = (
                 "present"
                 if not getattr(args, "muster", False)
