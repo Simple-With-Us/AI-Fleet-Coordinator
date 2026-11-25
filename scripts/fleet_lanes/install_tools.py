@@ -1629,7 +1629,7 @@ def render_opencode_plugin() -> str:
 // worktree root into its repo's fleet lane shortly after the session starts.  The guard registers tool
 // execute.before and throws to refuse a call; OpenCode surfaces the throw to the model and does not run the
 // tool.  A guard that cannot answer is a denial, never an allow.  The mover never blocks a chat.
-import { appendFileSync, realpathSync, statSync, truncateSync } from "node:fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, realpathSync, truncateSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -1942,15 +1942,66 @@ function laneCommand(): string {
   return typeof override === "string" && override.trim() ? override.trim() : join(homedir(), "apps", "lane");
 }
 
+// The log lives in the seat's own state directory, never inside the managed package:
+// the package directory is replaced atomically by `install_tools apply tools`, so a log
+// written there would make the directory look foreign (and the installer would refuse)
+// and every refresh would destroy the log.
 function laneMoveLogPath(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "lane-move.log");
+  return join(homedir(), ".local", "state", "fleet-lanes", "lane-move.log");
+}
+
+// The log is the seat's own private record of every lane move, so the directory that
+// holds it is created owner-only (mode 0700;  the umask can only take bits away from
+// that) and is never used through a symlink, which would put the log wherever another
+// user pointed it.  lstat does not follow a link, so a symlinked directory is a link
+// here and not a directory.  Only the log's own directory is checked:  the seat's home
+// path may itself sit under a symlink (a shared volume, a linked home), and that is
+// the seat's own business.  The state directory above it is shared with other
+// applications, so it keeps the permissions a plain directory gets and only the leaf
+// that holds the log is owner-only.
+function laneMoveLogDirOk(dir: string): boolean {
+  try {
+    const info = lstatSync(dir);
+    return info.isDirectory() && !info.isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 function laneMoveLog(kind: string, fields: Record<string, unknown>): void {
   try {
     const path = laneMoveLogPath();
+    const dir = dirname(path);
     try {
-      if (statSync(path).size > LANE_MOVE_LOG_BYTES) truncateSync(path, 0);
+      // The state directory above the log belongs to other applications too, so it is
+      // created with the default permissions.  Making it recursively would hand every
+      // ancestor it creates the same restrictive mode and lock down shared state.
+      mkdirSync(dirname(dir), { recursive: true });
+    } catch {
+      // a shared parent that cannot be made is not worth a chat
+    }
+    try {
+      mkdirSync(dir, { mode: 0o700 });
+    } catch {
+      // the log directory may already be there
+    }
+    if (!laneMoveLogDirOk(dir)) {
+      // a log directory that is not a real directory is not a place to write the log
+      return;
+    }
+    try {
+      // a directory made before the rule tightened is tightened now
+      chmodSync(dir, 0o700);
+    } catch {
+      // a directory that cannot be tightened is still the seat's own
+    }
+    try {
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) {
+        // a log file that is a symlink is not a place to write the log
+        return;
+      }
+      if (info.size > LANE_MOVE_LOG_BYTES) truncateSync(path, 0);
     } catch {
       // a log that is not there yet is fine
     }
@@ -5236,6 +5287,17 @@ def _makedirs_private(dirpath: str) -> None:
 # guard,  so a lock never appears in a platform's home as a file this tool does not own.
 LOCK_DIR_REL = ".local/state/fleet-lanes/locks"
 
+# The fleet's own directory inside the shared state directory.  The state directory and
+# the levels above it are shared with other applications,  so they keep the permissions a
+# plain mkdir gives them;  only the fleet's own levels below this one are owner-only.
+FLEET_STATE_DIR_REL = ".local/state/fleet-lanes"
+
+
+def _is_fleet_private_level(home: str, level: str) -> bool:
+    """True when this level is the fleet's own and may be created owner-only."""
+    private_root = os.path.join(home, *FLEET_STATE_DIR_REL.split("/"))
+    return level == private_root or level.startswith(private_root + os.sep)
+
 
 @contextlib.contextmanager
 def _target_lock(home: str, *targets: str):
@@ -5257,7 +5319,12 @@ def _target_lock(home: str, *targets: str):
         current = parent
     for level in reversed(missing):
         try:
-            os.mkdir(level, 0o700)
+            # A shared level keeps the permissions a plain mkdir gives it,  so the
+            # state directory other applications share is never locked down here.
+            if _is_fleet_private_level(home, level):
+                os.mkdir(level, 0o700)
+            else:
+                os.mkdir(level)
         except FileExistsError:
             pass
     handles = []
