@@ -244,6 +244,25 @@ class RuntimeSyncTransportTests(unittest.TestCase):
         isolated = function_body(text, "fetch_public_runtime")
         self.assertIn("-c credential.helper=", isolated)
 
+    def test_the_origin_transport_refuses_a_redirect_and_scopes_the_protocol(self) -> None:
+        """The helper may stay, but the credential must not follow a redirect off the origin.
+
+        A redirect to another host makes git ask the host credential helper for that
+        host's credential, so the origin transport refuses redirects and allows only the
+        transports an origin really uses.  The helper itself stays, because the origin
+        needs one to authenticate at all.
+        """
+        text = SCRIPT.read_text(encoding="utf-8")
+        wrapper = function_body(text, "rgit")
+        self.assertIn("-c http.followRedirects=false", wrapper)
+        self.assertIn("-c protocol.allow=never", wrapper)
+        for allowed in (
+            "protocol.https.allow=always",
+            "protocol.ssh.allow=always",
+            "protocol.file.allow=always",
+        ):
+            self.assertIn(f"-c {allowed}", wrapper)
+
     def test_the_approved_transport_reads_no_host_credential(self) -> None:
         """The approved transport sees no host Git config, no credential and no agent."""
         text = SCRIPT.read_text(encoding="utf-8")

@@ -47,10 +47,20 @@ log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %I:%M:%S%p')" "$*" >> "$LOG"; }
 # needs one authenticates, and clearing it would make that fetch fail instead of update.
 # The helper is cleared in the isolated public-source path instead, where no host
 # credential is wanted at all.
+#
+# The transport is scoped here the way the isolated path scopes it, without giving up the
+# credential.  A redirect is refused, so the helper is never asked for a credential for a
+# host other than the origin's own, and only the transports an origin actually uses are
+# allowed.  The credential stays because the origin needs one;  the redirect guard is
+# what keeps it on the origin.
 rgit() {
   GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never \
   GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
-  perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" "$@"
+  perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" \
+    -c http.followRedirects=false \
+    -c protocol.allow=never -c protocol.https.allow=always \
+    -c protocol.ssh.allow=always -c protocol.file.allow=always \
+    "$@"
 }
 
 # Retrieve exactly one approved public repository/ref in an isolated bare repo.
