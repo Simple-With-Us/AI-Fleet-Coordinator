@@ -1629,7 +1629,7 @@ def render_opencode_plugin() -> str:
 // worktree root into its repo's fleet lane shortly after the session starts.  The guard registers tool
 // execute.before and throws to refuse a call; OpenCode surfaces the throw to the model and does not run the
 // tool.  A guard that cannot answer is a denial, never an allow.  The mover never blocks a chat.
-import { appendFileSync, realpathSync, statSync, truncateSync } from "node:fs";
+import { appendFileSync, mkdirSync, realpathSync, statSync, truncateSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -1942,13 +1942,22 @@ function laneCommand(): string {
   return typeof override === "string" && override.trim() ? override.trim() : join(homedir(), "apps", "lane");
 }
 
+// The log lives in the seat's own state directory, never inside the managed package:
+// the package directory is replaced atomically by `install_tools apply tools`, so a log
+// written there would make the directory look foreign (and the installer would refuse)
+// and every refresh would destroy the log.
 function laneMoveLogPath(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "lane-move.log");
+  return join(homedir(), ".local", "state", "fleet-lanes", "lane-move.log");
 }
 
 function laneMoveLog(kind: string, fields: Record<string, unknown>): void {
   try {
     const path = laneMoveLogPath();
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+    } catch {
+      // a log directory that cannot be made is not worth a chat
+    }
     try {
       if (statSync(path).size > LANE_MOVE_LOG_BYTES) truncateSync(path, 0);
     } catch {
