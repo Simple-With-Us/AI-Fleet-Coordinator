@@ -332,6 +332,22 @@ static int mp_js_str_eq(const unsigned char *t, size_t span, size_t slen, const 
     return (size_t)n == want && !memcmp(decoded, expect, want);
 }
 
+/* Response-id equality:  string ids compare decoded, so an escaped spelling of the same
+ * id still matches its response instead of discarding a valid result.  Other values
+ * compare raw;  canonical payloads give numbers a single spelling.  A string id beyond
+ * the decode bound falls back to raw equality, keeping long ids on the old path. */
+static int mp_js_id_eq(const unsigned char *t1, size_t s1, size_t l1,
+                       const unsigned char *t2, size_t s2, size_t l2) {
+    if (l1 && l2 && t1[s1] == '"' && t2[s2] == '"') {
+        unsigned char a[MP_MAX_KEY_BYTES + 4], b[MP_MAX_KEY_BYTES + 4];
+        long la = mp_key_decode(t1, s1, l1, a, MP_MAX_KEY_BYTES);
+        long lb = mp_key_decode(t2, s2, l2, b, MP_MAX_KEY_BYTES);
+        if (la >= 0 && lb >= 0)
+            return la == lb && !memcmp(a, b, (size_t)la);
+    }
+    return l1 == l2 && !memcmp(t1 + s1, t2 + s2, l1);
+}
+
 /* Find a top-level key in a validated JSON object at obj (position of '{').
  * On hit, the value-span out-parameters receive the raw value span and the return is 1. */
 static int mp_js_find(const unsigned char *t, size_t n, size_t obj, const char *key,
@@ -543,25 +559,25 @@ static const char *mp_credentials_present(const unsigned char *frame, size_t len
         "sk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(live|test)_[A-Za-z0-9]{16,}|"
         "xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|st\\.[A-Za-z0-9]{20,}|"
         "sbt_[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----";
-    regex_t rx;
-    if (regcomp(&rx, pattern, REG_EXTENDED | REG_NOSUB)) return "credential_refused_scan";
-    unsigned char *decoded = malloc(len + 4);
-    if (!decoded) { regfree(&rx); return "credential_refused_scan"; }
+    static regex_t rx;
+    static int rx_ready = 0;
+    if (!rx_ready) {
+        if (regcomp(&rx, pattern, REG_EXTENDED | REG_NOSUB)) return "credential_refused_scan";
+        rx_ready = 1;  /* process-lifetime compile, no per-frame regcomp/malloc */
+    }
+    static unsigned char decoded[MP_MAX_BYTES + 4];  /* bounded scratch, like sse_buf */
     const char *found = NULL;
     for (size_t p = 0; p < len && !found;) {
         if (frame[p] != '"') { ++p; continue; }
         size_t start = p;
         if (!mp_js_string(frame, len, &p)) { found = "credential_refused_scan"; break; }
-        long n = mp_key_decode(frame, start, p - start, decoded, len);
+        long n = mp_key_decode(frame, start, p - start, decoded, MP_MAX_BYTES);
         if (n < 0 || memchr(decoded, 0, (size_t)n)) { found = "credential_refused_scan"; break; }
         decoded[n] = 0;
         int rc = regexec(&rx, (const char *)decoded, 0, NULL, 0);
         if (rc != REG_NOMATCH) found = rc == 0 ? mp_credential_field(frame, len, start) : "credential_refused_scan"; /* match or scanner failure */
         mp_wipe(decoded, (size_t)n + 1);
     }
-    mp_wipe(decoded, len + 4);
-    free(decoded);
-    regfree(&rx);
     return found;
 }
 
@@ -760,7 +776,7 @@ static size_t mp_handle_frame(mp_session *sess, const char *token, size_t token_
     for (size_t k = 0; k < payload_count; ++k) {
         if (payload_lens[k] == 0 || payloads[k][0] != '{') continue;
         if (!mp_js_find(payloads[k], payload_lens[k], 0, "id", &ms2, &ml2)) continue;
-        if (ml2 != id_l || memcmp(payloads[k] + ms2, frame + id_s, id_l)) continue;
+        if (!mp_js_id_eq(frame, id_s, id_l, payloads[k], ms2, ml2)) continue;
         int has_result = mp_js_find(payloads[k], payload_lens[k], 0, "result", &rs, &rl);
         int has_error = mp_js_find(payloads[k], payload_lens[k], 0, "error", &rs, &rl);
         if (has_result == has_error) continue;
