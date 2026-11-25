@@ -140,7 +140,13 @@ int main(void) {
             CHECK("credential family refuses without post or echo", refused && !captured.calls && strstr((char *)out,"credential_refused") && !strstr((char *)out,value));
         }
         script_reset();
-        size_t refused=handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"arguments\":{\"text\":\"ghp_\\u0041AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}}");
+        char escaped_request[512], synthetic_suffix[31];
+        memset(synthetic_suffix, 'A', sizeof(synthetic_suffix) - 1);
+        synthetic_suffix[sizeof(synthetic_suffix) - 1] = 0;
+        snprintf(escaped_request, sizeof(escaped_request),
+                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"arguments\":{\"text\":\"%s\\u0041%s\"}}}",
+                 prefixes[0], synthetic_suffix);
+        size_t refused=handle(escaped_request);
         CHECK("escaped credential signature refuses before post",refused && !captured.calls && strstr((char *)out,"credential_refused"));
     }
     /* Linear token search: bounded patterns, overlapping prefixes and large responses. */
@@ -271,7 +277,9 @@ int main(void) {
     n = handle("{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"gr_wf_repo_get\",\"arguments\":{}}}");
     CHECK("token echo refused", n && strstr((char *)out, "outcome_unknown"));
 
-    /* 17. session mismatch mid-stream: failure */
+    /* 17. session mismatch mid-stream: failure, with negotiated session. */
+    memcpy(sess.session, "sess-original", sizeof("sess-original"));
+    sess.session_len = strlen(sess.session);
     script_reset();
     script_push(200, "sess-OTHER", "application/json", "{\"jsonrpc\":\"2.0\",\"id\":13,\"result\":{}}");
     n = handle("{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\",\"params\":{\"name\":\"gr_wf_repo_get\",\"arguments\":{}}}");
@@ -514,6 +522,31 @@ int main(void) {
         CHECK("array jsonrpc refused before network", n && captured.calls == 0);
     }
 
+    script_reset();
+    n = handle("{\"jsonrpc\":\"1.0\",\"method\":\"notifications/initialized\"}");
+    CHECK("invalid notification version silent", n == 0 && captured.calls == 0);
+    script_reset();
+    /* Assemble intentionally credential-shaped fixture bytes only at runtime. */
+    char synthetic_value[35], synthetic_request[512];
+    memcpy(synthetic_value, "ghp_", 4);
+    memset(synthetic_value + 4, 'A', 30);
+    synthetic_value[34] = 0;
+    snprintf(synthetic_request, sizeof(synthetic_request),
+             "{\"jsonrpc\":\"2.0\",\"id\":94,\"method\":\"tools/call\",\"params\":{\"arguments\":{\"text\":\"%s\"}}}", synthetic_value);
+    n = handle(synthetic_request);
+    CHECK("credential refusal identifies fixed text field", n && strstr((char *)out, "credential_refused_arguments_text"));
+    script_reset();
+    snprintf(synthetic_request, sizeof(synthetic_request),
+             "{\"jsonrpc\":\"2.0\",\"id\":94,\"method\":\"tools/call\",\"params\":{\"arguments\":{\"%s\":\"x\"}}}", synthetic_value);
+    n = handle(synthetic_request);
+    CHECK("credential-shaped field name never echoed", n && strstr((char *)out, "credential_refused_arguments") && !strstr((char *)out, "ghp_"));
+    const char *near_types[] = {"application/json-secret", "text/event-stream-secret"};
+    for (size_t i = 0; i < 2; ++i) {
+        script_reset();
+        script_push(200, NULL, near_types[i], "{\"jsonrpc\":\"2.0\",\"id\":93,\"result\":{}}");
+        n = handle("{\"jsonrpc\":\"2.0\",\"id\":93,\"method\":\"tools/call\",\"params\":{\"name\":\"identities\",\"arguments\":{}}}");
+        CHECK("near-match media type refused by core", n && strstr((char *)out, "outcome_unknown"));
+    }
     printf(failures ? "\n%d FAILURES\n" : "\nALL FIXTURE CHECKS PASS\n", failures);
     return failures ? 1 : 0;
 }

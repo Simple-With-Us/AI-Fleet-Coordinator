@@ -52,13 +52,13 @@ didReceiveResponse:(NSURLResponse *)response
     if (state && [response isKindOfClass:[NSHTTPURLResponse class]]) {
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
         state.status = http.statusCode;
-        state.sessionId = http.allHeaderFields[@"Mcp-Session-Id"];
-        NSString *type = http.allHeaderFields[@"Content-Type"];
+        state.sessionId = [http valueForHTTPHeaderField:@"Mcp-Session-Id"];
+        NSString *type = [http valueForHTTPHeaderField:@"Content-Type"];
         if (type) {
             NSRange semi = [type rangeOfString:@";"];
             if (semi.location != NSNotFound) type = [type substringToIndex:semi.location];
-            state.contentType = [type stringByTrimmingCharactersInSet:
-                                 [NSCharacterSet whitespaceCharacterSet]];
+            state.contentType = [[type stringByTrimmingCharactersInSet:
+                                  [NSCharacterSet whitespaceCharacterSet]] lowercaseString];
         }
     }
     completionHandler(NSURLSessionResponseAllow);

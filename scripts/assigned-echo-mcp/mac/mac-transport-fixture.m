@@ -253,6 +253,15 @@ int main(void) {
         stub_body = nil;
         CHECK("202 may omit content type", post(frame) == 0);
 
+        stub_reset();
+        stub_headers = @{@"content-type": @"Application/JSON; charset=UTF-8", @"mcp-session-id": @"sess-lower"};
+        stub_body = [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
+        CHECK("lowercase response headers accepted", post(frame) == 0);
+        CHECK("lowercase session header captured", response.session_header && !strcmp(response.session_header, "sess-lower"));
+        CHECK("mixed-case JSON media normalized", response.content_type && !strcmp(response.content_type, "application/json"));
+        stub_headers = @{@"content-type": @"Text/Event-Stream"};
+        CHECK("mixed-case SSE media accepted", post(frame) == 0);
+
         /* 7. timeout:  never-completing stub, deadline 12s => 2s in-flight budget;
          *    session dies, cancel barrier observed, second post never reaches the stub */
         stub_reset();

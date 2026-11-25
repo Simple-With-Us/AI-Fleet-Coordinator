@@ -404,7 +404,7 @@ static size_t mp_failure(unsigned char *out, size_t cap, const unsigned char *id
     const char *message = !code ? transport_msg :
         !strcmp(code, "identity_not_allowed") ? identity_msg :
         !strcmp(code, "invalid_request") ? invalid_msg :
-        !strcmp(code, "credential_refused") ? credential_msg :
+        !strncmp(code, "credential_refused", sizeof("credential_refused") - 1) ? credential_msg :
         !strcmp(code, "request_rejected") ? rejected_msg : unknown_msg;
     if (is_call) {
         /* {"jsonrpc":"2.0","id":<id>,"result":{"isError":true,"content":[{"type":"text",
@@ -516,26 +516,47 @@ static int mp_js_decode(const unsigned char *t, size_t span, size_t slen,
  * Pattern families match the hosted front's credential refusal contract. The scratch
  * allocation is bounded by the already-validated frame, wiped on every path, never logged.
  * This is signature detection, not proof that arbitrary high-entropy text is nonsecret. */
-static int mp_credentials_present(const unsigned char *frame, size_t len) {
+static const char *mp_credential_field(const unsigned char *frame, size_t len, size_t position) {
+    /* Only fixed schema categories leave the scanner. Never echo arbitrary keys,
+     * values or a detected credential prefix, even when the key itself is secret. */
+    size_t ps, pl, as, al, fs, fl;
+    if (mp_js_find(frame, len, 0, "params", &ps, &pl) &&
+        ps < position && position < ps + pl) {
+        if (mp_js_find(frame, len, ps, "arguments", &as, &al) &&
+            as < position && position < as + al) {
+            static const char *names[] = {"text", "body", "title", "message", "content"};
+            static const char *codes[] = {"credential_refused_arguments_text", "credential_refused_arguments_body",
+                "credential_refused_arguments_title", "credential_refused_arguments_message", "credential_refused_arguments_content"};
+            for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+                if (mp_js_find(frame, len, as, names[i], &fs, &fl) &&
+                    fs <= position && position < fs + fl) return codes[i];
+            return "credential_refused_arguments";
+        }
+        return "credential_refused_params";
+    }
+    return "credential_refused_request";
+}
+
+static const char *mp_credentials_present(const unsigned char *frame, size_t len) {
     static const char pattern[] =
         "github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|"
         "sk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(live|test)_[A-Za-z0-9]{16,}|"
         "xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|st\\.[A-Za-z0-9]{20,}|"
         "sbt_[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----";
     regex_t rx;
-    if (regcomp(&rx, pattern, REG_EXTENDED | REG_NOSUB)) return 1;
+    if (regcomp(&rx, pattern, REG_EXTENDED | REG_NOSUB)) return "credential_refused_scan";
     unsigned char *decoded = malloc(len + 4);
-    if (!decoded) { regfree(&rx); return 1; }
-    int found = 0;
+    if (!decoded) { regfree(&rx); return "credential_refused_scan"; }
+    const char *found = NULL;
     for (size_t p = 0; p < len && !found;) {
         if (frame[p] != '"') { ++p; continue; }
         size_t start = p;
-        if (!mp_js_string(frame, len, &p)) { found = 1; break; }
+        if (!mp_js_string(frame, len, &p)) { found = "credential_refused_scan"; break; }
         long n = mp_key_decode(frame, start, p - start, decoded, len);
-        if (n < 0 || memchr(decoded, 0, (size_t)n)) { found = 1; break; }
+        if (n < 0 || memchr(decoded, 0, (size_t)n)) { found = "credential_refused_scan"; break; }
         decoded[n] = 0;
         int rc = regexec(&rx, (const char *)decoded, 0, NULL, 0);
-        if (rc != REG_NOMATCH) found = 1; /* match or scanner failure */
+        if (rc != REG_NOMATCH) found = rc == 0 ? mp_credential_field(frame, len, start) : "credential_refused_scan"; /* match or scanner failure */
         mp_wipe(decoded, (size_t)n + 1);
     }
     mp_wipe(decoded, len + 4);
@@ -563,7 +584,7 @@ static size_t mp_handle_frame(mp_session *sess, const char *token, size_t token_
     if (is_call < 0 ||
         !mp_js_find(frame, len, 0, "jsonrpc", &ms, &ml) ||
         !mp_js_str_eq(frame, ms, ml, "2.0"))
-        return mp_line_error(out, cap, -32700, "Invalid JSON-RPC input.");
+        return has_id ? mp_line_error(out, cap, -32700, "Invalid JSON-RPC input.") : 0;
     size_t id_s = vs, id_l = vl;
     /* A message without an id (notification) is owed NO line, even on failure - the
      * reviewed adapter's failure() returns None for it. */
@@ -631,7 +652,8 @@ static size_t mp_handle_frame(mp_session *sess, const char *token, size_t token_
         }
     }
 
-    if (mp_credentials_present(wire, wire_len)) MP_FAIL("credential_refused");
+    const char *credential_code = mp_credentials_present(wire, wire_len);
+    if (credential_code) MP_FAIL(credential_code);
 
     mp_headers headers;
     memcpy(headers.authorization, "Bearer ", 7);
@@ -676,13 +698,13 @@ static size_t mp_handle_frame(mp_session *sess, const char *token, size_t token_
     size_t payload_lens[64];
     size_t payload_count = 0;
     const char *type = response.content_type ? response.content_type : "";
-    if (!strncmp(type, "application/json", 16)) {
+    if (!strcmp(type, "application/json")) {
         if (!mp_js_canonical(response.body, response.body_len))
             MP_FAIL(NULL);
         payloads[0] = response.body;
         payload_lens[0] = response.body_len;
         payload_count = 1;
-    } else if (!strncmp(type, "text/event-stream", 17)) {
+    } else if (!strcmp(type, "text/event-stream")) {
         /* Bounded event assembly:  data lines join with \n inside one event, a blank line
          * dispatches it, scanning CONTINUES past every delimiter.  Each event payload is
          * validated as canonical JSON;  overflow or a broken event fails the response. */
