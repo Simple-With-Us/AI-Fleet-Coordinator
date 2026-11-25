@@ -126,13 +126,17 @@ def seats_json_from_env(environ=None):
     except PolicyError:
         raise
     except PermissionError:
-        # The file is private and owned by root, and this service runs as its own
-        # user:  the read is refused, and the operator needs to be told who has to
-        # own it.  The message names the uid, never the path.
+        # The file is private, and this service runs as its own user:  the read is
+        # refused, and the operator needs to be told who has to own it.  The
+        # message names the uid, never the path, and it names exactly the
+        # ownership and mode the check below enforces:  the file must belong to
+        # this service's own uid with mode 0400 or 0600.  A root-owned file is
+        # unreadable by a service that does not run as root, so promising root
+        # ownership here would send the operator down a dead end.
+        uid = os.geteuid()
         raise PolicyError(
-            "seat policy file is not readable by this service (uid %d); "
-            "it must be owned by that uid or by root with a mode the service can read"
-            % os.geteuid()
+            f"seat policy file is not readable by this service (uid {uid}); "
+            f"it must be owned by uid {uid} with mode 0400 or 0600"
         ) from None
     except (OSError, UnicodeError, ValueError):
         raise PolicyError("seat policy file could not be safely read") from None

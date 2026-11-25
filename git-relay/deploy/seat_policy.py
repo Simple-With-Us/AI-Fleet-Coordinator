@@ -136,6 +136,35 @@ def _default_branch_paths(identity: str, raw, repos):
         raise PolicyFileError(str(exc)) from None
 
 
+def _title_tags(seats: dict) -> dict:
+    """The runtime's own title-tag rules, so a bad tag never renders.
+
+    The relay loads the rendered policy and refuses a colliding tag at startup,
+    so the deploy side must refuse it first:  a policy that renders is a policy
+    the running relay accepts.
+    """
+    relay_dir = str(HERE.parent)
+    if relay_dir not in sys.path:
+        sys.path.insert(0, relay_dir)
+    from git_relay.policy import PolicyError, check_title_tags, effective_title_tag
+
+    seat_tags: dict[str, str] = {}
+    for slug, seat in seats.items():
+        tag = effective_title_tag(slug, seat.get("title_tag"))
+        if not TITLE_TAG.fullmatch(tag):
+            raise PolicyFileError(
+                f"seat {seat.get('identity')!r}: title tag {tag!r} must be 1-32 chars of "
+                "A-Z 0-9 space dash underscore; set title_tag when the App slug "
+                "does not derive one"
+            )
+        seat_tags[slug] = tag
+    try:
+        check_title_tags(seat_tags)
+    except PolicyError as exc:
+        raise PolicyFileError(str(exc)) from None
+    return seat_tags
+
+
 def render(doc: dict) -> dict:
     """The GIT_RELAY_SEATS_JSON object:  one shared-auth entry per seat, keyed by its App slug.
 
@@ -191,6 +220,7 @@ def render(doc: dict) -> dict:
             seats[slug]["title_tag"] = tag
     if not seats:
         raise PolicyFileError("the policy names no seat")
+    _title_tags(seats)
     return seats
 
 

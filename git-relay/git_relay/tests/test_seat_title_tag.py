@@ -68,6 +68,55 @@ class SeatTitleTagTests(unittest.TestCase):
                 with self.assertRaises(seat_policy.PolicyFileError):
                     seat_policy.render(doc)
 
+    def test_a_colliding_title_tag_is_refused_before_it_reaches_the_relay(self):
+        """Two seats may not pin the same tag:  the relay refuses it at startup."""
+        doc = seat_policy.load()
+        rows = doc["seats"]
+        rows[0]["title_tag"] = "CLASH"
+        rows[1]["title_tag"] = "CLASH"
+        with self.assertRaises(seat_policy.PolicyFileError) as error:
+            seat_policy.render(doc)
+        self.assertIn("share title tag", str(error.exception))
+
+    def test_a_title_tag_that_extends_another_is_refused(self):
+        """A tag that extends another seat's tag would make the bracket ambiguous."""
+        for tags in (("ZTEST", "ZTEST SS"),):
+            with self.subTest(tags=tags):
+                doc = seat_policy.load()
+                rows = doc["seats"]
+                for row, tag in zip(rows[:2], tags):
+                    row["title_tag"] = tag
+                with self.assertRaises(seat_policy.PolicyFileError) as error:
+                    seat_policy.render(doc)
+                self.assertIn("extends", str(error.exception))
+
+    def test_the_rendered_policy_is_one_the_relay_accepts(self):
+        """What renders is what the runtime loads:  the same tag rules, one place."""
+        doc = seat_policy.load()
+        for row in doc["seats"]:
+            if row.get("identity") == "MM":
+                row["title_tag"] = "MM"
+        rendered = seat_policy.render(doc)
+        policy = SeatPolicy(seat_policy.compact(rendered))
+        self.assertEqual(policy.title_tag("swu-minimax"), "MM")
+
+    def test_the_permission_hint_names_the_ownership_and_mode_it_enforces(self):
+        """The hint must not promise a root-owned file the service cannot read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "seats.json"
+            path.write_bytes(b"{}")
+            path.chmod(0o600)
+            env = {"GIT_RELAY_SEATS_FILE": str(path)}
+            with (
+                patch("git_relay.policy_input.os.open", side_effect=PermissionError("denied")),
+                self.assertRaises(PolicyError) as error,
+            ):
+                seats_json_from_env(env)
+            message = str(error.exception)
+        self.assertIn("0400 or 0600", message)
+        self.assertIn(str(os.geteuid()), message)
+        self.assertNotIn("root", message)
+
     def test_an_unreadable_policy_file_names_the_service_uid(self):
         """The relay serves as its own user, so a root-owned private file is refused."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -75,8 +124,10 @@ class SeatTitleTagTests(unittest.TestCase):
             path.write_bytes(b"{}")
             path.chmod(0o600)
             env = {"GIT_RELAY_SEATS_FILE": str(path)}
-            with patch("git_relay.policy_input.os.open", side_effect=PermissionError("denied")):
-                with self.assertRaisesRegex(PolicyError, "not readable by this service") as error:
-                    seats_json_from_env(env)
+            with (
+                patch("git_relay.policy_input.os.open", side_effect=PermissionError("denied")),
+                self.assertRaisesRegex(PolicyError, "not readable by this service") as error,
+            ):
+                seats_json_from_env(env)
             self.assertIn(str(os.geteuid()), str(error.exception))
             self.assertNotIn(tmp, str(error.exception))
