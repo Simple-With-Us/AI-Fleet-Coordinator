@@ -13,6 +13,26 @@ from fleet_rag import docs_library as library, sources
 
 
 class LibraryTests(unittest.TestCase):
+    def test_repeated_immutable_blob_reads_share_bounded_cache(self):
+        repository = self.repositories[0]
+        with mock.patch.object(library, 'git', wraps=library.git) as calls:
+            self.assertEqual(repository.blob('docs/current.md'), self.raw)
+            self.assertEqual(repository.blob('docs/current.md'), self.raw)
+        reads = [call for call in calls.call_args_list if 'cat-file' in call.args]
+        self.assertEqual(len(reads), 1)
+        self.assertLessEqual(library._BLOB_CACHE_BYTES, library._BLOB_CACHE_LIMIT)
+
+    def test_invalid_blob_is_held_without_blocking_good_sibling(self):
+        (self.repo / 'docs/invalid.md').write_bytes(b'Ordinary paragraph. ' * 500 + b'\x00')
+        (self.repo / 'docs/invalid-utf8.md').write_bytes(b'Ordinary paragraph. ' * 500 + b'\xff')
+        self.run_git('add', '.')
+        self.run_git('commit', '-q', '-m', 'invalid UTF8 and late binary fixture')
+        with mock.patch.object(sources.mirror, 'configured_root', return_value=None):
+            documents = list(sources.iter_docs(fleet_repo=self.root/'absent', fleet_ops=self.root/'absent-ops', extra=[], code_dir=self.code, apps_dir=None, grok_home=None))
+        self.assertIn('doc/Clutch/docs/current.md', [doc.doc_id for doc in documents])
+        self.assertIn('doc/Clutch/docs/invalid.md', sources.DOC_HELD_IDS)
+        self.assertIn('doc/Clutch/docs/invalid-utf8.md', sources.DOC_HELD_IDS)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.code=self.root/'Code';self.code.mkdir()
@@ -30,7 +50,7 @@ class LibraryTests(unittest.TestCase):
         self.warnings=[]
 
     def run_git(self,*args):
-        return subprocess.check_output(['/usr/bin/git','-C',str(self.repo),*args],env={**os.environ,'GIT_AUTHOR_NAME':'fixture','GIT_AUTHOR_EMAIL':'fixture@example.invalid','GIT_COMMITTER_NAME':'fixture','GIT_COMMITTER_EMAIL':'fixture@example.invalid'}).decode().strip()
+        return subprocess.check_output(['/usr/bin/git','-C',str(self.repo),*args],env={**os.environ,'GIT_AUTHOR_NAME':'fixture','GIT_AUTHOR_EMAIL':'fixture@example.invalid','GIT_COMMITTER_NAME':'fixture','GIT_COMMITTER_EMAIL':'fixture@example.invalid'},timeout=30).decode().strip()
 
     def make_doc(self,path):
         return sources.Doc('',path.stem,'','doc','fleet','doc','FLEET',path=str(path))
@@ -223,7 +243,7 @@ class LibraryTests(unittest.TestCase):
         replacement_id=self.run_git('hash-object','-w',str(replacement))
         self.run_git('replace',original,replacement_id)
         foreign=self.root/'foreign';foreign.mkdir()
-        subprocess.run(['/usr/bin/git','-C',str(foreign),'init','-q'],check=True)
+        subprocess.run(['/usr/bin/git','-C',str(foreign),'init','-q'],check=True,timeout=30)
         library._tracked_tree.cache_clear()
         hostile={'GIT_DIR':str(foreign/'.git'),'GIT_WORK_TREE':str(foreign),
                  'GIT_CONFIG_COUNT':'1','GIT_CONFIG_KEY_0':'core.bare','GIT_CONFIG_VALUE_0':'true'}

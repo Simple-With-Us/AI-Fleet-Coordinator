@@ -64,8 +64,8 @@ class OutboxTests(unittest.TestCase):
         def crash(directory,name,record):
             atomic(directory,name,record)
             if name.startswith('receipt-'):raise OSError('fixture crash')
-        with mock.patch.object(box,'_atomic',side_effect=crash),self.assertRaises(OSError):
-            box.drain(lambda _record:True,root=self.root)
+        with mock.patch.object(box,'_atomic',side_effect=crash):
+            self.assertEqual(box.drain(lambda _record:True,root=self.root)['item_failed'], 1)
         self.assertTrue(self.pending(receipt))
         result=box.drain(lambda _record:True,root=self.root)
         self.assertEqual(result['verified'],1)
@@ -76,7 +76,9 @@ class OutboxTests(unittest.TestCase):
         box.cancel(document().doc_id,root=self.root)
         callback=mock.Mock(return_value=True)
         box.drain(callback,root=self.root);callback.assert_not_called()
-        self.assertTrue(self.pending(receipt)['cancelled'])
+        self.assertFalse((self.root/(receipt['key']+'.json')).exists())
+        with mock.patch.object(box, 'MAX_PENDING', 1):
+            box.enqueue_id(document(name='p2').doc_id, root=self.root)
 
     def test_symlink_spool_or_pending_record_is_refused(self):
         self.root.symlink_to(Path(self.temp.name))
@@ -117,6 +119,8 @@ class OutboxTests(unittest.TestCase):
 
 
 class ReceiverTests(unittest.TestCase):
+    setUp = OutboxTests.setUp
+    pending = OutboxTests.pending
     def test_corrupt_hash_wrong_id_and_missing_chunk_never_ack(self):
         doc=document()
         rows,_=note_upsert.ingest.doc_rows(doc,'fixture')
@@ -162,8 +166,89 @@ class ReceiverTests(unittest.TestCase):
 
     def test_provider_read_failure_is_pending_without_loading_credentials(self):
         with mock.patch.object(note_upsert.core,'load_config') as config:
-            result=note_upsert.deliver_queued_note({'schema':2,'doc_id':'note/ABC/ICNote/p1'},read_current=mock.Mock(side_effect=RuntimeError('private provider diagnostic')))
-        self.assertFalse(result);config.assert_not_called()
+            with self.assertRaisesRegex(box.DeliveryError, '^delivery-outcome-unknown$'):
+                note_upsert.deliver_queued_note({'schema':2,'doc_id':'note/ABC/ICNote/p1'},read_current=mock.Mock(side_effect=RuntimeError('private provider diagnostic')))
+        config.assert_not_called()
+
+    def test_original_secret_gate_runs_before_scrub_or_staging(self):
+        from simple_tools import secretscan
+        original = document()
+        original.text_markdown = 'Original multiline field.\nStill the original field.'
+        with mock.patch.object(secretscan, 'scan', side_effect=lambda text: 'detected' if text == original.text_markdown else None) as scanner, mock.patch('fleet_rag.scrub.scrub') as scrubber, mock.patch.object(box.tempfile, 'TemporaryDirectory') as staging:
+            with self.assertRaisesRegex(box.DeliveryError, '^note-secret-gate-refused$'):
+                box.prepare_document(original)
+        self.assertEqual(original.text_markdown, scanner.call_args.args[0])
+        scrubber.assert_not_called(); staging.assert_not_called()
+
+    def test_item_filesystem_failure_does_not_block_later_record(self):
+        receipts = [box.enqueue_id(document(name=name).doc_id, root=self.root) for name in ('p1', 'p2')]
+        ordered = sorted(receipts, key=lambda receipt: receipt['key'])
+        current = box.current
+        def fault(root, key, version):
+            if key == ordered[0]['key']:
+                raise OSError('private-path-sentinel')
+            return current(root, key, version)
+        with mock.patch.object(box, 'current', side_effect=fault):
+            result = box.drain(lambda record: True, root=self.root, limit=2)
+        self.assertEqual((result['item_failed'], result['verified']), (1, 1))
+        self.assertTrue(self.pending(ordered[0]))
+        self.assertNotIn('private-path-sentinel', json.dumps(result))
+
+    def test_delivery_failures_have_fixed_classification_and_permanent_hold(self):
+        for status, category in ((408, 'retryable'), (429, 'retryable'), (503, 'retryable'), (403, 'permanent'), (None, 'outcome-unknown')):
+            with self.subTest(status=status):
+                queued = box.enqueue_id(document().doc_id, root=self.root, now=100)
+                failure = RuntimeError('private-provider-sentinel')
+                failure.status = status
+                result = box.drain(mock.Mock(side_effect=failure), root=self.root, now=100)
+                self.assertEqual(result[category], 1)
+                self.assertEqual(self.pending(queued)['delivery_state'], category)
+                self.assertNotIn('private-provider-sentinel', json.dumps(self.pending(queued)))
+                if category == 'permanent':
+                    callback = mock.Mock(return_value=True)
+                    box.drain(callback, root=self.root, now=999999)
+                    callback.assert_not_called()
+
+    def test_actual_http_wrapper_preserves_typed_status_context_without_body_reflection(self):
+        import io
+        import urllib.error
+        from fleet_rag import core
+        for status, category in ((403, 'permanent'), (429, 'retryable'), (503, 'retryable')):
+            with self.subTest(status=status):
+                provider = urllib.error.HTTPError('https://fixture.invalid/points', status, 'private-diagnostic', {}, io.BytesIO(b'private-body-sentinel'))
+                with mock.patch.object(core.urllib.request, 'urlopen', side_effect=provider):
+                    try:
+                        core.http_json('https://fixture.invalid/points', retries=0)
+                    except core.FleetRagError as error:
+                        failure = box.delivery_failure(error)
+                    else:
+                        self.fail('HTTP wrapper did not propagate failure')
+                self.assertEqual(failure.category, category)
+                self.assertNotIn('private', str(failure))
+                self.assertIsNone(failure.__context__)
+
+    def test_malformed_provider_snapshot_fails_before_credentials(self):
+        for snapshot in (None, {}, {'id': 3}, {'id':'x-coredata://ABC/ICNote/p1','name':'Note','text':None,'revision':'r'},
+                         {'id':'', 'name':'Note', 'text':'Body', 'revision':'r'},
+                         {'id':'   ', 'name':'Note', 'text':'Body', 'revision':'r'}):
+            with self.subTest(snapshot=snapshot), mock.patch.object(note_upsert.core, 'load_config') as config:
+                with self.assertRaisesRegex(box.DeliveryError, '^provider-contract-invalid$'):
+                    note_upsert.deliver_queued_note({'schema':2,'doc_id':'note/ABC/ICNote/p1'}, read_current=lambda _id: snapshot)
+                config.assert_not_called()
+
+    def test_child_timeout_and_missing_executable_are_fixed_statuses(self):
+        import subprocess
+        from simple_tools import notes
+        for error, status in ((subprocess.TimeoutExpired('private-command', 1),124), (FileNotFoundError('private-path'),127)):
+            with mock.patch.object(notes.subprocess, 'run', side_effect=error):
+                result = notes.retry_rag_outbox({})
+            self.assertEqual(result['exit_status'], status)
+            self.assertNotIn('private', json.dumps(result))
+            with mock.patch.object(box, 'enqueue_id', return_value={'key':'0' * 64}), mock.patch.object(notes.subprocess, 'run', side_effect=error):
+                result = notes._fleet_rag_upsert({'action':'create'}, 'x-coredata://ABC/ICNote/p1', {})
+            self.assertEqual(result['exit_status'], status)
+            self.assertEqual(result['state'], 'queued')
+            self.assertNotIn('private', json.dumps(result))
 
     def test_revision_change_without_a_new_event_holds_pending(self):
         from fleet_rag.core import content_hash
