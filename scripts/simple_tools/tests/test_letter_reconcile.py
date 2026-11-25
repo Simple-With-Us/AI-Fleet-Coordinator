@@ -312,6 +312,25 @@ class ReconcileTests(Base):
         self.assertEqual([row["sid"] for row in done["failures"]], ["m-0016"])
         self.assertEqual(done["failures"][0]["error"], "RuntimeError")
 
+    def test_a_title_write_that_is_still_owed_is_retried(self) -> None:
+        # A retire path that could not write the title leaves the mark that says so,  and the title still carries
+        # the prefix.  The pass retries that write,  so a chat whose letter is already gone does not wait for the
+        # gone sweep to notice it.
+        self.add("m-0019", title="Fix Login")
+        self.start("m-0019", at=self.old)
+        label = self.note("m-0019")["label"]
+        path = PL.note_path(self.env(), PM.SEAT, "m-0019")
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        note.update(state="closed", label="", labels=[label], title_pending=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh, sort_keys=True)
+        self.assertEqual(self.title_of("m-0019"), "%s: Fix Login" % label)
+
+        self.reconcile()
+        self.assertEqual(self.title_of("m-0019"), "Fix Login")
+        self.assertNotIn("title_pending", self.note("m-0019"))
+
     def test_an_assigner_that_does_not_answer_changes_nothing(self) -> None:
         self.add("m-0008", title="Fix Login")
         self.start("m-0008", at=self.old)

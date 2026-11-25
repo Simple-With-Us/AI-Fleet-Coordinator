@@ -5184,7 +5184,7 @@ def reconcile_letters(
             return {"skipped": "the stamp could not be saved", "recorded": False}
     finally:
         _release(lock)
-    candidates, _, _ = _lettered_chats(
+    candidates, _, owed = _lettered_chats(
         env,
         seat,
         spec.platform,
@@ -5240,6 +5240,23 @@ def reconcile_letters(
             # The letter is not this chat's:  it is not live,  or it is live under another record.
             if chat.write(_retire(chat, note, now)):
                 retired.append(sid)
+        except Exception as exc:  # noqa: BLE001 - one chat's failure never stops the pass
+            failures.append({"sid": sid, "error": type(exc).__name__})
+            continue
+    # The chats whose title write is still owed.  A retire path that could not write the title leaves the mark
+    # that says so,  and the title still carries the prefix.  The pass retries that write here,  so a chat whose
+    # letter is already gone does not wait for the gone sweep to notice it.  No assigner call is made for these:
+    # their registration is closed already,  and the retire path is the one that owes the title.
+    for row in list(owed.values())[:RECONCILE_MAX_CHATS]:
+        sid = row["session_id"]
+        try:
+            chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+            note = chat.read()
+            if not note.get("title_pending"):
+                continue
+            if _seconds(note.get("updated_at")) != row["seen"]:
+                continue  # the chat ran since the scan:  it is in use,  not stale
+            chat.write(_retire(chat, note, now))
         except Exception as exc:  # noqa: BLE001 - one chat's failure never stops the pass
             failures.append({"sid": sid, "error": type(exc).__name__})
             continue
