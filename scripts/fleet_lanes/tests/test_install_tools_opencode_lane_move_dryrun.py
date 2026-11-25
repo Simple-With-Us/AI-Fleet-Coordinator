@@ -153,7 +153,7 @@ if (moved.length === 4) {
 } else {
   fail("total moves", JSON.stringify(moved));
 }
-const logText = readFileSync(work + "/lane-move.log", "utf8");
+const logText = readFileSync(process.env.HOME + "/.local/state/fleet-lanes/lane-move.log", "utf8");
 if (logText.includes('"moved"') && !logText.includes("example.invalid") && !logText.includes("git@")) {
   ok("move log written without remote URLs");
 } else {
