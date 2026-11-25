@@ -623,19 +623,19 @@ export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(action==='wf_collaborator_permission'){
   const user=z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),login:z.string().regex(/^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/).refine(v=>!metadataCredential.test(v)),type:z.enum(['User','Bot','Organization'])}).strict();
-  const schema=z.object({user,permission:z.enum(['admin','write','read','none']),role_name:metadataText(100).refine(v=>v.trim().length>0)}).strict();
+  const schema=z.object({user,permission:z.enum(['admin','write','read','none']),role_name:metadataText(100).refine(v=>v.trim().length>0).refine(v=>!metadataCredential.test(v))}).strict();
   return schema.safeParse(body).success&&(!args||body.user.login.toLowerCase()===args.username.toLowerCase());
  }
  if(action==='wf_repo_collaborators'){
   const login=z.string().regex(/^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/).refine(v=>!metadataCredential.test(v));
   const permissions=z.object({pull:z.boolean(),triage:z.boolean(),push:z.boolean(),maintain:z.boolean(),admin:z.boolean()}).strict();
-  const collaborator=z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),login,type:z.enum(['User','Bot','Organization']),role_name:metadataText(100).refine(v=>v.trim().length>0),permissions}).strict();
-  const schema=z.object({collaborators:z.array(collaborator).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean(),affiliation:z.enum(['all','direct','outside'])}).strict();
+  const collaborator=z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),login,type:z.enum(['User','Bot','Organization']),role_name:metadataText(100).refine(v=>v.trim().length>0).refine(v=>!metadataCredential.test(v)),permissions}).strict();
+  const schema=z.object({collaborators:z.array(collaborator).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean(),affiliation:z.enum(['all','direct','outside']),permission:z.enum(['pull','triage','moderate','push','maintain','admin']).nullable()}).strict();
   if(!schema.safeParse(body).success)return false;
   if(new Set(body.collaborators.map(v=>v.id)).size!==body.collaborators.length||new Set(body.collaborators.map(v=>v.login.toLowerCase())).size!==body.collaborators.length)return false;
   if(!args)return true;
   const limit=args.per_page??30;
-  return body.page===(args.page??1)&&body.affiliation===(args.affiliation??'all')&&body.collaborators.length<=limit&&body.has_more===(body.collaborators.length===limit);
+  return body.page===(args.page??1)&&body.affiliation===(args.affiliation??'all')&&body.permission===(args.permission??null)&&body.collaborators.length<=limit&&body.has_more===(body.collaborators.length===limit);
  }
  if(action==='wf_review_thread_comments'){
   const cursor=z.string().regex(/^[A-Za-z0-9_/=+-]{1,256}$/).nullable();
