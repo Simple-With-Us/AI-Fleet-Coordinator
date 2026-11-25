@@ -79,11 +79,15 @@ class ScopedSeatKeyTests(unittest.TestCase):
             }
 
         token_name = seat_key.AFC_TOKEN_ENV
-        with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict(os.environ, {token_name: "st." + "synthetic-seat-key-reader-token", "HOME": home}):
-                with mock.patch.object(seat_key.scoped_secrets, "_api_json", api):
-                    with self.assertRaises(SystemExit):
-                        seat_key.infisical_pair("EMAIL", "KEY")
+        with (
+            tempfile.TemporaryDirectory() as home,
+            mock.patch.dict(
+                os.environ, {token_name: "st." + "synthetic-seat-key-reader-token", "HOME": home}
+            ),
+            mock.patch.object(seat_key.scoped_secrets, "_api_json", api),
+        ):
+            with self.assertRaises(SystemExit):
+                seat_key.infisical_pair("EMAIL", "KEY")
         self.assertEqual(calls, ["/v2/service-token"])
 
 
