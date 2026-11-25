@@ -876,3 +876,195 @@ class WorkflowPrElevation(unittest.TestCase):
         )
         with self.assertRaises(PreReadUnavailable):
             handle.run("wf_update_branch", args)
+class WorkflowRefMoveElevation(unittest.TestCase):
+    """wf_branch_update mints workflows:write only when the audited move touches the dir."""
+
+    NEW = "e" * 40
+
+    def args(self):
+        return {"repo": REPO, "branch": "wise/x", "sha": self.NEW, "expected_sha": SHA}
+
+    def receipt(self):
+        return {"ref": "refs/heads/wise/x", "object": {"sha": self.NEW}}
+
+    def run_move(self, replies, ceiling=None):
+        minter = Minter()
+        client = Client(
+            {"default_branch": "main"},
+            {"ref": "refs/heads/wise/x", "object": {"sha": SHA}},
+            *replies,
+        )
+        handle = WorkflowVerbs.for_action(
+            client,
+            Policy(ceiling or {**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_branch_update",
+            REPO,
+            args=self.args(),
+        )
+        return client, minter, handle
+
+    def run_move_trees(self, head_rows=(), base_rows=(), compare=None, ceiling=None):
+        head_tree = {
+            "sha": "c" * 40,
+            "truncated": False,
+            "tree": [
+                {"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"},
+                *head_rows,
+            ],
+        }
+        base_tree = {
+            "sha": "d" * 40,
+            "truncated": False,
+            "tree": [
+                {"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"},
+                *base_rows,
+            ],
+        }
+        head_commit = {"sha": self.NEW, "tree": {"sha": "c" * 40}}
+        base_commit = {"sha": SHA, "tree": {"sha": "d" * 40}}
+        replies = [
+            compare if compare is not None else {},
+            head_commit,
+            head_tree,
+            base_commit,
+            base_tree,
+            self.receipt(),
+        ]
+        return self.run_move(replies, ceiling=ceiling)
+
+    def test_workflow_touch_mints_second_token_with_workflows(self):
+        client, minter, handle = self.run_move(
+            [
+                {"files": [{"filename": "src/a.py"}, {"filename": ".github/workflows/ci.yml"}]},
+                self.receipt(),
+            ]
+        )
+        handle.run("wf_branch_update", self.args())
+        self.assertEqual(len(minter.calls), 2)
+        self.assertNotIn("workflows", minter.calls[0][2])
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+        self.assertIn(f"/compare/{SHA}...{self.NEW}", client.calls[2][1])
+        self.assertEqual(client.calls[-1][0], "PATCH")
+
+    def test_no_touch_stays_least_permission(self):
+        client, minter, handle = self.run_move(
+            [{"files": [{"filename": "src/a.py"}]}, self.receipt()]
+        )
+        handle.run("wf_branch_update", self.args())
+        self.assertEqual(len(minter.calls), 1)
+        self.assertNotIn("workflows", minter.calls[0][2])
+        self.assertEqual(client.calls[-1][0], "PATCH")
+
+    def test_renamed_out_of_workflows_elevates(self):
+        _, minter, handle = self.run_move(
+            [
+                {
+                    "files": [
+                        {
+                            "filename": "docs/ci.yml",
+                            "previous_filename": ".github/workflows/ci.yml",
+                        }
+                    ]
+                },
+                self.receipt(),
+            ]
+        )
+        handle.run("wf_branch_update", self.args())
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_ceiling_without_workflows_refused_before_write(self):
+        client, minter, handle = self.run_move(
+            [{"files": [{"filename": ".github/workflows/ci.yml"}]}, self.receipt()],
+            ceiling=CEILING,
+        )
+        with self.assertRaises(CeilingDenied):
+            handle.run("wf_branch_update", self.args())
+        self.assertEqual([c[0] for c in client.calls], ["GET", "GET", "GET"])
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_malformed_compare_files_refuse_before_write(self):
+        from git_relay.github_client import RelayGitHubError
+
+        client, _, handle = self.run_move([{"files": ["not-a-dict"]}, self.receipt()])
+        with self.assertRaises(RelayGitHubError):
+            handle.run("wf_branch_update", self.args())
+        self.assertNotIn("PATCH", [c[0] for c in client.calls])
+
+    def test_compare_preread_failure_blocks_write(self):
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.server import PreReadUnavailable
+
+        class Flaky(Client):
+            def _call(self, method, path, *a, **k):
+                if "/compare/" in path:
+                    self.calls.append((method, path, None, None))
+                    raise RelayGitHubError(503, "down")
+                return super()._call(method, path, *a, **k)
+
+        minter = Minter()
+        client = Flaky(
+            {"default_branch": "main"},
+            {"ref": "refs/heads/wise/x", "object": {"sha": SHA}},
+            self.receipt(),
+        )
+        handle = WorkflowVerbs.for_action(
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_branch_update",
+            REPO,
+            args=self.args(),
+        )
+        with self.assertRaises(PreReadUnavailable):
+            handle.run("wf_branch_update", self.args())
+        self.assertNotIn("PATCH", [c[0] for c in client.calls])
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_trees_fallback_detects_added_workflow_file(self):
+        added = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
+        client, minter, handle = self.run_move_trees(head_rows=[added])
+        handle.run("wf_branch_update", self.args())
+        tree_calls = [c for c in client.calls if "/git/trees/" in c[1]]
+        self.assertEqual(len(tree_calls), 2)
+        self.assertIn("recursive=1", tree_calls[0][1])
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+        self.assertEqual(client.calls[-1][0], "PATCH")
+
+    def test_trees_fallback_detects_removed_workflow_file(self):
+        removed = {
+            "type": "blob",
+            "path": ".github/workflows/old.yml",
+            "sha": "3" * 40,
+            "mode": "100644",
+        }
+        _, minter, handle = self.run_move_trees(base_rows=[removed])
+        handle.run("wf_branch_update", self.args())
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_full_compare_without_touch_verified_via_trees(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        client, minter, handle = self.run_move_trees(compare={"files": files})
+        handle.run("wf_branch_update", self.args())
+        tree_calls = [c for c in client.calls if "/git/trees/" in c[1]]
+        self.assertEqual(len(tree_calls), 2)
+        self.assertEqual(len(minter.calls), 1)
+        self.assertEqual(client.calls[-1][0], "PATCH")
+
+    def test_trees_fallback_refuses_truncated_tree(self):
+        client, minter, handle = self.run_move_trees()
+        client.replies[4] = {"sha": "c" * 40, "truncated": True, "tree": []}
+        with self.assertRaises(Refused):
+            handle.run("wf_branch_update", self.args())
+        self.assertNotIn("PATCH", [c[0] for c in client.calls])
+        self.assertEqual(len(minter.calls), 1)
