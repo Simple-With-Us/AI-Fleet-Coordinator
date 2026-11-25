@@ -49,16 +49,18 @@ UNREGISTERED_SIDECAR = {
 
 
 def registry_row(token_id: str, name: str) -> str:
-    return json.dumps({
-        "Token": name,
-        "Token ID": token_id,
-        "Project": "Fixture Project",
-        "Environment": "prod",
-        "Folders": "/fixture",
-        "Permission": "read",
-        "Status": "active",
-        "Expires (UTC)": "2027-01-01T00:00:00Z",
-    })
+    return json.dumps(
+        {
+            "Token": name,
+            "Token ID": token_id,
+            "Project": "Fixture Project",
+            "Environment": "prod",
+            "Folders": "/fixture",
+            "Permission": "read",
+            "Status": "active",
+            "Expires (UTC)": "2027-01-01T00:00:00Z",
+        }
+    )
 
 
 class RegistryCheckTest(unittest.TestCase):
@@ -80,24 +82,32 @@ class RegistryCheckTest(unittest.TestCase):
     def run_check(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [NODE, str(SCRIPT), *args],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
 
     def test_every_installed_token_has_a_row(self) -> None:
-        rows = self.write_rows([
-            registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
-            registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
-        ])
+        rows = self.write_rows(
+            [
+                registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
+                registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
+            ]
+        )
         result = self.run_check("--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("every installed service token has a registry row", result.stdout)
 
     def test_a_token_in_use_without_a_row_is_reported(self) -> None:
-        (self.sidecars / "unregistered.json").write_text(json.dumps(UNREGISTERED_SIDECAR), encoding="utf-8")
-        rows = self.write_rows([
-            registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
-            registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
-        ])
+        (self.sidecars / "unregistered.json").write_text(
+            json.dumps(UNREGISTERED_SIDECAR), encoding="utf-8"
+        )
+        rows = self.write_rows(
+            [
+                registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
+                registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
+            ]
+        )
         result = self.run_check("--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("MISSING ROW", result.stdout)
@@ -106,16 +116,34 @@ class RegistryCheckTest(unittest.TestCase):
 
     def test_a_peer_inventory_is_checked_too(self) -> None:
         peer = self.tmp / "peer.json"
-        peer.write_text(json.dumps({
-            "host": "peer",
-            "tokens": [{"id": UNREGISTERED_SIDECAR["id"], "name": UNREGISTERED_SIDECAR["name"], "file": "peer.json"}],
-        }), encoding="utf-8")
-        rows = self.write_rows([
-            registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
-            registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
-        ])
+        peer.write_text(
+            json.dumps(
+                {
+                    "host": "peer",
+                    "tokens": [
+                        {
+                            "id": UNREGISTERED_SIDECAR["id"],
+                            "name": UNREGISTERED_SIDECAR["name"],
+                            "file": "peer.json",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        rows = self.write_rows(
+            [
+                registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
+                registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
+            ]
+        )
         result = self.run_check(
-            "--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows), "--inventory", str(peer),
+            "--sidecar-dir",
+            str(self.sidecars),
+            "--sheet-rows",
+            str(rows),
+            "--inventory",
+            str(peer),
         )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(UNREGISTERED_SIDECAR["id"], result.stdout)
@@ -132,26 +160,42 @@ class RegistryCheckTest(unittest.TestCase):
 
     def test_a_token_on_two_hosts_is_not_a_duplicate(self) -> None:
         peer = self.tmp / "peer.json"
-        peer.write_text(json.dumps({
-            "host": "peer",
-            "tokens": [{"id": MAC_SIDECAR["id"], "name": MAC_SIDECAR["name"], "file": "mac.json"}],
-        }), encoding="utf-8")
-        rows = self.write_rows([
-            registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
-            registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
-        ])
+        peer.write_text(
+            json.dumps(
+                {
+                    "host": "peer",
+                    "tokens": [
+                        {"id": MAC_SIDECAR["id"], "name": MAC_SIDECAR["name"], "file": "mac.json"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        rows = self.write_rows(
+            [
+                registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
+                registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
+            ]
+        )
         result = self.run_check(
-            "--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows), "--inventory", str(peer),
+            "--sidecar-dir",
+            str(self.sidecars),
+            "--sheet-rows",
+            str(rows),
+            "--inventory",
+            str(peer),
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("DUPLICATE SIDECAR", result.stdout)
 
     def test_two_sidecars_on_one_host_naming_one_token_are_reported(self) -> None:
         (self.sidecars / "staging.json").write_text(json.dumps(MAC_SIDECAR), encoding="utf-8")
-        rows = self.write_rows([
-            registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
-            registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
-        ])
+        rows = self.write_rows(
+            [
+                registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
+                registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
+            ]
+        )
         result = self.run_check("--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("DUPLICATE SIDECAR", result.stdout)
@@ -163,11 +207,15 @@ class RegistryCheckTest(unittest.TestCase):
         self.assertIn("needs --sheet-rows or --fleet-ops-root", result.stderr)
 
     def test_a_sidecar_without_a_token_id_is_not_counted(self) -> None:
-        (self.sidecars / "no-id.json").write_text(json.dumps({"name": "fixture-without-an-id"}), encoding="utf-8")
-        rows = self.write_rows([
-            registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
-            registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
-        ])
+        (self.sidecars / "no-id.json").write_text(
+            json.dumps({"name": "fixture-without-an-id"}), encoding="utf-8"
+        )
+        rows = self.write_rows(
+            [
+                registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
+                registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
+            ]
+        )
         result = self.run_check("--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("installed service tokens: 2", result.stdout)
