@@ -39,6 +39,25 @@ current-head completion.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+
+from .events import FINDINGS_MEMBER_LIMIT
+
+
+def _source_instant(text: str) -> float:
+    # ISO-8601 as an epoch instant, normalising trailing Z;  lexical max over
+    # raw strings is wrong across offsets.  Members reach here only with a
+    # non-empty `at`.
+    raw = text.strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return float("-inf")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 KODY_LOGIN = "kody-ai[bot]"
 SENTRY_LOGIN = "sentry[bot]"
@@ -334,12 +353,40 @@ def derive(
         actors: dict[str, int] = {}
         for c in new_comments:
             actors[_login(c)] = actors.get(_login(c), 0) + 1
+        # Constituent identity:  every member comment's own id, creation time
+        # and head.  The batch's max id / head aggregate alone is lossy, so a
+        # batch without exact membership (oversized, or any member missing its
+        # time or head) exports none and is delivered ordinarily, never
+        # native-qualified from an aggregate.
+        members = sorted(
+            (
+                {
+                    "id": c["id"],
+                    "at": str(c.get("created_at") or ""),
+                    "head": str(c.get("original_commit_id") or ""),
+                }
+                for c in new_comments
+            ),
+            key=lambda m: m["id"],
+        )
+        if len(members) > FINDINGS_MEMBER_LIMIT or any(
+            not m["at"] or not m["head"] for m in members
+        ):
+            members = None
+        # The batch's source time is the NEWEST member instant, the same value
+        # the exported source_epoch carries;  ids and times are independent
+        # orderings, so the highest-id member is not always the newest.
+        source_time = (
+            max(members, key=lambda m: _source_instant(m["at"]))["at"] if members else None
+        )
         events.append(
             {
                 "repo": repo,
                 "number": number,
                 "kind": "findings_added",
                 "event_id": "c%d" % max(c["id"] for c in new_comments),
+                "source_time": source_time,
+                "members": members,
                 "actor": "+".join(sorted(actors)),
                 "head": sorted(heads)[-1] if heads else "",
                 "current_head": current_head,

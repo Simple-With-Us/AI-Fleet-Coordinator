@@ -16,13 +16,18 @@ def snapshot(reader, repo, number, epoch):
         raise ValueError("boundary-head")
     reviews = reader.reviews(repo, number)
     checks = reader.check_runs(repo, head)
-    if any(type(row.get("id")) is not int or row["id"] < 1 for row in reviews + checks):
+    comments = reader.review_comments(repo, number)
+    if any(
+        type(row.get("id")) is not int or row["id"] < 1
+        for row in reviews + checks + comments
+    ):
         raise ValueError("boundary-source-id")
     return dict(
         repo=repo,
         number=number,
         review_floor=max([row["id"] for row in reviews] or [0]),
         check_floor=max([row["id"] for row in checks] or [0]),
+        comment_floor=max([row["id"] for row in comments] or [0]),
         complete=True,
         epoch=epoch,
     )

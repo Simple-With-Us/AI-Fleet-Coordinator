@@ -151,6 +151,34 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(event["event_id"], "c23")
         self.assertIs(event["head_matches"], False)
         self.assertIn("3 new finding comments", event["summary"])
+        # Constituent identity:  exact per-member id, time and head, newest
+        # member's time as the batch's source_time.
+        self.assertEqual(
+            event["members"],
+            [
+                {"id": 21, "at": "2026-11-21T01:00:00Z", "head": HEAD},
+                {"id": 22, "at": "2026-11-21T01:00:00Z", "head": HEAD},
+                {"id": 23, "at": "2026-11-21T01:00:00Z", "head": "0" * 40},
+            ],
+        )
+        self.assertEqual(event["source_time"], "2026-11-21T01:00:00Z")
+
+    def test_findings_source_time_is_newest_instant_not_highest_id(self):
+        comments = [
+            sentry_comment(25, created_at="2026-11-21T01:00:02Z"),
+            sentry_comment(26, created_at="2026-11-21T01:00:01Z"),
+        ]
+        found = detect.derive(REPO, 7, HEAD, [], comments, [], dict(CURSOR0, comment_id=20))
+        self.assertEqual(found[0]["event_id"], "c26")
+        self.assertEqual(found[0]["source_time"], "2026-11-21T01:00:02Z")
+
+    def test_findings_batch_without_full_membership_exports_none(self):
+        comment = sentry_comment(24)
+        del comment["created_at"]
+        found = detect.derive(REPO, 7, HEAD, [], [comment], [], dict(CURSOR0, comment_id=20))
+        self.assertEqual(len(found), 1)
+        self.assertIsNone(found[0]["members"])
+        self.assertIsNone(found[0]["source_time"])
 
     def test_unrelated_comments_are_ignored(self):
         comments = [{"id": 30, "original_commit_id": HEAD, "user": {"login": "someone"}}]

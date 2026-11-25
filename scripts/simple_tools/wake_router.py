@@ -552,20 +552,43 @@ class Wake:
     source_event: dict | None = None  # authenticated review producer only
 
 
+#: Same bound as the producer's persistence contract:  a larger findings
+#: batch never carries membership to qualify.
+FINDINGS_MEMBER_LIMIT = 100
+
+
+def _findings_members_valid(members):
+    # Exact batch membership shape:  1..LIMIT exact-key records, ids int>0
+    # strictly increasing, an ISO timestamp string and one lowercase 40-hex
+    # head per member.  Deep source-time checks live in qualification.
+    if not isinstance(members, list) or not 1 <= len(members) <= FINDINGS_MEMBER_LIMIT:
+        return False
+    last = 0
+    for member in members:
+        if not isinstance(member, dict) or set(member) != {"id", "at", "head"}:
+            return False
+        if (
+            type(member["id"]) is not int
+            or member["id"] <= last
+            or not isinstance(member["at"], str)
+            or not isinstance(member["head"], str)
+            or not re.fullmatch(r"[0-9a-f]{40}", member["head"])
+        ):
+            return False
+        last = member["id"]
+    return True
+
+
 def source_event(value, wake):
     # Producer-authenticated metadata only; never a payload authority claim.
     # Invalid/missing evidence retains ordinary delivery, not native qualification.
     import hashlib
     import math
 
-    if not isinstance(value, dict) or set(value) != {
-        "repo",
-        "number",
-        "kind",
-        "event_id",
-        "epoch",
-        "source_epoch",
-    }:
+    base = {"repo", "number", "kind", "event_id", "epoch", "source_epoch"}
+    if not isinstance(value, dict) or not (
+        set(value) == base or set(value) == base | {"members"}
+    ):
         return None
     repo, number, kind, event_id = (value.get(k) for k in ("repo", "number", "kind", "event_id"))
     if (
@@ -575,11 +598,24 @@ def source_event(value, wake):
         or number < 1
     ):
         return None
-    if (
-        kind not in ("review_submitted", "review_completed")
-        or not isinstance(event_id, str)
-        or not re.fullmatch(r"[1-9][0-9]{0,19}", event_id)
-    ):
+    if kind in ("review_submitted", "review_completed"):
+        if (
+            "members" in value
+            or not isinstance(event_id, str)
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", event_id)
+        ):
+            return None
+    elif kind == "findings_added":
+        # A findings batch qualifies only on exact constituent membership;
+        # the event id names the newest member.
+        if (
+            not isinstance(event_id, str)
+            or not re.fullmatch(r"c[1-9][0-9]{0,19}", event_id)
+            or not _findings_members_valid(value.get("members"))
+            or event_id != "c%d" % value["members"][-1]["id"]
+        ):
+            return None
+    else:
         return None
     if (
         type(value["epoch"]) is not int
@@ -595,7 +631,12 @@ def source_event(value, wake):
         or wake.wake_id != "ra-" + hashlib.sha256(semantic.encode()).hexdigest()[:24]
     ):
         return None
-    return dict(value)
+    proof = dict(value)
+    if "members" in proof:
+        # Nested membership is copied independently:  later mutation of the
+        # caller's row never rewrites the validated, persisted identity.
+        proof["members"] = [dict(member) for member in proof["members"]]
+    return proof
 
 
 def workspace_root(configured: object) -> str:
