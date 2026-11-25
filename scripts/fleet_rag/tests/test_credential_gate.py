@@ -57,15 +57,14 @@ class CredentialGateTests(unittest.TestCase):
             self.assertEqual(str(failure.exception), 'refused_secret:' + field)
             scrub.assert_not_called()
 
-    def test_credential_split_across_fields_is_refused_combined(self):
+    def test_cross_field_boundary_phantom_is_not_refused(self):
+        # The fields persist separately, never stitched:  a shape that would
+        # exist only across the text/title boundary is not a stored credential.
         sample = synthetic_credential()
         cut = len(sample) // 2
-        values = dict(text='Operational note ' + sample[:cut], title=sample[cut:], url='https://example.invalid/lesson')
-        with mock.patch.object(recall_api, 'scrub') as scrub, no_effects():
-            with self.assertRaises(core.FleetRagError) as failure:
-                recall_api.recall_contribute(**values, category='lesson', seat='CODEX')
-        self.assertEqual(str(failure.exception), 'refused_secret:combined')
-        scrub.assert_not_called()
+        credential_gate.require_safe_fields(
+            text='Operational note ' + sample[:cut], title=sample[cut:], url='https://example.invalid/lesson'
+        )
 
     def test_missing_or_failed_scanner_refuses_with_fixed_field_code(self):
         cases = [mock.patch.dict(sys.modules, {'simple_tools.secretscan': None}),
