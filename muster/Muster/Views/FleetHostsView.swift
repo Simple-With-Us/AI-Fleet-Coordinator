@@ -12,7 +12,9 @@ import SwiftUI
 /// Under the hosts sits the Worker Health card:  the Worker's Linear token health,  from
 /// `~/.local/state/fleet-tools/worker-health.json`,  under the same forty-five minute rule.
 ///
-/// Both files are read again every minute and when the Mac wakes,  and the page works their
+/// The trade apps' API observations are read from their own Mac collector report too.
+///
+/// The files are read again every minute and when the Mac wakes,  and the page works their
 /// age and verdict out again every thirty seconds,  so a report left open goes stale when it
 /// crosses its window instead of keeping the answer it had when the page opened.
 struct FleetHostsView: View {
@@ -20,8 +22,9 @@ struct FleetHostsView: View {
     @State private var reading: FleetToolsReading?
     /// The Worker's own health file,  read beside the doctor's report,  and aged the same way.
     @State private var workerHealth: WorkerHealthReading?
+    @State private var apiHealth: ApiHealthReading?
     @State private var loading = false
-    /// When the two files were last read.
+    /// When the three files were last read.
     @State private var readAt: Date?
     /// When the Mac last woke,  so a read from before the sleep is not shown as current.
     @State private var wokeAt: Date?
@@ -82,6 +85,9 @@ struct FleetHostsView: View {
             if let health {
                 workerHealthCard(health, now: now)
             }
+            if let apiHealth {
+                apiHealthCard(apiHealth, now: now)
+            }
         }
     }
 
@@ -99,7 +105,7 @@ struct FleetHostsView: View {
                     Label("Read The Mac's Reports Again", systemImage: "arrow.clockwise")
                 }
                 .disabled(loading)
-                .help("Reads the doctor's report and the Worker health file this Mac holds.\(ServerStatusCopy.sentenceGap)It runs no doctor and asks no host anything.")
+                .help("Reads the doctor, Worker health and trade app health reports this Mac holds.\(ServerStatusCopy.sentenceGap)It runs no doctor and asks no host anything.")
             }
             Text("What the doctor's report says about each host's tools.")
                 .font(.callout)
@@ -497,6 +503,47 @@ struct FleetHostsView: View {
         .padding(.top, 8)
     }
 
+    /// The apps' own health observations, independent of Worker or host status.
+    private func apiHealthCard(_ reading: ApiHealthReading, now: Date) -> some View {
+        let freshness = ReportFreshness(
+            generatedAt: reading.generatedAt,
+            maxAge: TimeInterval(ApiHealthContract.maxAgeSeconds),
+            now: now, readAt: readAt, wokeAt: wokeAt)
+        let origin = ReportOrigin.macCollector("the trade app health collector")
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Trade App Health").font(.headline)
+            Text("Socratic Trade and Congress.Trade health as seen by the collector on this Mac.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let problem = reading.problem {
+                problemBox(problem)
+            } else if !freshness.verdict.isCurrent {
+                problemBox(ReportFreshnessCopy.verdictNote(origin, freshness)
+                    ?? "The trade app report is not current; both app states are unknown.")
+            } else {
+                if let line = ReportFreshnessCopy.ageLine(origin, freshness) {
+                    Text(line).font(.caption).foregroundStyle(.secondary)
+                }
+                apiHealthRow("Socratic Trade", app: reading.apps.first { $0.app == "ST" })
+                apiHealthRow("Congress.Trade", app: reading.apps.first { $0.app == "CT" })
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private func apiHealthRow(_ title: String, app: ApiHealthApp?) -> some View {
+        let state = app?.healthState ?? .unknown
+        return HStack {
+            Text(title)
+            Spacer()
+            FleetToolsStateBadge(state: state.cellState, width: 108)
+            if state == .unknown {
+                Text("Not observed").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     /// Who writes the Worker's health file:  the Mac's own collector,  not the Worker.
     private var workerHealthOrigin: ReportOrigin { .macCollector("the Worker health collector") }
 
@@ -547,7 +594,7 @@ struct FleetHostsView: View {
 
     // MARK: The read
 
-    /// Reads both files again,  off the main thread.  A read already in flight is not doubled:
+    /// Reads the files again,  off the main thread.  A read already in flight is not doubled:
     /// the tick,  the wake and the button all land here.
     ///
     /// The read is stamped with the time it started,  not the time it finished,  so bytes read
@@ -560,14 +607,17 @@ struct FleetHostsView: View {
         defer { loading = false }
         let url = FleetToolsReportReader.reportURL()
         let healthURL = WorkerHealthReportReader.reportURL()
+        let apiURL = ApiHealthReportReader.reportURL()
         var started = Date()
         repeat {
             started = Date()
-            let (result, health) = await Task.detached(priority: .userInitiated) {
-                (FleetToolsReportReader.read(at: url), WorkerHealthReportReader.read(at: healthURL))
+            let (result, health, api) = await Task.detached(priority: .userInitiated) {
+                (FleetToolsReportReader.read(at: url), WorkerHealthReportReader.read(at: healthURL),
+                 ApiHealthReportReader.read(at: apiURL))
             }.value
             reading = result
             workerHealth = health
+            apiHealth = api
             readAt = started
             if expandedHost == nil {
                 expandedHost = result.hosts.first?.host
