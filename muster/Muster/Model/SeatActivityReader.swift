@@ -845,16 +845,29 @@ struct SeatActivityReader {
             return SeatActivityBuilder.build(sources)
         }
 
-        // Who holds each seat:  the server eavesdropper's reading,  read before the user list
-        // so a refusal there still leaves every seat placed.  A read with no answer leaves every
-        // place not known,  and nothing on the Mac is read instead.
-        sources.server = await serverReading()
+        // Who holds each seat:  the server eavesdropper's reading.  It is asked at the same time
+        // as the user list,  so a slow helper never holds the Zulip reads back (Sentry on #2535),
+        // and a refused user list still leaves every seat placed.  A read with no answer leaves
+        // every place not known,  and nothing on the Mac is read instead.
+        let readServer = serverReading
+        async let serverAnswer = readServer()
+        let users: Result<ChatCLIResult, Error>
+        do {
+            users = .success(try await runner.run(ChatInvocation.users()))
+        } catch {
+            users = .failure(error)
+        }
+        requests += 1
+        sources.server = await serverAnswer
         // The server read joins the store's,  so its own clock may have moved on:  the reading
         // is judged current at the moment it came back.
         sources.readAt = now()
-        do {
-            let result = try await runner.run(ChatInvocation.users())
-            requests += 1
+        switch users {
+        case .failure(let error):
+            sources.userProblem = SeatActivityReader.operatorUnavailable(error.localizedDescription)
+            sources.requestsMade = requests
+            return SeatActivityBuilder.build(sources)
+        case .success(let result):
             guard result.exitCode == 0 else {
                 sources.userProblem = SeatActivityReader.operatorUnavailable(
                     OperatorReadRefusal.describe(result)
@@ -869,11 +882,6 @@ struct SeatActivityReader {
                 return SeatActivityBuilder.build(sources)
             }
             bots = decoded
-        } catch {
-            requests += 1
-            sources.userProblem = SeatActivityReader.operatorUnavailable(error.localizedDescription)
-            sources.requestsMade = requests
-            return SeatActivityBuilder.build(sources)
         }
         sources.bots = bots
 
