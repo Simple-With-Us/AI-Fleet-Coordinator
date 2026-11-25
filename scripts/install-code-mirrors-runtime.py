@@ -189,7 +189,10 @@ def install(source, destination, source_commit):
             frozenset(LEGACY_FILES) | frozenset(RETIRED_READER_FILES),
             frozenset(LEGACY_DOCS_FILES) | frozenset(RETIRED_READER_FILES),
         )
-        if previous.get("schema") != 1 or frozenset(previous.get("files", {})) not in recognized_closures:
+        if (
+            previous.get("schema") != 1
+            or frozenset(previous.get("files", {})) not in recognized_closures
+        ):
             raise ValueError("Existing bundle manifest is not recognized")
         for name, digest in previous["files"].items():
             target = destination / "scripts" / name
