@@ -852,8 +852,9 @@ def _validate_read(action, result):
             "page": positive,
             "has_more": boolean,
             "affiliation": lambda x: x in ("all", "direct", "outside"),
-            "permission": lambda x: x is None
-            or x in ("pull", "triage", "moderate", "push", "maintain", "admin"),
+            "permission": lambda x: (
+                x is None or x in ("pull", "triage", "moderate", "push", "maintain", "admin")
+            ),
         },
         "wf_repo_teams": {
             "teams": lambda v: seq(
