@@ -25,6 +25,9 @@ import { chmodSync, existsSync, readFileSync, statSync, writeFileSync, mkdirSync
 import { createRequire } from "node:module";
 
 const [tsPath, work] = [process.argv[2], process.argv[3]];
+// The permissions a new directory gets come from the umask, so the run pins it:  the
+// shared state directory must keep the group and other bits a plain mkdir gives it.
+process.umask(0o022);
 const require = createRequire(tsPath);
 let strip;
 try {
@@ -113,7 +116,8 @@ const ok = (name) => checks.push("ok " + name);
 // "symlink" points that directory at another one,  and the plugin must refuse to
 // write the log through it.
 const mode = process.env.OPENCODE_DRYRUN_MODE || "happy";
-const LOG_DIR = process.env.HOME + "/.local/state/fleet-lanes";
+const STATE_DIR = process.env.HOME + "/.local/state";
+const LOG_DIR = STATE_DIR + "/fleet-lanes";
 const LOG_PATH = LOG_DIR + "/lane-move.log";
 
 const mod = await import("file://" + pluginDir + "/index.js");
@@ -186,6 +190,14 @@ if (mode === "symlink") {
     ok("log directory is owner-only (0700)");
   } else {
     fail("log directory mode", "0" + dirMode.toString(8));
+  }
+  // The state directory above it is shared with other applications, so it must keep
+  // the permissions a plain mkdir gives it;  only the leaf is owner-only.
+  const stateMode = statSync(STATE_DIR).mode & 0o777;
+  if ((stateMode & 0o077) !== 0 && (dirMode & 0o077) === 0) {
+    ok("shared state directory keeps group/other permissions (0" + stateMode.toString(8) + ") while the log directory stays owner-only (0" + dirMode.toString(8) + ")");
+  } else {
+    fail("state directory modes", "parent 0" + stateMode.toString(8) + ", leaf 0" + dirMode.toString(8));
   }
 }
 
@@ -265,7 +277,7 @@ class LaneMoveDryRun(unittest.TestCase):
             home = os.path.join(work, "home")
             fixture_worktree(work)
             out, proc = self.run_dry_run(work, home)
-            self.assertEqual(out[0], "PASS 9 checks", proc.stdout[-2000:] + proc.stderr[-1000:])
+            self.assertEqual(out[0], "PASS 10 checks", proc.stdout[-2000:] + proc.stderr[-1000:])
 
     def test_the_rendered_plugin_refuses_to_write_the_log_through_a_symlinked_directory(self):
         # The log holds the seat's private record of every lane move, so the plugin
