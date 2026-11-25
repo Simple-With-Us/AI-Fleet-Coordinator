@@ -8,7 +8,7 @@ trap 'rm -rf "$tmp"' EXIT
 SAN='-fsanitize=address,undefined'
 # Exact ingress body with fake Security functions only; never a Keychain call.
 python3 "$here/test-ingress-source.py"
-# Pure-C protocol core: behavioral fixture (132 checks), plain and sanitized.
+# Pure-C protocol core: behavioral fixture (115 checks), plain and sanitized.
 /usr/bin/clang -std=c99 -Wall -Wextra -Werror -I"$here" "$here/mac-fixture.c" -o "$tmp/mac-fixture"
 "$tmp/mac-fixture"
 /usr/bin/clang -std=c99 -Wall -Wextra -Werror $SAN -I"$here" "$here/mac-fixture.c" -o "$tmp/mac-fixture-san"
