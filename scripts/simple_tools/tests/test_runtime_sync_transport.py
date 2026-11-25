@@ -35,6 +35,71 @@ def git(*arguments: str, cwd: Path) -> str:
     return result.stdout.strip()
 
 
+def shell_branch(text: str, opener: str) -> tuple[str, str]:
+    """The shell branch that `opener` opens, and the text before it.
+
+    The branch closes on the shell's own `fi` keyword, which the script writes on a
+    line of its own.  Cutting on a bare `fi` substring would end the branch at any
+    word that happens to hold those two letters, and the assertions would then
+    enforce only a fragment of the branch.
+    """
+    assert text.count(opener) == 1, "the opener must appear exactly once"
+    before, after = text.split(opener)
+    lines = after.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "fi" or stripped.startswith("fi ") or stripped.startswith("fi;"):
+            return before, "\n".join(lines[:index])
+    raise AssertionError("the branch that %r opens never closes" % opener)
+
+class ShellBranchTests(unittest.TestCase):
+    """The branch parser, on its own:  the shell's `fi` is the only boundary."""
+
+    OPENER = 'if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then'
+
+    def test_a_word_holding_fi_inside_the_branch_does_not_cut_it(self) -> None:
+        script = (
+            "#!/bin/bash\n"
+            "main() {\n"
+            '  if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then\n'
+            '    retrieval="origin"   # the verified file name\n'
+            "    fetch_public_runtime() { rgit fetch -q origin; }\n"
+            "  fi\n"
+            "}\n"
+            "main \"$@\"\n"
+        )
+        before, branch = shell_branch(script, self.OPENER)
+        self.assertIn('retrieval="origin"', branch)
+        self.assertIn("fetch -q origin", branch)
+        # The text before the opener keeps the rest of the script, never the branch.
+        self.assertNotIn("fetch -q origin", before)
+
+    def test_the_branch_ends_at_the_shells_own_fi(self) -> None:
+        script = (
+            "main() {\n"
+            '  if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then\n'
+            "    true\n"
+            "  fi\n"
+            "  after_the_branch\n"
+            "}\n"
+        )
+        before, branch = shell_branch(script, self.OPENER)
+        self.assertIn("true", branch)
+        # The branch stops at the closing fi, so what follows it is not part of it.
+        self.assertNotIn("after_the_branch", branch)
+        self.assertIn("main() {", before)
+
+    def test_a_branch_that_never_closes_is_refused(self) -> None:
+        script = (
+            "main() {\n"
+            '  if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then\n'
+            "    true\n"
+            "}\n"
+        )
+        with self.assertRaises(AssertionError):
+            shell_branch(script, self.OPENER)
+
+
 class RuntimeSyncTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="runtime-sync-transport-"))
@@ -107,13 +172,13 @@ class RuntimeSyncTransportTests(unittest.TestCase):
         """The public-source transport is the approved default;  the origin one is the fallback."""
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('local retrieval="public-source"', text)
-        not_approved = text.split('if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then')
-        self.assertEqual(len(not_approved), 2)
-        branch = not_approved[1].split("fi")[0]
+        before, branch = shell_branch(
+            text, 'if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then'
+        )
         self.assertIn('retrieval="origin"', branch)
         self.assertIn("fetch -q origin", branch)
         # The origin transport exists nowhere else:  never as a fallback after a failure.
-        self.assertNotIn("fetch -q origin", not_approved[0])
+        self.assertNotIn("fetch -q origin", before)
 
     def test_the_public_source_transport_is_fixed_and_never_falls_back(self) -> None:
         """The approved transport is one fixed public source, and its failure does not fall back."""
@@ -150,10 +215,11 @@ class RuntimeSyncTransportTests(unittest.TestCase):
     def test_the_fallback_guards_exist_only_inside_the_not_approved_branch(self) -> None:
         """The approved transport is fixed and never borrows the fallback's guards."""
         text = SCRIPT.read_text(encoding="utf-8")
-        parts = text.split('if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then')
-        self.assertEqual(len(parts), 2)
-        self.assertIn("GIT_SSH_COMMAND", parts[1].split("fi")[0])
-        self.assertNotIn("GIT_SSH_COMMAND", parts[0])
+        before, branch = shell_branch(
+            text, 'if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then'
+        )
+        self.assertIn("GIT_SSH_COMMAND", branch)
+        self.assertNotIn("GIT_SSH_COMMAND", before)
 
     def test_the_script_parses(self) -> None:
         result = subprocess.run(
