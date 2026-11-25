@@ -47,6 +47,7 @@ import time
 from datetime import UTC, datetime
 
 from . import detect, events, github_read, messages, wakes
+from .operator_pr_origin import hold_label
 
 
 # Relay seat slug -> wake-router seat tag.  There is NO default and NO
@@ -202,7 +203,7 @@ class AlertService:
                     self.bound_this_cycle.add((repo, number))
                 except Exception as exc:
                     if len(self.binding_holds) < 1000:
-                        self.binding_holds[repo + "#" + str(number)] = type(exc).__name__
+                        self.binding_holds[repo + "#" + str(number)] = hold_label(exc)
                     # No cursor advances while binding is unavailable. A later
                     # cycle resumes from the original event watermark.
                     counts["held"] += 1
