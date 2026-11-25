@@ -9,20 +9,20 @@ import Foundation
 //
 // The sources are:
 //
-//   * the Mac eavesdropper's own published state,  `~/.simple-tools/listener/status.json`,
-//     which holds the open sessions (the leases it holds alive),  the state of each seat
-//     it runs and the wake it is running (it once published a provider quota per seat;  since
-//     AFC-694 it runs no model and publishes none,  so the Quota column reads Not reported)
-//   * the seat partition (`docs/protocols/simple-tools-partition.toml`),  which says which
-//     machine's eavesdropper holds each seat
+//   * the server eavesdropper's reduced status (`server eavesdropper-status`,  read through the
+//     server's control helper by `ServerEavesdropperStatusStore`),  which says which seats the
+//     one listener holds (AFC-837).  Since the one-listener cutover of Nov 10 the Mac's
+//     eavesdropper is retired,  so its `~/.simple-tools/listener/status.json`,  the seat
+//     sections of its `listener.toml` and the Mac's copy of the seat partition say nothing
+//     true about a seat,  and none of them is read here
 //   * the fleet chat CLI (`simple-chat`),  which holds the seat's last Zulip post
 //
-// This model reads only the Mac's eavesdropper.  A seat the partition gives to the server
-// is shown as held by the server,  and its Mac eavesdropper facts say that they are not read
-// here:  never Unknown in orange,  and never zero.  Every session count here is a count of
-// sessions the Mac's eavesdropper holds.  The view shows a server seat's state from the
-// server's own eavesdropper instead (`ServerSeatRowPresentation`,  read through
-// `ServerEavesdropperStatusStore`),  which this model never mixes into its own facts.
+// A seat the server's current reading lists is held by the server,  and its row shows the
+// server's own facts (`ServerSeatRowPresentation`),  which this model never mixes into its own.
+// A seat a current reading does not list is held by no eavesdropper.  When there is no reading,
+// or a reading that is not current does not list the seat,  where the seat is held is not known:
+// it is never guessed from a Mac file.  The Mac columns are never filled in:  they say the
+// answer is not read here,  or why it is not known,  and never Unknown dressed as a zero.
 //
 // The panel is read only.  It runs `users` and `search`,  and nothing else:  the runner
 // in `SeatActivityReader` refuses any other verb.
@@ -341,7 +341,7 @@ struct RewakeVerification: Equatable, Sendable {
 
 // MARK: - Where a seat is held
 
-/// Which machine's eavesdropper holds a seat,  from the seat partition.
+/// Which machine's eavesdropper holds a seat,  from the server eavesdropper's reading.
 ///
 /// This is where a seat's Zulip queue lives,  not where every session of the seat runs:  a
 /// seat the Mac holds can still have a session on the server.
@@ -350,7 +350,7 @@ enum SeatPlace: Equatable, Sendable {
     case mac
     /// The server's eavesdropper holds the seat.
     case server
-    /// No eavesdropper holds the seat:  the partition says `none` or does not list it.
+    /// No eavesdropper holds the seat:  a current server reading does not list it.
     case noEavesdropper
     /// The partition gives the seat to the Mac,  but the seat's own section in the Mac's
     /// file names the server,  so the Mac's eavesdropper refuses it.
@@ -440,7 +440,7 @@ enum SeatPlaceGroup: String, CaseIterable, Identifiable, Sendable {
         case .noEavesdropper:
             return "No eavesdropper holds these seats,  so only their last post is shown."
         case .notKnown:
-            return "The seat partition could not settle where these seats are held."
+            return "The server's eavesdropper could not be read as current,  so Muster cannot say where these seats are held."
         }
     }
 }
@@ -972,17 +972,8 @@ struct SeatActivityModel: Equatable, Sendable {
     var requestCeiling: Int = 0
     /// What could not be read,  across every seat.
     var problems: [String] = []
-    /// Where the Mac eavesdropper's state came from.
-    var listenerPath: String = ""
-    /// When the Mac's eavesdropper wrote the state the panel used,  when it was used.
-    var listenerWrittenAt: Date?
-    /// Whether resume-wake is verified on this Mac,  from the state the panel used.  Nil when
-    /// that state was not used.
-    var rewake: RewakeVerification?
-    /// Where the seat partition came from.
-    var partitionPath: String = ""
-    /// The seats the partition gives to the server that have no row,  because the app's
-    /// roster does not hold them.
+    /// The seats the server's eavesdropper holds that have no row,  because the app's roster
+    /// does not hold them.
     var otherServerSeats: [String] = []
     /// Why there are no rows at all,  when the app has no seat list.
     var rosterProblem: String?
@@ -1036,7 +1027,7 @@ struct SeatActivityModel: Equatable, Sendable {
     var otherServerSeatsNote: String? {
         guard !otherServerSeats.isEmpty else { return nil }
         let count = otherServerSeats.count
-        return "The seat partition also gives the server \(count == 1 ? "1 seat" : "\(count) seats") "
+        return "The server's eavesdropper also holds \(count == 1 ? "1 seat" : "\(count) seats") "
             + "that Muster's seat list does not hold,  so \(count == 1 ? "it has" : "they have") no row:  "
             + otherServerSeats.joined(separator: ", ") + "."
     }
@@ -1120,18 +1111,9 @@ enum SeatActivityBuilder {
     struct Sources {
         /// The roster,  in the order the app shows it.
         var roster: [String] = []
-        /// The eavesdropper's published state,  when it could be read.
-        var listener: ListenerStateDocument?
-        /// Why the eavesdropper's state could not be read.
-        var listenerProblem: String?
-        /// The seat partition,  when it was read.
-        var partition: ListenerPartition?
-        /// The Mac eavesdropper's configuration file,  when it could be read.
-        var config: ListenerConfigDocument?
-        /// Why the configuration file is there but could not be read.
-        var configProblem: String?
-        /// Where the partition came from.
-        var partitionPath: String = ""
+        /// The server eavesdropper's reading,  or nil when it was not read.  It is the one
+        /// source of where each seat is held (AFC-837).
+        var server: ServerEavesdropperReading?
         /// The bots the realm knows,  by seat tag.
         var bots: [String: ChatBot] = [:]
         /// Why the user list could not be read.
@@ -1144,10 +1126,8 @@ enum SeatActivityBuilder {
         var requestsMade: Int = 0
         /// The ceiling the calls were held to.
         var requestCeiling: Int = 0
-        /// When the read happened.
+        /// When the read happened.  A server reading is judged current against this moment.
         var readAt: Date = Date()
-        /// Where the eavesdropper's state lives.
-        var listenerPath: String = ""
         /// Why there is no seat list,  when there is none.
         var rosterProblem: String?
     }
@@ -1159,24 +1139,11 @@ enum SeatActivityBuilder {
         model.readingSeat = sources.readingSeat
         model.requestsMade = sources.requestsMade
         model.requestCeiling = sources.requestCeiling
-        model.listenerPath = sources.listenerPath
-        model.listenerWrittenAt = sources.listener?.publishedAt
-        model.rewake = sources.listener?.rewake
-        model.partitionPath = sources.partitionPath
         model.rosterProblem = sources.rosterProblem
 
         var problems: [String] = []
         if let problem = sources.rosterProblem { problems.append(problem) }
-        // The Mac's listener is retired when the partition gives the Mac no agent seat (the
-        // Nov 10 one-listener cutover):  its last state file is stale by design, so that is
-        // not a problem to banner.  An unread partition says nothing either way and keeps it.
-        if let problem = sources.listenerProblem, sources.partition?.givesTheMacNoAgentSeat != true {
-            problems.append(problem)
-        }
-        if let problem = sources.partition?.problem {
-            problems.append("The seat partition could not be read,  so Muster cannot say which machine holds each seat.  \(problem)")
-        }
-        if let problem = sources.configProblem { problems.append(problem) }
+        if let problem = placementProblem(sources) { problems.append(problem) }
         if let problem = sources.userProblem { problems.append(problem) }
         model.problems = problems
 
@@ -1187,44 +1154,78 @@ enum SeatActivityBuilder {
         return model
     }
 
-    /// The seats the partition gives to the server that the roster does not hold.
-    private static func otherServerSeats(_ sources: Sources) -> [String] {
-        guard let seats = sources.partition?.seats else { return [] }
-        let roster = Set(sources.roster.map { $0.uppercased() })
-        return seats
-            .filter { $0.value == "server" && !roster.contains($0.key) }
-            .map(\.key)
-            .sorted()
+    /// Why Muster cannot say where the seats are held,  once for the whole panel,  or nil when
+    /// it can.  An empty roster has no seat to place,  so it needs no such line.
+    static func placementProblem(_ sources: Sources) -> String? {
+        guard !sources.roster.isEmpty else { return nil }
+        let consequence = "so Muster cannot say which seats the server holds."
+        guard let reading = sources.server else {
+            return "The server's eavesdropper was not read,  " + consequence
+        }
+        switch reading {
+        case .read(let status):
+            guard let why = status.notCurrentReason(now: sources.readAt) else { return nil }
+            return "The server's eavesdropper's last answer is not current,  "
+                + "so Muster cannot say whether it holds a seat that answer does not list.  " + why
+        case .notRead(let why), .notThisAppsVersion(let why):
+            return "The server's eavesdropper could not be read,  " + consequence + "  " + why
+        case .unavailable(let reason):
+            return "The server's eavesdropper could not be read,  " + consequence + "  " + reason.cause
+        }
     }
 
-    /// Which machine's eavesdropper holds a seat.
+    /// The seats the server's eavesdropper holds that the roster does not.
+    ///
+    /// They come only from a current reading:  a stale answer says nothing about which seats
+    /// the server holds now.
+    private static func otherServerSeats(_ sources: Sources) -> [String] {
+        guard let status = sources.server?.currentStatus(now: sources.readAt) else { return [] }
+        let roster = Set(sources.roster.map { $0.uppercased() })
+        let held = status.seats.map(\.seat) + status.skipped.map(\.seat) + status.disabled
+        return Array(Set(held.filter { !roster.contains($0.uppercased()) })).sorted()
+    }
+
+    /// Which machine's eavesdropper holds a seat,  from the server's reading alone.
+    ///
+    /// A seat the reading lists,  skipped or turned off included,  is the server's:  its row
+    /// then says what the server says about it.  A seat a current reading does not list is held
+    /// by no eavesdropper.  Anything else is not known,  and says why.
     static func place(of seat: String, sources: Sources) -> SeatPlace {
-        guard let partition = sources.partition else {
-            return .notKnown("The seat partition was not read.")
+        guard let reading = sources.server else {
+            return .notKnown("The server's eavesdropper was not read,  so Muster cannot say who holds this seat.")
         }
-        if let config = sources.config {
-            return SeatPlace(partition.host(of: seat, in: config))
+        switch reading.seat(seat, now: sources.readAt) {
+        case .read, .notCurrent(.some, _):
+            return .server
+        case .notCurrent(nil, let why):
+            return .notKnown("The server's eavesdropper's last answer does not list this seat,  and it is not current.  " + why)
+        case .notHeld:
+            if let status = reading.status,
+               status.skippedSeat(named: seat) != nil || status.isDisabled(seat) {
+                return .server
+            }
+            return .noEavesdropper
+        case .notRead(let why), .notThisAppsVersion(let why):
+            return .notKnown(why)
+        case .unavailable(let reason):
+            return .notKnown(reason.cause)
         }
-        return SeatPlace(partition.host(of: seat))
     }
 
     /// One seat's row.
     private static func row(for seat: String, sources: Sources) -> SeatActivityRow {
-        let bot = sources.bots[seat]
         let place = place(of: seat, sources: sources)
-        let entry = sources.listener?.seats?[seat]
-        let quotaFact = quota(for: seat, place: place, sources: sources)
         return SeatActivityRow(
             seat: seat,
-            botName: bot?.fullName,
+            botName: sources.bots[seat]?.fullName,
             place: place,
-            openSessions: openSessions(for: seat, place: place, sources: sources),
-            sessions: (entry?.leases ?? []).enumerated().map { SeatSession(lease: $0.element, index: $0.offset) },
-            listener: listenerState(for: seat, place: place, sources: sources),
-            runningWake: entry?.running != nil,
-            lastEvent: entry?.lastEvent.map { Date(timeIntervalSince1970: $0) },
-            quota: quotaFact,
-            quotaReason: entry?.quota?.reason.map(SeatActivityText.label).flatMap { $0.isEmpty ? nil : $0 },
+            openSessions: macColumn(place),
+            sessions: [],
+            listener: macColumn(place),
+            runningWake: false,
+            lastEvent: nil,
+            quota: macColumn(place),
+            quotaReason: nil,
             lastPost: sources.lastPosts[seat] ?? .unknown(SeatActivityBuilder.noPostReason)
         )
     }
@@ -1232,107 +1233,17 @@ enum SeatActivityBuilder {
     /// The reason a seat has no last post,  when the panel never asked.
     static let noPostReason = "The seat's last post was not read."
 
-    /// The number of live sessions the Mac's eavesdropper holds for a seat.
-    ///
-    /// The eavesdropper's own lease list is the source:  a lease is a session that attached
-    /// to the fleet chat,  and the eavesdropper judges it alive or not.  A seat the Mac's
-    /// eavesdropper publishes no state for has no lease list to read,  so its count is never
-    /// zero:  it is held elsewhere,  or it is unknown.
-    private static func openSessions(for seat: String, place: SeatPlace, sources: Sources) -> SeatFact<Int> {
-        if let entry = sources.listener?.seats?[seat] {
-            guard let leases = entry.leases else {
-                return .unknown("The eavesdropper's state for this seat names no leases,  so its sessions on the Mac are unknown.")
-            }
-            let live = leases.filter { $0.alive == true }.count
-            // A lease whose "alive" is missing or of the wrong type is not a dead one.  With
-            // no lease known to be alive and any of them unsaid,  the count is unknown,  and
-            // never a zero.
-            if live == 0, leases.contains(where: { $0.alive == nil }) {
-                return .unknown("The eavesdropper's state does not say whether this seat's session leases are alive.")
-            }
-            return .known(live)
-        }
-        if place.isElsewhere {
-            return .notHere(place.notHereReason)
-        }
-        guard let listener = sources.listener else {
-            return .unknown(sources.listenerProblem ?? "The eavesdropper's state could not be read.")
-        }
-        if listener.disabled?.contains(seat) == true {
-            return .unknown("The eavesdropper's configuration turns this seat off,  so it holds no sessions for it.")
-        }
-        return .unknown("The Mac's eavesdropper publishes no state for this seat,  so its sessions on the Mac are unknown.")
-    }
+    /// Why the Mac's eavesdropper answers for no seat.
+    static let retiredMacReason = "The Mac's eavesdropper is retired,  so it reports on no seat,  and this is not read here."
 
-    /// The eavesdropper's state for a seat.
-    private static func listenerState(
-        for seat: String,
-        place: SeatPlace,
-        sources: Sources
-    ) -> SeatFact<SeatListenerState> {
-        // A seat held elsewhere is not the Mac's to report on,  and the Mac's kill switch
-        // does not reach it.  Only a seat the Mac's eavesdropper still publishes reads as known.
-        if place.isElsewhere, sources.listener?.seats?[seat] == nil {
-            return .notHere(place.notHereReason)
-        }
-        guard let listener = sources.listener else {
-            return .unknown(sources.listenerProblem ?? "The eavesdropper's state could not be read.")
-        }
-        // The kill switch comes first:  a paused seat is paused whatever else it is.  A
-        // wakes-only pause leaves the seat running and connected,  so it does not hide the
-        // connection state;  it only changes the label.
-        let pause = pauseKind(for: seat, listener: listener)
-        if pause == .full {
-            return .known(.paused)
-        }
-        if listener.disabled?.contains(seat) == true {
-            return .known(.off)
-        }
-        if let entry = listener.seats?[seat] {
-            if entry.paused == true {
-                return .known(.paused)
-            }
-            guard let connected = entry.connected else {
-                return .unknown("The eavesdropper's state for this seat does not say whether it is connected.")
-            }
-            if pause == .wakesOnly {
-                return .known(.wakesPaused(connected: connected))
-            }
-            return .known(connected ? .connected(jobs: entry.jobs ?? 0) : .disconnected)
-        }
-        if let problems = listener.skippedSeats?[seat], !problems.isEmpty {
-            return .known(.skipped(problems.joined(separator: "; ")))
-        }
-        return .unknown("The Mac's eavesdropper publishes no state for this seat.")
-    }
-
-    /// The provider quota the Mac's eavesdropper published for a seat.
+    /// A Mac eavesdropper column for a seat.
     ///
-    /// Today's eavesdropper runs no model and publishes no quota (AFC-694), and has no wake
-    /// gate that reads one.  A seat with no reading,  or one the reading cannot speak for,
-    /// reads as not reported:  never as having quota.
-    private static func quota(
-        for seat: String,
-        place: SeatPlace,
-        sources: Sources
-    ) -> SeatFact<SeatQuotaReading> {
-        if let entry = sources.listener?.seats?[seat] {
-            guard let quota = entry.quota, quota.known == true else {
-                return .known(.notReported)
-            }
-            let reset = quota.resetAt.flatMap { FleetTime.parse($0) }
-            if quota.exhausted == true {
-                return .known(.exhausted(resetAt: reset))
-            }
-            return .known(.available(remaining: quota.remaining, resetAt: reset))
-        }
-        if place.isElsewhere {
-            return .notHere(place.notHereReason)
-        }
-        guard sources.listener != nil else {
-            return .unknown(sources.listenerProblem ?? "The eavesdropper's state could not be read.")
-        }
-        return .unknown("The Mac's eavesdropper publishes no state for this seat,  so its quota is unknown.")
+    /// The Mac's eavesdropper is retired,  so its columns are never filled in from a Mac file
+    /// that went stale:  they say where the answer lives instead.  A seat whose place is not
+    /// known says why once,  under the row (`SeatActivityRow.notes`),  and not again in each
+    /// Mac column.
+    private static func macColumn<Value: Equatable & Sendable>(_ place: SeatPlace) -> SeatFact<Value> {
+        .notHere(place.isElsewhere ? place.notHereReason : retiredMacReason)
     }
 
     /// How far the kill switch covers a seat.
