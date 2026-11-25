@@ -1055,9 +1055,33 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
     HOGHUNTER_WATCHDOG_SECS=300
     HOGHUNTER_GRACE_SECS=60
     HOGHUNTER_BUDGET_SECS=$((HOGHUNTER_WATCHDOG_SECS - HOGHUNTER_GRACE_SECS))
-    janitor_watchdog "$HOGHUNTER_WATCHDOG_SECS" "hoghunter-clean" -- \
-      "$HOGHUNTER_CLEAN" --clean --band=full --budget-sec="$HOGHUNTER_BUDGET_SECS"
-    actions="${actions}hoghunter "
+    #
+    # PR #2531 review (Kody, Seer): an installed engine that predates the flag
+    # would reject --budget-sec and reclaim nothing, and the phase used to log
+    # "hoghunter" in actions whatever happened.  So probe the flag once (bounded,
+    # like every other external call here), fall back to the bare call when it
+    # is missing, and record a non-zero exit or a watchdog kill (124) in both
+    # the log and the actions line instead of reporting a clean run.  A run that
+    # stops on its own budget exits 0, so this flags only real failures.
+    if janitor_watchdog 30 "hoghunter-help" -- "$HOGHUNTER_CLEAN" --help 2>/dev/null \
+        | grep -q -- '--budget-sec'; then
+      janitor_watchdog "$HOGHUNTER_WATCHDOG_SECS" "hoghunter-clean" -- \
+        "$HOGHUNTER_CLEAN" --clean --band=full --budget-sec="$HOGHUNTER_BUDGET_SECS"
+      hh_rc=$?
+    else
+      printf '%s  HOGHUNTER-NOBUDGET engine has no --budget-sec; running unbudgeted\n' \
+        "$(date '+%Y-%m-%d %H:%M')" >> "$LOG"
+      janitor_watchdog "$HOGHUNTER_WATCHDOG_SECS" "hoghunter-clean" -- \
+        "$HOGHUNTER_CLEAN" --clean --band=full
+      hh_rc=$?
+    fi
+    if [ "$hh_rc" -eq 0 ]; then
+      actions="${actions}hoghunter "
+    else
+      printf '%s  HOGHUNTER-FAIL phase=hoghunter-clean rc=%s\n' \
+        "$(date '+%Y-%m-%d %H:%M')" "$hh_rc" >> "$LOG"
+      actions="${actions}hoghunter(rc=${hh_rc}) "
+    fi
 
     # 2026-10-04 (MINIMAX, board e30a863e): CleanMyMac CLI is a FREE PUBLIC BETA
     # (MacPaw, v1.0.0) and is installed again, so the dev/ai/trash sweep is
