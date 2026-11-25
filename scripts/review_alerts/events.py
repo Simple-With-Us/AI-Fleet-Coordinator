@@ -42,7 +42,16 @@ EVENT_FIELDS = (
 
 #: The event kinds.  The first three are review activity;  `ci_failed` and `merge_blocked`
 #: are states of the PR itself, which block it as surely as a finding does.
-KINDS = ("review_submitted", "review_completed", "findings_added", "ci_failed", "merge_blocked")
+KINDS = (
+    "review_submitted",
+    "review_completed",
+    "findings_added",
+    "ci_failed",
+    "merge_blocked",
+    "merge_conflict",
+    "check_failure",
+    "changes_requested",
+)
 TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
 #: outcome is not settled (transport failure or a possibly-lost answer) and is
@@ -196,6 +205,8 @@ class EventStore:
         checks = 0
         ci_floor = 0
         ci_ids: set = set()
+        legacy_conflict_pairs: set = set()
+        legacy_review_ids: set = set()
         completed_heads: set = set()
         with self._lock:
             seed = self._seeds.get((repo, int(number)))
@@ -219,6 +230,12 @@ class EventStore:
                     tail = str(event_id)[1:]
                     if tail.isdigit():
                         comments = max(comments, int(tail))
+                elif kind == "check_failure" and str(event_id).isdigit():
+                    ci_ids.add(int(event_id))
+                elif kind == "changes_requested" and str(event_id).isdigit():
+                    legacy_review_ids.add(int(event_id))
+                elif kind == "merge_conflict":
+                    legacy_conflict_pairs.add(str(event_id))
                 elif kind == "ci_failed" and str(event_id).startswith("ci"):
                     ci_ids.update(
                         int(token) for token in str(event_id)[2:].split("+") if token.isdigit()
@@ -232,6 +249,8 @@ class EventStore:
             "comment_id": comments,
             "check_id": checks,
             "ci_ids": sorted(ci_ids),
+            "legacy_conflict_pairs": sorted(legacy_conflict_pairs),
+            "legacy_review_ids": sorted(legacy_review_ids),
             "ci_floor": ci_floor,
             "completed_heads": sorted(completed_heads),
         }

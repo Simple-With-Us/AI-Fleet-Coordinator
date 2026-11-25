@@ -123,6 +123,9 @@ jobs:
         else
           python3 scripts/check-generated-mirror.py
         fi
+    - name: Review alert delivery and durable event contracts
+      timeout-minutes: 5
+      run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/review_alerts/tests -q
     - name: Run unittests
       timeout-minutes: 10
       run: |
