@@ -115,6 +115,7 @@ class WakeClient:
         link: str,
         *,
         message_id: int = 0,
+        source_event=None,
     ) -> dict:
         """One alert wake for exactly the claimed origin session.  The excerpt
         deliberately carries no session-shaped token:  fragment picking stays
@@ -151,6 +152,8 @@ class WakeClient:
             "sender_full_name": "review-alerts",
             "dm": False,
         }
+        if source_event is not None:
+            payload["source_event"] = source_event
         status, answer = self._call("POST", "/wake/%s" % seat, payload)
         if status in (200, 202):
             return answer

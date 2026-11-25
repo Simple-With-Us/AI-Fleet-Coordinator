@@ -27,6 +27,7 @@ EVENT_FIELDS = (
     "number",
     "kind",
     "event_id",
+    "source_time",
     "epoch",
     "actor",
     "head",
@@ -52,7 +53,16 @@ EVENT_FIELDS = (
     "target_session",
     "target_letter",
     "target_generation",
+    # A findings batch's exact constituent membership (id, creation time,
+    # head per comment), or None when the batch exports none:  old rows and
+    # every non-findings row carry None and deliver ordinarily.
+    "members",
 )
+
+#: Upper bound on a findings batch's persisted constituent membership
+#: (`members`):  a larger batch exports no membership at all and is delivered
+#: ordinarily, never native-qualified from a lossy aggregate.
+FINDINGS_MEMBER_LIMIT = 100
 
 #: The event kinds.  The first three are review activity;  `ci_failed` and `merge_blocked`
 #: are states of the PR itself, which block it as surely as a finding does.

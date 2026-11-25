@@ -8,6 +8,13 @@ origin session;  then settle pending receipts.  Every event lands in the
 store exactly once;  anything that cannot be delivered is held with a named
 reason and counted, never dropped.
 
+Besides review activity, two states of the PR itself are events:  a check run
+on the current head that failed, and a current head in merge conflict with
+the base branch.  Both take the same road as a review event (one Operator
+status line, then one exact-origin wake), so the chat that owns the PR hears
+what blocks it.  Mergeability is read from the PR body;  a body without it
+(the relay's reduced read) derives no conflict event, in either direction.
+
 Only claimed-ownership rows drive alerts:  session, letter AND generation
 claims come from the open_pr caller;  a row missing any of them is held
 ("no-origin-claim"), never delivered.  The claims are untrusted hints:  the
@@ -117,6 +124,64 @@ RECEIPT_DEADLINE_S = 3600
 #: ambiguous):  each epoch mints a fresh wake id only after the prior wake
 #: record is certainly undelivered.
 MAX_EPOCHS = 5
+
+
+def _findings_members(value):
+    """A findings batch's exact constituent membership, or None:  1..LIMIT
+    exact-key records, ids int>0 strictly increasing, an ISO timestamp string
+    and one lowercase 40-hex head per member.  Anything else is no membership
+    at all, so the caller delivers ordinarily instead of qualifying an
+    aggregate."""
+    if not isinstance(value, list) or not 1 <= len(value) <= events.FINDINGS_MEMBER_LIMIT:
+        return None
+    members = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"id", "at", "head"}:
+            return None
+        if type(item["id"]) is not int or item["id"] < 1:
+            return None
+        if not isinstance(item["at"], str) or not isinstance(item["head"], str):
+            return None
+        if len(item["head"]) != 40 or any(c not in "0123456789abcdef" for c in item["head"]):
+            return None
+        members.append({"id": item["id"], "at": item["at"], "head": item["head"]})
+    if any(b["id"] <= a["id"] for a, b in zip(members, members[1:])):
+        return None
+    return members
+
+
+def source_identity(row):
+    # Old ledger rows have no source_time and use ordinary delivery; no
+    # backfill is inferred from detection timestamps.
+    kind = row.get("kind")
+    if kind in ("review_submitted", "review_completed"):
+        instant = _instant(row.get("source_time"))
+        if instant is None:
+            return None
+        return {
+            **{k: row.get(k) for k in ("repo", "number", "kind", "event_id", "epoch")},
+            "source_epoch": instant.timestamp(),
+        }
+    if kind == "findings_added":
+        # A findings batch is a SET of source comments, not one source:  its
+        # identity is the exact membership (id, creation time, head per
+        # comment).  source_epoch is the newest member's own creation time;
+        # the event id must name that same newest member.
+        members = _findings_members(row.get("members"))
+        if members is None:
+            return None
+        instants = [_instant(m["at"]) for m in members]
+        if any(i is None for i in instants):
+            return None
+        if row.get("event_id") != "c%d" % members[-1]["id"]:
+            return None
+        return {
+            **{k: row.get(k) for k in ("repo", "number", "kind", "event_id", "epoch")},
+            "source_epoch": max(instants).timestamp(),
+            "members": members,
+        }
+    return None
+
 
 #: Reasons the bounded recovery pass may revisit:  the delivery-time store
 #: miss is the one hold that accumulates terminal rows below the epoch cap
@@ -421,6 +486,7 @@ class AlertService:
                     topic,
                     link,
                     message_id=base["message_id"],
+                    source_event=source_identity(base),
                 )
             except wakes.WakeRetryable:
                 # The wake may or may not have landed:  reconcile by receipt
@@ -838,6 +904,7 @@ class AlertService:
                 topic,
                 row.get("link") or "",
                 message_id=row["message_id"],
+                source_event=source_identity(row),
             )
         except wakes.WakeRetryable:
             return  # still unsettled;  next cycle reconciles
