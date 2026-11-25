@@ -65,6 +65,74 @@ class PatchTests(unittest.TestCase):
             args["path"],
         )
 
+    def test_large_base_falls_back_to_git_blob(self):
+        args, replies = self.setup_case()
+        raw = b"const apiKey = " + b"stsProviderCredential(provider);\n" + b"other = old;\n"
+        replies[3] = dict(
+            type="file", path=args["path"], sha=blob(raw), encoding="none", content=None
+        )
+        replies.insert(
+            4,
+            dict(sha=blob(raw), encoding="base64", content=base64.b64encode(raw).decode()),
+        )
+        c = Client(*replies)
+        out = Multi(c).run("wf_file_patch", args)
+        self.assertEqual(out["commit"], "e" * 40)
+        blob_gets = [p for m, p, *_ in c.calls if m == "GET" and "/git/blobs/" in p]
+        self.assertEqual(blob_gets, [f"/repos/{REPO}/git/blobs/{blob(raw)}"])
+
+    def test_transient_pre_read_is_retryable_unavailable(self):
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.server import PreReadUnavailable
+
+        class RaisingClient(Client):
+            def _call(self, *a, **kw):
+                reply = super()._call(*a, **kw)
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply
+
+        args, replies = self.setup_case()
+        raw = b"const apiKey = " + b"stsProviderCredential(provider);\n" + b"other = old;\n"
+        replies[3] = dict(
+            type="file", path=args["path"], sha=blob(raw), encoding="none", content=None
+        )
+        replies.insert(
+            4,
+            dict(sha=blob(raw), encoding="base64", content=base64.b64encode(raw).decode()),
+        )
+        # 0 repo, 1 ref, 2 commit, 3 contents, 4 blob fallback, 5/6 entry-mode trees:
+        # a transient failure on any pre-read is a retryable PreReadUnavailable and
+        # no write is attempted.
+        for at in range(7):
+            for status in (0, 408, 500):
+                test_replies = list(replies)
+                test_replies[at] = RelayGitHubError(status, "transient")
+                c = RaisingClient(*test_replies)
+                with self.subTest(at=at, status=status), self.assertRaises(PreReadUnavailable):
+                    Multi(c).run("wf_file_patch", args)
+                self.assertTrue(all(m == "GET" for m, *_ in c.calls))
+
+        # A terminal refusal stays a plain RelayGitHubError, never an availability signal.
+        term_replies = list(replies)
+        term_replies[4] = RelayGitHubError(403, "refused")
+        c = RaisingClient(*term_replies)
+        with self.assertRaises(RelayGitHubError):
+            Multi(c).run("wf_file_patch", args)
+        self.assertTrue(all(m == "GET" for m, *_ in c.calls))
+
+    def test_blob_fallback_mismatch_refuses_before_write(self):
+        args, replies = self.setup_case()
+        raw = b"const apiKey = " + b"stsProviderCredential(provider);\n" + b"other = old;\n"
+        replies[3] = dict(
+            type="file", path=args["path"], sha=blob(raw), encoding="none", content=None
+        )
+        replies.insert(4, dict(sha="f" * 40, encoding="base64", content="eA=="))
+        c = Client(*replies)
+        with self.assertRaises(Refused):
+            Multi(c).run("wf_file_patch", args)
+        self.assertTrue(all(m == "GET" for m, *_ in c.calls))
+
     def test_pins_fail_before_write(self):
         for at, change in [
             (0, dict(default_branch="feature/x")),

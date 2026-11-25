@@ -39,12 +39,30 @@ class ReceiptContractTests(unittest.TestCase):
                 self.assertFalse(thread.is_alive())
                 self.assertFalse(check({"id": 43, "sender_email": agent.creds.email}))
 
+    def test_confirmed_own_message_answers_without_waiting_on_the_fence(self):
+        agent = object.__new__(cli.Agent)
+        agent.creds = SimpleNamespace(email="fixture@example.invalid")
+        agent.tag = None
+        agent.state = mock.Mock()
+        agent.state.posted.return_value = {42}
+        @contextlib.contextmanager
+        def stalled():
+            raise PostReceiptPending("fixture")
+            yield
+        agent.state.stream_post_guard = stalled
+        message = {"id": 42, "sender_email": agent.creds.email}
+        self.assertTrue(agent.is_self(message))
+        self.assertFalse(agent.is_self({"id": 43, "sender_email": "peer@example.invalid"}))
+        with self.assertRaises(cli.ReceiptDeferred):
+            agent.is_self({"id": 43, "sender_email": agent.creds.email})
+
     def test_timeout_does_not_guess_sibling_or_advance_delivery_cursor(self):
         agent = object.__new__(cli.Agent)
         agent.creds = SimpleNamespace(email="fixture@example.invalid")
         agent.tag = None
         agent.state = mock.Mock()
         agent.state.cursor.return_value = None
+        agent.state.posted.return_value = set()
         @contextlib.contextmanager
         def stalled():
             raise PostReceiptPending("fixture")
@@ -205,10 +223,12 @@ class ReceiptContractTests(unittest.TestCase):
                 agent = object.__new__(cli.Agent)
                 agent.state = mock.Mock()
                 agent.state.cursor.return_value = 41
+                agent.state.posted.return_value = set()
                 @contextlib.contextmanager
                 def pending():
                     raise PostReceiptPending("fixture pending")
                     yield
+                agent.tag = None
                 agent.state.stream_post_guard = pending
                 agent.creds = SimpleNamespace(email="fixture@example.invalid")
                 agent.fetch = mock.Mock(return_value=[{"id":42, "sender_email":agent.creds.email}])

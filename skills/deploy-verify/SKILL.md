@@ -129,7 +129,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 - **Autorotate** was retired from TestFlight on 2026-10-10 and the freshness check does not list it.  Its `testflight.yml` is dispatch-only with a signing-ready attestation; do not attest signing you have not verified.
 - **ContactLogo** `ios-testflight.yml` is the fleet pipeline (CL-204, 2026-10-17): push to `main` on `Apps/ContactLogoiOS/**`, `Sources/ContactLogoKit/**` or `project.yml`, a path-gated twice-hourly catch-up, and `workflow_dispatch`.  It needs no repository variable (`CL_IOS_TESTFLIGHT_ENABLED` and `CL_APPLE_ID` are retired) and takes no required dispatch input.
 
-**Rules that matter** (the repository AGENTS.md working rules and FLEET-PROTOCOL.md § App Version and Build Numbers):
+**Rules that matter** (the repository AGENTS.md working rules and FLEET-PROTOCOL.md § App Versions and Build Timestamps):
 
 - What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with a normal space before uppercase AM or PM and no zone abbreviation.  No seat, agent, or tool names, ever.
 - The build number is the time the build itself runs in `YYYYMMDDHHmm` Central Time (owner ruling updated November 15, 2026: every build, including rebuilds, takes its own run time), strictly increasing per app, so no build number is ever reused.  The marketing version follows the app's standing version rule (default `0.1.0`, CT `1.1.2`, or the app's current App Store rule), not the commit count.  Commit-count and UTC build stamps are retired.
@@ -144,7 +144,7 @@ Move the Linear issue to **Deployed** (the MCP tool `linear_status`, with `id` a
 - `~/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
 - `docs/protocols/production-deploys.md` — sanctioned deploy paths and Coolify tokens
-- `~/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
+- `~/apps/FLEET-PROTOCOL.md` — App Versions and Build Timestamps (owner copy)
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`

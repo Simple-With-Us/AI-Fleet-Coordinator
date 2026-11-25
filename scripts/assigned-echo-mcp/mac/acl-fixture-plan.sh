@@ -4,7 +4,7 @@
 set -euo pipefail
 cat <<'PLAN'
 Gate: host owner chooses an isolated disposable NONSECRET test Keychain, never login.keychain.
-Compile acl-fixture.c into TWO different fixed test executable paths.
+Compile mac-acl-fixture.c into TWO different fixed test executable paths.
 Sign each with DISTINCT identifiers using existing approved Developer ID; do not trust a generic interpreter.
 Create/unlock isolated test Keychain with a NONSECRET disposable fixture password via private stdin/native API, never production custody.
 FIRST binary: create ISOLATED_KEYCHAIN FIRST_BINARY_PATH

@@ -459,7 +459,7 @@ class IngestTests(unittest.TestCase):
 
     def test_cursor_record_is_not_a_prune_candidate(self) -> None:
         state = {
-            "linear/uuid-1": {"source": "linear", "chunk_ids": ["p"]},
+            "linear/uuid-1": {"source": "linear", "chunk_ids": ["p"], "source_reconciliation_marker": "ingest-v1"},
             sources.LINEAR_CURSOR_KEY: {
                 "kind": "linear-sync",
                 "updated_at_cursor": "2026-11-12T00:00:00.000Z",
@@ -997,7 +997,7 @@ class IngestTests(unittest.TestCase):
 
     def test_prune_cap_applies_only_when_diet_ids_are_among_the_gone_set(self) -> None:
         state = {
-            f"doc/k{i}": {"source": "doc", "chunk_ids": [f"p{i}"], "doc_hash": "h"}
+            f"doc/k{i}": {"source": "doc", "chunk_ids": [f"p{i}"], "doc_hash": "h", "source_reconciliation_marker": "ingest-v1"}
             for i in range(10)
         }
         yielded = {f"doc/k{i}" for i in range(8)}

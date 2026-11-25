@@ -38,7 +38,12 @@ def human_review(rid, state="CHANGES_REQUESTED", commit=HEAD, login="octocat"):
 
 
 def ci_check(
-    rid, head=HEAD, status="completed", conclusion="failure", name="ci", slug="github-actions"
+    rid,
+    head=HEAD,
+    status="completed",
+    conclusion="failure",
+    name="ci",
+    slug="github-actions",
 ):
     return {
         "id": rid,
@@ -58,7 +63,10 @@ class ChangesRequested(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(reviews=[human_review(61)]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(reviews=[human_review(61)]),
+                router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
             self.assertEqual(router.submitted[0]["session"], SESSION)
@@ -68,15 +76,18 @@ class ChangesRequested(unittest.TestCase):
             svc.store = events.EventStore(svc.store._path)
             svc.cycle()
             self.assertEqual(len(router.submitted), 1)
-            row = svc.store.get(REPO, 7, "changes_requested", "61")
-            self.assertEqual(row["actor"], "octocat")
+            row = svc.store.get(REPO, 7, "merge_blocked", "mb%s:changes_requested" % HEAD)
+            self.assertEqual(row["summary"], "blocked from merging: changes requested")
             self.assertIs(row["head_matches"], True)
 
     def test_review_bot_changes_requested_does_not_double_alert(self):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(reviews=[kody_review(11)]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(reviews=[kody_review(11)]),
+                router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
             self.assertIsNotNone(svc.store.get(REPO, 7, "review_submitted", "11"))
@@ -105,8 +116,10 @@ class ChangesRequested(unittest.TestCase):
                 router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
-            row = svc.store.get(REPO, 7, "changes_requested", "61")
-            self.assertIs(row["head_matches"], False)
+            row = svc.store.get(REPO, 7, "merge_blocked", "mb%s:changes_requested" % HEAD)
+            self.assertIs(
+                row["head_matches"], True
+            )  # State blocks the current proposal, even from an old review.
 
     def test_superseding_approval_emits_nothing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,7 +161,9 @@ class ChangesRequested(unittest.TestCase):
                 router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
-            self.assertIsNotNone(svc.store.get(REPO, 7, "changes_requested", "61"))
+            self.assertIsNotNone(
+                svc.store.get(REPO, 7, "merge_blocked", "mb%s:changes_requested" % HEAD)
+            )
 
     def test_dismissal_supersedes_request(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -172,13 +187,18 @@ class ChangesRequested(unittest.TestCase):
                 router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
-            self.assertIsNotNone(svc.store.get(REPO, 7, "changes_requested", "62"))
+            self.assertIsNotNone(
+                svc.store.get(REPO, 7, "merge_blocked", "mb%s:changes_requested" % HEAD)
+            )
 
     def test_approval_after_alerted_request_emits_nothing_new(self):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(reviews=[human_review(61)]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(reviews=[human_review(61)]),
+                router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
             svc.gh._reviews = [human_review(61), human_review(62, state="APPROVED")]
@@ -200,13 +220,16 @@ class CheckFailure(unittest.TestCase):
             svc.store = events.EventStore(svc.store._path)
             svc.cycle()
             self.assertEqual(len(router.submitted), 1)
-            row = svc.store.get(REPO, 7, "check_failure", "51")
-            self.assertEqual(row["summary"], "check failed: ci (failure)")
-            self.assertEqual(row["actor"], "github-actions")
+            row = svc.store.get(REPO, 7, "ci_failed", "ci51")
+            self.assertEqual(row["summary"], "CI failed on the current head: ci")
+            self.assertEqual(row["head"], HEAD)
 
     def test_non_failure_conclusions_and_old_head_never_alert(self):
         for conclusion in ("success", "neutral", "skipped", "cancelled", "stale", None):
-            with self.subTest(conclusion=conclusion), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(conclusion=conclusion),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 router = FakeRouter()
                 svc = self.make_service(
                     directory,
@@ -218,7 +241,10 @@ class CheckFailure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(checks=[ci_check(51, head=OTHER)]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(checks=[ci_check(51, head=OTHER)]),
+                router,
             )
             self.assertEqual(svc.cycle()["events"], 0)
 
@@ -234,7 +260,7 @@ class CheckFailure(unittest.TestCase):
             self.assertEqual(svc.cycle()["events"], 0)
             svc.gh._checks = [ci_check(51)]
             self.assertEqual(svc.cycle()["submitted"], 1)
-            self.assertIsNotNone(svc.store.get(REPO, 7, "check_failure", "51"))
+            self.assertIsNotNone(svc.store.get(REPO, 7, "ci_failed", "ci51"))
 
     def test_review_bot_check_failure_alerts_via_review_completed_only(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -247,7 +273,7 @@ class CheckFailure(unittest.TestCase):
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
             self.assertIsNotNone(svc.store.get(REPO, 7, "review_completed", "51"))
-            self.assertIsNone(svc.store.get(REPO, 7, "check_failure", "51"))
+            self.assertIsNone(svc.store.get(REPO, 7, "ci_failed", "ci51"))
 
     def test_each_failing_run_alerts_once(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -263,9 +289,9 @@ class CheckFailure(unittest.TestCase):
                 ),
                 router,
             )
-            self.assertEqual(svc.cycle()["submitted"], 2)
+            self.assertEqual(svc.cycle()["submitted"], 1)
             svc.cycle()
-            self.assertEqual(len(router.submitted), 2)
+            self.assertEqual(len(router.submitted), 1)  # One batch still names both failed runs.
 
     def test_higher_id_terminal_failure_does_not_hide_lower_id_in_progress_run(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -282,10 +308,10 @@ class CheckFailure(unittest.TestCase):
                 router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
-            self.assertIsNotNone(svc.store.get(REPO, 7, "check_failure", "52"))
+            self.assertIsNotNone(svc.store.get(REPO, 7, "ci_failed", "ci52"))
             svc.gh._checks = [ci_check(51), ci_check(52, name="lint")]
             self.assertEqual(svc.cycle()["submitted"], 1)
-            self.assertIsNotNone(svc.store.get(REPO, 7, "check_failure", "51"))
+            self.assertIsNotNone(svc.store.get(REPO, 7, "ci_failed", "ci51"))
             svc.cycle()
             self.assertEqual(len(router.submitted), 2)
 
@@ -300,7 +326,7 @@ class CheckFailure(unittest.TestCase):
             )
             self.assertEqual(svc.cycle()["submitted"], 2)
             self.assertIsNotNone(svc.store.get(REPO, 7, "review_completed", "70"))
-            self.assertIsNotNone(svc.store.get(REPO, 7, "check_failure", "65"))
+            self.assertIsNotNone(svc.store.get(REPO, 7, "ci_failed", "ci65"))
             svc.cycle()
             self.assertEqual(len(router.submitted), 2)
 
@@ -308,7 +334,10 @@ class CheckFailure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(checks=[ci_check(65, name="ci")]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(checks=[ci_check(65, name="ci")]),
+                router,
             )
             self.assertEqual(svc.cycle()["submitted"], 1)
             svc.gh._checks = [ci_check(65, name="ci"), kody_check(60)]
@@ -335,12 +364,20 @@ class BlockerMessage(unittest.TestCase):
 
             svc.message_poster = post
             self.assertEqual(svc.cycle()["submitted"], 2)
-            self.assertEqual(sorted(posted), ["changes_requested", "check_failure"])
+            self.assertEqual(sorted(posted), ["ci_failed", "merge_blocked"])
             ids = {row["message_id"] for row in router.submitted}
             self.assertEqual(ids, {1001, 1002})
             store = events.EventStore(svc.store._path)
-            self.assertEqual(store.get(REPO, 7, "changes_requested", "61")["message_id"], 1001)
-            self.assertEqual(store.get(REPO, 7, "check_failure", "51")["message_id"], 1002)
+            self.assertEqual(
+                store.get(
+                    REPO,
+                    7,
+                    "merge_blocked",
+                    "mb%s:checks_failed+changes_requested" % HEAD,
+                )["message_id"],
+                1002,
+            )
+            self.assertEqual(store.get(REPO, 7, "ci_failed", "ci51")["message_id"], 1001)
 
 
 if __name__ == "__main__":

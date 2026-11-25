@@ -11,6 +11,8 @@ import SwiftUI
 /// launchd agent is what launchctl reports,  and the BotFleet MCP Server is what its
 /// own health endpoint reports.
 struct FleetServicesPanel: View {
+    var openServerOperator: (() -> Void)? = nil
+
     @EnvironmentObject private var admin: FleetAdmin
     @EnvironmentObject private var router: ServiceActionRouter
     @StateObject private var processModel = FleetProcessModel()
@@ -20,6 +22,14 @@ struct FleetServicesPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                if let openServerOperator {
+                    HStack {
+                        Text("The Mac listener is retired. The active Eavesdropper runs on the server.")
+                            .foregroundStyle(.secondary)
+                        Button("Open Operator On The Server", action: openServerOperator)
+                    }
+                    .font(.callout)
+                }
                 serverCard
                 reconcilerLine
                 if let problem = admin.ownerStopProblem {

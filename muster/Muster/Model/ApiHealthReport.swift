@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 // Socratic Trade and Congress.Trade operational health,  as Muster reads it (AFC-398).
@@ -23,6 +24,7 @@ enum ApiHealthContract {
     static let supportedSchemaVersion = 1
     static let expectedTool = "fleet-api-health"
     static let expectedCollector = "api"
+    static let maxBytes = 256 * 1024
 
     /// The collector runs every fifteen minutes,  so three of its runs are the window a
     /// file is current in:  the same window the doctor's report has.
@@ -208,16 +210,32 @@ enum ApiHealthReportReader {
         reading.path = url.path
         let gap = ServerStatusCopy.sentenceGap
 
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else {
+            reading.problem = errno == ENOENT
+                ? "The file could not be read:\(gap)the file is not there"
+                : "The API health report could not be opened as a regular file."
+            return reading
+        }
+        defer { close(fd) }
+
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(), info.st_mode & 0o022 == 0,
+              info.st_size >= 0, info.st_size <= off_t(ApiHealthContract.maxBytes) else {
+            reading.problem = "The API health report is too large or is not a trusted file for this user."
+            return reading
+        }
+        let reader = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
         let data: Data
-        if FileManager.default.fileExists(atPath: url.path) {
-            do {
-                data = try Data(contentsOf: url)
-            } catch {
-                reading.problem = "The file could not be read:\(gap)\(error.localizedDescription)"
-                return reading
-            }
-        } else {
-            reading.problem = "The file could not be read:\(gap)the file is not there"
+        do {
+            data = try reader.read(upToCount: ApiHealthContract.maxBytes + 1) ?? Data()
+        } catch {
+            reading.problem = "The API health report could not be read."
+            return reading
+        }
+        guard data.count <= ApiHealthContract.maxBytes else {
+            reading.problem = "The API health report is too large."
             return reading
         }
 
@@ -245,6 +263,11 @@ enum ApiHealthReportReader {
             return reading
         }
 
+        let mappedApps = report.apps.filter { ["ST", "CT"].contains($0.app) }
+        guard Set(mappedApps.map(\.app)).count == mappedApps.count else {
+            reading.problem = "The API health report contains duplicate app rows."
+            return reading
+        }
         reading.generatedAt = generated
         reading.age = FleetTime.ageText(since: generated, now: now)
         let seconds = Int(now.timeIntervalSince(generated))
@@ -255,7 +278,7 @@ enum ApiHealthReportReader {
         reading.isCurrent = seconds <= ApiHealthContract.maxAgeSeconds
         if reading.isCurrent {
             reading.worst = ApiHealthState(reportValue: report.worst)
-            reading.apps = report.apps
+            reading.apps = mappedApps
         }
         reading.state = overall(of: reading)
         return reading

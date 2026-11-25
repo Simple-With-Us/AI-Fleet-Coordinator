@@ -48,6 +48,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import threading
 import urllib.parse
@@ -81,6 +82,7 @@ NEVER_RAN: frozenset[str] = frozenset(
         "bad-session-id",
         "no-ssh-destination",
         "conversation-not-found",
+        "conversation-data-missing",
         "conversation-subagent",
         "conversation-killed",
         "session-cwd-gone",
@@ -131,13 +133,15 @@ def store_paths(env: Mapping[str, str]) -> list[Path]:
     ]
 
 
-def find_conversation_record(
+def find_conversation_record_with_root(
     env: Mapping[str, str], session_id: str
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Read one conversation row from the summaries database, or (None, reason).
+) -> tuple[dict[str, Any] | None, str | None, Path | None]:
+    """Read one conversation row, its error and the root that served it.
 
-    Returns (record, None) on success, (None, None) if not found in any store, or
-    (None, error_code) if a database error occurred.
+    Returns (record, None, root) on success, (None, None, None) if not found in
+    any store, or (None, error_code, None) if a database error occurred.  The
+    data check probes the very root the row came from (AFC-840 review):  a
+    second scan could watch the row vanish and fail open.
     """
     for db in store_paths(env):
         if not db.is_file():
@@ -152,13 +156,13 @@ def find_conversation_record(
                 if "conversation_id" not in cols:
                     continue
                 if "not_fully_idle" not in cols:
-                    return None, "schema-missing-idle"
+                    return None, "schema-missing-idle", None
                 if "killed" not in cols:
-                    return None, "schema-missing-killed"
+                    return None, "schema-missing-killed", None
                 if "parent_conversation_id" not in cols:
-                    return None, "schema-missing-parent"
+                    return None, "schema-missing-parent", None
                 if "nesting_depth" not in cols:
-                    return None, "schema-missing-depth"
+                    return None, "schema-missing-depth", None
                 fields = [
                     "conversation_id",
                     "not_fully_idle",
@@ -187,14 +191,106 @@ def find_conversation_record(
                     }
                     for idx, col in enumerate(fields[5:], start=5):
                         data[col] = row[idx]
-                    return data, None
+                    return data, None, db.parent
             finally:
                 conn.close()
         except sqlite3.OperationalError:
-            return None, "db-operational-error"
+            return None, "db-operational-error", None
         except (sqlite3.Error, OSError):
-            return None, "db-error"
-    return None, None
+            return None, "db-error", None
+    return None, None, None
+
+
+def find_conversation_record(
+    env: Mapping[str, str], session_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read one conversation row from the summaries database, or (None, reason)."""
+    record, error, _root = find_conversation_record_with_root(env, session_id)
+    return record, error
+
+
+def _data_here(root: Path, session_id: str) -> tuple[bool, bool, bool]:
+    """(mine, understood, unreadable) for one product root.
+
+    The shapes are the ones the letter library already trusts a product root to
+    hold (`platform_letter_antigravity._root_knows_conversation`), plus the
+    implicit protobuf this host's CLI store keeps (`implicit/<id>.pb`).  A root
+    that cannot be read (permission) is unreadable, never empty."""
+    specs = (
+        (root / "annotations" / ("%s.pbtxt" % session_id), False),
+        (root / "brain" / session_id, True),
+        (root / "conversations" / ("%s.db" % session_id), False),
+        (root / "conversations" / ("%s.pb" % session_id), False),
+        (root / "implicit" / ("%s.pb" % session_id), False),
+    )
+    mine = False
+    unreadable = False
+    for path, want_dir in specs:
+        try:
+            st = path.stat()
+        except PermissionError:
+            unreadable = True
+            continue
+        except OSError:
+            continue
+        if want_dir and stat.S_ISDIR(st.st_mode) or not want_dir and stat.S_ISREG(st.st_mode):
+            mine = True
+    if mine:
+        return True, True, unreadable
+    understood = False
+    for folder, suffix in (
+        ("annotations", ".pbtxt"),
+        ("conversations", ".db"),
+        ("conversations", ".pb"),
+        ("implicit", ".pb"),
+    ):
+        try:
+            with os.scandir(root / folder) as it:
+                for entry in it:
+                    if entry.name.endswith(suffix):
+                        understood = True
+                        break
+        except PermissionError:
+            unreadable = True
+        except OSError:
+            continue
+        if understood:
+            break
+    if not understood:
+        try:
+            with os.scandir(root / "brain") as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir():
+                            understood = True
+                            break
+                    except OSError:
+                        continue
+        except PermissionError:
+            unreadable = True
+        except OSError:
+            pass
+    return False, understood, unreadable
+
+
+def conversation_data_missing(env: Mapping[str, str], session_id: str, root: Path | None) -> bool:
+    """True when the matched root holds no data for this conversation (AFC-840).
+
+    A summary row alone is not proof the CLI can load the conversation:  with
+    the data gone it prints `conversation "<id>" not found` and runs the turn in
+    a new chat.  The refusal is made only for the root whose summaries database
+    holds the row, and only when that root is understood — it holds conversation
+    data for other ids in a known shape — yet holds none for this one, or when
+    it cannot be read at all (fail closed).  A root with no data artifacts at
+    all, or no matched root, cannot be told apart from a database-resident
+    layout and never refuses:  the post-hoc `resume-new-chat` naming (PR 2320)
+    stays the guard there."""
+    if root is None:
+        return False
+    mine, understood, unreadable = _data_here(root, session_id)
+    if mine:
+        return False
+    return unreadable or understood
 
 
 def _excluded_ids(stores: list[Path], sids: list[str]) -> set[str]:
@@ -539,7 +635,7 @@ def deliver_local(
                 if stale is not None:
                     return stale
 
-            rec, db_err = find_conversation_record(env, session_id)
+            rec, db_err, store_root = find_conversation_record_with_root(env, session_id)
             if db_err is not None:
                 return WR.Delivery("failed", "resume", code="store-%s" % db_err)
             if rec is None:
@@ -555,6 +651,11 @@ def deliver_local(
             cwd = _resolve_cwd(rec)
             if not cwd:
                 return WR.Delivery("refused", "resume", code="session-cwd-gone")
+
+            # Strict before launch (AFC-840):  a summary row whose conversation
+            # data is gone would make the CLI run the turn in a new chat.
+            if conversation_data_missing(env, session_id, store_root):
+                return WR.Delivery("refused", "resume", code="conversation-data-missing")
 
             child_env = _child_env(env)
             binary = _find_agy_binary(child_env)

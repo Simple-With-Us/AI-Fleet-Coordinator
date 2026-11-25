@@ -1,8 +1,8 @@
 #!/bin/bash
 # simple-tools-runtime-sync.sh  --  keep the simple-tools runtime checkout on AFC origin/main.
 #
-# The always-on Zulip listener (com.jay.operator) and the `simple-chat` CLI run from a
-# dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
+# The `simple-chat` CLI runs from a dedicated managed checkout, never from the human
+# integration tree ~/Code/AI-Fleet-Coordinator:
 #
 #   /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime     (detached worktree, locked)
 #
@@ -12,8 +12,8 @@
 #      origin/main detached;
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
-#   4. if the change touched scripts/simple_tools/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
-#      or docs/protocols/simple-tools-partition.toml, kickstarts the listener so it loads the new code.
+# The Mac listener (com.jay.operator) is retired (owner, Tue, Nov 10; AFC-836):  this sync
+# never kickstarts it.  The one listener, on the server, loads new code by its own deploy.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
 # Pause:   touch ~/.simple-tools/runtime-sync.pause   (resume: rm it)
@@ -25,14 +25,12 @@
 set -u
 
 RUNTIME="${SIMPLE_TOOLS_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime}"
-LISTENER_LABEL="${SIMPLE_TOOLS_LISTENER_LABEL:-com.jay.operator}"
 STATE_DIR="$HOME/.simple-tools"
 LOCK_DIR="$STATE_DIR/runtime-sync.lock"
 PAUSE_FILE="$STATE_DIR/runtime-sync.pause"
 BAD_FILE="$STATE_DIR/runtime-sync.bad-sha"
 LOG="${SIMPLE_TOOLS_RUNTIME_SYNC_LOG:-$HOME/apps/logs/simple-tools-runtime-sync.log}"
 GIT_TIMEOUT=60
-RESTART_RE='^(scripts/simple_tools/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/simple-tools-partition\.toml$)'
 PLUGIN_RE='^(plugins/simple-chat/|\.claude-plugin/)'
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
@@ -141,13 +139,6 @@ main() {
     log "PLUGIN-CHANGED  the Claude plugin source moved; refresh with: claude plugin marketplace update afc"
   fi
 
-  if printf '%s\n' "$changed" | grep -Eq "$RESTART_RE"; then
-    if launchctl kickstart -k "gui/$(id -u)/$LISTENER_LABEL" >/dev/null 2>&1; then
-      log "RESTARTED  $LISTENER_LABEL (listener code changed)"
-    else
-      log "RESTART-FAILED  launchctl kickstart -k $LISTENER_LABEL failed (is it loaded?)"
-    fi
-  fi
 }
 
 main "$@"

@@ -148,10 +148,44 @@ SEAT_NAME_RE = re.compile(
 OPERATOR_PATH = "/operator"
 # Optional capability, secondary /zulip only; never inherited from the container.
 REVIEW_ORIGIN_READ_KEY = "REVIEW_ORIGIN_CODEX_READ_KEY"
-OPTIONAL_PROJECTION_NAMES = frozenset({REVIEW_ORIGIN_READ_KEY})
+REVIEW_ORIGIN_ZC_READ_KEY = "REVIEW_ORIGIN_ZC_READ_KEY"
+OPTIONAL_PROJECTION_NAMES = frozenset({REVIEW_ORIGIN_READ_KEY, REVIEW_ORIGIN_ZC_READ_KEY})
 OPERATOR_NAMES = frozenset(
     {"OPERATOR_NOTES_WORKER_KEY", "OPERATOR_NOTES_SERVER_KEY", "OPERATOR_NOTES_RUNNER_KEY"}
 )
+#: The review-alert loop's optional names, from the one /wake-router home both the router and the
+#: Eavesdropper already read.  ABSENT from the listing means "not provisioned yet":  the name is simply
+#: not exported and the review loop then holds with its own named reason.  PRESENT but unusable is loud
+#: (a LoadError), because a value that exists but cannot serve must never look like "disabled on purpose".
+REVIEW_ALERT_NAMES: tuple[tuple[str, str, str, str], ...] = (
+    # The two credentials:  the Infisical secret keys carry the review-alerts name;  the
+    # exported names are what the service and the loop read (RA_*).
+    ("RA_WAKE_KEY", WAKE_ROUTER_PATH, "REVIEW_ALERTS_WAKE_KEY", r"[!-~]{32,512}"),
+    (
+        "RA_SERVICE_TOKEN",
+        WAKE_ROUTER_PATH,
+        "REVIEW_ALERTS_SERVICE_READ_TOKEN",
+        r"[!-~]{32,512}",
+    ),
+    # The settings knobs.  The two JSON maps allow spaces:  operators may store them
+    # pretty-printed, and a space is not a defect in a JSON value.
+    ("RA_ENABLED", WAKE_ROUTER_PATH, "RA_ENABLED", r"[A-Za-z0-9_.:=,-]{1,64}"),
+    ("RA_REPOS", WAKE_ROUTER_PATH, "RA_REPOS", r"[A-Za-z0-9_./,#-]{1,512}"),
+    ("RA_SEAT_MAP_JSON", WAKE_ROUTER_PATH, "RA_SEAT_MAP_JSON", r"[ -~]{2,4096}"),
+    ("RA_PLATFORM_MAP_JSON", WAKE_ROUTER_PATH, "RA_PLATFORM_MAP_JSON", r"[ -~]{2,4096}"),
+    ("RA_STATE_DIR", WAKE_ROUTER_PATH, "RA_STATE_DIR", r"/[ -~]{1,256}"),
+    ("RA_SELFTEST_SEAT", WAKE_ROUTER_PATH, "RA_SELFTEST_SEAT", r"[A-Z][A-Z0-9_-]{0,31}"),
+    ("RA_INTERVAL_S", WAKE_ROUTER_PATH, "RA_INTERVAL_S", r"[0-9]{1,6}"),
+    ("RA_RELAY_URL", WAKE_ROUTER_PATH, "RA_RELAY_URL", r"[!-~]{1,256}"),
+    ("RA_ROUTER_URL", WAKE_ROUTER_PATH, "RA_ROUTER_URL", r"[!-~]{1,256}"),
+)
+
+
+def review_alert_sources(folder: str) -> frozenset[str]:
+    """The source names REVIEW_ALERT_NAMES reads from one folder."""
+    return frozenset(source for _, where, source, _ in REVIEW_ALERT_NAMES if where == folder)
+
+
 #: Names whose only source is Infisical and that are not per seat:  (the name exported to the daemon, its one
 #: folder, its one name there, the pattern a usable value matches).  A container copy of an exported or a source
 #: name is removed before anything is read, and a missing or unusable value stops startup.  One table for every
@@ -583,9 +617,39 @@ def wake_router_values(env: Mapping[str, str], **kw) -> dict[str, str]:
         token_name=WAKE_ROUTER_TOKEN,
         expected_paths=(WAKE_ROUTER_PATH,),
         stage="read %s" % WAKE_ROUTER_PATH,
-        keep=infisical_only_sources(WAKE_ROUTER_PATH),
+        keep=infisical_only_sources(WAKE_ROUTER_PATH) | review_alert_sources(WAKE_ROUTER_PATH),
         **kw,
     )
+
+
+def resolve_review_alert(
+    folders: Mapping[str, Mapping[str, str]],
+) -> tuple[dict[str, str], list[str]]:
+    """({exported name: value}, ["NAME from /folder", ...]) for the optional review-alert names.
+
+    A name missing from the /wake-router listing is simply not provisioned yet:  it exports nothing and
+    the review loop holds with its own named reason.  A name PRESENT but unusable is a loud error, so a
+    mistyped or truncated value can never silently look like "disabled on purpose"."""
+    values: dict[str, str] = {}
+    sources: list[str] = []
+    unusable: list[str] = []
+    for export, folder, name, pattern in REVIEW_ALERT_NAMES:
+        if folder not in folders:
+            continue
+        value = (folders[folder].get(name) or "").strip()
+        if not value:
+            continue
+        if not re.fullmatch(pattern, value):
+            unusable.append("%s (%s %s)" % (export, folder, name))
+            continue
+        values[export] = value
+        sources.append("%s from %s" % (export, folder))
+    if unusable:
+        raise LoadError(
+            "the Infisical value for %s is not usable;  a container copy is never used"
+            % ", ".join(unusable)
+        )
+    return values, sources
 
 
 def resolve_infisical_only(
@@ -722,7 +786,16 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     # (any seat, server or not), the Operator's names and the INFISICAL_ONLY names.  What follows is only what
     # Infisical returned.
     only = infisical_only_names()
-    owned = only | OPERATOR_NAMES | OPERATOR_VOICE_NAMES | allowed | OPTIONAL_PROJECTION_NAMES
+    review_alert_sources = {name for _, _, name, _ in REVIEW_ALERT_NAMES}
+    owned = (
+        only
+        | OPERATOR_NAMES
+        | OPERATOR_VOICE_NAMES
+        | allowed
+        | OPTIONAL_PROJECTION_NAMES
+        | review_alert_sources
+        | {export for export, _, _, _ in REVIEW_ALERT_NAMES}
+    )
 
     def from_container(name: str) -> bool:
         # WAKE_ROUTER_* are the router's own knobs, read by the router alone from /wake-router (including
@@ -755,18 +828,22 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         len(operator),
         len(OPERATOR_NAMES),
     )
+    wake_router_folder = wake_router_values(env, **kw)
     only_values, only_sources = resolve_infisical_only(
         {
             ZULIP_PATH: found,
             OPERATOR_PATH: operator_all,
-            WAKE_ROUTER_PATH: wake_router_values(env, **kw),
+            WAKE_ROUTER_PATH: wake_router_folder,
         }
     )
+    review_values, review_sources = resolve_review_alert({WAKE_ROUTER_PATH: wake_router_folder})
     read_keys, read_note = listener_read_keys(env, codes, **kw)
     # The one optional origin key is not a seat or routine key. No primary or
     # container copy can replace this canonical secondary-source value.
-    projection_value = read_keys.pop(REVIEW_ORIGIN_READ_KEY, None)
-    projection_conflict = REVIEW_ORIGIN_READ_KEY in found or REVIEW_ORIGIN_READ_KEY in operator_all
+    projection_values = {name: read_keys.pop(name, None) for name in OPTIONAL_PROJECTION_NAMES}
+    projection_conflicts = {
+        name for name in OPTIONAL_PROJECTION_NAMES if name in found or name in operator_all
+    }
     # One home per name:  a routine key held by both projects is used from neither, so deleting one copy to
     # revoke it can never leave the other in service.
     conflicts = sorted(name for name in read_keys if name in found)
@@ -782,21 +859,30 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     # The four sources own disjoint names (a test holds them so);  merged in order, never with ** keywords,
     # so a future overlap cannot raise mid-start:  the later, more specific source wins.
     loaded_values: dict[str, str] = {}
-    for part in (seats, operator, voice_keys, only_values):
+    for part in (seats, operator, voice_keys, only_values, review_values):
         loaded_values.update(part)
     # Missing, malformed and reused read keys disable only this optional capability.
     # The source was already fetched under the existing secondary /zulip grant.
-    projection_ok = (
-        not projection_conflict
-        and isinstance(projection_value, str)
-        and re.fullmatch(r"[!-~]{32,512}", projection_value) is not None
-        and "${" not in projection_value
-        and projection_value not in {_strip_quotes(value) for value in loaded_values.values()}
-    )
-    if projection_ok:
-        loaded_values[REVIEW_ORIGIN_READ_KEY] = projection_value
-    projection_note = "; review-origin read key " + (
-        "loaded from secondary /zulip" if projection_ok else "not loaded (optional capability held)"
+    projection_loaded = []
+    for name, value in projection_values.items():
+        projection_ok = (
+            name not in projection_conflicts
+            and isinstance(value, str)
+            and re.fullmatch(r"[!-~]{32,512}", value) is not None
+            and "${" not in value
+            and value not in {_strip_quotes(v) for v in loaded_values.values()}
+            and sum(v == value for v in projection_values.values()) == 1
+        )
+        if projection_ok:
+            loaded_values[name] = value
+            projection_loaded.append(name)
+    projection_note = "; review-origin read keys loaded from secondary /zulip: " + (
+        str(len(projection_loaded))
+        + (
+            " (optional capability held)"
+            if len(projection_loaded) < len(OPTIONAL_PROJECTION_NAMES)
+            else ""
+        )
     )
     loaded = sorted(loaded_values)
     replaced = sum(1 for name in loaded if name in env)
@@ -806,6 +892,11 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         len(only_values),
         len(INFISICAL_ONLY),
         ", ".join(only_sources),
+    )
+    review_note = "; review-alert names: %d of %d%s" % (
+        len(review_values),
+        len(REVIEW_ALERT_NAMES),
+        (" (" + ", ".join(review_sources) + ")") if review_sources else " (none provisioned)",
     )
     removed_note = "; container copies removed: %d%s" % (
         len(removed),
@@ -833,7 +924,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     return out, (
         f"loaded {len(loaded)} variables from Infisical (prod {ZULIP_PATH}; {replaced} replaced a container "
         f"value, {ignored} other names in the folder ignored){coverage}{seat_note}{operator_note}"
-        f"{only_note}{removed_note}{read_note}{voice_note}{projection_note}"
+        f"{only_note}{removed_note}{read_note}{voice_note}{projection_note}{review_note}"
     )
 
 

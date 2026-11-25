@@ -377,7 +377,15 @@ class Agent:
         return sorted(result.get("messages") or [], key=lambda m: m.get("id", 0))
 
     def is_self(self, message: Mapping[str, Any], *, receipt_timeout: float | None = None) -> bool:
-        """All consumers share the same bounded stream-post receipt fence."""
+        """Confirmed own posts answer without the fence; only the unknown wait on it.
+
+        A message already in the posted ledger, or carrying this session's exact
+        tag, is confirmed ours: a concurrent post cannot change that. Taking the
+        receipt fence first would needlessly defer such messages behind an
+        in-flight send. The fence decides only messages not yet confirmed.
+        """
+        if self._is_self_confirmed(message):
+            return True
         if self.sent_by_this_bot(message):
             try:
                 guard = (
@@ -1970,7 +1978,7 @@ def _wildcard_refused(exc: ApiError) -> bool:
 def _check_fleet_target(channel: str, topic: str) -> None:
     """`post --fleet` is the fleet-wide wake, and it is allowed in exactly one place."""
     if (
-        channel.casefold() != ROUTER.FLEET_WAKE_CHANNEL
+        channel.casefold() != ROUTER.FLEET_WAKE_CHANNEL.casefold()
         or topic.strip().casefold() != ROUTER.FLEET_WAKE_TOPIC
     ):
         raise UsageError(

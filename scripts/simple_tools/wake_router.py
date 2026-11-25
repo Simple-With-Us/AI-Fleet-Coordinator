@@ -66,6 +66,18 @@ would show when a seat was last woken.  The count is absent until a history has 
 process, health asks the registry nothing, and the count never changes `healthy`.  A row with no
 seat or a malformed one is not counted:  it names nobody.
 
+The Mac route (AFC-836).  A chat on the Mac is delivered over one ssh route, by claude_wake for
+every platform.  Each seat's health says what that route last answered a delivery
+(`mac_route_answer`:  `answered`, `unreachable`, `refused`, `no-answer` or `failed`, and how many
+answers in a row gave it;  `Router.route_answer_health`), and its last gate check with the time of
+that check (`mac_route_check`).  Health needs no key, so it does not say when a delivery's answer
+came:  that would show when the seat was last woken.  The preflight passes for a gated key and an
+ungated one alike, so whether the Mac forces the router's key to its gate is a check:
+`GET /route-check/<SEAT>`, for the routine bearer, sends one command the gate refuses
+(`Router.route_check`, claude_wake.gate_check), runs nothing on the Mac, and answers `gated` only
+on the gate's own refusal.  Neither field is there before the first answer or check in this
+process, and neither changes `healthy`.
+
 A reply link.  The listener may add `"linked_by": "reply"` when the message answers one a chat
 posted, with the letter of that chat.  Any other value is ignored.  It changes no step of the pick:
 when that letter picks the chat, the receipt says `picked: "reply"` and `reason: "reply"`, and the
@@ -345,6 +357,21 @@ NOT_INSTALLED = "not-installed"
 MAC_ROUTE_CONFIGURED = "configured"
 MAC_ROUTE_NONE = "no-ssh-destination"
 MAC_SSH_DEST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]*")
+# What the Mac route answered one delivery that went by it (AFC-836), as `route_answer` reads it
+# from the Delivery the platform returned.  A closed list:  health carries only these words.
+ROUTE_ANSWERED = "answered"
+ROUTE_UNREACHABLE = "unreachable"
+ROUTE_REFUSED = "refused"
+ROUTE_NO_ANSWER = "no-answer"
+ROUTE_FAILED = "failed"
+ROUTE_ANSWERS = (ROUTE_ANSWERED, ROUTE_UNREACHABLE, ROUTE_REFUSED, ROUTE_NO_ANSWER, ROUTE_FAILED)
+# The route's own codes (claude_wake._remote, the one ssh sender for every platform), by the
+# answer each one is.  A test drives each of the sender's paths through `route_answer`.
+ROUTE_NOT_ASKED = frozenset({"no-ssh-destination", "bad-session-id", "unknown-platform"})
+ROUTE_UNREACHABLE_CODES = frozenset({"ssh-preflight-timeout", "ssh-unreachable", "ssh-dropped"})
+#: How long a gate check's answer serves further route checks (seconds):  the
+#: probe is one ssh, and a slow Mac must not hold every caller behind it.
+ROUTE_CHECK_DEBOUNCE_S = 30.0
 #: The name the note carries when the shared loader file itself could not be read:  the loader
 #: file is the one source a loader read can fail on, and it carries the same name on every host.
 #: It is a token the transport keeps.
@@ -377,6 +404,8 @@ RECEIPT_PATH_RE = re.compile(
     r"/receipt/(?:(%s)/)?([A-Za-z0-9][A-Za-z0-9._-]{0,127})" % SEAT_RE.pattern
 )
 HEALTH_PATH_RE = re.compile(r"/health/(%s)" % SEAT_RE.pattern)
+# The gate check of one seat's Mac route (AFC-836), for the routine bearer:  `Router.route_check`.
+ROUTE_CHECK_PATH_RE = re.compile(r"/route-check/(%s)" % SEAT_RE.pattern)
 LEGACY_RECEIPT_SEAT = "CLAUDE"
 UNCONFIRMED = "settings-unconfirmed"
 # The `refused` codes that can only come before anything ran.  It is a list of what is known safe,
@@ -520,6 +549,92 @@ class Wake:
     require_letter: str = ""
     require_generation: int = 0
     require_pr: str = ""
+    source_event: dict | None = None  # authenticated review producer only
+
+
+#: Same bound as the producer's persistence contract:  a larger findings
+#: batch never carries membership to qualify.
+FINDINGS_MEMBER_LIMIT = 100
+
+
+def _findings_members_valid(members):
+    # Exact batch membership shape:  1..LIMIT exact-key records, ids int>0
+    # strictly increasing, an ISO timestamp string and one lowercase 40-hex
+    # head per member.  Deep source-time checks live in qualification.
+    if not isinstance(members, list) or not 1 <= len(members) <= FINDINGS_MEMBER_LIMIT:
+        return False
+    last = 0
+    for member in members:
+        if not isinstance(member, dict) or set(member) != {"id", "at", "head"}:
+            return False
+        if (
+            type(member["id"]) is not int
+            or member["id"] <= last
+            or not isinstance(member["at"], str)
+            or not isinstance(member["head"], str)
+            or not re.fullmatch(r"[0-9a-f]{40}", member["head"])
+        ):
+            return False
+        last = member["id"]
+    return True
+
+
+def source_event(value, wake):
+    # Producer-authenticated metadata only; never a payload authority claim.
+    # Invalid/missing evidence retains ordinary delivery, not native qualification.
+    import hashlib
+    import math
+
+    base = {"repo", "number", "kind", "event_id", "epoch", "source_epoch"}
+    if not isinstance(value, dict) or not (set(value) == base or set(value) == base | {"members"}):
+        return None
+    repo, number, kind, event_id = (value.get(k) for k in ("repo", "number", "kind", "event_id"))
+    if (
+        not isinstance(repo, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+        or type(number) is not int
+        or number < 1
+    ):
+        return None
+    if kind in ("review_submitted", "review_completed"):
+        if (
+            "members" in value
+            or not isinstance(event_id, str)
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", event_id)
+        ):
+            return None
+    elif kind == "findings_added":
+        # A findings batch qualifies only on exact constituent membership;
+        # the event id names the newest member.
+        if (
+            not isinstance(event_id, str)
+            or not re.fullmatch(r"c[1-9][0-9]{0,19}", event_id)
+            or not _findings_members_valid(value.get("members"))
+            or event_id != "c%d" % value["members"][-1]["id"]
+        ):
+            return None
+    else:
+        return None
+    if (
+        type(value["epoch"]) is not int
+        or value["epoch"] != 0
+        or type(value["source_epoch"]) not in (int, float)
+        or not math.isfinite(value["source_epoch"])
+        or value["source_epoch"] <= 0
+    ):
+        return None
+    semantic = "%s#%d:%s:%s:e%d" % (repo, number, kind, event_id, value["epoch"])
+    if (
+        wake.require_pr != repo + "#" + str(number)
+        or wake.wake_id != "ra-" + hashlib.sha256(semantic.encode()).hexdigest()[:24]
+    ):
+        return None
+    proof = dict(value)
+    if "members" in proof:
+        # Nested membership is copied independently:  later mutation of the
+        # caller's row never rewrites the validated, persisted identity.
+        proof["members"] = [dict(member) for member in proof["members"]]
+    return proof
 
 
 def workspace_root(configured: object) -> str:
@@ -624,6 +739,46 @@ class Platform:
     # The opt-in to turns (module docstring, Turns), last so a positional Platform still builds:
     # deliver_turn(target, head, riders, turn_id) -> Turn.  None, the default, is today's path.
     deliver_turn: Callable[[Target, Wake, tuple[Wake, ...], str], Turn] | None = None
+
+
+def route_answer(delivery: Delivery) -> str | None:
+    """The answer the Mac route gave one delivery, or None when the delivery did not go by it.
+
+    It is read from the Delivery a platform's `deliver` returned, so no platform reports it and
+    every platform's ssh delivery counts:  one whose `route` is `ssh` or `ssh:<...>` went by the
+    route.  `ssh:<...>` is the far side's answer to a delivery, so that is `answered`.  Before the
+    real command started, the preflight's failures are `unreachable` (the host did not answer),
+    `refused` (it answered and would not let the key pass) and `failed` (ssh could not run);  once
+    it started, an answer that cannot be read is `no-answer`.  A refusal made before any ssh ran is
+    no answer at all, since the route was never asked."""
+    route = delivery.route or ""
+    if route.startswith("ssh:"):
+        return ROUTE_ANSWERED
+    if route != "ssh":
+        return None
+    code = delivery.code or ""
+    if code in ROUTE_NOT_ASKED:
+        return None
+    if code in ROUTE_UNREACHABLE_CODES:
+        return ROUTE_UNREACHABLE
+    if code.startswith("ssh-preflight-exit-"):
+        return ROUTE_REFUSED
+    if code == "remote-needs-update":
+        # The old-Mac refusal (claude_wake.OLD_MAC_REFUSAL):  the far side
+        # answered and nothing executed, so this is a failure, not a
+        # may-have-run no-answer.
+        return ROUTE_FAILED
+    if code.startswith(("ssh-timeout", "ssh-error-", "remote-")):
+        return ROUTE_NO_ANSWER
+    return ROUTE_FAILED
+
+
+def _iso_utc(stamp: object) -> str:
+    """A time as ISO 8601 in UTC, to the second, or "" for one that is no time at all."""
+    try:
+        return datetime.fromtimestamp(stamp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")  # type: ignore[arg-type]
+    except (OverflowError, OSError, TypeError, ValueError):
+        return ""
 
 
 #: The seam for an optional decider, off by default.  It receives the candidates and the wake's
@@ -1481,6 +1636,7 @@ class Router:
         clock: Callable[[], float] = time.time,
         never_ran: Iterable[str] = (),
         review_key: KeySource | None = None,
+        route_runner: Callable[..., Any] | None = None,
     ) -> None:
         self.platform = platform
         # The refusals known to come before anything ran:  this module's, and the platform's own
@@ -1503,6 +1659,18 @@ class Router:
         # The latest read of the platform's history:  (open chats left out only because their row
         # names another seat, when it was read).  None until one has been read in this process.
         self.other_seat_scan: tuple[int, float] | None = None
+        # What the Mac route last answered in this process (AFC-836), and the last gate check with
+        # its time:  the word, and how many answers in a row gave it.  Health reads them;  only a
+        # delivery by the route or a check changes them.  `route_runner` is the check's ssh.
+        self._route_lock = threading.Lock()
+        self._route_last: str | None = None
+        self._route_streak = 0
+        self._route_check: dict[str, Any] | None = None
+        self._route_check_stamp: float | None = None
+        self._route_check_exit: int | None = None
+        self._route_check_dest: str | None = None
+        self._route_checking = False
+        self._route_runner = route_runner or subprocess.run
 
     def review_key(self) -> tuple[str, str]:
         try:
@@ -1552,14 +1720,88 @@ class Router:
         platform's `mac_ssh` setting names a destination in the one shape the ssh route accepts,
         `no-ssh-destination` when it does not (such a wake is refused before anything ran), and
         None for a platform whose settings have no `mac_ssh`.  A token and never the destination.
-        It says that a destination is named, not that the Mac's gate accepts this router's key:  only
-        a delivery or a dry run shows that."""
+        It says that a destination is named, not that the Mac's gate accepts this router's key:
+        a delivery shows that (`route_answer_health`), and `route_check` proves it on demand."""
         if "mac_ssh" not in self.config:
             return None
         dest = str(self.config.get("mac_ssh") or "").strip()
         if MAC_SSH_DEST_RE.fullmatch(dest):
             return MAC_ROUTE_CONFIGURED
         return MAC_ROUTE_NONE
+
+    def _route_answered(self, delivery: Delivery) -> None:
+        """Keep what the Mac route answered one delivery (`route_answer`), once per delivery the
+        platform returned.  A delivery that did not go by the route changes nothing:  a refusal
+        made before any ssh ran is not an answer, so what was last answered stays."""
+        answer = route_answer(delivery)
+        if answer is None:
+            return
+        with self._route_lock:
+            self._route_streak = self._route_streak + 1 if answer == self._route_last else 1
+            self._route_last = answer
+
+    def route_answer_health(self) -> dict[str, Any]:
+        """What this seat's health says about its Mac route's answers:  the latest as a code word
+        and how many answers in a row gave it, or {} until the route has answered in this process.
+        Never when:  health needs no key, and the time of an answer is the time of a wake.  The
+        words are ROUTE_ANSWERS and no others, and none of it changes `healthy`."""
+        with self._route_lock:
+            if self._route_last is None:
+                return {}
+            return {"last": self._route_last, "in_a_row": self._route_streak}
+
+    def route_check_health(self) -> dict[str, Any]:
+        """The last gate check (`route_check`) in this process:  its answer, when it was made and
+        the gate's exit status, which is said because an operator asked for it, or {} before any."""
+        with self._route_lock:
+            if self._route_check is None:
+                return {}
+            health = dict(self._route_check)
+            if self._route_check_exit is not None:
+                health["exit"] = self._route_check_exit
+            return health
+
+    def route_check(self) -> tuple[int, dict[str, Any]]:
+        """Prove whether the Mac forces this router's key to its gate (AFC-836), by one ssh made
+        exactly as a delivery makes it (`claude_wake.gate_check`).  Nothing runs on the Mac:  the
+        gate refuses what the check sends, and only a key with no forced command would run it.  The
+        answer is the seat, the Mac route token and `check`:  one word of claude_wake.ROUTE_CHECKS
+        with the exit status.  It is kept for the seat's health (`route_check_health`).  While one
+        check runs another is refused with 429, and a check answered within
+        ROUTE_CHECK_DEBOUNCE_S is served from the kept answer, so no caller opens ssh to the Mac
+        in a loop or holds this handler on a slow Mac."""
+        from . import claude_wake as CW  # imported here:  claude_wake imports this module
+
+        answer: dict[str, Any] = {"seat": self.platform.seat, "mac_route": self.mac_route()}
+        dest = str(self.config.get("mac_ssh") or "").strip()
+        with self._route_lock:
+            if self._route_checking:
+                return 429, {**answer, "error": "a route check is already running"}
+            if (
+                self._route_check is not None
+                and self._route_check_stamp is not None
+                and self._route_check_dest == dest
+                and self.clock() - self._route_check_stamp < ROUTE_CHECK_DEBOUNCE_S
+            ):
+                return 200, {
+                    **answer,
+                    "check": {**self._route_check, "exit": self._route_check_exit},
+                }
+            self._route_checking = True
+        try:
+            check = CW.gate_check(dest, runner=self._route_runner)
+        finally:
+            with self._route_lock:
+                self._route_checking = False
+        if not isinstance(check, dict) or check.get("answer") not in CW.ROUTE_CHECKS:
+            check = {"answer": CW.CHECK_FAILED, "exit": None}
+        kept = {"answer": check["answer"], "at": _iso_utc(self.clock())}
+        with self._route_lock:
+            self._route_check = kept
+            self._route_check_stamp = self.clock()
+            self._route_check_exit = check.get("exit")
+            self._route_check_dest = dest
+        return 200, {**answer, "check": {**kept, "exit": check.get("exit")}}
 
     def other_seat_health(self) -> dict[str, Any]:
         """What this seat's health says about the latest history read:  a count, never an id, a
@@ -2212,6 +2454,7 @@ class Router:
                 result = self.platform.deliver(pick.target, told)
             except Exception as exc:  # noqa: BLE001 - a platform's failure is a failed try
                 result = Delivery("failed", code="deliver-error-%s" % type(exc).__name__)
+            self._route_answered(result)
             self._settle(entry, pick, result)
         finally:
             with self._cond:
@@ -2638,6 +2881,7 @@ class Router:
                 )
             if not isinstance(turn, Turn) or not isinstance(turn.delivery, Delivery):
                 turn = Turn(Delivery("refused", code=TURN_BAD_ANSWER), unreadable=True)
+            self._route_answered(turn.delivery)
             self._settle_turn(entry, pick, riders, turn)
         except Exception:
             self._abandon(riders, called)
@@ -3394,10 +3638,12 @@ class Seats:
         return self.down.get(seat)
 
     def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
-        """One seat's state:  reason tokens, and for a served seat only the other-seat count
-        (`Router.other_seat_health`) and the Mac route (`Router.mac_route`), never a value, never
-        the destination and never the time of the read:  health needs no key, that time would show
-        when the seat was last woken, and the destination names a host."""
+        """One seat's state:  reason tokens, and for a served seat only the other-seat count
+        (`Router.other_seat_health`), the Mac route (`Router.mac_route`) and what that route last
+        answered and last checked (`Router.route_answer_health`, `Router.route_check_health`);  never
+        a value, never the destination and never the time of a read or of an answer:  health needs
+        no key, that time would show when the seat was last woken, and the destination names a host.
+        A check's own time is the one time said, since an operator asked for it."""
         router = self.routers.get(seat)
         if router is None:
             if seat in self.not_installed:
@@ -3413,6 +3659,14 @@ class Seats:
         route = router.mac_route()
         if route is not None:
             answer["mac_route"] = route
+            # What the route last answered, and its last check, sit beside the token.  Neither is
+            # there before the first one in this process.
+            answered = router.route_answer_health()
+            if answered:
+                answer["mac_route_answer"] = answered
+            checked = router.route_check_health()
+            if checked:
+                answer["mac_route_check"] = checked
         key, why = router.routine_key()
         if not key:
             reason = "routine-key-unavailable:" + why
@@ -3573,6 +3827,19 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 else:
                     self._answer(404, {"error": "not found"})
                 return
+            found = ROUTE_CHECK_PATH_RE.fullmatch(path)
+            if found:
+                router = self._router_for(found.group(1))
+                if router is None:
+                    return
+                scope = self._authorized(router)
+                if not scope:
+                    return
+                if scope != "routine":
+                    self._answer(403, {"error": "the routine key checks the route"})
+                    return
+                self._answer(*router.route_check())
+                return
             found = RECEIPT_PATH_RE.fullmatch(path)
             if not found:
                 self._answer(404, {"error": "not found"})
@@ -3671,7 +3938,11 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 return
             wake = wake_from_payload(payload, router.platform.mention)
             if scope == REVIEW_ALERT_SCOPE:
-                wake = replace(wake, credential_scope=REVIEW_ALERT_SCOPE)
+                wake = replace(
+                    wake,
+                    credential_scope=REVIEW_ALERT_SCOPE,
+                    source_event=source_event(payload.get("source_event"), wake),
+                )
             if payload.get("test") is True:
                 self._answer(200, router.test_answer(wake))
                 return

@@ -984,7 +984,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
 
 class AgentSeatPinTests(unittest.TestCase):
-    """The seat-precedence block (FLEET-PROTOCOL.md § Identity Rules, owner 2026-10-09).
+    """The seat-precedence block (FLEET-PROTOCOL.md § Seats and Identity, owner 2026-10-09).
 
     BotFleet runs Claude, Codex and other CLIs as engines for its own bots, and
     those engines load these skills.  A bare `export AGENT_SEAT=<PLATFORM>`
@@ -2598,6 +2598,7 @@ class GuardedBlockSyntaxTests(unittest.TestCase):
 def load_tests(loader, standard_tests, _pattern):
     """Run the isolated shared registry recipe fixtures in this existing CI suite."""
     standard_tests.addTests(loader.loadTestsFromName("test_service_token_recipe"))
+    standard_tests.addTests(loader.loadTestsFromName("test_service_token_registry_check"))
     return standard_tests
 
 

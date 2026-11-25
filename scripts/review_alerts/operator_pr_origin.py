@@ -30,6 +30,49 @@ class Held(Exception):
     pass
 
 
+#: Every reason code the per-cycle binding path can raise, from this module,
+#: operator_origin_bridge's RegistryOriginBinder, and operator_loop's
+#: registry_call/StopAwareRead inside a cycle.  The status snapshot is an
+#: operator surface:  only these fixed codes are ever recorded, never
+#: arbitrary exception text (paths, credentials, registry prose).
+HOLD_REASONS = frozenset(
+    {
+        # bind_creation
+        "invalid-pr-key",
+        "no-confirmed-live-creation",
+        "creation-pr-mismatch",
+        "creation-correlation-missing",
+        "no-native-origin",
+        "unknown-authenticated-seat",
+        "registry-unavailable",
+        "origin-not-uniquely-live",
+        "registry-identity-incomplete",
+        "creation-changed",
+        "binding-receipt-mismatch",
+        # ProtectedReceipts lookup can fail during binding after enumeration.
+        "receipt-census-invalid",
+        "receipt-invalid",
+        # RegistryOriginBinder
+        "platform-not-configured",
+        "seat-changed",
+        "resolve-unavailable",
+        "platform-mismatch",
+        # registry_call / StopAwareRead, reachable inside a cycle
+        "operator-stopping",
+        "registry-operation-refused",
+    }
+)
+
+
+def hold_label(exc):
+    """Bounded status label:  a known reason code for our own Held, else only
+    the class name.  Exception text can carry private context, so a Held whose
+    message is not an allowlisted code stays its bare class name too."""
+    if isinstance(exc, Held) and str(exc) in HOLD_REASONS:
+        return "Held:" + str(exc)
+    return type(exc).__name__
+
+
 def bind_creation(repo, number, *, lookup_creation, registry_history, registry_bind, seat_map):
     """Callbacks are service-owned, never selected by an HTTP request.
 

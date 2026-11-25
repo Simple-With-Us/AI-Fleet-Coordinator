@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-24.04
     # A stalled step once held this job open for over 15 minutes, and a rerun passed.  Each test
     # step has its own limit, about twice its normal run (a stall now fails in minutes and names
-    # the step), and the whole job stops at 60 minutes;  a normal run takes 21 to 32 minutes.
-    timeout-minutes: 60
+    # the step), and the whole job stops at 75 minutes.
+    timeout-minutes: 75
     steps:
     # Depth 2 keeps both parents of a pull request's merge commit, so the mirror check below can read the base
     # side (HEAD^1) without a second fetch.  Nothing else in the job reads history.
@@ -123,6 +123,9 @@ jobs:
         else
           python3 scripts/check-generated-mirror.py
         fi
+    - name: Review alert delivery and durable event contracts
+      timeout-minutes: 5
+      run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/review_alerts/tests -q
     - name: Run unittests
       timeout-minutes: 10
       run: |
@@ -289,12 +292,60 @@ jobs:
     - name: Autofix caller template guard
       timeout-minutes: 10
       run: python3 scripts/test_pr_autofix_doc_template.py
-    - name: simple-chat CLI tests
-      timeout-minutes: 12
+    # AFC-882:  these three discovers used to share one step.  On 2026-11-22 three
+    # consecutive runs of this job were read as hanging inside test_operator_linear
+    # (EngineTests) because the shared step's output reached the in-progress log in
+    # buffered bursts that froze at the same byte count.  The completed logs prove
+    # less than that reading claimed, and only this much:  the third run finished
+    # all 7,141 simple_tools tests, OK, in 579s and completed the job;  the first
+    # two progressed well past that module and were cancelled by the next push
+    # before they could settle;  and no completed log shows a stall (no timestamp
+    # gap over 32 seconds).  What no log can prove is why the in-progress view
+    # froze where it did, so the split does not close that question:  each discover
+    # now has its own named step and runs unbuffered (python3 -u), so progress
+    # streams line by line and a genuine stall names the suite and the exact test
+    # it stopped on, which is the evidence a suite-level fix would need.
+    # Follow-on (2026-11-25):  the single simple-tools step then ran 7,656
+    # tests in 691.964s against its 12-minute limit (job 138926499410), a
+    # 28-second margin that runner variance alone could erase.  The discover
+    # is now sharded by module-name range into four steps.  The ranges are
+    # disjoint and cover a-z, so every module still runs exactly once and a
+    # new module falls into a shard automatically;  a guard step below fails
+    # the job on any test file whose name falls outside the a-z ranges, so a
+    # future non-lowercase module name cannot slip past every shard silently.
+    # Measured on that tree,
+    # the shards ran about 162s / 191s / 175s / 164s (2,320 / 1,363 / 2,141 /
+    # 1,832 tests by loader count, summing to the same 7,656), and each
+    # shard's 8-minute limit is about 2.5x its measured run, so the limit
+    # stays a hang guard rather than a close fit.  The job limit rises to 75
+    # minutes for the same reason:  the proof job took 48m 59s end to end.
+    - name: simple-tools shard coverage guard
+      timeout-minutes: 2
       run: |
-        cd scripts && python3 -m unittest discover -s simple_tools/tests -t . -v
-        python3 -m unittest discover -s simple_tools/stdio_launcher/tests -t . -v
-        python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
+        cd scripts
+        bad="$(find simple_tools/tests -name 'test*.py' ! -name 'test_[a-z]*.py' -print)"
+        if [ -n "$bad" ]; then
+          echo "$bad"
+          echo "test files outside the a-z shard ranges:  extend the shard patterns in this workflow before merging"; exit 1
+        fi
+    - name: simple-tools tests (a-l)
+      timeout-minutes: 8
+      run: cd scripts && python3 -u -m unittest discover -s simple_tools/tests -t . -p 'test_[a-l]*.py' -v
+    - name: simple-tools tests (m-o)
+      timeout-minutes: 8
+      run: cd scripts && python3 -u -m unittest discover -s simple_tools/tests -t . -p 'test_[m-o]*.py' -v
+    - name: simple-tools tests (p-r)
+      timeout-minutes: 8
+      run: cd scripts && python3 -u -m unittest discover -s simple_tools/tests -t . -p 'test_[p-r]*.py' -v
+    - name: simple-tools tests (s-z)
+      timeout-minutes: 8
+      run: cd scripts && python3 -u -m unittest discover -s simple_tools/tests -t . -p 'test_[s-z]*.py' -v
+    - name: simple-tools stdio launcher tests
+      timeout-minutes: 2
+      run: cd scripts && python3 -u -m unittest discover -s simple_tools/stdio_launcher/tests -t . -v
+    - name: WhatsApp bridge tests
+      timeout-minutes: 2
+      run: cd scripts && python3 -u -m unittest discover -s whatsapp_bridge/tests -t . -v
     # The Operator's session registry:  the letter allocation, the two letter spaces,
     # the registry CLI, and the secret scan that guards every title.  The files sit at
     # the top of scripts/, outside the directories discovery walks, so this step runs
@@ -524,7 +575,7 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_autofix_request_gate -v
-    # Owner seat-precedence rule (FLEET-PROTOCOL Identity Rules, 2026-10-09):  no
+    # Owner seat-precedence rule (FLEET-PROTOCOL Seats and Identity, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees

@@ -1,0 +1,176 @@
+--- base-zcode_wake.py	2026-11-24 10:22:09.837811875 -0600
++++ candidate-zcode_wake.py	2026-11-24 10:46:33.212506274 -0600
+@@ -151,6 +151,8 @@
+     # ZC_WAKE_TASKS_INDEX override cannot reach it.  Empty keeps the existing order:  the
+     # env override, then the default under HOME.
+     "tasks_index": "",
++    "native_delivery_review_only": False,
++    "native_activation_epoch": 0,
+ }
+ 
+ NEVER_RAN: frozenset[str] = frozenset(
+@@ -676,6 +678,8 @@
+     *,
+     recheck_registry: bool = False,
+     runner: Runner = subprocess.Popen,
++    native_driver=None,
++    native_fresh: bool = False,
+ ) -> WR.Delivery:
+     """Deliver one wake to a chat on this host under the per-session lock."""
+     return _deliver_prompt(
+@@ -688,6 +692,8 @@
+         target=target,
+         recheck_registry=recheck_registry,
+         runner=runner,
++        native_driver=native_driver,
++        native_fresh=native_fresh,
+     )
+ 
+ 
+@@ -702,6 +708,8 @@
+     target: WR.Target | None = None,
+     recheck_registry: bool = False,
+     runner: Runner = subprocess.Popen,
++    native_driver=None,
++    native_fresh: bool = False,
+ ) -> WR.Delivery:
+     """One `zcode --resume` child carrying `prompt`:  the per-session lock and every check."""
+     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
+@@ -759,7 +767,7 @@
+                 return WR.Delivery("failed", "resume", code="store-tasks-index")
+             if status == "missing":
+                 return WR.Delivery("refused", "resume", code="session-not-found")
+-            if (row.get("task_status") or "") == "running":
++            if not config.get("native_delivery_review_only", False) and (row.get("task_status") or "") == "running":
+                 return WR.Delivery("busy", "resume", code="session-busy")
+             # The binding comes from the session's own store row:  the exact session id and
+             # the directory that session reports, compared with the requested session and the
+@@ -794,6 +802,32 @@
+             if session_id in subagents:
+                 return WR.Delivery("refused", "resume", code="session-subagent")
+ 
++            if config.get("native_delivery_review_only", False):
++                # Review-only injection seam, no transport activation or legacy fallback.
++                # Caller must prove this is a NEW never-attempted genuine wake.
++                if native_driver is None or target is None or not evidence_ids:
++                    return WR.Delivery("refused", "resume", code="native-not-qualified")
++                if target.host != "server" or config.get("local_host", "server") != "server":
++                    return WR.Delivery("refused", "resume", code="native-local-server-only")
++                exact = {"host": target.host, "local": True, "session_id": session_id,
++                         "workspace": recorded, "generation": target.generation}
++                def verify(expected):
++                    if expected != exact or _recheck(env, target) is not None:
++                        return False
++                    st, current = _session_binding(env, session_id)
++                    sub_st, subs = _subagent_ids(env, [session_id])
++                    return st == "ok" and current.get("id") == session_id and current.get("directory") == recorded and sub_st == "ok" and session_id not in subs
++                if not verify(exact):
++                    return WR.Delivery("refused", "resume", code="native-binding-changed")
++                try:
++                    reply = native_driver(exact, evidence_ids[0], prompt, fresh=native_fresh, verify=verify, target=target)
++                except Exception:
++                    return WR.Delivery("unknown", "resume", code="native-driver-uncertain")
++                # Admission is not a native-message or owning-alert handling receipt.
++                # A callback result cannot prove no effect. Once invoked, uncertainty
++                # is terminal regardless of claimed retryable outcome or arbitrary code.
++                return WR.Delivery("unknown", "resume", code="native-unconfirmed")
++
+             child_env = _child_env(env)
+             if config.get("zcode_bin"):
+                 child_env["ZCODE_BIN"] = str(config["zcode_bin"])
+@@ -918,6 +952,8 @@
+     *,
+     runner: Runner = subprocess.Popen,
+     remote_runner: Runner = subprocess.run,
++    native_driver=None,
++    native_is_fresh=None,
+ ) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
+     """ZCode's `deliver`:  this host directly, the Mac over ssh, any other host refused.
+ 
+@@ -936,6 +972,8 @@
+                 target=target,
+                 recheck_registry=False,
+                 runner=runner,
++                native_driver=native_driver,
++                native_fresh=bool(native_is_fresh and native_is_fresh(target,wake.wake_id)),
+             )
+         if target.host == "mac":
+             from . import claude_wake as CW
+@@ -957,6 +995,8 @@
+     turn_id: str,
+     *,
+     runner: Runner = subprocess.Popen,
++    native_driver=None,
++    native_fresh: bool = False,
+ ) -> WR.Turn:
+     """One idle ZC turn:  a single resume child whose one prompt names the head and its riders.
+ 
+@@ -964,6 +1004,8 @@
+     exit carried every offered rider, and anything else names no rider.  A refusal or an
+     unknown may have run the turn, so its carry list is unreadable and the router closes the
+     riders unknown, never a second run."""
++    if config.get("native_delivery_review_only", False) and riders:
++        return WR.Turn(WR.Delivery("refused", code="native-cap1-only"), unreadable=True)
+     base = int(config.get("resume_timeout_seconds") or 900)
+     delivery = _deliver_prompt(
+         env,
+@@ -975,6 +1017,8 @@
+         target=target,
+         recheck_registry=False,
+         runner=runner,
++        native_driver=native_driver,
++        native_fresh=native_fresh,
+     )
+     if delivery.outcome != "sent":
+         return WR.Turn(delivery, unreadable=delivery.outcome in ("refused", "unknown"))
+@@ -992,6 +1036,8 @@
+     *,
+     runner: Runner = subprocess.Popen,
+     remote_runner: Runner = subprocess.run,
++    native_driver=None,
++    native_is_fresh=None,
+ ) -> Callable[[WR.Target, WR.Wake, tuple[WR.Wake, ...], str], WR.Turn]:
+     """ZCode's `deliver_turn`:  a real turn on this host, head-only on the Mac, else refused."""
+     local_host = str(config.get("local_host", "server"))
+@@ -1000,7 +1046,7 @@
+         target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str
+     ) -> WR.Turn:
+         if target.host == local_host:
+-            return deliver_turn_local(env, config, target, head, riders, turn_id, runner=runner)
++            return deliver_turn_local(env, config, target, head, riders, turn_id, runner=runner, native_driver=native_driver, native_fresh=bool(native_is_fresh and native_is_fresh(target,head.wake_id)))
+         if target.host == "mac":
+             from . import claude_wake as CW
+ 
+@@ -1025,19 +1071,30 @@
+     remote_runner: Runner = subprocess.run,
+ ) -> WR.Platform:
+     """Build the ZCode `Platform` for `wake_service.BUILDERS`."""
++    native_driver = None
++    native_is_fresh = None
++    if config.get("native_delivery_review_only", False):
++        # Still default-off. Source-only candidate; activation requires separate review.
++        from .native_integration import Driver, freshness
++        activation = config.get("native_activation_epoch", 0)
++        if type(activation) not in (int, float) or activation <= 0:
++            raise ValueError("native-activation-boundary-required")
++        node = "/home/jay/.zcode/server/releases/3.19.0-linux-x64-60f71efd6a01/runtime/node"
++        native_driver = Driver(state_dir(env), activation, node, str(env.get("HOME") or ""))
++        native_is_fresh = lambda target, key: freshness(state_dir(env), target, key, activation)
+     return WR.Platform(
+         seat=SEAT,
+         platform=PLATFORM,
+         mention=MENTION,
+         target_re=SESSION_RE,
+-        deliver=make_deliver(env, config, runner=runner, remote_runner=remote_runner),
++        deliver=make_deliver(env, config, runner=runner, remote_runner=remote_runner, native_driver=native_driver, native_is_fresh=native_is_fresh),
+         exclude=exclude_non_interactive(
+             env,
+             str(config.get("local_host", "server")),
+             str(config.get("workspace") or ""),
+             config,
+         ),
+-        deliver_turn=make_deliver_turn(env, config, runner=runner, remote_runner=remote_runner),
++        deliver_turn=make_deliver_turn(env, config, runner=runner, remote_runner=remote_runner, native_driver=native_driver, native_is_fresh=native_is_fresh),
+     )
+ 
+ 

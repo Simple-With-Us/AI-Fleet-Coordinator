@@ -230,7 +230,7 @@ struct FleetOverviewView: View {
         case .driftHistory:
             DriftHistoryView()
         case .services:
-            FleetServicesPanel()
+            FleetServicesPanel(openServerOperator: { destination = .operator })
         case .macAgents:
             OperationsView(part: .agents)
         case .operator:
@@ -240,7 +240,7 @@ struct FleetOverviewView: View {
         case .seatDetail:
             SeatSetupView()
         case .serverStatus:
-            ServerStatusPanel()
+            ServerStatusPanel(openServerOperator: { destination = .operator })
         case .serverResourceLimits:
             ResourceLimitsView(
                 readPolicy: { await OpsResourcePolicyReader().read() },

@@ -144,7 +144,7 @@ TOP = {
 }
 VOICE = {"available", "code", "since"}
 SCHEDULE = {"interval_minutes", "stale_after_minutes", "next_at"}
-LINEAR = {"state", "since", "last_tick", "errors", "last_error"}
+LINEAR = {"state", "since", "last_tick", "errors", "last_error", "created", "updated"}
 # "other" for a state the list does not know, and None for a state not reported.
 LINEAR_STATES = (*RS._LINEAR_COMMENT_STATES, "other", None)
 SWEEP = {
@@ -581,7 +581,7 @@ def status_document(**changes: Any) -> dict[str, Any]:
             "next_at": NOW + 300,
         },
         "linear_comments": {"state": "running", "last_tick": NOW - 30, "errors": 0,
-                            "last_error": None},
+                            "last_error": None, "created": 4, "updated": 5},
         "seats": seats,
     }
     document.update(changes)
@@ -1425,7 +1425,8 @@ class LinearCommentsTests(unittest.TestCase):
     """`linear_comments` (AFC-833): the Operator's Zulip -> Linear living comments' health, in words
     from a closed list; nothing else the source carries in the block reaches the output."""
 
-    NONE = {"state": None, "since": None, "last_tick": None, "errors": None, "last_error": None}
+    NONE = {"state": None, "since": None, "last_tick": None, "errors": None, "last_error": None,
+            "created": None, "updated": None}
 
     def reduced(self, block: Any) -> dict[str, Any]:
         document = status_document()
@@ -1456,7 +1457,7 @@ class LinearCommentsTests(unittest.TestCase):
                 {"state": "running", "last_tick": NOW - 30, "errors": 2, "last_error": "value_error"}
             ),
             {"state": "running", "since": None, "last_tick": iso(NOW - 30), "errors": 2,
-             "last_error": "value_error"},
+             "last_error": "value_error", "created": None, "updated": None},
         )
 
     def test_a_stopped_engine_reports_since_when(self) -> None:
@@ -1477,7 +1478,7 @@ class LinearCommentsTests(unittest.TestCase):
                 {"state": "running", "last_tick": True, "errors": "2", "last_error": "ValueError"}
             ),
             {"state": "running", "since": None, "last_tick": None, "errors": None,
-             "last_error": None},
+             "last_error": None, "created": None, "updated": None},
         )
         self.assertIsNone(self.reduced({"last_error": KEY})["last_error"])
         self.assertIsNone(self.reduced({"last_error": "a" * 60})["last_error"])

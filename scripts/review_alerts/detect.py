@@ -27,7 +27,7 @@ hears what blocks it without polling:
                  beside those and never alone:
                  a failed check is the CI event.  Keyed by the head and the
                  blockers, so one head alerts once per blocker set, and a
-                 conflict is only ever resolved by a new commit.
+                 conflict also includes the confirmed base commit in its identity.
 
 Semantic dedupe:  a head's completion is alerted once - a submitted review
 and a completed check on the SAME head are one round, not two.  Head binding
@@ -39,6 +39,26 @@ current-head completion.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
+
+from .events import FINDINGS_MEMBER_LIMIT
+
+
+def _source_instant(text: str) -> float:
+    # ISO-8601 as an epoch instant, normalising trailing Z;  lexical max over
+    # raw strings is wrong across offsets.  Members reach here only with a
+    # non-empty `at`.
+    raw = text.strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return float("-inf")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
 
 KODY_LOGIN = "kody-ai[bot]"
 SENTRY_LOGIN = "sentry[bot]"
@@ -105,23 +125,39 @@ def check_name(run: dict) -> str:
     return name[:CHECK_NAME_CHARS]
 
 
-def in_conflict(pull: dict) -> bool | None:
-    """Whether the PR's current head has conflicting files;  None when GitHub has not said.
-
-    `mergeable_state` is the explicit answer ("dirty" is a conflict, every other state is
-    not).  A body without it (the relay's reduced read) is answered by `mergeable` alone.
-    GitHub computes both after a push and answers null and "unknown" until it has:  that is
-    None, not no, so the next cycle asks again.
-    """
-    state = str(pull.get("mergeable_state") or "")
-    if state and state != "unknown":
-        return state == "dirty"
-    mergeable = pull.get("mergeable")
-    if mergeable is True:
+def in_conflict(pull: dict) -> bool:
+    """A confirmed conflicting commit pair, never an unknown/protection hold."""
+    if pull.get("state") != "open" or pull.get("mergeable") is not False:
         return False
-    if mergeable is False:
-        return True
-    return None
+    if pull.get("mergeable_state") != "dirty":
+        return False
+    for field in ("head", "base"):
+        row = pull.get(field)
+        if not isinstance(row, dict) or not isinstance(row.get("sha"), str):
+            return False
+        if not re.fullmatch(r"[0-9a-f]{40}", row["sha"]):
+            return False
+    return True
+
+
+def merge_conflict(repo: str, number: int, pull: dict) -> list[dict]:
+    """Legacy inspection contract only. The cycle emits merge_blocked, not both."""
+    if not in_conflict(pull):
+        return []
+    head, base = pull["head"]["sha"], pull["base"]["sha"]
+    return [
+        dict(
+            repo=repo,
+            number=number,
+            kind="merge_conflict",
+            event_id=head + ":" + base,
+            actor="github",
+            head=head,
+            current_head=head,
+            head_matches=True,
+            summary="merge conflict: update the PR against its base branch",
+        )
+    ]
 
 
 def newest_runs(check_runs: list, current_head: str) -> dict[str, dict]:
@@ -260,6 +296,7 @@ def derive(
                 "repo": repo,
                 "number": number,
                 "kind": "review_submitted",
+                "source_time": review.get("submitted_at"),
                 "event_id": str(rid),
                 "actor": review_actor,
                 "head": commit,
@@ -293,6 +330,7 @@ def derive(
                 "repo": repo,
                 "number": number,
                 "kind": "review_completed",
+                "source_time": run.get("completed_at"),
                 "event_id": str(rid),
                 "actor": review_actor,
                 "head": head,
@@ -316,12 +354,40 @@ def derive(
         actors: dict[str, int] = {}
         for c in new_comments:
             actors[_login(c)] = actors.get(_login(c), 0) + 1
+        # Constituent identity:  every member comment's own id, creation time
+        # and head.  The batch's max id / head aggregate alone is lossy, so a
+        # batch without exact membership (oversized, or any member missing its
+        # time or head) exports none and is delivered ordinarily, never
+        # native-qualified from an aggregate.
+        members = sorted(
+            (
+                {
+                    "id": c["id"],
+                    "at": str(c.get("created_at") or ""),
+                    "head": str(c.get("original_commit_id") or ""),
+                }
+                for c in new_comments
+            ),
+            key=lambda m: m["id"],
+        )
+        if len(members) > FINDINGS_MEMBER_LIMIT or any(
+            not m["at"] or not m["head"] for m in members
+        ):
+            members = None
+        # The batch's source time is the NEWEST member instant, the same value
+        # the exported source_epoch carries;  ids and times are independent
+        # orderings, so the highest-id member is not always the newest.
+        source_time = (
+            max(members, key=lambda m: _source_instant(m["at"]))["at"] if members else None
+        )
         events.append(
             {
                 "repo": repo,
                 "number": number,
                 "kind": "findings_added",
                 "event_id": "c%d" % max(c["id"] for c in new_comments),
+                "source_time": source_time,
+                "members": members,
                 "actor": "+".join(sorted(actors)),
                 "head": sorted(heads)[-1] if heads else "",
                 "current_head": current_head,
@@ -384,14 +450,41 @@ def derive(
     # 5. What keeps the current head from merging.  Keyed by the head and the blockers:  one
     #    head alerts once per blocker set, and the store keeps a set from alerting twice.
     if current_head:
-        blockers = merge_blockers(pull, reviews, check_runs, current_head, exclude=(review_actor,))
+        known_requests = set(cursor.get("legacy_review_ids", []))
+        blocker_reviews = [
+            dict(row, state="DISMISSED")
+            if row.get("id") in known_requests and row.get("state") == "CHANGES_REQUESTED"
+            else row
+            for row in reviews
+        ]
+        blockers = merge_blockers(
+            pull, blocker_reviews, check_runs, current_head, exclude=(review_actor,)
+        )
+        base = pull["base"]["sha"] if "conflicts" in blockers else ""
+        # Legacy outcomes remain immutable, including unknown. Remove only facts
+        # already recorded, never a new gate, changed base, or newly failed run.
+        if current_head + ":" + base in cursor.get(
+            "legacy_conflict_pairs", []
+        ) or current_head in cursor.get("legacy_conflict_heads", []):
+            # Head-only #2510 records cannot establish a historical base. Keep
+            # their conflict outcome bounded to that head without inventing it.
+            blockers = [name for name in blockers if name != "conflicts"]
+        known_components = cursor.get("legacy_blocker_components", {}).get(current_head, [])
+        blockers = [name for name in blockers if name not in known_components]
+        if blockers == ["checks_failed"]:
+            blockers = []
         if blockers:
+            identity = "mb%s:%s%s" % (
+                current_head,
+                base + ":" if "conflicts" in blockers else "",
+                "+".join(blockers),
+            )
             events.append(
                 {
                     "repo": repo,
                     "number": number,
                     "kind": "merge_blocked",
-                    "event_id": "mb%s:%s" % (current_head, "+".join(blockers)),
+                    "event_id": identity,
                     "actor": "",
                     "head": current_head,
                     "current_head": current_head,

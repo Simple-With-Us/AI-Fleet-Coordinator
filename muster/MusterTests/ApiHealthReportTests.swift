@@ -22,6 +22,20 @@ final class ApiHealthReportTests: XCTestCase {
         return ApiHealthReportReader.read(at: url, now: generated.addingTimeInterval(minutes * 60))
     }
 
+    func test_health_report_does_not_follow_a_file_symlink() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muster-api-health-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let target = directory.appendingPathComponent("unrelated.json")
+        try fixture("api_health_current", "json").write(to: target, atomically: true, encoding: .utf8)
+        let url = directory.appendingPathComponent("api-health.json")
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+        let reading = ApiHealthReportReader.read(at: url, now: generated)
+        XCTAssertNotNil(reading.problem)
+        XCTAssertEqual(reading.state, .unknown)
+    }
+
     func test_a_current_file_reads_both_apps() throws {
         let reading = try readText(try fixture("api_health_current", "json"))
         XCTAssertNil(reading.problem)

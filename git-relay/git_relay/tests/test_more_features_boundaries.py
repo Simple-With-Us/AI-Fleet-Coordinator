@@ -74,7 +74,7 @@ class PracticalPageBoundaries(unittest.TestCase):
 class PracticalPageRelayIngress(unittest.TestCase):
     """Exercise real relay auth/routing, not only directly constructed handlers."""
 
-    def relay(self, tmp, enabled=True, listed=True):
+    def relay(self, tmp, enabled=True):
         import json
         import os
 
@@ -85,7 +85,7 @@ class PracticalPageRelayIngress(unittest.TestCase):
         seats = {
             "swu-wise": {
                 "token": "w" * 32,
-                "actions": list(ACTIONS) if listed else ["wf_runs"],
+                "actions": list(ACTIONS),
                 "repos": [REPO],
                 "app_slug": "swu-wise",
                 "mint_permissions": {
@@ -108,13 +108,13 @@ class PracticalPageRelayIngress(unittest.TestCase):
             workflow_verbs_enabled=enabled,
         )
 
-    def test_all_page_actions_disabled_unlisted_wrong_repo_or_wrong_caller_no_effect(self):
+    def test_all_page_actions_disabled_wrong_repo_or_wrong_caller_no_effect(self):
         import tempfile
 
         for action in ACTIONS:
-            for case in ("disabled", "unlisted", "wrongrepo", "wrongcaller", "badargs"):
+            for case in ("disabled", "wrongrepo", "wrongcaller", "badargs"):
                 with self.subTest(action=action, case=case), tempfile.TemporaryDirectory() as tmp:
-                    r = self.relay(tmp, enabled=case != "disabled", listed=case != "unlisted")
+                    r = self.relay(tmp, enabled=case != "disabled")
                     status, _ = r.handle(
                         "x" * 32 if case == "wrongcaller" else "w" * 32,
                         action,

@@ -36,7 +36,7 @@ Rollout: `docs/rollouts/2026-10-26-afc554-housekeeper-owner-record.md`.
 
 ## 2026-10-25 MM — the sentence-gap rule, restated with the one chat-pane exception
 
-Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab), MiniMax Code (the MiniMax Code pane) and Z Code (the Z Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
+Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab), MiniMax Code (the MiniMax Code pane), Z Code (the Z Code pane) and Antigravity (the Antigravity chat pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
 
 ## 2026-10-23 CODEX — WhatsApp Wake Bridge Implementation (AFC-477)
 
@@ -85,7 +85,7 @@ file now describe Zulip (`https://simplewithus.zulipchat.com`) instead of Slack:
 `simple-chat` CLI (`~/.local/bin/simple-chat`), the `[SEAT·session8]` tag, and posting by
 channel plus topic.  The retired Slack path — `slack-sync.sh`, `consumer.mjs`, the
 `slack-collab` MCP, and the Slack tokens they read — is no longer instructed anywhere in
-those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Chat: The Zulip Contract and
+those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Posting and
 `docs/protocols/zulip-fleet-guide.md`.  Entries below are dated history and describe Slack
 as it was at the time; they are not rewritten.
 

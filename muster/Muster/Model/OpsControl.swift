@@ -1316,6 +1316,9 @@ struct OpsResult: Decodable, Equatable {
     let resourceName: String?
     /// What a `server test-wake` run came to:  the wake id and the router's answer as code words.
     let testWake: OperatorTestWake?
+    /// True when the answer carries a `testWake` that is not null but could not be read:  a result
+    /// in another shape,  told apart from one that is absent (Kody,  PR 2299).
+    let testWakeUnreadable: Bool
     /// The pause in force, as a `server pause|pause-wakes|resume` plan or run read it.
     let pause: OperatorPauseState?
 
@@ -1368,7 +1371,13 @@ struct OpsResult: Decodable, Equatable {
         checkedAt = try? container.decodeIfPresent(String.self, forKey: .checkedAt)
         logsUnit = try? container.decodeIfPresent(String.self, forKey: .logsUnit)
         resourceName = try? container.decodeIfPresent(String.self, forKey: .resourceName)
+        // Lenient, unlike `pause` below:  a `testWake` in another shape must not cost the sheet the
+        // helper's `result`,  `detail` and `errorCode`,  so the answer still decodes.  But it is
+        // marked unreadable rather than read as absent,  and a run whose result is not readable is
+        // never shown as a pass (`OpsOutcome.testWakeUnconfirmed`).
         testWake = try? container.decodeIfPresent(OperatorTestWake.self, forKey: .testWake)
+        testWakeUnreadable = testWake == nil && container.contains(.testWake)
+            && (try? container.decodeNil(forKey: .testWake)) != true
         // Strict:  a `pause` block in another shape makes the whole answer unreadable (a plan that
         // cannot be read runs nothing), never one that shows no pause.  A missing or null block is
         // still nil.
@@ -1496,6 +1505,12 @@ struct OpsOutcome: Equatable {
     /// What a `server test-wake` run came to, for a run's answer to that verb that carried one;
     /// nil for every other answer and for a plan.
     var testWake: OperatorTestWake? = nil
+    /// True when that run's answer carried a `testWake` that could not be read.
+    var testWakeUnreadable: Bool = false
+    /// True for a test-wake run whose answer has no readable result that says it passed.  The
+    /// helper's `done` always carries one (`run_test_wake`),  so without it the run is not shown as
+    /// a pass,  whatever `ok`,  `result` and the exit code say.  False for every other action.
+    var testWakeUnconfirmed: Bool = false
     /// The pause in force, for a plan or a run of `server pause|pause-wakes|resume` that answered
     /// with one;  nil for every other answer.
     var pause: OperatorPauseState? = nil
@@ -1526,7 +1541,7 @@ struct OpsOutcome: Equatable {
         guard ok, exitCode == 0 else { return false }
         switch mode {
         case .plan: return kind == .planned
-        case .yes: return kind == .done
+        case .yes: return kind == .done && !testWakeUnconfirmed
         }
     }
 
@@ -1587,6 +1602,10 @@ struct OpsOutcome: Equatable {
             switch kind {
             case .done where isSuccess(for: .yes):
                 return "The router accepted the dry run and picked this chat.\(gap)Nothing was delivered."
+            case .done where testWakeUnreadable:
+                return "The server said done, but its test wake result could not be read, so the router's answer is not confirmed.\(gap)Nothing was delivered."
+            case .done where testWakeUnconfirmed:
+                return "The server said done, but sent no test wake result that says it passed, so the router's answer is not confirmed.\(gap)Nothing was delivered."
             case .failed:
                 return "The test wake did not pass.\(gap)Nothing was delivered."
             case .refused:
@@ -1894,9 +1913,16 @@ enum OpsResultParser {
         // A test wake's result is read only from a run's answer to that verb (or one that names
         // none):  a plan sent nothing, and an answer for another verb is not this result.
         var testWake: OperatorTestWake?
-        if case .testWake = action, mode == .yes,
-           answer.verb == nil || answer.verb == OpsAction.testWakeVerb {
-            testWake = answer.testWake
+        var testWakeUnreadable = false
+        var testWakeUnconfirmed = false
+        if case .testWake = action, mode == .yes {
+            if answer.verb == nil || answer.verb == OpsAction.testWakeVerb {
+                testWake = answer.testWake
+                testWakeUnreadable = answer.testWakeUnreadable
+            }
+            // A pass needs the result to say so:  absent,  null,  unreadable,  or an object without
+            // `passed: true` (its fields read leniently,  one by one) is not a pass.
+            testWakeUnconfirmed = testWake?.passed != true
         }
         // The pause in force is read from a plan or a run of that one verb (or one that names
         // none):  an answer for another verb is not this pause.
@@ -1934,6 +1960,8 @@ enum OpsResultParser {
             resourceName: resourceName,
             stoppedOnMac: stoppedOnMac,
             testWake: testWake,
+            testWakeUnreadable: testWakeUnreadable,
+            testWakeUnconfirmed: testWakeUnconfirmed,
             pause: pause
         )
     }

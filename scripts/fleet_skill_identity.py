@@ -25,7 +25,7 @@ SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
 # The canonical pack's identity block is the retired MONET seat's own block,
 # exactly what seat_pin_block() renders for MONET (#405 made the canonical
 # carry the renderer's own output).  Every render swaps the whole block for the
-# destination seat's seat-precedence block (FLEET-PROTOCOL.md § Identity Rules, owner
+# destination seat's seat-precedence block (FLEET-PROTOCOL.md § Seats and Identity, owner
 # 2026-10-09):  a launcher's AGENT_LAUNCH_SEAT, no seat at all when a launcher
 # set none, then AGENT_SEAT, then the platform default.  The pattern also takes
 # the two older canonical shapes (a bare `export AGENT_SEAT=MONET`, and the

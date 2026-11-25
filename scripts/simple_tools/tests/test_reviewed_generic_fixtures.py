@@ -158,3 +158,146 @@ class ReviewedGenericTests(unittest.TestCase):
                             (self.body + "Authorization: Bearer " + "c" * 30, [])]:
             with self.approve(body):
                 self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, body, known))
+
+
+
+import pathlib
+
+
+class NativeOriginCaptureProbeEntryTests(unittest.TestCase):
+    """Entry-specific coverage for the match-pinned probe fixture admission.
+
+    The reviewed fixture file is admitted by exact full-file digest plus the
+    exact nonempty effective-match census, never by the legacy whole-file
+    route.  The credential-shaped assignment is a deliberate synthetic
+    negative control:  the probe test plants it in a caller-controlled tool
+    name and asserts the probe never echoes it.  See
+    docs/security/reviewed-fixtures/native-origin-capture-probe-2026-11-25.md.
+
+    The shipped-entry pins and test_exact_reviewed_bytes_admit_once_merged
+    concern the actual reviewed fixture.  Every other test here uses a tiny
+    synthetic body with a monkeypatched registry:  they pin mechanism
+    behavior for this entry's shape, and are not executed-actual-fixture
+    regressions.  Actual-fixture qualification runs host-side on the
+    combined source tree before publication.
+    """
+
+    REPO = "Simple-With-Us/AI-Fleet-Coordinator"
+    PATH = "scripts/mcp-servers/test_native_origin_capture.py"
+    DIGEST = "a9c9dbb7f15cc0bb160a4bbb78c906bfd7ec70f2d84c2ab9b2e92645f22242b6"
+    KEY = (REPO, PATH, DIGEST)
+    CENSUS = frozenset({("assigned secret", 9436, 9471, 9446, 9471)})
+    ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+    @staticmethod
+    def census_of(body):
+        found = set()
+        for label, pattern in secretscan._PATTERNS:
+            if label in secretscan._GENERIC_ASSIGNMENTS and "value" in pattern.groupindex:
+                for match in pattern.finditer(body):
+                    found.add((label, *match.span(), *match.span("value")))
+        return frozenset(found)
+
+    def pin(self, body, census):
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        return patch.object(
+            secretscan, "_REVIEWED_GENERIC_MATCHES", {(self.REPO, self.PATH, digest): census}
+        )
+
+    def test_shipped_entry_is_match_pinned_not_legacy(self):
+        self.assertNotIn(self.KEY, secretscan._REVIEWED_GENERIC_FIXTURES)
+        self.assertEqual(secretscan._REVIEWED_GENERIC_MATCHES[self.KEY], self.CENSUS)
+
+    def test_synthetic_exact_pinned_bytes_admit_and_raw_scan_still_refuses(self):
+        body = 'secret = "' + "a" * 22 + '"\n'
+        self.assertEqual(len(self.census_of(body)), 1)
+        with self.pin(body, self.census_of(body)):
+            self.assertIsNone(secretscan.scan_file(self.REPO, self.PATH, body))
+            self.assertEqual(secretscan.scan(body), "assigned secret")
+
+    def test_synthetic_wrong_repo_path_or_digest_fail_closed(self):
+        body = 'secret = "' + "a" * 22 + '"\n'
+        census = self.census_of(body)
+        with self.pin(body, census):
+            for repo, path, text in [
+                (self.REPO + "2", self.PATH, body),
+                (self.REPO, self.PATH + "2", body),
+                (self.REPO, self.PATH, body + "\n"),
+            ]:
+                with self.subTest(repo=repo, path=path):
+                    self.assertEqual(
+                        secretscan.scan_file(repo, path, text), "assigned secret"
+                    )
+
+    def test_synthetic_tampered_or_incomplete_census_refuses(self):
+        body = 'secret = "' + "a" * 22 + '"\n'
+        census = self.census_of(body)
+        (label, m0, m1, v0, v1), = census
+        for bad in (frozenset(), frozenset({(label, m0, m1, v0, v1 + 1)}),
+                    frozenset({("assigned credential", m0, m1, v0, v1)})):
+            with self.subTest(census=bad), self.pin(body, bad):
+                self.assertEqual(
+                    secretscan.scan_file(self.REPO, self.PATH, body), "assigned secret"
+                )
+
+    def test_synthetic_additional_generic_match_beyond_census_refuses(self):
+        body = 'secret = "' + "a" * 22 + '"\n'
+        grown = body + 'token = "' + "b" * 20 + '"\n'
+        # Pin the grown bytes with only the original one-match census.
+        with self.pin(grown, self.census_of(body)):
+            self.assertEqual(
+                secretscan.scan_file(self.REPO, self.PATH, grown), "assigned secret"
+            )
+
+    def test_synthetic_loaded_values_stay_absolute_including_short_contained(self):
+        body = 'secret = "' + "a" * 22 + '"\n'
+        with self.pin(body, self.census_of(body)):
+            for known in (["a" * 22], ["aaaa"]):
+                with self.subTest(known=known):
+                    self.assertEqual(
+                        secretscan.scan_file(self.REPO, self.PATH, body, known=known),
+                        "a loaded credential",
+                    )
+
+    def test_synthetic_provider_bearer_and_zulip_stay_absolute_at_exact_digest(self):
+        body = 'secret = "' + "a" * 22 + '"\n'
+        zulip = "Ab1" * 10 + "C2"
+        cases = [
+            (body + "Authorization: Bearer " + "c" * 24 + "\n", "bearer token"),
+            (body + zulip + "\n", "a Zulip-shaped API key"),
+            (body + "eyJ" + "d" * 10 + ".eyJ" + "e" * 10 + "." + "f" * 10 + "\n",
+             "access token (JWT)"),
+        ]
+        for payload, expected in cases:
+            with self.subTest(expected=expected), self.pin(payload, self.census_of(payload)):
+                self.assertEqual(
+                    secretscan.scan_file(self.REPO, self.PATH, payload), expected
+                )
+
+    def test_scanner_copies_stay_byte_identical(self):
+        simple = self.ROOT / "scripts" / "simple_tools" / "secretscan.py"
+        relay = self.ROOT / "git-relay" / "git_relay" / "patch_secretscan.py"
+        self.assertEqual(simple.read_bytes(), relay.read_bytes())
+
+    # Main's pre-probe bytes at the same path: the probe patch adds 159
+    # lines to an existing file, so this older digest is the expected state
+    # until the probe merges.  It needs no admission (it scans clean
+    # unregistered) and is pinned here so only these two known states skip
+    # or pass - any other digest is a loud failure, never a silent skip.
+    PRE_PROBE_DIGEST = "0a46521889e6df8142c28d9d5fdbed6278db740eaeaedefff5dfb1de0c9b0110"
+
+    def test_exact_reviewed_bytes_admit_once_merged(self):
+        real = self.ROOT / self.PATH
+        self.assertTrue(real.is_file(), "established native-origin fixture is missing")
+        text = real.read_text()
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        if digest == self.PRE_PROBE_DIGEST:
+            self.skipTest("probe patch not merged yet; pre-probe bytes present")
+        self.assertEqual(
+            digest,
+            self.DIGEST,
+            "probe test file drifted from every known digest; a byte change "
+            "is a new file and needs a new review",
+        )
+        self.assertIsNone(secretscan.scan_file(self.REPO, self.PATH, text))
+        self.assertEqual(secretscan.scan(text), "assigned secret")
