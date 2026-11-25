@@ -790,10 +790,18 @@ class AppTokenMinter:
             # refusal must carry secret-free operational evidence of that
             # ("+revocation-failed" in the error:  the reason only, never the
             # token itself).  A missing token has nothing to revoke.
+            revoke_failed = False
             if isinstance(token, str) and token:
                 if not self.revoke_installation_token(token):
+                    revoke_failed = True
                     why = why + "+revocation-failed"
-            raise AppTokenError(f"minted-token answer failed service validation ({why})")
+            error = AppTokenError(f"minted-token answer failed service validation ({why})")
+            # Typed secret-free flag for the caller's audit row:  a rejected
+            # over-grant whose revocation also failed may still be live
+            # upstream, and that fact must survive even where the error text
+            # is flattened into a generic refusal.
+            error.revoke_failed = revoke_failed
+            raise error
 
         if not isinstance(token, str) or not token or not expires_at:
             # Every post-mint validation failure goes through refuse, so a

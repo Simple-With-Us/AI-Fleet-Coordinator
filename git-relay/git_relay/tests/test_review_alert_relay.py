@@ -351,14 +351,66 @@ class ServiceReadTests(unittest.TestCase):
             self.assertTrue(any(r.get("result") == "unauthenticated" for r in rows))
 
     def test_seat_token_is_not_a_service_bearer(self):
+        # A valid seat bearer that is not the configured lane credential
+        # falls through to the normal policy path:  the lane never runs (no
+        # mint), and the seat gets its own authenticated refusal.  The
+        # fixture seat may only open PRs, so its read is a policy denial.
         with tempfile.TemporaryDirectory() as directory:
-            relay = make_relay(
-                directory, Client(), minter=FakeMinter(), service_repos=[ARGS["repo"]]
-            )
+            minter = FakeMinter()
+            relay = make_relay(directory, Client(), minter=minter, service_repos=[ARGS["repo"]])
             status, _ = relay.handle(
                 ECHO_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
             )
-            self.assertEqual(status, 401)
+            self.assertEqual(status, 403)
+            self.assertEqual(minter.mints, [])
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(any(r.get("result") == "denied" for r in rows))
+
+    def test_lane_reports_partial_coverage_with_pending_fence(self):
+        # A pending creation fence stops the protected seat path outright,
+        # but the dedicated lane still returns the confirmed open_pr rows
+        # and says plainly that coverage is partial.  The fence itself is
+        # untouched:  the protected path still refuses afterwards.
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client(), FakeMinter(), service_repos={ARGS["repo"]})
+            status, _ = open_pr(relay)
+            self.assertEqual(status, 200)
+            relay.pr_owners.begin_creation("a" * 32)
+            status, body = relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "verb": "creation_receipts"}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(body["coverage"], "partial")
+            self.assertEqual(len(body["body"]), 1)
+            self.assertEqual(body["body"][0]["number"], 1)
+            with self.assertRaises(ValueError):
+                relay.pr_owners.protected_for_repo(ARGS["repo"])
+            self.assertIn("a" * 32, relay.pr_owners._pending_creations)
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(any(r.get("coverage") == "partial" for r in rows))
+
+    def test_lane_reports_complete_coverage_without_gaps(self):
+        # With a clean index and no pending fence the same lane answer
+        # carries explicit complete coverage, so partial and complete are
+        # never indistinguishable.
+        with tempfile.TemporaryDirectory() as directory:
+            relay = make_relay(directory, Client(), FakeMinter(), service_repos={ARGS["repo"]})
+            status, _ = open_pr(relay)
+            self.assertEqual(status, 200)
+            status, body = relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "verb": "creation_receipts"}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(body["coverage"], "complete")
+            self.assertEqual(len(body["body"]), 1)
 
     def test_repo_allowlist_and_shape(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -422,6 +474,62 @@ class ServiceReadTests(unittest.TestCase):
             self.assertEqual(client.reads[0]["method"], "GET")
             self.assertEqual(client.reads[0]["path"], "/repos/example/fixture/pulls/7")
             self.assertEqual(client.reads[0]["bearer"], "minted-token")
+
+    def test_mint_rejection_with_failed_revocation_is_audited_as_cleanup_failure(self):
+        # The minter rejects an over-granted answer and its revocation also
+        # fails:  the lane's generic 502 flattens the error text, so the
+        # typed secret-free flag must carry the cleanup failure into the
+        # audit row, never the exception prose.
+        with tempfile.TemporaryDirectory() as directory:
+
+            class RejectMinter(FakeMinter):
+                def token_for_service(self, slug, repo, permissions):
+                    error = ValueError(
+                        "minted-token answer failed service validation "
+                        "(granted scope outside the request+revocation-failed)"
+                    )
+                    error.revoke_failed = True
+                    raise error
+
+            relay = make_relay(
+                directory, Client(), minter=RejectMinter(), service_repos=[ARGS["repo"]]
+            )
+            status, _ = relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
+            )
+            self.assertEqual(status, 502)
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            mint = [r for r in rows if r.get("at") == "mint"]
+            self.assertEqual(len(mint), 1)
+            self.assertEqual(mint[0].get("revoke_failed"), True)
+            self.assertNotIn("revocation-failed", json.dumps(mint))
+
+    def test_mint_rejection_without_flag_carries_no_cleanup_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+
+            class RejectMinter(FakeMinter):
+                def token_for_service(self, slug, repo, permissions):
+                    raise ValueError("minted-token answer failed service validation (malformed)")
+
+            relay = make_relay(
+                directory, Client(), minter=RejectMinter(), service_repos=[ARGS["repo"]]
+            )
+            status, _ = relay.handle(
+                SERVICE_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
+            )
+            self.assertEqual(status, 502)
+            rows = [
+                json.loads(line)
+                for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            mint = [r for r in rows if r.get("at") == "mint"]
+            self.assertEqual(len(mint), 1)
+            self.assertNotIn("revoke_failed", mint[0])
 
     def test_check_runs_verb_requires_sha(self):
         with tempfile.TemporaryDirectory() as directory:
