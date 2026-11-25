@@ -2022,6 +2022,7 @@ class WorkflowVerbs:
             "page": page,
             "has_more": len(collaborators) == limit,
             "affiliation": affiliation,
+            "permission": permission,
         }
 
     def wf_repo_teams(self, repo, args):
