@@ -45,8 +45,12 @@ class ScopedSeatKeyTests(unittest.TestCase):
                 }
             }
 
+        # The host's own store is patched away:  the store is the authority at runtime,
+        # but the store on the machine that runs this test must not decide which code
+        # path the test exercises.
         with (
-            mock.patch.dict(os.environ, {seat_key.AFC_TOKEN_ENV: token}),
+            tempfile.TemporaryDirectory() as home,
+            mock.patch.dict(os.environ, {seat_key.AFC_TOKEN_ENV: token, "HOME": home}),
             mock.patch.object(seat_key.scoped_secrets, "_api_json", api),
         ):
             self.assertEqual(
@@ -75,10 +79,15 @@ class ScopedSeatKeyTests(unittest.TestCase):
             }
 
         token_name = seat_key.AFC_TOKEN_ENV
-        with mock.patch.dict(os.environ, {token_name: "st." + "synthetic-seat-key-reader-token"}):
-            with mock.patch.object(seat_key.scoped_secrets, "_api_json", api):
-                with self.assertRaises(SystemExit):
-                    seat_key.infisical_pair("EMAIL", "KEY")
+        with (
+            tempfile.TemporaryDirectory() as home,
+            mock.patch.dict(
+                os.environ, {token_name: "st." + "synthetic-seat-key-reader-token", "HOME": home}
+            ),
+            mock.patch.object(seat_key.scoped_secrets, "_api_json", api),
+        ):
+            with self.assertRaises(SystemExit):
+                seat_key.infisical_pair("EMAIL", "KEY")
         self.assertEqual(calls, ["/v2/service-token"])
 
 
@@ -93,8 +102,8 @@ class GenericHandoffReaderTests(unittest.TestCase):
         with ScopedReadAPI(
             values,
             project=str(uuid.uuid4()),
-            path="/",
-            token_name=seat_key.TOKEN_ACCOUNTS["/"],
+            path=seat_key.HANDOFF_FOLDER,
+            token_name=seat_key.TOKEN_ACCOUNTS[seat_key.HANDOFF_FOLDER],
         ) as api:
 
             def read(project, folder, env, **options):

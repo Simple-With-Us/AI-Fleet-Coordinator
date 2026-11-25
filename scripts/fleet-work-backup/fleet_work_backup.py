@@ -2796,8 +2796,16 @@ CREDENTIAL_TOKEN_ACCOUNT = "fleet-work-backup-ro"
 class BindingRefused(RuntimeError):
     """This job's own scoped token is not usable:  the message names the account and the refusal."""
 
-# The folder the job's own names live in.
-CREDENTIAL_FOLDER = "/"
+# The folder the job's own names live in.  Every one of them is a literal in the
+# Fleet-OPS prod /global-api-keys folder:  RESTIC_FLEET_WORK_PASSWORD, the three
+# B2_FLEET_WORK_* names and the BACKBLAZE_MASTER_* names are all in that folder
+# (verified against the provider on Nov 25 2026), and the Fleet-OPS project root
+# is an alias layer whose raw route returns a reference instead of the value.
+# So the read names the folder where the literal is, and the job's own grant is
+# scoped to exactly that one folder:  a grant on the project root would be a
+# wider grant than this job needs, and a grant on any other folder could not
+# serve it at all.
+CREDENTIAL_FOLDER = "/global-api-keys"
 
 _READER_LOCK = threading.RLock()
 _READER_CACHE = None
