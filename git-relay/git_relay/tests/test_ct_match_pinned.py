@@ -110,7 +110,7 @@ class MatchPinnedReview(unittest.TestCase):
     def test_actual_registry_and_preserved_admissions(self):
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 5)
         self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 4)
-        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 7)
+        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 8)
         server_key = (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "git-relay/git_relay/server.py",
@@ -121,6 +121,16 @@ class MatchPinnedReview(unittest.TestCase):
             frozenset({("assigned secret", 51282, 51325, 51290, 51325)}),
         )
         self.assertNotIn(server_key, relay._REVIEWED_GENERIC_FIXTURES)
+        probe_key = (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/mcp-servers/test_native_origin_capture.py",
+            "a9c9dbb7f15cc0bb160a4bbb78c906bfd7ec70f2d84c2ab9b2e92645f22242b6",
+        )
+        self.assertEqual(
+            relay._REVIEWED_GENERIC_MATCHES[probe_key],
+            frozenset({("assigned secret", 9436, 9471, 9446, 9471)}),
+        )
+        self.assertNotIn(probe_key, relay._REVIEWED_GENERIC_FIXTURES)
         key, census = next(
             (key, census)
             for key, census in relay._REVIEWED_GENERIC_MATCHES.items()

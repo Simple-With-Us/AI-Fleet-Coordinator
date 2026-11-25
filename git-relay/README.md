@@ -266,8 +266,9 @@ value matching a credential shape is stored hashed, whatever key it arrived unde
 ### Reviewed security-test fixtures
 
 File writes still scan the full decoded content before any GitHub write. The
-server-owned `git_relay/reviewed_fixtures.py` records thirteen exact-content
-attestations for synthetic credential-rejection fixtures in AFC. Each entry binds
+server-owned `git_relay/reviewed_fixtures.py` records fourteen exact-content
+attestations: thirteen AFC synthetic credential-rejection fixtures plus the
+CT endpoint regression fixture documented below. Each entry binds
 repository, destination path and SHA-256 of the entire file. It is not a caller
 option, path-wide exemption, environment setting or trust in existing Git history.
 Changing one byte or destination invalidates the attestation; any credential shape
@@ -309,7 +310,8 @@ gap this attestation exists to close:
 
 The `gr-front.test.mjs` row was refreshed after merging main (with AFC-734, PR #1826) into AFC-727.  The bytes combine the `gr_create_repo` pinned name list (AFC-632), the AFC-734 not_configured reasons, and the intent-only `gr_workflow_dispatch` assertions from this branch.  Source blob `3a7c6b485d91a7f2dfee5922b3d026450d087fb1` supersedes the earlier attestations.
 
-The table records the current 13-entry source registry, not an installed-state claim.
+The table records the thirteen AFC entries, not an installed-state claim.
+The additional CT entry is documented below.
 The Infisical API-route row is separately refreshed from immutable main
 27801add4cfd5ea09fa8d2cbc3307e509779c1b9, source blob
 03f2ca24e1de1a47fd7aa1bb031e1e68f064c76e, through the five rename/import/env
@@ -591,3 +593,38 @@ patch qualification, apply only the three existing profile action additions and
 update the existing canonical digest regression to its computed new digest,
 then verify rendered canonical policy equals the transformed policy. Until that
 lands, this bootstrap transform and its durable tests record the exact delta.
+
+
+#### CT #3197 endpoint regression fixture
+
+One additional exact-content row is proposed for
+`Simple-With-Us/Congress.Trade`, destination
+`app/src/admin/__tests__/reviewQueueFailures.test.ts`.
+The 17,981-byte target has SHA-256
+`ef488ddc69bec439d19097ac231e04bf0016a9d6330906d544da04a258f51d48`
+and Git blob `289083c49e719267bf926f8c1b6c5a26b97f3f39`.
+It is the complete fixture from CT head
+`76066f26f3c313b1bd63c395e742516eb0eaa237`, with only the
+`firstSeenCount: 7` field added to the scoped run-report request and its
+stored-value assertion. The patch changes no credential or destination.
+The full file was read, not only its diff. All token and Authorization lines
+are byte-identical to their synthetic test context in introducing commit
+`4fda34e0d1cfb3487ff804a41f8f7dfd03e45d6a`. The values are test-local
+placeholders paired with the local router environment. Requests use
+`app.request`, the test DB, and in-memory KV, not an external server.
+The only dedicated pattern match is one bearer-header placeholder.
+
+Independent local boundary checks against the actual proposed target verify
+that this exact repo/path/content passes only with the proposed row. Prior
+bytes, a one-byte append, another repo and another path still refuse. A
+known loaded placeholder value refuses before attestation. Existing scanner
+algorithms, caller controls and outbound message scanning do not change.
+The bounded registry tests now permit exactly this CT triple in addition to
+the existing thirteen AFC entries, not an arbitrary cross-repository rule.
+
+This is a source proposal, not evidence of installation or permission to
+resume a refused publication. Normal source review and operator deployment
+must finish before the unchanged target file is submitted through the normal
+file-publication service. Re-read CT head and verify the complete target
+hash before that submission. No source transformation, caller override,
+credential disclosure, merge of CT, or CT deployment is authorized by this row.

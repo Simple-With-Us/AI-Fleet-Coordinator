@@ -223,7 +223,7 @@ class Base(unittest.TestCase):
             return self.results.pop(0)
         return WR.Delivery("completed", "fake", ack="confirmed")
 
-    def router(self, deliver=None, consult=None, **config) -> WR.Router:
+    def router(self, deliver=None, consult=None, route_runner=None, **config) -> WR.Router:
         platform = WR.Platform(
             seat="CLAUDE",
             platform="claude",
@@ -239,6 +239,7 @@ class Base(unittest.TestCase):
             self.key_source,
             consult=consult,
             clock=self.clock,
+            route_runner=route_runner,
         )
 
     def router_env(self) -> dict:
@@ -3275,6 +3276,127 @@ class Http(Base):
         for private in (SID_A, SID_B, "A Mac chat", "Only chat", BODY_MARK):
             self.assertNotIn(private, json.dumps([health, every]))
 
+    def test_the_route_check_answers_for_the_routine_key_only(self) -> None:
+        # AFC-836:  `GET /route-check/<SEAT>` makes one ssh by the router's own invocation and
+        # answers what the far side said, for the routine bearer.  Anything else is refused.
+        probe = SimpleNamespace(
+            returncode=CW.GATE_REFUSED, stdout="", stderr="x " + CW.GATE_REFUSED_LINE
+        )
+        router = self.router(route_runner=lambda *argv, **kwargs: probe)
+        router.config["mac_ssh"] = "owner-mac-tailnet-alias"
+        router.clock = lambda: 1770000000.0  # a fixed time the check can say on its health
+        port = self.serve(router)
+        status, answer = self.request(port, "/route-check/CLAUDE", key=self.key, method="GET")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            answer,
+            {
+                "seat": "CLAUDE",
+                "mac_route": WR.MAC_ROUTE_CONFIGURED,
+                "check": {"answer": "gated", "at": "2026-02-02T02:40:00Z", "exit": 126},
+            },
+        )
+        # No destination, no host name, no ssh text rides the answer.
+        self.assertNotIn("owner-mac-tailnet-alias", json.dumps(answer))
+        status, health = self.request(port, "/health/CLAUDE", method="GET")
+        # The check lands in the seat's health with its time:  an operator asked for it, so the
+        # time is said.  Its delivery-time counterpart stays absent until a delivery answers.
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            health["mac_route_check"],
+            {"answer": "gated", "at": "2026-02-02T02:40:00Z", "exit": 126},
+        )
+        self.assertNotIn("mac_route_answer", health)
+        self.assertEqual(
+            (
+                self.request(port, "/route-check/CLAUDE", method="GET")[0],
+                self.request(port, "/route-check/CLAUDE", key="wrong", method="GET")[0],
+                self.request(port, "/route-check/ZC", key=self.key, method="GET")[0],
+            ),
+            (401, 401, 404),
+        )
+
+    def test_a_second_check_while_one_runs_is_refused(self) -> None:
+        # Two ssh to one Mac at once is never opened on purpose:  the second gets 429.
+        release = threading.Event()
+
+        def slow(*argv, **kwargs):
+            self.assertTrue(release.wait(timeout=20))
+            return SimpleNamespace(
+                returncode=CW.GATE_REFUSED, stdout="", stderr=CW.GATE_REFUSED_LINE
+            )
+
+        router = self.router(route_runner=slow)
+        router.config["mac_ssh"] = "owner-mac-tailnet-alias"
+        router.start()
+        self.addCleanup(router.stop)
+        port = self.serve(router)
+        seen = {}
+
+        def ask(name):
+            seen[name] = self.request(port, "/route-check/CLAUDE", key=self.key, method="GET")
+
+        first = threading.Thread(target=ask, args=("first",), daemon=True)
+        first.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not router._route_checking:
+            time.sleep(0.01)
+        second = threading.Thread(target=ask, args=("second",), daemon=True)
+        second.start()
+        second.join(timeout=10)
+        release.set()
+        first.join(timeout=20)
+        self.assertEqual(seen["second"][0], 429)
+        self.assertEqual(seen["second"][1]["error"], "a route check is already running")
+        self.assertEqual(seen["first"][0], 200)
+        self.assertEqual(
+            (seen["first"][1]["check"]["answer"], seen["first"][1]["check"]["exit"]),
+            ("gated", CW.GATE_REFUSED),
+        )
+
+    def test_a_fresh_route_check_answer_is_served_without_a_second_ssh(self) -> None:
+        # Within the debounce the kept answer serves, so a slow Mac is not
+        # re-probed per caller;  past it the next check probes again.
+        calls = []
+        probe = SimpleNamespace(
+            returncode=CW.GATE_REFUSED, stdout="", stderr="x " + CW.GATE_REFUSED_LINE
+        )
+
+        def runner(*argv, **kwargs):
+            calls.append(argv)
+            return probe
+
+        router = self.router(route_runner=runner)
+        router.config["mac_ssh"] = "owner-mac-tailnet-alias"
+        now = [1770000000.0]
+        router.clock = lambda: now[0]
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(len(calls), 1)
+        now[0] += WR.ROUTE_CHECK_DEBOUNCE_S + 1
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(len(calls), 2)
+
+    def test_a_route_check_for_a_new_destination_probes_again(self) -> None:
+        # The debounce serves the probed destination's answer only:  a new
+        # mac_ssh destination is a new question and probes at once.
+        calls = []
+        probe = SimpleNamespace(
+            returncode=CW.GATE_REFUSED, stdout="", stderr="x " + CW.GATE_REFUSED_LINE
+        )
+
+        def runner(*argv, **kwargs):
+            calls.append(argv)
+            return probe
+
+        router = self.router(route_runner=runner)
+        router.clock = lambda: 1770000000.0
+        router.config["mac_ssh"] = "first-mac"
+        self.assertEqual(router.route_check()[0], 200)
+        router.config["mac_ssh"] = "second-mac"
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(len(calls), 2)
+
     def test_the_answer_does_not_wait_for_the_delivery(self) -> None:
         release = threading.Event()
 
@@ -4868,15 +4990,19 @@ class Remote(RemoteBase):
         self.assertEqual((code, answer["delivery"]["outcome"]), (0, "sent"))
         spy.assert_called_once()
 
-    def test_a_router_from_before_the_envelope_keeps_working(self) -> None:
-        # What a router not yet updated sends and reads:  it has no target and looks for a flat answer.
+    def test_a_router_from_before_the_envelope_is_refused(self) -> None:
+        # AFC-836:  `_deliver_legacy` is gone (what came before #1778's envelope skipped the
+        # Mac's registry recheck), so a request with no target cannot deliver:  it ends at the
+        # envelope's own checks, with nothing run and no registry read.
         request = {"session_id": SID_A, "wake": WR.asdict(self.w)}
-        self.registry.rows = []  # no generation to recheck, so the registry is not asked
-        with mock.patch.object(CW, "deliver_local", return_value=WR.Delivery("sent", "socket")) as spy:
+        with mock.patch.object(CW, "deliver_local") as spy:
             code, answer = self.run_main(request)
-        self.assertEqual(code, 0)
-        self.assertEqual((answer["outcome"], answer["route"]), ("sent", "socket"))
-        self.assertEqual(spy.call_args.args[2], SID_A)
+        self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
+        # The envelope reads the ids that are there:  the wake it carries is there, while the
+        # session id and generation the request never names come back blank.
+        self.assertEqual((answer["wake_id"], answer["session_id"], answer["generation"]),
+                         (self.w.wake_id, "", None))
+        spy.assert_not_called()
         self.assertEqual(self.registry.calls, [])
 
     def test_an_unknown_platform_is_refused_and_nothing_is_imported(self) -> None:
@@ -5226,9 +5352,18 @@ class Remote(RemoteBase):
         self.assertEqual((code, answer["delivery"]["outcome"]), (0, "sent"))
         spy.assert_called_once()
 
-    def test_a_bad_request_from_an_old_router_gets_a_flat_refusal(self) -> None:
-        code, answer = self.run_main({"session_id": SID_A, "wake": {"wake_id": "../x"}})
-        self.assertEqual((code, answer["code"]), (2, "bad-request"))
+    def test_a_request_from_an_old_router_gets_an_envelope_shaped_refusal(self) -> None:
+        # AFC-836:  the pre-envelope shape is gone.  `_deliver_legacy` was removed when #1778 had
+        # every router on the envelope (PR 2290 merged), and such a request now fails the envelope
+        # checks and is refused as a bad request, with nothing run and no registry read.
+        with mock.patch.object(CW, "deliver_local") as spy:
+            code, answer = self.run_main({"session_id": SID_A, "wake": {"wake_id": "../x"}})
+        self.assertEqual((code, answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                         (2, "refused", "bad-request"))
+        self.assertEqual((answer["wake_id"], answer["session_id"], answer["generation"]),
+                         ("", "", None))
+        spy.assert_not_called()
+        self.assertEqual(self.registry.calls, [])
 
 
 # A platform whose chat ids are not bare UUIDs, shaped as ZCode's are:  `sess_` plus a UUID.
@@ -5463,24 +5598,147 @@ class Gate(RemoteBase):
             self.assertEqual(self.gate(delivery)[0], 0)
         spy.assert_called_once()
 
+    def test_simple_chat_dispatches_the_key_line_verb(self) -> None:
+        # AFC-836:  `wake-key-line` prints the installable authorized_keys line for this
+        # checkout, and never runs ssh.
+        script = Path(CW.__file__).resolve().parents[1] / "simple-chat"
+        done = subprocess.run(
+            [sys.executable, str(script), "wake-key-line", "--from", "mac-host"],
+            env={"HOME": self.tmp, "PATH": os.environ.get("PATH", "")},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, CW.router_key_line("mac-host") + "\n")
+
+    def run_gate_probe(self, answer):
+        """One `gate_check` against a fake ssh answering `answer` (returncode, stdout, stderr)."""
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append((argv, kwargs))
+            code, out, err = answer
+            return SimpleNamespace(returncode=code, stdout=out, stderr=err)
+
+        return CW.gate_check("mac-host", runner=runner), calls
+
+    def test_the_check_reads_the_gate_refusal_as_gated(self) -> None:
+        (found, calls), = [self.run_gate_probe((CW.GATE_REFUSED, "", "gated " + CW.GATE_REFUSED_LINE))]
+        self.assertEqual(found, {"answer": CW.CHECK_GATED, "exit": CW.GATE_REFUSED})
+        argv, kwargs = calls[0]
+        self.assertEqual(argv[-1], CW.GATE_PROBE_COMMAND)
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_the_check_reads_the_probe_marker_as_unrestricted(self) -> None:
+        (found, calls), = [self.run_gate_probe((0, "  " + CW.GATE_PROBE + "  \n", ""))]
+        self.assertEqual(found, {"answer": CW.CHECK_UNRESTRICTED, "exit": 0})
+        self.assertEqual(calls[0][0][-1], CW.GATE_PROBE_COMMAND)
+
+    def test_the_check_distinguishes_a_refusal_without_the_gate_line(self) -> None:
+        found, _ = self.run_gate_probe((CW.GATE_REFUSED, "", ""))
+        self.assertEqual(found, {"answer": CW.CHECK_OTHER_COMMAND, "exit": CW.GATE_REFUSED})
+        found, _ = self.run_gate_probe((CW.SSH_UNREACHABLE, "", ""))
+        self.assertEqual(found, {"answer": CW.CHECK_UNREACHABLE, "exit": CW.SSH_UNREACHABLE})
+
+    def test_the_check_reads_a_key_the_far_side_would_not_take(self) -> None:
+        found, _ = self.run_gate_probe(
+            (CW.SSH_UNREACHABLE, "", "user@host: Permission denied (publickey).")
+        )
+        self.assertEqual(found, {"answer": CW.CHECK_KEY_REFUSED, "exit": CW.SSH_UNREACHABLE})
+
+    def test_the_check_maps_a_timeout_an_unmapped_exit_and_a_crash(self) -> None:
+        def timed_out(argv, **kwargs):
+            raise subprocess.TimeoutExpired("ssh", 14)
+
+        def crashed(argv, **kwargs):
+            raise OSError("no ssh here")
+
+        for label, probe, want in (
+            ("a timeout", timed_out, {"answer": CW.CHECK_UNREACHABLE, "exit": None}),
+            ("a runner that cannot run", crashed, {"answer": CW.CHECK_FAILED, "exit": None}),
+        ):
+            with self.subTest(label):
+                self.assertEqual(CW.gate_check("mac-host", runner=probe), want)
+        self.assertEqual(
+            self.run_gate_probe((3, "", "bye"))[0], {"answer": CW.CHECK_FAILED, "exit": 3}
+        )
+
+    def test_the_check_never_asks_a_destination_the_route_would_not_take(self) -> None:
+        for dest in ("", None, 7, "two words", "-starts-with-a-dash", "a/slash"):
+            with self.subTest(dest=repr(dest)):
+                calls = []
+
+                def runner(argv, **kwargs):
+                    calls.append(argv)
+                    raise AssertionError("no ssh is ever made")
+
+                self.assertEqual(
+                    CW.gate_check(dest, runner=runner),
+                    {"answer": CW.CHECK_NO_DESTINATION, "exit": None},
+                )
+                self.assertEqual(calls, [])
+
+    def test_the_check_sends_by_the_routers_own_invocation(self) -> None:
+        # ... and so does every delivery:  one helper builds both invocations.  The harness
+        # records (argv, kwargs) pairs, so the check's argv matches the preflight's, and the
+        # delivery's matches too, except in its command.
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            return SimpleNamespace(
+                returncode=0, stdout=CW.GATE_PROBE + "\n", stderr=""
+            )
+
+        CW.gate_check("mac-host", runner=runner)
+        self.deliver_remote()
+        preflight, real = self.runs[0][0], self.runs[1][0]
+        self.assertEqual(
+            preflight[:-1], calls[0][:-1], "the check sends by the preflight's invocation"
+        )
+        self.assertEqual(
+            (preflight[-1], calls[0][-1]),
+            (CW.PREFLIGHT_COMMAND, CW.GATE_PROBE_COMMAND),
+        )
+        self.assertEqual(real[:-1], calls[0][:-1], "a delivery and the check differ only by command")
+        self.assertEqual(
+            (preflight[-1], real[-1]), (CW.PREFLIGHT_COMMAND, CW.REMOTE_COMMAND)
+        )
+
+    def test_the_gate_refused_line_says_this_gate(self) -> None:
+        self.assertIn(CW.GATE, CW.GATE_REFUSED_LINE)
+        code, _, err = self.gate("true; id")
+        self.assertEqual((code, err), (CW.GATE_REFUSED, CW.GATE_REFUSED_LINE))
+
+    def test_the_probe_command_is_not_one_the_router_sends(self) -> None:
+        # The check proves the key is gated, so what it sends must never be a real command.
+        self.assertNotEqual(CW.GATE_PROBE_COMMAND, CW.PREFLIGHT_COMMAND)
+        self.assertNotEqual(CW.GATE_PROBE_COMMAND, CW.REMOTE_COMMAND)
     def test_simple_chat_dispatches_the_gate(self) -> None:
         script = Path(CW.__file__).resolve().parents[1] / "simple-chat"
-        for command, want in (("true", 0), ("true; id", CW.GATE_REFUSED)):
-            with self.subTest(command=command):
-                env = {
-                    "HOME": self.tmp,
-                    "PATH": os.environ.get("PATH", ""),
-                    "SSH_ORIGINAL_COMMAND": command,
-                }
-                done = subprocess.run(
-                    [sys.executable, str(script), "wake-ssh-gate"],
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    timeout=60,
-                    check=False,
-                )
-                self.assertEqual(done.returncode, want, done.stderr)
+        for argv, want in (
+            (["wake-ssh-gate"], {"true": 0, "true; id": CW.GATE_REFUSED}),
+            (["wake-key-line"], {}),
+        ):
+            for command, want_code in want.items():
+                with self.subTest(argv=argv, command=command):
+                    env = {
+                        "HOME": self.tmp,
+                        "PATH": os.environ.get("PATH", ""),
+                        "SSH_ORIGINAL_COMMAND": command,
+                    }
+                    done = subprocess.run(
+                        [sys.executable, str(script), *argv],
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        timeout=60,
+                        check=False,
+                    )
+                    self.assertEqual(done.returncode, want_code, done.stderr)
 
 
 class Exclude(ClaudeBase):
@@ -5869,6 +6127,174 @@ class RegistryNotConfigured(Base):
     def test_serve_starts_without_it(self) -> None:
         # Infisical may be down at start:  the router starts and says so on /health instead.
         self.assertNotIn("registry API URL is not set", Path(WR.__file__).read_text())
+
+    def test_the_key_line_names_a_restricted_forced_command_to_the_gate(self) -> None:
+        # AFC-836:  the line the Mac's owner installs, which no installer writes.  `restrict`
+        # turns off a terminal, forwarding and the rest;  `from=` admits the router's host alone;
+        # `command=` is this checkout's own `simple-chat wake-ssh-gate`, named by absolute path.
+        line = CW.router_key_line("mac-host")
+        self.assertTrue(line.startswith('restrict,from="mac-host",command="'), line)
+        self.assertTrue(line.endswith('" <key-type> <public-key> wake-router'), line)
+        self.assertIn(
+            str(Path(CW.__file__).resolve().parents[1] / "simple-chat") + " " + CW.GATE, line
+        )
+        self.assertNotIn(".local/bin", line, "no home-relative path:  it names the checkout")
+
+    def test_the_key_line_matches_the_shape_a_gate_key_allows(self) -> None:
+        # AFC-836:  the source shapes a forced-command key's `from=` admits on both Mac routes
+        # that gate one key (the letter route's `parent-key-line` names one; this line admits a
+        # comma list for that same shape, checked per part, so each part stays inside it).
+        for source in ("203.0.113.7", "router-host", "*", "1.2.3.4", "mac"):
+            with self.subTest(source=source):
+                self.assertIn('from="%s"' % source, CW.router_key_line(source), source)
+                self.assertTrue(PL.KEY_FROM_RE.fullmatch(source) is not None, source)
+        for source in ("", "a b", "a,b c", "a,,b", 'x",command="id', "-oProxyCommand=id"):
+            with self.subTest(source=source):
+                self.assertIn('from="<server-ip>"', CW.router_key_line(source))
+
+    def test_the_key_line_placeholds_a_checkout_path_with_a_space(self) -> None:
+        # A space in the checkout path would word-split inside the forced
+        # command sshd runs:  the line names the placeholder instead.
+        with mock.patch.object(CW, "gate_script", lambda: "/tmp/with space/simple-chat"):
+            line = CW.router_key_line("mac-host")
+        self.assertIn('command="<absolute path of scripts/simple-chat> ', line)
+        self.assertNotIn("/tmp/with space", line)
+
+    def test_the_key_line_placeholds_a_path_with_shell_metacharacters(self) -> None:
+        # $ expansion, backtick or ; chaining inside the forced command would
+        # run on the Mac:  such a checkout path names the placeholder instead.
+        for script in ("/tmp/$HOME/simple-chat", "/tmp/`id`/simple-chat", "/tmp/a;id/simple-chat"):
+            with self.subTest(script=script):
+                with mock.patch.object(CW, "gate_script", lambda s=script: s):
+                    self.assertIn(
+                        'command="<absolute path of scripts/simple-chat> ',
+                        CW.router_key_line("mac-host"),
+                    )
+
+    def test_the_key_line_and_the_parents_gate_read_the_same_shape(self) -> None:
+        # platform-letter's `parent-key-line` and this key line each name ssh-safe sources:  one
+        # address alone fits both, and this line's comma lists keep every part inside it.
+        for source in ("203.0.113.7", "router-host", "*"):
+            with self.subTest(source=source):
+                self.assertTrue(CW._sources_ok(source), source)
+                self.assertTrue(PL.KEY_FROM_RE.fullmatch(source), source)
+        for source in ("host-one,host-two", "1.2.3.4,mac"):
+            with self.subTest(source=source):
+                self.assertTrue(CW._sources_ok(source), source)
+                self.assertTrue(
+                    all(PL.KEY_FROM_RE.fullmatch(part) for part in source.split(",")), source
+                )
+
+    def test_the_key_line_verb_prints_the_line_and_nothing_else(self) -> None:
+        out = io.StringIO()
+        self.assertEqual(CW.router_key_line_main([], out), 0)
+        self.assertEqual(out.getvalue(), CW.router_key_line() + "\n")
+        self.assertEqual(CW.router_key_line_main(["--from", "mac-host"], out), 0)
+        self.assertTrue(out.getvalue().endswith(CW.router_key_line("mac-host") + "\n"))
+        self.assertEqual(CW.router_key_line_main(["--from", "a b"], io.StringIO()), 2)
+        self.assertEqual(CW.router_key_line_main(["--from"], io.StringIO()), 2)
+        self.assertEqual(CW.router_key_line_main(["wake-key-line"], io.StringIO()), 2)
+
+    def test_the_last_answer_and_the_last_check_sit_beside_the_mac_route(self) -> None:
+        # AFC-836:  health carries what the Mac route last answered and the last gate check, as
+        # code words and counts.  Neither changes `healthy`, and nothing held back ever names the
+        # destination, a time or any of ssh's own text.
+        router = self.router()
+        router.env = self.router_env()
+        router.config["mac_ssh"] = "owner-mac-tailnet-alias"
+        seats = WR.Seats([router])
+        status, answer = seats.seat_health("CLAUDE")
+        self.assertEqual(status, 200)
+        self.assertNotIn("mac_route_answer", answer)
+        self.assertNotIn("mac_route_check", answer)
+        router._route_answered(WR.Delivery("sent", "ssh:socket"))
+        router._route_answered(WR.Delivery("sent", "ssh:socket"))
+        router._route_answered(WR.Delivery("failed", "ssh", code="ssh-preflight-timeout"))
+        status, answer = seats.seat_health("CLAUDE")
+        self.assertEqual(status, 200)
+        self.assertEqual(answer["mac_route_answer"], {"last": "unreachable", "in_a_row": 1})
+        # The delivery's route and code stay on the ledger side of the wire:  health is code words.
+        self.assertNotIn("ssh:socket", json.dumps(answer))
+        self.assertNotIn("ssh-preflight-timeout", json.dumps(answer))
+        self.assertNotIn("owner-mac-tailnet-alias", json.dumps(answer))
+        check = {"answer": "gated", "exit": 126}
+        router._route_check = {"answer": check["answer"], "at": "2026-11-25T03:00:00Z"}
+        status, answer = seats.seat_health("CLAUDE")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            answer["mac_route_check"], {"answer": "gated", "at": "2026-11-25T03:00:00Z"}
+        )
+
+    def test_a_delivery_that_did_not_go_by_the_route_changes_nothing(self) -> None:
+        # A refusal made before any ssh ran is no answer at all:  the route was never asked.
+        router = self.router()
+        router.env = self.router_env()
+        router.config["mac_ssh"] = "owner-mac-tailnet-alias"
+        router._route_answered(WR.Delivery("sent", "ssh:socket"))
+        before = seats_health(router)
+        for delivery in (
+            WR.Delivery("refused", "", code="no-ssh-destination"),
+            WR.Delivery("completed", "local", ack="confirmed"),
+            WR.Delivery("failed", "busy", code="session-locked"),
+        ):
+            router._route_answered(delivery)
+        self.assertEqual(seats_health(router), before)
+
+    def test_route_answer_reads_each_delivery_of_the_one_ssh_sender(self) -> None:
+        # AFC-836:  every Delivery the `_remote` sender in claude_wake.py can return, through
+        # `route_answer`.  A test drives each of the sender's paths (as the source comment says).
+        answered = WR.Delivery("sent", "ssh:socket")
+        cases = {
+            "a far-side answer": (answered, "answered"),
+            "the preflight timed out": (
+                WR.Delivery("unreachable", "ssh", code="ssh-preflight-timeout"),
+                "unreachable",
+            ),
+            "ssh would not take the key": (
+                WR.Delivery("unreachable", "ssh", code="ssh-unreachable"),
+                "unreachable",
+            ),
+            "the host dropped the connection": (
+                WR.Delivery("refused", "ssh", code="ssh-dropped"),
+                "unreachable",
+            ),
+            "ssh refused the invocation": (
+                WR.Delivery("failed", "ssh", code="ssh-preflight-exit-126"),
+                "refused",
+            ),
+            "a head that may have run": (
+                WR.Delivery("refused", "ssh", code="ssh-timeout"),
+                "no-answer",
+            ),
+            "an error from the runner": (
+                WR.Delivery("refused", "ssh", code="ssh-error-OSError"),
+                "no-answer",
+            ),
+            "an answer that cannot be read": (
+                WR.Delivery("refused", "ssh", code="remote-exit-3"),
+                "no-answer",
+            ),
+            "the Mac asks for an update": (
+                WR.Delivery("failed", "ssh", code="remote-needs-update"),
+                "failed",
+            ),
+            "a route the local host took": (
+                WR.Delivery("sent", "socket", code=""),
+                None,
+            ),
+            "a refusal that never asked it": (
+                WR.Delivery("refused", "", code="no-ssh-destination"),
+                None,
+            ),
+        }
+        for label, (delivery, want) in cases.items():
+            with self.subTest(label):
+                self.assertEqual(WR.route_answer(delivery), want)
+
+
+def seats_health(router: WR.Router) -> dict:
+    """One seat_health answer, for before/after comparisons."""
+    return WR.Seats([router]).seat_health("CLAUDE")[1]
 
 
 MAC_SIDS = tuple("d000000%d-0000-4000-8000-00000000000%d" % (n, n) for n in (1, 2, 3))

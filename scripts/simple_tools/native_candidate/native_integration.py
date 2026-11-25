@@ -14,8 +14,9 @@ from pathlib import Path
 
 from .native_custody import fresh as custody_fresh
 from .native_evidence import alert_id, persist
+from .native_routing import route
 from .native_store import reconcile
-from .zcode_native import NativeDelivery, digest
+from .zcode_native import NativeDelivery, compact_diagnostic, digest
 
 
 class Driver:
@@ -72,6 +73,16 @@ class Driver:
         return self(binding, wake_key, text, fresh=False, verify=verify)
 
     def transport(self, request):
+        # Derived routing selects only the existing protocol namespace. It never
+        # authorizes a session, freshness, generation or a second dispatch.
+        try:
+            routing, route_stamp = route(self.home, request["binding"])
+        except Exception:
+            return {
+                "ack": None,
+                "diagnostic": {"stage": "routing", "code": "routing-unavailable"},
+            }
+        request = {**request, "routing": routing}
         command = [self.node, str(Path(__file__).with_name("native_driver.cjs"))]
         child = subprocess.Popen(
             command,
@@ -104,8 +115,10 @@ class Driver:
                     line, buffer = buffer.split(b"\n", 1)
                     message = json.loads(line)
                     if "verify" in message:
-                        ok = message.get("binding") == request["binding"] and self.verify(
-                            request["binding"]
+                        ok = (
+                            message.get("binding") == request["binding"]
+                            and self.verify(request["binding"])
+                            and route(self.home, request["binding"]) == (routing, route_stamp)
                         )
                         child.stdin.write(
                             (json.dumps({"verify": message["verify"], "ok": ok}) + "\n").encode()
@@ -113,6 +126,14 @@ class Driver:
                         child.stdin.flush()
                     elif set(message) == {"result"} and isinstance(message["result"], dict):
                         return message["result"]
+                    elif (
+                        set(message) == {"error", "diagnostic"}
+                        and message["error"] == "native-driver-refused-or-uncertain"
+                    ):
+                        return {
+                            "ack": None,
+                            "diagnostic": compact_diagnostic(message["diagnostic"]),
+                        }
                     else:
                         raise ValueError("native-driver-unverified")
             raise TimeoutError()

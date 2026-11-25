@@ -288,6 +288,24 @@ The same designated registrar owns approved same-ID status changes.  This appen
 
 After verifying the sheet row, the Fleet-OPS metadata mirror may be synchronized from an owned Fleet-OPS lane with `node scripts/infisical-service-tokens/sync-from-sheet.mjs --write`.  Inspect the diff and confirm only the matching metadata changed.  The sheet remains the source of truth; never hand-edit the mirror as a substitute.
 
+## Check That Every Installed Token Has A Row
+
+The registry is only as good as the last mint, so the rule that every token gets a row by hand, every time, needs a check that can be run without the minting session.  `scripts/service_token_registry_check.mjs` compares the registry tab against the metadata sidecars the consumers keep beside their stored values, and reports every token that is installed but has no row.  It prints only token ids, names, projects and expiries, and it never reads a token value.
+
+On the host that can read the sheet (the Mac, through the shared Fleet-OPS client and the prebound `INFISICAL_TOKEN`):
+
+```sh
+node scripts/service_token_registry_check.mjs --fleet-ops-root "$(pwd -P)" --sidecar-dir "$HOME/.config/infisical"
+```
+
+On another host, print the inventory and hand it over:
+
+```sh
+node scripts/service_token_registry_check.mjs --sidecar-dir "$HOME/.config/infisical" --print-inventory > /tmp/service-token-inventory.json
+```
+
+Read that file with `--inventory` on the host that reads the sheet.  Exit 0 means every installed token has a row, exit 1 names the tokens that do not, and exit 3 means a read failed and nothing was concluded.  A gap is a defect to fix, not a task to defer:  register the row before the token is called done.
+
 ## Rotate, Revoke And Close Out
 
 Rotation is not a metadata edit.  Issue the replacement with the intended scope and the chosen finite or no-expiry lifetime, install it at every listed destination, verify its grant and store, and register the new metadata row.  Keep the old grant live until every actual consumer successfully reads through the replacement; source edits or a stored file alone are insufficient.  After the required owner authorization and consumer acceptance, revoke the old grant through the authorized user session, verify the result, then mark its registry row revoked.  An uncertain revoke result must be reconciled before any retry or revoked-status claim.  Never revoke or broaden a token based on a metadata row alone.

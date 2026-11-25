@@ -91,6 +91,7 @@ RECALL_MODULES = (
     "__init__",
     "contribute_guard",
     "core",
+    "credential_gate",
     "doctor",
     "fleet_bearer",
     "health",

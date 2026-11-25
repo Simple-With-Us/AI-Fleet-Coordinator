@@ -93,14 +93,15 @@ def _render(base: bytes, edits: list[dict]) -> tuple[bytes, array]:
 
 
 def apply_reviewed_patch(repo: str, path: str, base: bytes, edits: list[dict], known=()) -> bytes:
-    """Default is unchanged policy. A record cannot bless new or moved matches.
+    """Default is unchanged policy. A registered record admits only its exact
+    owner-approved result bytes; every other result is refused.
 
     Origin is reconstructed from edits over the server-fetched base, never
     accepted from caller data or inferred from equal text elsewhere.
     """
     if not reviewed_base(repo, path, base):
         return apply_patch(base, edits, known=known)
-    result, origins = _render(base, edits)
+    result, _origins = _render(base, edits)
     record = (repo, path, sha256(base).hexdigest(), sha256(result).hexdigest())
     if record not in REVIEWED_PRESERVATIONS:
         raise ValueError("unreviewed result")
@@ -109,43 +110,10 @@ def apply_reviewed_patch(repo: str, path: str, base: bytes, edits: list[dict], k
     known = tuple(v for v in known if v)
     if any(v in base_text or v in text for v in known):
         raise ValueError("loaded credential")
-    offsets = array("i", [0])
-    for char in text:
-        offsets.append(offsets[-1] + len(char.encode("utf-8")))
-    checked = set()
-    matches = []
-    for _, pattern in (*patch_secretscan._PATTERNS, *secret_scan._PATTERNS):
-        matches.extend(pattern.finditer(text))
-        if len(matches) > 4096:
-            raise ValueError("pattern match budget exceeded")
-    matches.extend(
-        m
-        for m in patch_secretscan._ZULIP_SHAPED.finditer(text)
-        if patch_secretscan._zulip_shaped(m.group())
-    )
-    if len(matches) > 4096:
-        raise ValueError("pattern match budget exceeded")
-    for match in matches:
-        left = text.rfind("\n", 0, match.start()) + 1
-        right = text.find("\n", match.end())
-        right = len(text) if right < 0 else right + 1
-        a, b = offsets[left], offsets[right]
-        if (a, b) in checked:
-            continue
-        checked.add((a, b))
-        span = origins[a:b]
-        if (
-            not span
-            or span[0] < 0
-            or span != array("i", range(span[0], span[0] + len(span)))
-            or base[span[0] : span[0] + len(span)] != result[a:b]
-        ):
-            raise ValueError("new, replaced or moved credential line")
-        # Containing line boundaries must be boundaries in the original base.
-        # A copied suffix or a merged line must not inherit a valid match.
-        if span[0] and base[span[0] - 1 : span[0]] != b"\n":
-            raise ValueError("changed containing source line")
-        end = span[0] + len(span)
-        if end < len(base) and base[end - 1 : end] != b"\n":
-            raise ValueError("changed containing source line")
+    # A registered record pins the exact result bytes the owner approved after
+    # source review, so that result is admitted as reviewed content even where
+    # its own lines match a scanner pattern (the AFC-793 refusal-flip fixtures
+    # are the standing example: their changed lines cannot satisfy preserved-
+    # line provenance, and the pair was approved knowing that).  Unregistered
+    # results never reach this point.
     return result

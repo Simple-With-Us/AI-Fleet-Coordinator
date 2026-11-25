@@ -126,6 +126,13 @@ MAC_SIMPLE_TOOLS = (
     # reaches the registry through it would fail.
     ("platform-letter", "platform-letter"),
 )
+# The host's own hook wrappers (AFC-564):  ~/.local/libexec/simple-tools-hooks/<command> is a script that sets the
+# registry settings every hook needs and then runs the runtime's script.  install.sh leaves it alone on purpose, so
+# the Mac's ~/.local/bin/platform-letter points here and not into the runtime:  the doctor has to know this path.
+MAC_HOOKS_DIR = HOME / ".local/libexec/simple-tools-hooks"
+# The path fragments that say which runtime a wrapper runs, whichever HOME it was installed under.
+RELEASE_PATH_FRAGMENT = ".local/share/fleet-cli/current"
+MANAGED_PATH_FRAGMENT = "lanes/_managed/fleet/simple-tools-runtime"
 MAC_FLEET_MODE_DOC = HOME / "apps/FLEET-MODE.md"
 AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
 # Coarse git pathspecs that bound the diff;  is_shipped() then applies the exact rules.
@@ -219,6 +226,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/__init__.py",
         "scripts/fleet_rag/contribute_guard.py",
         "scripts/fleet_rag/core.py",
+        "scripts/fleet_rag/credential_gate.py",
         "scripts/fleet_rag/doctor.py",
         "scripts/fleet_rag/fleet_bearer.py",
         "scripts/fleet_rag/health.py",
@@ -1508,11 +1516,12 @@ def check_commands(report: Report) -> None:
 
 
 def check_catalogs(report: Report, host: str | None = None) -> None:
-    base = RUNTIME / "current"
-    if not base.exists():
-        repo = find_repo("AI-Fleet-Coordinator")
-        base = repo if repo else base
-    human = (host or host_kind()) == "mac" and not str(base).startswith(str(RUNTIME))
+    host = host or host_kind()
+    # The tree this host runs:  the Mac's published runtime, the fleet-cli release, else a checkout.  A release
+    # checkout left on a Mac is the server's layout and never the Mac's source, so it is not judged here.
+    base = runtime_base(host_layout(host)) or (RUNTIME / "current")
+    repo = find_repo("AI-Fleet-Coordinator")
+    human = bool(repo) and base == repo
     for rel, required in CATALOGS:
         present = (base / rel).exists()
         status = "OK" if present else ("FAIL" if required else "WARN")
@@ -1525,10 +1534,68 @@ def check_catalogs(report: Report, host: str | None = None) -> None:
         )
 
 
-def runtime_base() -> Path | None:
-    """The tree whose files this host runs:  the fleet-cli release, else the Mac's published runtime,
-    else a checkout."""
-    for base in (RUNTIME / "current", MAC_RUNTIME):
+def mac_link_runs(link: Path, script: str) -> str | None:
+    """Which runtime this command runs:  "managed", "release", or None when it says nothing.
+
+    A link into a runtime says so by its target.  A wrapper script says so by its text:  the
+    server's wrappers exec current/<script>, and the Mac's own hook wrappers exec the managed
+    runtime's script.
+    """
+    try:
+        resolved = os.path.realpath(link)
+    except OSError:
+        return None
+    if resolved == os.path.realpath(MAC_RUNTIME / "scripts" / script):
+        return "managed"
+    if resolved == os.path.realpath(RUNTIME / "current" / "scripts" / script):
+        return "release"
+    try:
+        text = link.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if RELEASE_PATH_FRAGMENT in text and script in text:
+        return "release"
+    if MANAGED_PATH_FRAGMENT in text and script in text:
+        return "managed"
+    return None
+
+
+def mac_runtime_layout() -> str:
+    """ "managed" or "release":  the runtime layout this Mac runs.
+
+    The Mac's own fleet tool commands are the evidence:  they are what this host runs.  A
+    fleet-cli release checkout left on disk is the server's layout (retired on the Mac since
+    2026-10-19), so it never decides the branch:  the Mac is judged by the runtime it actually
+    uses, and the leftover earns a row of its own.
+    """
+    for command, script in MAC_SIMPLE_TOOLS:
+        layout = mac_link_runs(HOME / ".local/bin" / command, script)
+        if layout:
+            return layout
+    # No command says otherwise:  the managed runtime is the only runtime on this host when it is
+    # there at all, so the Mac is mac-style and its own link rows report anything broken.  A managed
+    # runtime published as a plain file copy has no .git, and its commands still point at it.
+    if (MAC_RUNTIME / ".git").exists():
+        return "managed"
+    return "release"
+
+
+def host_layout(host: str | None = None) -> str:
+    """The runtime layout this host runs:  "managed" (the Mac's published runtime) or "release"."""
+    host = host or host_kind()
+    return mac_runtime_layout() if host == "mac" else "release"
+
+
+def runtime_base(layout: str | None = None) -> Path | None:
+    """The tree whose files this host runs:  the Mac's published runtime, else the fleet-cli
+    release, else a checkout."""
+    layout = layout or host_layout()
+    order = (
+        (MAC_RUNTIME, RUNTIME / "current")
+        if layout == "managed"
+        else (RUNTIME / "current", MAC_RUNTIME)
+    )
+    for base in order:
         if base.exists():
             return base
     return find_repo("AI-Fleet-Coordinator")
@@ -2331,10 +2398,14 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
                     tool=command,
                 ),
             )
-        elif os.path.realpath(link) == os.path.realpath(target):
-            add_tool_row(
-                report, command, inherit_row(command, rt, f"{link} links into the runtime")
-            )
+        elif mac_link_runs(link, script) == "managed":
+            # The Mac's own hook wrapper (AFC-564:  ~/.local/libexec/simple-tools-hooks/platform-letter) sets the
+            # registry settings every hook needs and then runs the runtime's script, so it runs the runtime too.
+            if os.path.realpath(link) == os.path.realpath(target):
+                why = f"{link} links into the runtime"
+            else:
+                why = f"{link} runs the managed runtime through the host's hook wrapper"
+            add_tool_row(report, command, inherit_row(command, rt, why))
         else:
             why = f"{link} resolves to {os.path.realpath(link)}, not the managed runtime"
             add_tool_row(
@@ -3850,9 +3921,9 @@ def run(
     previous = read_json_file(report_path or (HOME / REPORT_RELATIVE))
     expected = read_tip(network, runner)
     updater = None
-    on_mac_runtime = (
-        host == "mac" and (MAC_RUNTIME / ".git").exists() and not (RUNTIME / "repo/.git").exists()
-    )
+    # The layout is what this host runs, decided by the host's own commands (OPS-1095):  a release checkout
+    # left on the Mac is the server's layout and never makes the Mac server-style.
+    on_mac_runtime = host_layout(host) == "managed"
     if on_mac_runtime:
         updater = check_mac_updater(report, runner, previous)
     if on_mac_runtime:
@@ -3861,6 +3932,21 @@ def run(
         rt = check_mac_runtime(report, runner, expected, updater, previous)
     else:
         rt = check_runtime(report, network, runner, expected, updater, previous)
+    if on_mac_runtime and (RUNTIME / "repo/.git").exists():
+        # A release checkout left on a Mac-style host:  the server's layout, retired here since 2026-10-19.
+        # It does not change how this host is judged, but it is stale state on the disk.
+        why = (
+            f"a fleet-cli release checkout sits at {RUNTIME / 'repo'};  this Mac runs the managed runtime, "
+            "so the checkout is unused"
+        )
+        report.add(
+            "runtime-layout:release-checkout",
+            "WARN",
+            why,
+            state="unknown",
+            category="fleet-tool",
+            reason=why,
+        )
     checkouts = check_checkouts(report, network, runner, host)
     check_commands(report)
     check_catalogs(report, host)

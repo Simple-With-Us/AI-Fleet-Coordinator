@@ -64,10 +64,12 @@ class ConflictDetection(unittest.TestCase):
     def test_new_head_or_base_is_distinct(self):
         first = detect.merge_conflict(REPO, 7, pull())[0]["event_id"]
         self.assertNotEqual(
-            first, detect.merge_conflict(REPO, 7, pull(base={"sha": "c" * 40}))[0]["event_id"]
+            first,
+            detect.merge_conflict(REPO, 7, pull(base={"sha": "c" * 40}))[0]["event_id"],
         )
         self.assertNotEqual(
-            first, detect.merge_conflict(REPO, 7, pull(head={"sha": "c" * 40}))[0]["event_id"]
+            first,
+            detect.merge_conflict(REPO, 7, pull(head={"sha": "c" * 40}))[0]["event_id"],
         )
 
 
@@ -111,7 +113,10 @@ class ConflictCycle(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self.make_service(
-                directory, [claimed_owner()], FakeRead(pr=pull(), reviews=[kody_review(11)]), router
+                directory,
+                [claimed_owner()],
+                FakeRead(pr=pull(), reviews=[kody_review(11)]),
+                router,
             )
             self.assertEqual(svc.cycle()["submitted"], 2)
             self.assertEqual(svc.store.cursor(REPO, 7)["review_id"], 11)
@@ -164,10 +169,10 @@ class ConflictMessage(unittest.TestCase):
 
             svc.message_poster = post
             self.assertEqual(svc.cycle()["submitted"], 1)
-            self.assertEqual(posted[0]["kind"], "merge_conflict")
+            self.assertEqual(posted[0]["kind"], "merge_blocked")
             self.assertEqual(router.submitted[0]["message_id"], 432)
             record = events.EventStore(svc.store._path).get(
-                REPO, 7, "merge_conflict", HEAD + ":" + BASE
+                REPO, 7, "merge_blocked", "mb" + HEAD + ":" + BASE + ":conflicts"
             )
             self.assertEqual(record["message_id"], 432)
 

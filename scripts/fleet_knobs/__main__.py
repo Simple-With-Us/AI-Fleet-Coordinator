@@ -89,9 +89,12 @@ def _status(args, out) -> int:
             # Asked for by name, like the values:  when this was read, and whether a write
             # could run here (the token's shape only, never its value).
             doc["checked_epoch"] = int(time.time())
+            if getattr(args, "muster", False):
+                doc["folders"] = rep.get("folders", {"/": knobs.folder_status("/")})
             doc["write_token"] = (
                 "present"
-                if setter.read_token(dict(os.environ), sys.platform, setter.run)
+                if not getattr(args, "muster", False)
+                and setter.read_token(dict(os.environ), sys.platform, setter.run)
                 else "missing"
             )
         doc["knobs"] = rows
@@ -118,6 +121,7 @@ def _get(args, out) -> int:
         sys.stderr.write(f"unknown knob {args.name}\n")
         return 2
     if spec.secret:
+        # The generic get command never returns a secret value.
         sys.stderr.write(f"{args.name} is a secret and is never printed\n")
         return 2
     k = knobs.resolve(args.name)
@@ -226,6 +230,7 @@ def main(argv: list[str] | None = None, out=None) -> int:
         action="store_true",
         help="with --json, also carry each NON-secret knob's value (Muster's Controls tab)",
     )
+    p.add_argument("--muster", action="store_true", help="use Muster's declared read-only bindings")
     p = sub.add_parser("get")
     p.add_argument("name")
     p.add_argument(
@@ -258,6 +263,13 @@ def main(argv: list[str] | None = None, out=None) -> int:
     p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.cmd == "status" and args.muster:
+            if not (args.json and args.values):
+                parser.error("--muster requires status --json --values")
+            from . import muster_reader
+
+            with knobs.independent_status(muster_reader.fetch_named):
+                return _status(args, out)
         return {
             "status": _status,
             "get": _get,

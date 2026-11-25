@@ -1580,6 +1580,11 @@ class RelayWorker:
         self.realm = zulip_realm
         self.own_email = own_email.lower()
         self.linear = linear
+        # Living-comment writes this worker has landed since it was built (AFC-833):
+        # the daemon's status reads them for its health block, so a panel can see the
+        # mirror is moving.  Adoptions are not creates:  the comment already existed.
+        self.comments_created = 0
+        self.comments_updated = 0
         self.ledger = ledger
         self.regex = regex
         self.clock = clock  # wall time, for the timestamps the ledger keeps
@@ -2803,6 +2808,7 @@ class RelayWorker:
             entry["pending"] = False  # a definite refusal: nothing landed
             raise
         entry["pending"] = False
+        self.comments_created += 1
 
     def _adopt_or_create(self, uuid: str, entry: dict[str, Any]) -> str:
         # A create may have landed while its answer was lost.  Look for the marker before
@@ -2820,6 +2826,7 @@ class RelayWorker:
             self.linear.update_comment(
                 entry["comment_id"], render_comment(entry, self.realm, self.byline)
             )
+            self.comments_updated += 1
             return "updated the"
         except (LinearNotFound, LinearRejected, LinearPermanentError) as exc:
             refusal = exc

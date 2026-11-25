@@ -26,6 +26,11 @@ MAX_BODY = 1024 * 1024
 MAX_PAGE_BODY = 8 * 1024 * 1024
 # Complete immutable tree proofs may exceed1MiB; never widen ordinary reads or compares.
 MAX_RECURSIVE_TREE_BODY = 2 * 1024 * 1024
+# Git Data blob reads back wf_file_patch base provenance for files the contents API
+# will not serve (over 1 MB):  bounded separately, like recursive trees, never widening
+# ordinary reads.  Covers a 2 MiB raw file (workflow_verbs.MAX_FILE_RAW, pinned by a
+# test) base64-encoded plus its JSON envelope.
+MAX_BLOB_BODY = 4 * 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
 # open_pr's read-back runs after the create already answered, inside the same caller wait.
@@ -306,16 +311,19 @@ def _retry_after_seconds(headers) -> int | None:
 # page, so ``per_page`` does not bound it and it keeps the plain bound.
 _COMPARE_ROUTE = re.compile(r"/repos/[^/?]+/[^/?]+/compare/")
 _RECURSIVE_TREE_ROUTE = re.compile(r"/repos/[^/?#]+/[^/?#]+/git/trees/[0-9a-f]{40}")
+_BLOB_ROUTE = re.compile(r"/repos/[^/?#]+/[^/?#]+/git/blobs/[0-9a-f]{40}")
 
 
 def response_limit(method: str, path: str) -> int:
-    """2MiB for exact immutable recursive trees,8MiB paged GETs, else1MiB.
+    """4MiB pinned Git Data blobs, 2MiB exact immutable recursive trees, 8MiB paged GETs, else1MiB.
 
     Paged means ``per_page`` is a key of the query after the first ``?``.  A file name that
     contains ``per_page=`` sits in the path (``?`` is quoted there), so it never widens a read.
     """
     if method == "GET":
         route, _, query = path.partition("?")
+        if not query and _BLOB_ROUTE.fullmatch(route):
+            return MAX_BLOB_BODY
         if query == "recursive=1" and _RECURSIVE_TREE_ROUTE.fullmatch(route):
             return MAX_RECURSIVE_TREE_BODY
         if not _COMPARE_ROUTE.match(route) and any(

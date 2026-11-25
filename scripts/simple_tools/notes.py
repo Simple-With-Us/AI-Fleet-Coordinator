@@ -1339,14 +1339,22 @@ def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str
         )
         if outcome.returncode == 0:
             receipt = json.loads(outcome.stdout)
+            if not isinstance(receipt, dict):
+                return {"state": "queued", "reason": "invalid-rag-child-receipt"}
             if receipt.get("verified") == 1:
                 return {"state": "receiver-verified"}
             if receipt.get("quarantined"):
                 return {"state": "failed", "reason": "rag-delivery-record-quarantined"}
+            if receipt.get("permanent"):
+                return {"state": "failed", "reason": "rag-delivery-permanent"}
+            if receipt.get("retryable"):
+                return {"state": "queued", "reason": "rag-delivery-retryable"}
+            if receipt.get("outcome-unknown"):
+                return {"state": "queued", "reason": "rag-delivery-outcome-unknown"}
     except subprocess.TimeoutExpired:
-        return {"state": "queued", "reason": "rag-delivery-timeout", "exit_code": 124}
+        return {"state": "queued", "reason": "rag-delivery-timeout", "exit_status": 124}
     except FileNotFoundError:
-        return {"state": "queued", "reason": "rag-delivery-executable-missing", "exit_code": 127}
+        return {"state": "queued", "reason": "rag-delivery-executable-missing", "exit_status": 127}
     except (OSError, subprocess.SubprocessError):
         pass
     except (ValueError, TypeError):
@@ -1369,7 +1377,7 @@ def retry_rag_outbox(env: Mapping[str, Any]) -> dict:
             record = json.loads(process.stdout)
             summary = {
                 name: int(record.get(name, 0))
-                for name in ("verified", "pending", "superseded", "quarantined")
+                for name in ("verified", "pending", "superseded", "quarantined", "item_failed", "retryable", "permanent", "outcome-unknown")
             }
             metadata = record.get("coding_metadata")
             if isinstance(metadata, dict):
@@ -1379,10 +1387,11 @@ def retry_rag_outbox(env: Mapping[str, Any]) -> dict:
                     if name in metadata and type(metadata[name]) in (bool, int)
                 }
             return summary
+        return {"failed": 1, "exit_status": process.returncode}
     except subprocess.TimeoutExpired:
-        return {"failed": 1, "exit_code": 124, "reason": "timeout"}
+        return {"failed": 1, "exit_status": 124, "reason": "timeout"}
     except FileNotFoundError:
-        return {"failed": 1, "exit_code": 127, "reason": "executable-missing"}
+        return {"failed": 1, "exit_status": 127, "reason": "executable-missing"}
     except Exception:
         pass
     return {"failed": 1}
