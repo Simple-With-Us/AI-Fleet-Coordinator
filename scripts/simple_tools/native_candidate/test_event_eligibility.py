@@ -3,6 +3,7 @@ import importlib
 import unittest
 
 # Existing package fixture loads source modules without changing installed adapters.
+import test_integration  # noqa: F401
 
 eligible = importlib.import_module("native_fixture_package.native_event_eligibility").eligible_event
 
