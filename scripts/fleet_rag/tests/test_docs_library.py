@@ -205,6 +205,11 @@ class LibraryTests(unittest.TestCase):
         (child/'manifest.json').write_text(json.dumps(manifest))
         self.assertEqual(self.read(),[])
         self.assertNotIn('source_aliases',self.document.extra)
+        for malformed in ('noslash', 'a/b/c', '/Clutch', 'Simple-With-Us/'):
+            manifest['owner_repo']=malformed
+            (child/'manifest.json').write_text(json.dumps(manifest))
+            self.assertEqual(self.read(),[], malformed)
+            self.assertNotIn('source_aliases',self.document.extra, malformed)
         manifest['owner_repo']='Simple-With-Us/Clutch'
         manifest['files']['documents/docs/current.md']['sha256']='0'*64
         (child/'manifest.json').write_text(json.dumps(manifest))

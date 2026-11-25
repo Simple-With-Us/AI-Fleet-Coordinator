@@ -117,6 +117,20 @@ class OutboxTests(unittest.TestCase):
             box.reconcile_coding(root=self.root,metadata_reader=mock.Mock(side_effect=RuntimeError('provider-outage')))
         self.assertEqual((self.root/'coding-metadata.json').read_text(),before)
 
+    def test_permanent_delivery_does_not_block_a_later_coding_update(self):
+        row={'id':'x-coredata://ABC/ICNote/p1','name':'Title','modified':'first','created':'original'}
+        box.reconcile_coding(root=self.root,metadata_reader=lambda:[row])
+        changed=box.reconcile_coding(root=self.root,metadata_reader=lambda:[{**row,'modified':'newer'}])
+        self.assertEqual(changed['queued'],1)
+        # Mark the queued record permanently failed, then change the note again.
+        queued_files=[p for p in self.root.glob('*.json') if p.name!='coding-metadata.json']
+        self.assertEqual(len(queued_files),1)
+        record=json.loads(queued_files[0].read_text())
+        record['delivery_state']='permanent'
+        queued_files[0].write_text(json.dumps(record))
+        again=box.reconcile_coding(root=self.root,metadata_reader=lambda:[{**row,'modified':'third'}])
+        self.assertEqual(again['queued'],1)
+
 
 class ReceiverTests(unittest.TestCase):
     setUp = OutboxTests.setUp
