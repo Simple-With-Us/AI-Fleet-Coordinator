@@ -173,7 +173,9 @@ class SeatPolicy:
 
     The per-seat action allowlist was retired 2026-11-25:  every implemented
     action works for every seat through its own bearer.  A seat row's legacy
-    "actions" list is informational only and is never consulted by authorize().
+    "actions" list is informational only, with one exception:  create_repo
+    mints a namespace-level token outside the seat mint ceiling, so it still
+    requires an explicit per-seat listing (see authorize()).
 
     Shape:
         {
@@ -896,6 +898,13 @@ class SeatPolicy:
             return "unknown seat"
         if action == "wf_pr_create":
             return "PR creation requires owner-only open_pr"
+        # create_repo is the one action still entitled per seat:  it mints a
+        # namespace-level token (organization_administration/administration
+        # writes) OUTSIDE the seat mint ceiling, so it is not an action the
+        # seat's own bearer can perform, and the retired allowlist stays in
+        # force for it alone.
+        if action == "create_repo" and action not in self._seats[seat]["actions"]:
+            return f"action {action!r} not allowed for this seat"
         if not self._repo_allowed(seat, repo):
             return f"repo {repo!r} not allowed for this seat"
         # One authorize is one dispatch:  the quota is charged here, once, before the idempotency gate, exactly as

@@ -57,6 +57,8 @@ class WorkflowPolicyTests(unittest.TestCase):
         for action in sorted(SeatPolicy.ALL_ACTIONS):
             if action == "wf_pr_create":
                 continue  # owner-only open_pr rule
+            if action == "create_repo":
+                continue  # still an explicit per-seat entitlement (namespace mint)
             with self.subTest(action=action):
                 self.assertIsNone(policy.authorize("swu-wise", action, "example/r"))
 

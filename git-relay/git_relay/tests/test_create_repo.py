@@ -186,17 +186,17 @@ class CreateRepoTests(unittest.TestCase):
         self.assertEqual(methods(script), ["GET", "POST"])
         self.assertEqual(len(minter.mints), 1)
 
-    def test_create_repo_needs_no_per_action_grant(self):
-        # The per-seat action allowlist is retired:  any seat may create_repo for
-        # an owner the relay's account allowlist names, through its own bearer.
-        script = Script([http(404), Body(201, repo_body())])
+    def test_deny_without_an_explicit_grant(self):
+        # create_repo keeps its per-seat entitlement after the action-allowlist
+        # retirement:  it mints namespace-admin tokens outside the seat ceiling.
+        script = Script([])
         status, body, script, minter, _audit = drive(
             script, {"repo": "Simple-With-Us/Widget"}, actions=("open_pr",)
         )
-        self.assertEqual(status, 200)
-        self.assertEqual(body["result"], "created")
-        self.assertEqual(methods(script), ["GET", "POST"])
-        self.assertEqual(len(minter.mints), 1)
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "action 'create_repo' not allowed for this seat")
+        self.assertEqual(script.requests, [])
+        self.assertEqual(minter.mints, [])
 
     def test_bad_owner_is_refused_before_github(self):
         script = Script([])
