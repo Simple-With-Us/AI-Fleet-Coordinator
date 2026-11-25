@@ -561,10 +561,20 @@ int main(void) {
         gl += big;
         giant[gl++] = '"';
         CHECK("oversize benign string scans clean", mp_credentials_present(giant, gl) == NULL);
-        memcpy(giant + gl - 7, "\\u00zz", 6);
-        CHECK("oversize malformed string refuses, wipe bounded",
-              mp_credentials_present(giant, gl) != NULL);
         free(giant);
+        /* A lexically valid string beyond even the file-argument bound refuses in
+         * decode;  the cleanup wipe must stay inside the static buffer. */
+        size_t huge = MP_MAX_FILE_ARGS + 2048;
+        unsigned char *over = malloc(huge + 64);
+        CHECK("huge string allocation", over != NULL);
+        size_t ol = 0;
+        over[ol++] = '"';
+        memset(over + ol, 'A', huge);
+        ol += huge;
+        over[ol++] = '"';
+        CHECK("over-bound valid string refuses, wipe bounded",
+              mp_credentials_present(over, ol) != NULL);
+        free(over);
     }
 
     /* PR 1630 review:  response-id equality when an escaped spelling near the key
