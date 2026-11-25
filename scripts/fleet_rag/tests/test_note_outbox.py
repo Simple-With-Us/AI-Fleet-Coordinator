@@ -117,6 +117,13 @@ class OutboxTests(unittest.TestCase):
             box.reconcile_coding(root=self.root,metadata_reader=mock.Mock(side_effect=RuntimeError('provider-outage')))
         self.assertEqual((self.root/'coding-metadata.json').read_text(),before)
 
+    def test_orphaned_cancel_temp_sentinels_are_cleaned_on_enqueue(self):
+        box.enqueue_id(document(name='p1').doc_id,root=self.root)
+        orphan=self.root/'cancelled-deadbeef.tmp-0123456789abcdef'
+        orphan.write_text('')
+        box.enqueue_id(document(name='p2').doc_id,root=self.root)
+        self.assertFalse(orphan.exists())
+
     def test_permanent_delivery_does_not_block_a_later_coding_update(self):
         row={'id':'x-coredata://ABC/ICNote/p1','name':'Title','modified':'first','created':'original'}
         box.reconcile_coding(root=self.root,metadata_reader=lambda:[row])
