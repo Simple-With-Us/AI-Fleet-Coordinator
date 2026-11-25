@@ -106,6 +106,57 @@ def outcome(record: Mapping[str, Any], reply: Mapping[str, Any] | None) -> dict:
     }
 
 
+def compact_diagnostic(value):
+    stages = {
+        "validate",
+        "verify",
+        "readiness",
+        "listen",
+        "routing",
+        "driver",
+        "helloConversationV4",
+        "initializeConversationV4",
+        "subscribeConversationV4",
+        "unsubscribeConversationV4",
+        "sendConversationCommandV4",
+        "queryConversationCommandsV4",
+    }
+    codes = {
+        "project.remote-project-required",
+        "project.host-mismatch",
+        "project.cwd-not-in-roots",
+        "project.session-lineage-invalid",
+        "project.remote-single-root-required",
+        "rpc-refused",
+        "rpc-timeout",
+        "readiness-timeout",
+        "binding-changed",
+        "session-not-ready",
+        "event-invalid",
+        "decode-refused",
+        "connection-closed",
+        "transport-error",
+        "readiness-changed",
+        "subscription-invalid",
+        "frame-binding",
+        "snapshot-binding-or-regression",
+        "snapshot-wire-binding",
+        "frame-assembly-refused",
+        "routing-unavailable",
+        "refused-or-uncertain",
+    }
+    if not isinstance(value, dict) or set(value) != {"stage", "code"}:
+        return {"stage": "driver", "code": "refused-or-uncertain"}
+    return {
+        "stage": value["stage"]
+        if isinstance(value["stage"], str) and value["stage"] in stages
+        else "driver",
+        "code": value["code"]
+        if isinstance(value["code"], str) and value["code"] in codes
+        else "refused-or-uncertain",
+    }
+
+
 def compact_ack(reply):
     if not isinstance(reply, Mapping):
         return None
@@ -293,6 +344,8 @@ class NativeDelivery:
                     return {"outcome": "unknown", "code": "native-query-unavailable"}
                 reply = response.get("ack") if isinstance(response, dict) else None
                 answer = outcome(old, reply)
+                if isinstance(response, dict) and "diagnostic" in response:
+                    answer["diagnostic"] = compact_diagnostic(response["diagnostic"])
                 old["receipt"] = answer
                 old["last_ack"] = compact_ack(reply)
                 _save(path, old, self.dirfd)
@@ -323,6 +376,8 @@ class NativeDelivery:
                 )
                 reply = response.get("ack") if isinstance(response, dict) else None
                 answer = outcome(record, reply)
+                if isinstance(response, dict) and "diagnostic" in response:
+                    answer["diagnostic"] = compact_diagnostic(response["diagnostic"])
             except Exception:
                 answer = {"outcome": "unknown", "code": "native-dispatch-uncertain"}
             record["phase"] = "dispatched"

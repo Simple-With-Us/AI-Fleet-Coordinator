@@ -17,6 +17,7 @@ const frame=(codec,h,b)=>{const body=codec.encode(h,b),out=Buffer.alloc(13+body.
 const parser=require('./native_codec.cjs').parser;
 const snapshotFixture=require('./snapshot_fixture.json');
 const binding={host:'server',local:true,session_id:'sess-fixture',workspace:'/fixture',generation:1};
+const routing={workspace_identity:'remote:fixture'};
 let count=0;async function one(mode){
  const calls=[];let boundClient,subscribed=false,sendCount=0,eventId,ordinal=0;
 
@@ -30,7 +31,7 @@ let count=0;async function one(mode){
  }
  const wss=new WebSocketServer({host:'127.0.0.1',port:0});await new Promise(r=>wss.once('listening',r));
  wss.on('connection',(ws,req)=>{assert.equal(req.headers.authorization,'Bearer x');ws.send(frame(c,[200]));ws.on('message',parser(c,(h,args)=>{
-  const name=h[3],p=args?.[0];if(h[0]===102){eventId=h[1];return}if(h[0]===103)return;calls.push(name);let body;
+  const name=h[3],p=args?.[0];if(h[0]===102){assert(!Array.isArray(args));assert.equal(args.workspacePath,binding.workspace);assert.equal(args.workspaceIdentity,routing.workspace_identity);eventId=h[1];return}if(h[0]===103)return;calls.push(name);if(['subscribeConversationV4','sendConversationCommandV4','queryConversationCommandsV4','unsubscribeConversationV4'].includes(name))assert.equal(p.workspaceIdentity,routing.workspace_identity);let body;
   if(name==='helloConversationV4')body={kind:'hello',protocolVersion:3,connectionId:'fixture-connection',serverTime:1,capabilities:{nativeDialogs:false,localTerminal:false,binaryFrames:true,compression:'none'},auth:{},deliveryProfile:'replayable',clientMode:mode==='badhello'?'bad':'web-remote-replayable'};
   if(name==='initializeConversationV4'){context.hello.parse(p);boundClient=p.clientId;body=mode==='badinit'?{ok:true}:undefined}
   if(name==='subscribeConversationV4'&&mode==='lostsubscribe')return ws.terminate();
@@ -51,7 +52,7 @@ let count=0;async function one(mode){
  }))});
  const rpc=rpcModule.connect({WebSocket,url:`ws://127.0.0.1:${wss.address().port}/ws`,token:'x',codec:c,frame,parser,timeoutMs:200});
  const action=['query','wrongquery'].includes(mode)?'query':'dispatch';
- const request={action,binding,command_id:'app-control-review-alerts-'+'a'.repeat(64),client_id:mode==='badclient'?'wrong':'review-alerts-router',text:'fixture'};
+ const request={action,binding,routing,command_id:'app-control-review-alerts-'+'a'.repeat(64),client_id:mode==='badclient'?'wrong':'review-alerts-router',text:'fixture'};
  let error,checks=0;
  try{await flow.run(request,rpc,async()=>{checks++;
    if(['readyfailed','readyinitializing','readyinvalid','readyepoch','readyabsent','readynull','readymalformed','readyduplicate','readyregress'].includes(mode)&&checks===3){
@@ -63,6 +64,7 @@ let count=0;async function one(mode){
    }
    return mode!=='stale'&&!(mode==='race'&&checks===3)})}catch(e){error=e}
  finally{for(const client of wss.clients)client.terminate();await new Promise(r=>wss.close(r))}
+ if(mode==='race')assert.equal(error.nativeStage,'verify');if(mode==='wrongack')assert.equal(error.nativeStage,'sendConversationCommandV4');if(mode==='readyinitializing')assert.equal(error.nativeStage,'verify');
  assert.equal(Boolean(error),!['ok','split','query','coldready','fragmented','unsubscribeclosed'].includes(mode));assert(sendCount<=1);if(['readyfailed','readyinitializing','readyinvalid','readyepoch','readyabsent','readynull','readymalformed','readyduplicate','readyregress'].includes(mode))assert.equal(sendCount,0);
  if(['ok','split','wrongack','race','coldready'].includes(mode))assert(calls.includes('unsubscribeConversationV4'));
  if(['lostsubscribe','malformedsubscribe'].includes(mode)){assert.equal(sendCount,0);assert(!calls.includes('unsubscribeConversationV4'))}
