@@ -876,6 +876,8 @@ class WorkflowPrElevation(unittest.TestCase):
         )
         with self.assertRaises(PreReadUnavailable):
             handle.run("wf_update_branch", args)
+
+
 class WorkflowRefMoveElevation(unittest.TestCase):
     """wf_branch_update mints workflows:write only when the audited move touches the dir."""
 

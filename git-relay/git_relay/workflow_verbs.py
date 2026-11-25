@@ -1452,9 +1452,7 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
         files = data.get("files") if isinstance(data, dict) else None
         touches = False
         if not isinstance(files, list):
-            touches = self._base_changes_touch_workflows_via_trees(
-                read, repo, head_sha, base_sha
-            )
+            touches = self._base_changes_touch_workflows_via_trees(read, repo, head_sha, base_sha)
         else:
             for row in files:
                 if not isinstance(row, dict):
