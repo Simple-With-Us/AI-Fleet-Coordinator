@@ -1,14 +1,11 @@
 import importlib.util
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 root = Path(__file__).parent
-spec = importlib.util.spec_from_file_location(
-    "diagnostic_native", root / "zcode_native.py"
-)
+spec = importlib.util.spec_from_file_location("diagnostic_native", root / "zcode_native.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
@@ -64,9 +61,7 @@ class Diagnostics(unittest.TestCase):
             try:
                 result = journal.deliver(binding, "wake", "fixture", fresh=True)
                 self.assertEqual(result["outcome"], "unknown")
-                self.assertEqual(
-                    result["diagnostic"]["code"], "project.remote-project-required"
-                )
+                self.assertEqual(result["diagnostic"]["code"], "project.remote-project-required")
                 stored = json.loads(next(Path(folder).glob("*.json")).read_text())
                 self.assertEqual(stored["receipt"]["diagnostic"], result["diagnostic"])
                 journal.deliver(binding, "wake", "fixture", fresh=True)

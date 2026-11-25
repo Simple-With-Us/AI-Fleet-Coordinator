@@ -60,9 +60,7 @@ def _save(path: Path, value: dict, dirfd: int) -> None:
     # Unique names leave crash debris harmless. Never delete a preexisting sibling,
     # and never infer whether dispatch happened from temporary-file presence.
     temp = path.name + "." + uuid.uuid4().hex + ".tmp"
-    fd = os.open(
-        temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dirfd
-    )
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dirfd)
     try:
         with os.fdopen(fd, "w") as f:
             f.write(canonical(value))
@@ -102,8 +100,7 @@ def outcome(record: Mapping[str, Any], reply: Mapping[str, Any] | None) -> dict:
         "code": "native-ack-"
         + (
             status
-            if status
-            in ("accepted", "duplicate", "rejected", "stale", "failed", "noop")
+            if status in ("accepted", "duplicate", "rejected", "stale", "failed", "noop")
             else "invalid"
         ),
     }
@@ -256,8 +253,7 @@ class NativeDelivery:
             and r.get("payload_sha256")
             == digest({"text": intent["text"], "requestedDelivery": "queue"})
             and command_id
-            == "app-control-review-alerts-"
-            + digest({"wake_key": intent.get("wake_key")})
+            == "app-control-review-alerts-" + digest({"wake_key": intent.get("wake_key")})
         )
 
     def deliver(self, binding: dict, wake_key: str, text: str, *, fresh: bool) -> dict:

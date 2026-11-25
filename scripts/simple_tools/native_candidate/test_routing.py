@@ -1,7 +1,5 @@
 import importlib.util
-import os
 import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -56,9 +54,7 @@ INSERT INTO project_roots VALUES ('project','/fixture');
         self.change(
             "UPDATE tasks SET host_id='local',workspace_key='/fixture',workspace_identity=NULL"
         )
-        self.assertEqual(
-            m.route(self.home, self.binding)[0], {"workspace_identity": None}
-        )
+        self.assertEqual(m.route(self.home, self.binding)[0], {"workspace_identity": None})
 
     def test_missing_duplicate_and_mismatched_routes_refuse(self):
         mutations = [
