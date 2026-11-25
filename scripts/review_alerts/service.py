@@ -108,6 +108,55 @@ def seat_for(slug: str, seat_map: dict) -> str:
     return seat_map.get(slug, "")
 
 
+def credential(env: dict, value_name: str, file_name: str) -> str:
+    """The credential for one consumer:  the loader-delivered environment value when present
+    (the sanctioned Infisical transport), otherwise the content of the named 0600 file.
+    Empty when neither is configured, so callers keep their existing missing-credential holds."""
+    direct = str(env.get(value_name) or "").strip()
+    if direct:
+        return direct
+    return _credential_from_file(str(env.get(file_name) or "").strip())
+
+
+def credential_loader(env: dict, value_name: str, file_name: str):
+    """A callable credential source for a client's per-request lambda.
+
+    The environment value is a fixed transport binding, so when present it is returned
+    directly;  otherwise the named file is re-read only when its mtime changes, so file
+    rotation needs no restart and no request pays file I/O when nothing changed."""
+    fixed = str(env.get(value_name) or "").strip()
+    if fixed:
+        return lambda: fixed
+    path = str(env.get(file_name) or "").strip()
+    cache = {"mtime": None, "value": ""}
+
+    def load():
+        if not path:
+            return ""
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except FileNotFoundError:
+            # Revocation by deletion fails closed:  a removed file is the operator
+            # taking the credential away, so the cached value must not outlive it.
+            cache["value"] = ""
+            cache["mtime"] = None
+            return ""
+        except OSError:
+            # A transient stat error is not revocation:  keep the last good value.
+            return cache["value"]
+        if cache["mtime"] != mtime:
+            fresh = _credential_from_file(path)
+            # A failed or empty read keeps the last good value and the old mtime, so the
+            # next call retries instead of serving an empty credential until the file
+            # changes again.  A credential file is never legitimately empty.
+            if fresh:
+                cache["value"] = fresh
+                cache["mtime"] = mtime
+        return cache["value"]
+
+    return load
+
+
 def _credential_from_file(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -125,6 +174,20 @@ RECEIPT_DEADLINE_S = 3600
 #: ambiguous):  each epoch mints a fresh wake id only after the prior wake
 #: record is certainly undelivered.
 MAX_EPOCHS = 5
+
+
+def source_identity(row):
+    # Only supported single-source kinds. Old ledger rows have no source_time and
+    # use ordinary delivery; no backfill is inferred from detection timestamps.
+    if row.get("kind") not in ("review_submitted", "review_completed"):
+        return None
+    instant = _instant(row.get("source_time"))
+    if instant is None:
+        return None
+    return {
+        **{k: row.get(k) for k in ("repo", "number", "kind", "event_id", "epoch")},
+        "source_epoch": instant.timestamp(),
+    }
 
 
 class AlertService:
@@ -339,6 +402,7 @@ class AlertService:
                     topic,
                     link,
                     message_id=base["message_id"],
+                    source_event=source_identity(base),
                 )
             except wakes.WakeRetryable:
                 # The wake may or may not have landed:  reconcile by receipt
@@ -440,7 +504,11 @@ class AlertService:
                         )
                     }
                     self._dispatch(
-                        owner or {}, event, "", counts, epoch=int(row.get("epoch") or 0) + 1
+                        owner or {},
+                        event,
+                        "",
+                        counts,
+                        epoch=int(row.get("epoch") or 0) + 1,
                     )
                     counts["redriven"] += 1
                 else:
@@ -508,7 +576,12 @@ class AlertService:
             self._finish(row, "held", "no-origin-claim")
             return
         head_note = "" if row.get("head_matches") else " (against an older head)"
-        topic = "%s#%s: %s%s" % (row["repo"], row["number"], row.get("summary") or "", head_note)
+        topic = "%s#%s: %s%s" % (
+            row["repo"],
+            row["number"],
+            row.get("summary") or "",
+            head_note,
+        )
         try:
             self.router.submit(
                 seat_for(str(owner.get("seat") or ""), self.seat_map),
@@ -520,6 +593,7 @@ class AlertService:
                 topic,
                 row.get("link") or "",
                 message_id=row["message_id"],
+                source_event=source_identity(row),
             )
         except wakes.WakeRetryable:
             return  # still unsettled;  next cycle reconciles
@@ -577,7 +651,15 @@ class AlertService:
             "pending": [
                 {
                     k: r.get(k)
-                    for k in ("repo", "number", "kind", "event_id", "epoch", "status", "ts")
+                    for k in (
+                        "repo",
+                        "number",
+                        "kind",
+                        "event_id",
+                        "epoch",
+                        "status",
+                        "ts",
+                    )
                 }
                 for r in self.store.pending()
             ],
@@ -601,16 +683,16 @@ def main(argv=None) -> int:
     owners_path = str(env.get("RA_OWNERS_PATH") or "").strip()
     state_dir = str(env.get("RA_STATE_DIR") or "").strip()
     selftest_seat = str(env.get("RA_SELFTEST_SEAT") or "").strip()
-    token_file = str(env.get("RA_SERVICE_TOKEN_FILE") or "").strip()
-    wake_key_file = str(env.get("RA_WAKE_KEY_FILE") or "").strip()
+    token = credential(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE")
+    wake_key = credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE")
     missing = [
         name
         for name, value in (
             ("RA_OWNERS_PATH", owners_path),
             ("RA_STATE_DIR", state_dir),
             ("RA_SELFTEST_SEAT", selftest_seat),
-            ("RA_SERVICE_TOKEN_FILE", token_file),
-            ("RA_WAKE_KEY_FILE", wake_key_file),
+            ("RA_SERVICE_TOKEN(_FILE)", token),
+            ("RA_WAKE_KEY(_FILE)", wake_key),
         )
         if not value
     ]
@@ -629,13 +711,13 @@ def main(argv=None) -> int:
 
     router = wakes.WakeClient(
         str(env.get("RA_ROUTER_URL") or "http://127.0.0.1:8794"),
-        lambda: _credential_from_file(wake_key_file),
+        credential_loader(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"),
     )
     # Rollout gate:  never send a real wake to a router without hold semantics.
     router.check_required_session_support(selftest_seat, probe_id=str(int(time.time())))
     gh = github_read.ServiceReadClient(
         str(env.get("RA_RELAY_URL") or "http://127.0.0.1:8471"),
-        lambda: _credential_from_file(token_file),
+        credential_loader(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"),
     )
     repos = {r.strip() for r in str(env.get("RA_REPOS") or "").split(",") if r.strip()}
     if not repos:
@@ -646,7 +728,13 @@ def main(argv=None) -> int:
         return 2
     store = events.EventStore(os.path.join(state_dir, "events.jsonl"))
     service = AlertService(
-        store, gh, router, owners_path, seat_map_from(env), repos=repos, gate_seat=selftest_seat
+        store,
+        gh,
+        router,
+        owners_path,
+        seat_map_from(env),
+        repos=repos,
+        gate_seat=selftest_seat,
     )
     if "--once" in argv:
         counts = service.cycle()

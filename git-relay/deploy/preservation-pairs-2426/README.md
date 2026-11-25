@@ -6,12 +6,14 @@ authorizes no execution; every step below is a separate owner-executed gate.
 
 The fixed transaction family preservation-pairs-2426 replaces only
 `git_relay/reviewed_preservation.py` from
-`f84708ceb6def508441af18770da5a91547c724ffda11e5e9d18a16b5455f132` (the
-image installed before this release, byte-identical to the pre-#2424
-`origin/main` blob) to
 `3f72088feb8e69b29431fb8811a4a29d3c0e5c51cbed947de34cecf2783323a3` (the
-reviewed module of main after #2513: the #2424 AFC-797 tuple, the AFC-793
-ingest pair, and the renewed recall pair in place of the retired Nov 21 one).
+image installed by the Nov 24, 2026 transaction, byte-identical to the
+`origin/main` blob after #2513) to
+`97cac773211630c55e8bf507b47cd6ee6b7c2167505721388c73ad3849437fb0` (the
+reviewed module carrying the exact-pair admission fix: a registered record
+admits its own owner-approved result bytes, which the AFC-793 recall pair
+requires).  The registry content is unchanged: the #2424 AFC-797 tuple, the
+AFC-793 ingest pair, and the renewed recall pair.
 No other module, policy, seat, Worker deployment or old transaction replay is
 included.
 
@@ -144,7 +146,7 @@ merging this PR.
    an automatic rollback before it is detected. `manifest.json` is
    exactly `{"config", "files", "runner", "unit"}` with the single row
    `{"root": "code", "name": "reviewed_preservation.py", "before":
-   f84708ce…, "after": 3f72088f…, "meta": {"uid": 0, "gid": 0, "mode": 420}}`
+   3f72088f…, "after": 97cac773…, "meta": {"uid": 0, "gid": 0, "mode": 420}}`
    (the code root is already the `git_relay` directory, so the row name is
    the bare module filename). `runner` is this root's runner path and `unit`
    is `git-relay-<name>.service`.
@@ -187,7 +189,7 @@ merging this PR.
    operator must additionally confirm afterward: the module imports in the
    running service, `sha256sum` of
    `/opt/git-relay/git-relay/git_relay/reviewed_preservation.py` equals
-   `3f72088f…`, `/healthz` still answers 200, and a rejection still refuses
+   `97cac773…`, `/healthz` still answers 200, and a rejection still refuses
    unapproved pairs (an unreviewed credential-shaped patch on an admitted
    path is still refused by the normal route). Then remove the proof bearer
    from the root that ran and from every root staged for a retry.
@@ -213,6 +215,6 @@ with the module (the unit test pins the first relationship):
   execution time ("reviewed preservation module candidate drift");
 - a change to a pinned engine module refreshes its `MODULES` entry (as #2504
   did after #2440);
-- once this release is installed, the installed image is `3f72088f…`: a later
+- once this release is installed, the installed image is `97cac773…`: a later
   release of the module starts from that as its BEFORE, in this directory or
   a successor prepared for it.

@@ -25,7 +25,10 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
     # Called only by separately reviewed installed builder selection. Never mutate
     # live global config or make all platform delivery native.
     expected = {"target", "workspace", "epoch", "expires"}
-    if not isinstance(spec, dict) or set(spec) != expected:
+    if not isinstance(spec, dict) or set(spec) not in (
+        expected,
+        expected | {"qualification_generation", "source_boundary"},
+    ):
         raise ValueError("qualification-spec")
     local_config = {**config, "native_delivery_review_only": False}
     kwargs = {}
@@ -106,6 +109,14 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
         notification,
         unknown,
         custody,
+        **(
+            {
+                "qualification_generation": spec["qualification_generation"],
+                "source_boundary": spec["source_boundary"],
+            }
+            if "qualification_generation" in spec
+            else {}
+        ),
     )
 
     def deliver(target, head):

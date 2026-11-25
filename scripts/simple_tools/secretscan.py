@@ -379,6 +379,11 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         "upgrade-reviewed-hub.py",
         "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
     ): frozenset({("assigned secret", 8115, 8143, 8123, 8143)}),
+    (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "scripts/mcp-servers/test_native_origin_capture.py",
+        "a9c9dbb7f15cc0bb160a4bbb78c906bfd7ec70f2d84c2ab9b2e92645f22242b6",
+    ): frozenset({("assigned secret", 9436, 9471, 9446, 9471)}),
 }
 
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
