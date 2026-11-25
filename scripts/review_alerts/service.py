@@ -134,7 +134,14 @@ def credential_loader(env: dict, value_name: str, file_name: str):
             return ""
         try:
             mtime = os.stat(path).st_mtime_ns
+        except FileNotFoundError:
+            # Revocation by deletion fails closed:  a removed file is the operator
+            # taking the credential away, so the cached value must not outlive it.
+            cache["value"] = ""
+            cache["mtime"] = None
+            return ""
         except OSError:
+            # A transient stat error is not revocation:  keep the last good value.
             return cache["value"]
         if cache["mtime"] != mtime:
             fresh = _credential_from_file(path)

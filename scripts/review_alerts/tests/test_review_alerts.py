@@ -636,6 +636,21 @@ class CredentialResolution(unittest.TestCase):
             os.utime(path, ns=(stamp2, stamp2))
             self.assertEqual(load(), "recovered-" + "b" * 30)
 
+    def test_a_deleted_credential_file_fails_closed_and_can_recover(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "relay.key"
+            path.write_text("good-" + "a" * 36)
+            load = service.credential_loader(
+                {"RA_SERVICE_TOKEN_FILE": str(path)}, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"
+            )
+            self.assertEqual(load(), "good-" + "a" * 36)
+            # Revocation by deletion:  the cached value must not outlive the file.
+            path.unlink()
+            self.assertEqual(load(), "")
+            # Re-provisioning recovers without a restart.
+            path.write_text("new-" + "b" * 37)
+            self.assertEqual(load(), "new-" + "b" * 37)
+
     def test_the_operator_loop_holds_when_neither_credential_source_has_a_value(self):
         held = []
         svc = ServiceCycleTests._service(
