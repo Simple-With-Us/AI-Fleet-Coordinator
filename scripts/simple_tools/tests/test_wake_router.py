@@ -3303,7 +3303,8 @@ class Http(Base):
         # time is said.  Its delivery-time counterpart stays absent until a delivery answers.
         self.assertEqual(status, 200)
         self.assertEqual(
-            health["mac_route_check"], {"answer": "gated", "at": "2026-02-02T02:40:00Z"}
+            health["mac_route_check"],
+            {"answer": "gated", "at": "2026-02-02T02:40:00Z", "exit": 126},
         )
         self.assertNotIn("mac_route_answer", health)
         self.assertEqual(
@@ -3373,6 +3374,26 @@ class Http(Base):
         self.assertEqual(router.route_check()[0], 200)
         self.assertEqual(len(calls), 1)
         now[0] += WR.ROUTE_CHECK_DEBOUNCE_S + 1
+        self.assertEqual(router.route_check()[0], 200)
+        self.assertEqual(len(calls), 2)
+
+    def test_a_route_check_for_a_new_destination_probes_again(self) -> None:
+        # The debounce serves the probed destination's answer only:  a new
+        # mac_ssh destination is a new question and probes at once.
+        calls = []
+        probe = SimpleNamespace(
+            returncode=CW.GATE_REFUSED, stdout="", stderr="x " + CW.GATE_REFUSED_LINE
+        )
+
+        def runner(*argv, **kwargs):
+            calls.append(argv)
+            return probe
+
+        router = self.router(route_runner=runner)
+        router.clock = lambda: 1770000000.0
+        router.config["mac_ssh"] = "first-mac"
+        self.assertEqual(router.route_check()[0], 200)
+        router.config["mac_ssh"] = "second-mac"
         self.assertEqual(router.route_check()[0], 200)
         self.assertEqual(len(calls), 2)
 
@@ -6138,6 +6159,17 @@ class RegistryNotConfigured(Base):
             line = CW.router_key_line("mac-host")
         self.assertIn('command="<absolute path of scripts/simple-chat> ', line)
         self.assertNotIn("/tmp/with space", line)
+
+    def test_the_key_line_placeholds_a_path_with_shell_metacharacters(self) -> None:
+        # $ expansion, backtick or ; chaining inside the forced command would
+        # run on the Mac:  such a checkout path names the placeholder instead.
+        for script in ("/tmp/$HOME/simple-chat", "/tmp/`id`/simple-chat", "/tmp/a;id/simple-chat"):
+            with self.subTest(script=script):
+                with mock.patch.object(CW, "gate_script", lambda s=script: s):
+                    self.assertIn(
+                        'command="<absolute path of scripts/simple-chat> ',
+                        CW.router_key_line("mac-host"),
+                    )
 
     def test_the_key_line_and_the_parents_gate_read_the_same_shape(self) -> None:
         # platform-letter's `parent-key-line` and this key line each name ssh-safe sources:  one

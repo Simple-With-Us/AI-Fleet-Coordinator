@@ -1291,9 +1291,10 @@ def router_key_line(source: str = "<server-ip>") -> str:
     address or host name, or several separated by commas.  One that would close the quote or open
     an option puts the placeholder back, and so does a checkout path that cannot be quoted."""
     script = gate_script()
-    if '"' in script or "\\" in script or " " in script or any(ord(c) < 32 for c in script):
-        # A space would word-split inside the forced command sshd runs, and a
-        # quote or backslash would break out of it:  the placeholder stands.
+    if not script or any(not (c.isalnum() or c in "/._-+@~") for c in script):
+        # Anything outside a plain path alphabet would word-split, expand or
+        # break out of the forced command sshd runs (space, quote, backslash,
+        # $, backtick, ; and the rest):  the placeholder stands.
         script = "<absolute path of scripts/simple-chat>"
     if source != "<server-ip>" and not _sources_ok(source):
         source = "<server-ip>"

@@ -1582,6 +1582,7 @@ class Router:
         self._route_check: dict[str, Any] | None = None
         self._route_check_stamp: float | None = None
         self._route_check_exit: int | None = None
+        self._route_check_dest: str | None = None
         self._route_checking = False
         self._route_runner = route_runner or subprocess.run
 
@@ -1664,10 +1665,15 @@ class Router:
             return {"last": self._route_last, "in_a_row": self._route_streak}
 
     def route_check_health(self) -> dict[str, Any]:
-        """The last gate check (`route_check`) in this process:  its answer and when it was made,
-        which is said because an operator asked for it, or {} before any."""
+        """The last gate check (`route_check`) in this process:  its answer, when it was made and
+        the gate's exit status, which is said because an operator asked for it, or {} before any."""
         with self._route_lock:
-            return dict(self._route_check) if self._route_check is not None else {}
+            if self._route_check is None:
+                return {}
+            health = dict(self._route_check)
+            if self._route_check_exit is not None:
+                health["exit"] = self._route_check_exit
+            return health
 
     def route_check(self) -> tuple[int, dict[str, Any]]:
         """Prove whether the Mac forces this router's key to its gate (AFC-836), by one ssh made
@@ -1681,12 +1687,14 @@ class Router:
         from . import claude_wake as CW  # imported here:  claude_wake imports this module
 
         answer: dict[str, Any] = {"seat": self.platform.seat, "mac_route": self.mac_route()}
+        dest = str(self.config.get("mac_ssh") or "").strip()
         with self._route_lock:
             if self._route_checking:
                 return 429, {**answer, "error": "a route check is already running"}
             if (
                 self._route_check is not None
                 and self._route_check_stamp is not None
+                and self._route_check_dest == dest
                 and self.clock() - self._route_check_stamp < ROUTE_CHECK_DEBOUNCE_S
             ):
                 return 200, {
@@ -1695,7 +1703,6 @@ class Router:
                 }
             self._route_checking = True
         try:
-            dest = str(self.config.get("mac_ssh") or "").strip()
             check = CW.gate_check(dest, runner=self._route_runner)
         finally:
             with self._route_lock:
@@ -1707,6 +1714,7 @@ class Router:
             self._route_check = kept
             self._route_check_stamp = self.clock()
             self._route_check_exit = check.get("exit")
+            self._route_check_dest = dest
         return 200, {**answer, "check": {**kept, "exit": check.get("exit")}}
 
     def other_seat_health(self) -> dict[str, Any]:
