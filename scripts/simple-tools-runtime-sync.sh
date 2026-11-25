@@ -1,19 +1,22 @@
 #!/bin/bash
 # simple-tools-runtime-sync.sh  --  keep the simple-tools runtime checkout on AFC origin/main.
 #
-# The always-on Zulip listener (com.jay.operator) and the `simple-chat` CLI run from a
+# Public-source updater approved by owner Nov 18, 2026.
+# The `simple-chat` CLI runs from a
 # dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
 #
 #   /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime     (detached worktree, locked)
 #
 # LaunchAgent com.jay.simple-tools-runtime-sync runs this every 120 seconds.  Each run:
-#   1. fetches origin (60 second cap);
+#   1. retrieves only the fixed approved public source (60 second caps), and only the change
+#      since the last run:  the stage is seeded with the objects this host already holds, so a
+#      run costs a delta instead of the whole history;
 #   2. if origin/main differs from the runtime HEAD AND the worktree has no tracked changes, checks out
 #      origin/main detached;
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
-#   4. if the change touched scripts/simple_tools/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
-#      or docs/protocols/simple-tools-partition.toml, kickstarts the listener so it loads the new code.
+#   4. records plugin refresh advice without restarting the retired Mac listener, and runs the
+#      unlettered-repair tick and the Mac GitOps drift report that the tracked copy carried.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
 # Pause:   touch ~/.simple-tools/runtime-sync.pause   (resume: rm it)
@@ -25,14 +28,12 @@
 set -u
 
 RUNTIME="${SIMPLE_TOOLS_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime}"
-LISTENER_LABEL="${SIMPLE_TOOLS_LISTENER_LABEL:-com.jay.operator}"
 STATE_DIR="$HOME/.simple-tools"
 LOCK_DIR="$STATE_DIR/runtime-sync.lock"
 PAUSE_FILE="$STATE_DIR/runtime-sync.pause"
 BAD_FILE="$STATE_DIR/runtime-sync.bad-sha"
 LOG="${SIMPLE_TOOLS_RUNTIME_SYNC_LOG:-$HOME/apps/logs/simple-tools-runtime-sync.log}"
 GIT_TIMEOUT=60
-RESTART_RE='^(scripts/simple_tools/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/simple-tools-partition\.toml$)'
 PLUGIN_RE='^(plugins/simple-chat/|\.claude-plugin/)'
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
@@ -42,9 +43,67 @@ log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %I:%M:%S%p')" "$*" >> "$LOG"; }
 # git with a hard time cap:  perl's alarm survives exec and kills a hung git.
 rgit() { perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" "$@"; }
 
+# Retrieve exactly one approved public repository/ref in an isolated bare repo.
+# Network Git sees no host Git config, credentials, SSH agent, hooks or proxy.
+# Import is local-only; runtime origin URL/config is not rewritten or consulted.
+fetch_public_runtime() (
+  local stage sha
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/runtime-public.XXXXXX")" || exit 1
+  trap 'rm -rf "$stage"' EXIT
+  mkdir "$stage/home" || exit 1
+  clean_git() {
+    env -i HOME="$stage/home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never \
+      perl -e 'alarm shift; exec @ARGV' 60 /usr/bin/git \
+      -c credential.helper= -c http.followRedirects=false \
+      -c protocol.allow=never -c protocol.https.allow=always \
+      -c core.hooksPath=/dev/null "$@"
+  }
+  clean_git init --bare -q "$stage/repo" || exit 1
+  # Seed the stage with the objects this host already holds:  a local copy, with no network and
+  # no origin configuration consulted, so the retrieval below carries the change since the last
+  # run instead of the whole history.  A fresh host has nothing to seed and fetches the history
+  # once, as it did before.
+  seed_local_objects() {
+    env -i HOME="$stage/home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never \
+      perl -e 'alarm shift; exec @ARGV' 60 /usr/bin/git \
+      -c credential.helper= -c http.followRedirects=false \
+      -c protocol.allow=never -c protocol.file.allow=always -c protocol.https.allow=always \
+      -c core.hooksPath=/dev/null \
+      -C "$stage/repo" fetch --no-tags --no-recurse-submodules -q "$RUNTIME" \
+      "$1":refs/heads/approved-main >/dev/null 2>&1
+  }
+  seed_local_objects +refs/remotes/origin/main || seed_local_objects +HEAD || true
+  clean_git -C "$stage/repo" fetch --no-tags --no-recurse-submodules -q \
+    https://github.com/Simple-With-Us/AI-Fleet-Coordinator.git \
+    +refs/heads/main:refs/heads/approved-main || exit 1
+  sha="$(clean_git -C "$stage/repo" rev-parse --verify refs/heads/approved-main^{commit})" || exit 1
+  case "$sha" in *[!0-9a-f]*|'') exit 1;; esac
+  [ "${#sha}" -eq 40 ] || exit 1
+  # This local object import cannot contact any remote; all submodule recursion
+  # is disabled. Explicit allow is scoped to the generated temporary file path.
+  env -i HOME="$stage/home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+    perl -e 'alarm shift; exec @ARGV' 60 /usr/bin/git \
+    -c core.hooksPath=/dev/null -c protocol.allow=never -c protocol.file.allow=always \
+    -C "$RUNTIME" fetch --no-tags --no-recurse-submodules -q "$stage/repo" \
+    +refs/heads/approved-main:refs/remotes/origin/main || exit 1
+  [ "$(rgit rev-parse refs/remotes/origin/main)" = "$sha" ]
+)
+
 main() {
   mkdir -p "$(dirname "$LOG")" "$STATE_DIR"
   [ -e "$PAUSE_FILE" ] && exit 0
+
+  # Explicit operator approval is required before enabling this fixed public-source
+  # mode. This is not a fallback when caller-authenticated simple-git refuses.
+  if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then
+    log "PUBLIC-SOURCE-NOT-APPROVED  updater transport adoption is held"
+    exit 0
+  fi
 
   # One run at a time.  A lock older than 10 minutes belongs to a dead run.
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -98,8 +157,8 @@ main() {
     exit 1
   fi
 
-  if ! rgit fetch -q origin; then
-    log "FETCH-FAILED  git fetch origin did not finish; will retry next run"
+  if ! fetch_public_runtime; then
+    log "FETCH-FAILED  fixed public-source retrieval failed; no credential fallback"
     exit 0
   fi
 
@@ -113,15 +172,28 @@ main() {
   fi
 
   # Tracked changes only:  __pycache__ and other untracked files are expected here.
-  if [ -n "$(rgit status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+  local tracked_status
+  tracked_status="$(rgit status --porcelain --untracked-files=no 2>/dev/null)" || {
+    log "STATUS-FAILED  cannot establish tracked cleanliness; left untouched"
+    exit 1
+  }
+  if [ -n "$tracked_status" ]; then
     log "SKIP-DIRTY  runtime worktree has tracked changes; not moving ${old:0:7} -> ${new:0:7} (left untouched)"
     exit 0
   fi
 
+  if ! rgit merge-base --is-ancestor "$old" "$new"; then
+    log "NON-FAST-FORWARD  main is not a descendant of the installed commit; left untouched"
+    exit 1
+  fi
   local changed
-  changed="$(rgit diff --name-only "$old" "$new" 2>/dev/null)"
+  changed="$(rgit diff --name-only "$old" "$new" 2>/dev/null)" || {
+    log "DIFF-FAILED  cannot establish changed paths; left untouched"
+    exit 1
+  }
 
-  if ! rgit checkout -q --detach origin/main; then
+  # Checkout the validated object, never a mutable remote-tracking name.
+  if ! rgit checkout -q --detach "$new"; then
     log "CHECKOUT-FAILED  ${old:0:7} -> ${new:0:7}; left as it was"
     exit 1
   fi
@@ -141,13 +213,9 @@ main() {
     log "PLUGIN-CHANGED  the Claude plugin source moved; refresh with: claude plugin marketplace update afc"
   fi
 
-  if printf '%s\n' "$changed" | grep -Eq "$RESTART_RE"; then
-    if launchctl kickstart -k "gui/$(id -u)/$LISTENER_LABEL" >/dev/null 2>&1; then
-      log "RESTARTED  $LISTENER_LABEL (listener code changed)"
-    else
-      log "RESTART-FAILED  launchctl kickstart -k $LISTENER_LABEL failed (is it loaded?)"
-    fi
-  fi
+  # The Mac listener is retired. Updating shared CLI code never loads,
+  # restarts or re-enables it. Hosted listener deployment has its own owner.
+
 }
 
 main "$@"
