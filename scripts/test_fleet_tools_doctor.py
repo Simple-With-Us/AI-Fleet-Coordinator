@@ -2397,7 +2397,6 @@ class MacLayoutTests(ReportAndRunTests):
         os.symlink(release, self.home / ".local/bin/simple-chat")
         self.assertEqual(doctor.mac_runtime_layout(), "release")
 
-
     def test_a_managed_runtime_without_a_git_directory_is_still_managed(self):
         # A managed runtime published as a plain file copy has no .git, and its commands still point
         # at it.  The commands are the evidence, so the copy is mac-style and not a release layout.
