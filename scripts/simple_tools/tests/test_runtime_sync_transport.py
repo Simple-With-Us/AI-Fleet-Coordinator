@@ -215,12 +215,12 @@ class RuntimeSyncTransportTests(unittest.TestCase):
         self.assertNotIn("fetch -q origin", text[approved:])
 
     def test_the_origin_transport_closes_every_prompt_path(self) -> None:
-        """A launchd run has no terminal, so every interactive path must be closed.
+        """A launchd run has no terminal, so every prompt must be closed.
 
-        Git's own prompt is one of several:  an SSH passphrase, an SSH host key and a
-        credential helper each ask on their own, and each one would hold the whole alarm
-        on every tick.  The guards live in the git wrapper, so every call is closed and
-        a later call site cannot drop one silently.
+        Git's own prompt is one of several:  an SSH passphrase, an SSH host key and a GCM
+        interaction each ask on their own, and each one would hold the whole alarm on
+        every tick.  The guards live in the git wrapper, so every call is closed and a
+        later call site cannot drop one silently.
         """
         text = SCRIPT.read_text(encoding="utf-8")
         wrapper = function_body(text, "rgit")
@@ -228,9 +228,21 @@ class RuntimeSyncTransportTests(unittest.TestCase):
             "GIT_TERMINAL_PROMPT=0",
             "GCM_INTERACTIVE=never",
             "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes'",
-            "-c credential.helper=",
         ):
             self.assertIn(guard, wrapper)
+
+    def test_the_origin_transport_keeps_the_host_credential_helper(self) -> None:
+        """A credential helper is how an origin that needs one authenticates.
+
+        Clearing it in the wrapper would make that fetch fail instead of updating, so the
+        helper is cleared in the isolated public-source path instead, where no host
+        credential is wanted at all.
+        """
+        text = SCRIPT.read_text(encoding="utf-8")
+        wrapper = function_body(text, "rgit")
+        self.assertNotIn("credential.helper", wrapper)
+        isolated = function_body(text, "fetch_public_runtime")
+        self.assertIn("-c credential.helper=", isolated)
 
     def test_the_approved_transport_reads_no_host_credential(self) -> None:
         """The approved transport sees no host Git config, no credential and no agent."""

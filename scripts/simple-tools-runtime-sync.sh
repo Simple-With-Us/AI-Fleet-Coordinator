@@ -38,15 +38,19 @@ export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %I:%M:%S%p')" "$*" >> "$LOG"; }
 
 # git with a hard time cap:  perl's alarm survives exec and kills a hung git.
-# Every interactive path is closed here as well.  A launchd run has no terminal to
-# answer a prompt on, and a prompt that waits holds the whole alarm on every tick.
-# Git's own prompt is only one of them:  an SSH passphrase, an SSH host key and a
-# credential helper each ask on their own, so the guards live in the wrapper and
-# cover every call instead of one call site.
+# Every prompt is closed here as well.  A launchd run has no terminal to answer a prompt
+# on, and a prompt that waits holds the whole alarm on every tick.  Git's own prompt is
+# only one of them:  an SSH passphrase, an SSH host key and a GCM interaction each ask on
+# their own, so the guards live in the wrapper and cover every call.
+#
+# The credential helper is not cleared here.  A credential helper is how an origin that
+# needs one authenticates, and clearing it would make that fetch fail instead of update.
+# The helper is cleared in the isolated public-source path instead, where no host
+# credential is wanted at all.
 rgit() {
   GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never \
   GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
-  perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" -c credential.helper= "$@"
+  perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" "$@"
 }
 
 # Retrieve exactly one approved public repository/ref in an isolated bare repo.
