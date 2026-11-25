@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+
 from review_alerts import events
 from review_alerts.tests import test_review_alerts as fixtures
 from review_alerts.tests.test_review_alerts import (
@@ -9,8 +10,8 @@ from review_alerts.tests.test_review_alerts import (
     REPO,
     FakeRead,
     FakeRouter,
-    claimed_owner,
     ci_run,
+    claimed_owner,
     pull,
     review,
 )
