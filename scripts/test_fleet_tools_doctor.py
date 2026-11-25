@@ -2398,6 +2398,18 @@ class MacLayoutTests(ReportAndRunTests):
         self.assertEqual(doctor.mac_runtime_layout(), "release")
 
 
+    def test_a_managed_runtime_without_a_git_directory_is_still_managed(self):
+        # A managed runtime published as a plain file copy has no .git, and its commands still point
+        # at it.  The commands are the evidence, so the copy is mac-style and not a release layout.
+        (self.rt_dir / "scripts").mkdir(parents=True, exist_ok=True)
+        self.command_link("simple-chat", "simple-chat", self.rt_dir / "scripts/simple-chat")
+        self.assertFalse((self.rt_dir / ".git").exists())
+        self.assertEqual(doctor.mac_runtime_layout(), "managed")
+        # With no command to answer and no managed runtime at all, the host runs the release layout.
+        (self.home / ".local/bin/simple-chat").unlink()
+        self.assertEqual(doctor.mac_runtime_layout(), "release")
+
+
 class ServerStatusTests(HomeCase):
     """The server's doctor carries the collector's report, and the Mac keeps it beside its own."""
 

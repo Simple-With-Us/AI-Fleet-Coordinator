@@ -1567,15 +1567,16 @@ def mac_runtime_layout() -> str:
     2026-10-19), so it never decides the branch:  the Mac is judged by the runtime it actually
     uses, and the leftover earns a row of its own.
     """
-    if not (MAC_RUNTIME / ".git").exists():
-        return "release"
     for command, script in MAC_SIMPLE_TOOLS:
         layout = mac_link_runs(HOME / ".local/bin" / command, script)
         if layout:
             return layout
-    # No command says otherwise:  the managed runtime is the only runtime on this host, so the Mac is
-    # mac-style and its own link rows report anything broken.
-    return "managed"
+    # No command says otherwise:  the managed runtime is the only runtime on this host when it is
+    # there at all, so the Mac is mac-style and its own link rows report anything broken.  A managed
+    # runtime published as a plain file copy has no .git, and its commands still point at it.
+    if (MAC_RUNTIME / ".git").exists():
+        return "managed"
+    return "release"
 
 
 def host_layout(host: str | None = None) -> str:
