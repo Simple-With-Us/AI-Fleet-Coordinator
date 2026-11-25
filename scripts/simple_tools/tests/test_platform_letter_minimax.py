@@ -127,10 +127,9 @@ class ArchiveFlagTests(StoreBase):
         self.assertEqual(PM.minimax_gone(env, frozenset({"m-0001"})), {"m-0001"})
 
 
-class GoneChatsTests(StoreBase):
-    """An archived chat releases its letter (AFC-855).  Archiving reaches no hook, so the MiniMax row names the
-    chats the store has archived (`minimax_gone`, from the store's own `archived` flag) and the library's gone
-    report, made on a chat's start, has the assigner close them.  Every other chat is left alone."""
+class GoneHarness(StoreBase):
+    """The harness the gone-report tests share:  a chat that holds a letter,  the reports the host makes,  and the
+    row the assigner holds for that chat."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -156,6 +155,15 @@ class GoneChatsTests(StoreBase):
     def row_state(self, sid: str, location: str = "mac") -> str:
         return self.row(sid, location)["state"]
 
+    def touch_note(self, sid: str, seconds: float) -> None:
+        """Make the note of a chat look as if the fleet addressed it that long ago."""
+        path = PL.note_path(self.env(), "MM", sid)
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        note["updated_at"] = time.time() - seconds
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
     @contextmanager
     def reports(self):
         """The body of every report-gone request the client makes while this is open."""
@@ -170,8 +178,15 @@ class GoneChatsTests(StoreBase):
         with mock.patch.object(registry_api, "_open", capture):
             yield seen
 
+
+class GoneChatsTests(GoneHarness):
+    """An archived chat releases its letter (AFC-855).  Archiving reaches no hook, so the MiniMax row names the
+    chats the store has archived (`minimax_gone`, from the store's own `archived` flag) and the library's gone
+    report, made on a chat's start, has the assigner close them.  Every other chat is left alone."""
+
     def test_a_start_reports_the_archived_chats_and_their_letters_are_freed(self) -> None:
         self.add("m-0001")
+        self.add("m-0002")
         self.begin("m-0001", now=self.t0)
         label = self.label("m-0001")
         self.assertEqual(self.row_state("m-0001"), "active")
@@ -186,17 +201,34 @@ class GoneChatsTests(StoreBase):
 
     def test_a_chat_that_was_not_archived_keeps_its_letter(self) -> None:
         self.add("m-0001")
+        self.add("m-0002")
         self.begin("m-0001", now=self.t0)
         with self.reports() as sent:
             self.begin("m-0002", now=self.due)
         self.assertEqual(sent, [])
         self.assertEqual(self.row_state("m-0001"), "active")
 
-    def test_a_chat_the_store_does_not_know_keeps_its_letter(self) -> None:
-        # A chat of another host's store, or one the store has not written yet:  any doubt keeps it.
-        self.begin("m-0001", now=self.t0)
+    def test_a_chat_the_store_does_not_know_is_gone_when_nobody_has_addressed_it(self) -> None:
+        # A chat that was deleted or pruned has no store row at all,  so the row the assigner holds for it
+        # must be closed,  or its letter can never be freed (AFC-894).
+        self.add("m-0002")
+        first = time.time() - 600  # the chat registers,  and its note is fresh
+        self.begin("m-0001", now=first)
+        self.touch_note("m-0001", 7200)  # and the fleet has not addressed it since
         with self.reports() as sent:
-            self.begin("m-0002", now=self.due)
+            self.begin("m-0002", now=first + PL.GONE_REPORT_SECONDS + 1)
+        self.assertEqual(sent, [{"platform": "minimax", "verified_host": "mac", "profile_scope": "default",
+                                 "native_session_ids": ["m-0001"]}])
+        self.assertEqual(self.row_state("m-0001"), "closed")
+
+    def test_a_chat_the_store_does_not_know_but_that_was_addressed_lately_is_kept(self) -> None:
+        # The store has not written the chat yet,  and the fleet addressed it a minute ago:  any doubt keeps it.
+        self.add("m-0002")
+        first = time.time() - 600
+        self.begin("m-0001", now=first)
+        self.touch_note("m-0001", 60)
+        with self.reports() as sent:
+            self.begin("m-0002", now=first + PL.GONE_REPORT_SECONDS + 1)
         self.assertEqual(sent, [])
         self.assertEqual(self.row_state("m-0001"), "active")
 
@@ -244,6 +276,299 @@ class GoneChatsTests(StoreBase):
             self.begin("m-0002", now=self.due)
         self.assertEqual(sent, [])
         self.assertEqual(self.row_state("m-0001"), "active")
+
+
+# --------------------------------------------------------------------------------------------
+# The app's own runs (AFC-894)
+# --------------------------------------------------------------------------------------------
+
+#: The runtime's own table with the columns that say what a session is.
+MACHINE_DDL = (
+    "CREATE TABLE local_runtime_sessions (session_id TEXT PRIMARY KEY, title TEXT, session_kind TEXT,"
+    " parent_session_id TEXT, archived INTEGER NOT NULL DEFAULT 0, status TEXT, created_at_ms INTEGER,"
+    " updated_at_ms INTEGER,"
+    " workspace_dir TEXT, project_workspace_dir TEXT, purpose TEXT)"
+)
+
+#: A BotFleet bot run works in a workspace of its own.
+BOTFLEET = "/Users/jay/.botfleet/workspaces/abc"
+#: The owner's own chat works in a project folder.
+OWNER = "/Users/jay/Code/AI-Fleet-Coordinator"
+
+
+class MachineRunBase(GoneHarness):
+    """A session store that says what a session is:  a BotFleet bot run,  the runtime's own work,  or the owner's
+    own chat."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        os.remove(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(MACHINE_DDL)
+        conn.close()
+
+    def add(
+        self,
+        sid: str,
+        *,
+        title: str = "",
+        kind: str = "conversation",
+        parent: str = "",
+        archived: bool = False,
+        status: str = "idle",
+        updated: float | None = None,
+        workspace: str = "",
+        project_workspace: str = "",
+        purpose: str = "",
+    ) -> None:
+        moment = time.time() if updated is None else updated
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO local_runtime_sessions (session_id, title, session_kind, parent_session_id,"
+                " archived, status, created_at_ms, updated_at_ms, workspace_dir, project_workspace_dir, purpose)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    sid,
+                    title,
+                    kind,
+                    parent or None,
+                    1 if archived else 0,
+                    status,
+                    int((moment - 3600) * 1000),
+                    int(moment * 1000),
+                    workspace,
+                    project_workspace,
+                    purpose,
+                ),
+            )
+        conn.close()
+
+    def update(self, sid: str, **fields: object) -> None:
+        names = {"workspace": "workspace_dir", "project_workspace": "project_workspace_dir"}
+        columns = [names.get(name, name) for name in fields]
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "UPDATE local_runtime_sessions SET %s WHERE session_id = ?"
+                % ", ".join("%s = ?" % name for name in columns),
+                (*fields.values(), sid),
+            )
+        conn.close()
+
+    def kind(self, sid: str) -> str:
+        return PM.minimax_kind({"session_id": sid}, self.env())
+
+
+class MachineRunTests(MachineRunBase):
+    """A machine run never takes a letter (AFC-894).  A BotFleet bot run and the runtime's own work are the app's
+    own runs,  and the fleet's rule is that only interactive chats take one."""
+
+    def test_a_botfleet_run_is_headless(self) -> None:
+        self.add("m-0001", workspace=BOTFLEET)
+        self.assertEqual(self.kind("m-0001"), "headless")
+
+    def test_the_owners_own_chat_is_a_chat(self) -> None:
+        self.add("m-0001", workspace=OWNER)
+        self.assertEqual(self.kind("m-0001"), "chat")
+
+    def test_the_runtimes_own_work_is_headless(self) -> None:
+        self.add("m-0001", workspace=OWNER, purpose="local-background-task:bg_abc")
+        self.add("m-0002", workspace=OWNER, purpose="cron:mavis:poll-pr-513")
+        self.add("m-0003", workspace=OWNER, purpose="local-task:turn_abc:call_01")
+        for sid in ("m-0001", "m-0002", "m-0003"):
+            self.assertEqual(self.kind(sid), "headless")
+
+    def test_a_store_that_does_not_say_what_a_session_is_leaves_the_chat_a_chat(self) -> None:
+        # A store from before the runtime wrote the columns says nothing at all,  and any doubt keeps the chat a
+        # chat:  a letter is never taken from a chat the store cannot describe.
+        os.remove(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(DDL)
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES ('m-0001', '', 'conversation', NULL, 0)"
+            )
+        conn.close()
+        self.assertEqual(self.kind("m-0001"), "chat")
+
+    def test_a_machine_run_never_gets_a_letter_in_the_hook(self) -> None:
+        self.add("m-0001", workspace=BOTFLEET)
+        out = self.run_hook(
+            PM.SPEC,
+            {"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+        )
+        self.assertEqual(out, "")
+        self.assertIsNone(self.fake.lookup("minimax", "mac", PL.SCOPE, "m-0001"))
+
+
+class OverRunTests(MachineRunBase):
+    """A machine run that is over frees the pair it held (AFC-894).  A pair held by a chat nobody addresses is a pair
+    the owner's own chats cannot have."""
+
+    def test_an_ended_machine_run_is_gone(self) -> None:
+        self.add("m-0001", status="aborted", workspace=BOTFLEET)
+        self.assertEqual(PM.over_sessions(self.env(), frozenset({"m-0001"})), {"m-0001"})
+
+    def test_a_machine_run_that_is_still_at_work_is_not_gone(self) -> None:
+        self.add("m-0001", status="started", workspace=BOTFLEET)
+        self.assertEqual(PM.over_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_a_machine_run_that_has_rested_for_a_fortnight_is_gone(self) -> None:
+        old = time.time() - PM.DEAD_QUIET_SECONDS - 60
+        recent = time.time() - PM.DEAD_QUIET_SECONDS + 3600
+        self.add("m-0001", status="idle", updated=old, workspace=BOTFLEET)
+        self.add("m-0002", status="idle", updated=recent, workspace=BOTFLEET)
+        self.assertEqual(PM.over_sessions(self.env(), frozenset({"m-0001", "m-0002"})), {"m-0001"})
+
+    def test_the_owners_own_chat_is_never_gone(self) -> None:
+        # An ended chat of the owner is his:  he archives it,  and the archive releases the pair (AFC-855).
+        self.add("m-0001", status="aborted", workspace=OWNER)
+        self.assertEqual(PM.over_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_the_gone_path_names_the_archived_and_the_over(self) -> None:
+        self.add("m-0001", archived=True, workspace=OWNER)
+        self.add("m-0002", status="aborted", workspace=BOTFLEET)
+        self.add("m-0003", workspace=OWNER)
+        ids = frozenset({"m-0001", "m-0002", "m-0003"})
+        self.assertEqual(PM.minimax_gone(self.env(), ids), {"m-0001", "m-0002"})
+
+    def test_a_store_that_cannot_be_read_names_nothing(self) -> None:
+        with open(self.store, "wb") as fh:
+            fh.write(b"this is not a session store" * 8)
+        self.assertEqual(PM.over_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_a_store_without_the_columns_names_nothing(self) -> None:
+        os.remove(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(DDL)
+            conn.execute(
+                "INSERT INTO local_runtime_sessions VALUES ('m-0001', '', 'conversation', NULL, 0)"
+            )
+        conn.close()
+        self.assertEqual(PM.over_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_nothing_about_the_store_can_fail_a_start(self) -> None:
+        # The chat holds a letter,  and the store turns out to be unreadable:  the report names nothing,  and the
+        # row the assigner holds stays as it was.
+        self.add("m-0001", workspace=OWNER)
+        self.add("m-0002", workspace=OWNER)
+        self.begin("m-0001", now=self.t0)
+        self.update("m-0001", status="aborted", workspace=BOTFLEET)
+        with mock.patch.object(PM, "over_sessions", side_effect=RuntimeError("the store changed")), \
+                self.reports() as sent:
+            self.begin("m-0002", now=self.due)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.row_state("m-0001"), "active")
+
+
+class AbsentChatTests(MachineRunBase):
+    """A lettered chat the store does not know at all,  and that nobody has addressed for an hour,  is gone
+    (AFC-894):  a chat that was deleted or pruned has no store row,  and the row the assigner holds for it must
+    be closed so its letter can be freed."""
+
+    def write_note(self, sid: str, seconds: float) -> None:
+        """The note of a chat,  as if the fleet addressed it that long ago."""
+        path = PL.note_path(self.env(), "MM", sid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "session_id": sid,
+                    "state": "open",
+                    "label": "AA",
+                    "platform": "minimax",
+                    "location": "mac",
+                    "updated_at": time.time() - seconds,
+                },
+                fh,
+            )
+
+    def test_a_chat_the_store_does_not_know_is_absent_when_nobody_has_addressed_it(self) -> None:
+        self.write_note("m-0001", 7200)
+        self.assertEqual(PM.absent_sessions(self.env(), frozenset({"m-0001"})), {"m-0001"})
+
+    def test_a_chat_the_store_does_not_know_but_that_was_addressed_lately_is_not_absent(self) -> None:
+        self.write_note("m-0001", 60)
+        self.assertEqual(PM.absent_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_a_chat_without_a_note_is_not_absent(self) -> None:
+        # Any doubt keeps the chat:  a note that cannot be read says nothing about its quiet time.
+        self.assertEqual(PM.absent_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_a_chat_the_store_knows_is_not_absent(self) -> None:
+        self.add("m-0001", workspace=OWNER)
+        self.write_note("m-0001", 7200)
+        self.assertEqual(PM.absent_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_a_store_that_cannot_be_read_names_nothing(self) -> None:
+        self.write_note("m-0001", 7200)
+        with open(self.store, "wb") as fh:
+            fh.write(b"this is not a session store" * 8)
+        self.assertEqual(PM.absent_sessions(self.env(), frozenset({"m-0001"})), set())
+
+
+class ReleaseReportTests(MachineRunBase):
+    """The report a chat's start makes frees the pair an ended machine run held (AFC-894)."""
+
+    def test_a_start_reports_an_ended_machine_run_and_its_letter_is_freed(self) -> None:
+        # The chat was a chat when the hook saw it,  and the store says now that it is a BotFleet run that is over.
+        self.add("m-0001", workspace=OWNER)
+        self.add("m-0002", workspace=OWNER)
+        self.begin("m-0001", now=self.t0)
+        label = self.label("m-0001")
+        self.assertTrue(label)
+        self.update("m-0001", status="aborted", workspace=BOTFLEET)
+        with self.reports() as sent:
+            self.begin("m-0002", now=self.due)
+        self.assertEqual(
+            sent,
+            [
+                {
+                    "platform": "minimax",
+                    "verified_host": "mac",
+                    "profile_scope": "default",
+                    "native_session_ids": ["m-0001"],
+                }
+            ],
+        )
+        self.assertEqual(self.row_state("m-0001"), "closed")
+        # The letter is free:  the registry no longer resolves it to any live chat.
+        self.assertFalse(
+            registry_api.call(self.env(), "resolve", {"platform": "minimax", "letter": label})["found"]
+        )
+
+    def test_a_machine_run_that_is_still_at_work_keeps_its_letter(self) -> None:
+        self.add("m-0001", workspace=OWNER)
+        self.add("m-0002", workspace=OWNER)
+        self.begin("m-0001", now=self.t0)
+        self.update("m-0001", status="started", workspace=BOTFLEET)
+        with self.reports() as sent:
+            self.begin("m-0002", now=self.due)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.row_state("m-0001"), "active")
+
+
+class RepairScanTests(MachineRunBase):
+    """The repair pass leaves the app's own runs alone (AFC-894):  a BotFleet run is not a chat the owner
+    addresses,  and it must not take the scan's room from the chats that are."""
+
+    def test_a_machine_run_is_not_named_by_the_scan(self) -> None:
+        self.add("m-0001", workspace=BOTFLEET, title="")
+        self.add("m-0002", workspace=OWNER, title="")
+        named = PM.minimax_unlettered_sessions(self.env())
+        self.assertIsNotNone(named)
+        self.assertNotIn("m-0001", named)
+        self.assertIn("m-0002", named)
+
+    def test_a_machine_run_whose_title_lost_its_letter_is_not_named_by_the_scan(self) -> None:
+        self.add("m-0001", workspace=BOTFLEET, title="New Chat")
+        self.add("m-0002", workspace=OWNER, title="New Chat")
+        named = PM.minimax_unlettered_sessions(self.env())
+        self.assertIsNotNone(named)
+        self.assertNotIn("m-0001", named)
 
 
 if __name__ == "__main__":  # pragma: no cover
