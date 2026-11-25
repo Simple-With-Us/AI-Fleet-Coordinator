@@ -501,9 +501,7 @@ class PrControls(unittest.TestCase):
                     }
                 return {
                     "data": {
-                        "repository": {
-                            "pullRequest": {"id": "PR_abc", "autoMergeRequest": None}
-                        }
+                        "repository": {"pullRequest": {"id": "PR_abc", "autoMergeRequest": None}}
                     }
                 }
 
@@ -517,8 +515,13 @@ class PrControls(unittest.TestCase):
         )
         for message, expected in cases:
             h = WorkflowVerbs(
-                Refusing(message), Policy(), "swu-wise", "private", "swu-wise",
-                "wf_automerge_enable", REPO,
+                Refusing(message),
+                Policy(),
+                "swu-wise",
+                "private",
+                "swu-wise",
+                "wf_automerge_enable",
+                REPO,
             )
             with self.assertRaises(Refused) as caught:
                 h.run("wf_automerge_enable", args)

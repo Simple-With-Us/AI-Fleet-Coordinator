@@ -116,6 +116,8 @@ def _auto_merge_refusal(message):
         if needle in lowered:
             return reason
     return None
+
+
 _NODE_ID = re.compile(r"[A-Za-z0-9_/=+-]{1,200}")
 
 
