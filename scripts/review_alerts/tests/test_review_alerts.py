@@ -849,6 +849,7 @@ class FakeRouter:
         link,
         *,
         message_id=0,
+        source_event=None,
     ):
         if self.fail_submit is not None:
             raise self.fail_submit
