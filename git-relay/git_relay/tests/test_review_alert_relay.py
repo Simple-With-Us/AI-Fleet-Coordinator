@@ -357,9 +357,7 @@ class ServiceReadTests(unittest.TestCase):
         # fixture seat may only open PRs, so its read is a policy denial.
         with tempfile.TemporaryDirectory() as directory:
             minter = FakeMinter()
-            relay = make_relay(
-                directory, Client(), minter=minter, service_repos=[ARGS["repo"]]
-            )
+            relay = make_relay(directory, Client(), minter=minter, service_repos=[ARGS["repo"]])
             status, _ = relay.handle(
                 ECHO_TOKEN, "service_read", {"repo": ARGS["repo"], "number": 1, "verb": "pull"}
             )
@@ -397,9 +395,7 @@ class ServiceReadTests(unittest.TestCase):
                 for line in (Path(directory) / "audit.jsonl").read_text().splitlines()
                 if line.strip()
             ]
-            self.assertTrue(
-                any(r.get("coverage") == "partial" for r in rows)
-            )
+            self.assertTrue(any(r.get("coverage") == "partial" for r in rows))
 
     def test_lane_reports_complete_coverage_without_gaps(self):
         # With a clean index and no pending fence the same lane answer
