@@ -382,16 +382,27 @@ def derive(
         )
 
     # 5. What keeps the current head from merging.  Keyed by the head and the blockers:  one
-    #    head alerts once per blocker set, and the store keeps a set from alerting twice.
+    #    head alerts once per blocker set, and the store keeps a set from alerting twice.  When
+    #    the PR body names its base, the base joins the identity:  a base-branch advance is a
+    #    NEW "you must update the PR" fact even on an unchanged head (the conflict pair
+    #    semantics this event carries over from the earlier conflict-only design).
     if current_head:
         blockers = merge_blockers(pull, reviews, check_runs, current_head, exclude=(review_actor,))
         if blockers:
+            base = str((pull or {}).get("base") or {})
+            base_sha = ""
+            if isinstance((pull or {}).get("base"), dict):
+                base_sha = str(pull["base"].get("sha") or "")
+            if re.fullmatch(r"[0-9a-f]{40}", base_sha):
+                identity = "mb%s:%s:%s" % (current_head, base_sha, "+".join(blockers))
+            else:
+                identity = "mb%s:%s" % (current_head, "+".join(blockers))
             events.append(
                 {
                     "repo": repo,
                     "number": number,
                     "kind": "merge_blocked",
-                    "event_id": "mb%s:%s" % (current_head, "+".join(blockers)),
+                    "event_id": identity,
                     "actor": "",
                     "head": current_head,
                     "current_head": current_head,

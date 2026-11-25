@@ -107,6 +107,16 @@ def seat_for(slug: str, seat_map: dict) -> str:
     return seat_map.get(slug, "")
 
 
+def credential(env: dict, value_name: str, file_name: str) -> str:
+    """The credential for one consumer:  the loader-delivered environment value when present
+    (the sanctioned Infisical transport), otherwise the content of the named 0600 file.
+    Empty when neither is configured, so callers keep their existing missing-credential holds."""
+    direct = str(env.get(value_name) or "").strip()
+    if direct:
+        return direct
+    return _credential_from_file(str(env.get(file_name) or "").strip())
+
+
 def _credential_from_file(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -600,16 +610,16 @@ def main(argv=None) -> int:
     owners_path = str(env.get("RA_OWNERS_PATH") or "").strip()
     state_dir = str(env.get("RA_STATE_DIR") or "").strip()
     selftest_seat = str(env.get("RA_SELFTEST_SEAT") or "").strip()
-    token_file = str(env.get("RA_SERVICE_TOKEN_FILE") or "").strip()
-    wake_key_file = str(env.get("RA_WAKE_KEY_FILE") or "").strip()
+    token = credential(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE")
+    wake_key = credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE")
     missing = [
         name
         for name, value in (
             ("RA_OWNERS_PATH", owners_path),
             ("RA_STATE_DIR", state_dir),
             ("RA_SELFTEST_SEAT", selftest_seat),
-            ("RA_SERVICE_TOKEN_FILE", token_file),
-            ("RA_WAKE_KEY_FILE", wake_key_file),
+            ("RA_SERVICE_TOKEN(_FILE)", token),
+            ("RA_WAKE_KEY(_FILE)", wake_key),
         )
         if not value
     ]
@@ -628,13 +638,13 @@ def main(argv=None) -> int:
 
     router = wakes.WakeClient(
         str(env.get("RA_ROUTER_URL") or "http://127.0.0.1:8794"),
-        lambda: _credential_from_file(wake_key_file),
+        lambda: wake_key,
     )
     # Rollout gate:  never send a real wake to a router without hold semantics.
     router.check_required_session_support(selftest_seat, probe_id=str(int(time.time())))
     gh = github_read.ServiceReadClient(
         str(env.get("RA_RELAY_URL") or "http://127.0.0.1:8471"),
-        lambda: _credential_from_file(token_file),
+        lambda: token,
     )
     repos = {r.strip() for r in str(env.get("RA_REPOS") or "").split(",") if r.strip()}
     if not repos:

@@ -72,11 +72,9 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
     if not callable(operator_send) or not callable(destination_for_origin):
         raise Held("review-service-message-callbacks-required")
     messenger = messages.OperatorMessages(operator_send, destination_for_origin)
-    token_file = env.get("RA_SERVICE_TOKEN_FILE", "")
-    wake_file = env.get("RA_WAKE_KEY_FILE", "")
-    if not service._credential_from_file(token_file) or not service._credential_from_file(
-        wake_file
-    ):
+    relay_read = service.credential(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE")
+    router_wake = service.credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE")
+    if not relay_read or not router_wake:
         raise Held("review-service-credential-missing")
 
     class StopAwareRead(github_read.ServiceReadClient):
@@ -87,7 +85,7 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
 
     reader = StopAwareRead(
         env.get("RA_RELAY_URL", "http://127.0.0.1:8471"),
-        lambda: service._credential_from_file(token_file),
+        lambda: relay_read,
     )
     receipts = ProtectedReceipts(reader, repos)
 
@@ -110,7 +108,7 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
 
     router = StopAwareRouter(
         env.get("RA_ROUTER_URL", "http://127.0.0.1:8794"),
-        lambda: service._credential_from_file(wake_file),
+        lambda: router_wake,
     )
     gate = str(env.get("RA_SELFTEST_SEAT") or "")
     if gate not in platforms:

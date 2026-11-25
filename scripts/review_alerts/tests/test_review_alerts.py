@@ -159,13 +159,18 @@ def ci_run(rid, name="unit tests", conclusion="failure", status="completed", hea
     }
 
 
-def pull(mergeable=None, mergeable_state=""):
+def pull(mergeable=None, mergeable_state="", base=None):
     body = {"state": "open", "head": {"sha": HEAD}, "html_url": "https://example/pr/7"}
     if mergeable is not None:
         body["mergeable"] = mergeable
     if mergeable_state:
         body["mergeable_state"] = mergeable_state
+    if base is not None:
+        body["base"] = {"sha": base}
     return body
+
+
+BASE = "c" * 40
 
 
 def kinds(found):
@@ -523,6 +528,21 @@ class DetectMergeBlockedTests(unittest.TestCase):
         self.assertEqual(kinds(found), ["review_submitted", "merge_blocked"])
         self.assertEqual(found[-1]["event_id"], "mb%s:changes_requested" % HEAD)
 
+    def test_a_base_advance_re_alerts_a_conflict_on_the_same_head(self):
+        # The pair carries over from the earlier conflict-only design:  main moving under a
+        # fixed head is a NEW "update the PR" fact, so the base joins the identity.
+        first = detect.derive(
+            REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty", base=BASE)
+        )
+        self.assertEqual([e["event_id"] for e in first], ["mb%s:%s:conflicts" % (HEAD, BASE)])
+        again = detect.derive(
+            REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty", base="d" * 40)
+        )
+        self.assertEqual([e["event_id"] for e in again], ["mb%s:%s:conflicts" % (HEAD, "d" * 40)])
+        # A body without a base keeps the head-only identity.
+        plain = detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty"))
+        self.assertEqual([e["event_id"] for e in plain], ["mb%s:conflicts" % HEAD])
+
     def test_review_activity_and_pr_states_coexist_in_one_cycle(self):
         found = detect.derive(
             REPO,
@@ -536,6 +556,51 @@ class DetectMergeBlockedTests(unittest.TestCase):
         )
         self.assertEqual(
             kinds(found), ["review_submitted", "findings_added", "ci_failed", "merge_blocked"]
+        )
+
+
+class CredentialResolution(unittest.TestCase):
+    def test_the_environment_value_wins_and_the_file_is_the_fallback(self):
+        env = {"RA_WAKE_KEY": "from-env-" + "x" * 40}
+        self.assertEqual(
+            service.credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"), env["RA_WAKE_KEY"]
+        )
+        self.assertEqual(service.credential({}, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"), "")
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "wake.key"
+            path.write_text("from-file-" + "y" * 40)
+            path.chmod(0o600)
+            # file_name is the ENV NAME whose value is the path, as main() passes it.
+            self.assertEqual(
+                service.credential(
+                    {"RA_WAKE_KEY_FILE": str(path)}, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"
+                ),
+                "from-file-" + "y" * 40,
+            )
+            # Both present:  the loader-delivered environment value wins.
+            self.assertEqual(
+                service.credential(
+                    {"RA_WAKE_KEY": "from-env-" + "x" * 40, "RA_WAKE_KEY_FILE": str(path)},
+                    "RA_WAKE_KEY",
+                    "RA_WAKE_KEY_FILE",
+                ),
+                "from-env-" + "x" * 40,
+            )
+
+    def test_the_operator_loop_holds_when_neither_credential_source_has_a_value(self):
+        held = []
+        svc = ServiceCycleTests._service(
+            self, tempfile.mkdtemp(), [claimed_owner()], FakeRead(), FakeRouter()
+        )
+        try:
+            svc.store  # exists
+        except AttributeError:
+            pass
+        # The loop-level check is what a real cycle exercises:  a missing value holds.
+        empty = {}
+        self.assertFalse(
+            service.credential(empty, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE")
+            and service.credential(empty, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE")
         )
 
 

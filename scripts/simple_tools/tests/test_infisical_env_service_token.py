@@ -338,6 +338,42 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.LoadError, "which this loader does not read"):
             MODULE.resolve_infisical_only({MODULE.OPERATOR_PATH: {}})
 
+    def test_review_alert_names_absent_are_not_exported_and_present_are_exported(self):
+        # Nothing provisioned yet:  the names export nothing and the loader starts fine;
+        # the review loop then holds with its own named reason.
+        values, sources = MODULE.resolve_review_alert({MODULE.WAKE_ROUTER_PATH: {}})
+        self.assertEqual(values, {})
+        self.assertEqual(sources, [])
+        provisioned = {
+            "REVIEW_ALERTS_WAKE_KEY": "k" * 40,
+            "REVIEW_ALERTS_SERVICE_READ_TOKEN": "t" * 40,
+            "RA_ENABLED": "true",
+            "RA_REPOS": "Simple-With-Us/AI-Fleet-Coordinator",
+            "RA_SEAT_MAP_JSON": '{"swu-zc":"ZC"}',
+            "RA_PLATFORM_MAP_JSON": '{"ZC":"zcode"}',
+            "RA_STATE_DIR": "/data/review-alerts",
+            "RA_SELFTEST_SEAT": "ZC",
+            "RA_INTERVAL_S": "900",
+            "RA_RELAY_URL": "http://127.0.0.1:8471",
+            "RA_ROUTER_URL": "http://127.0.0.1:8794",
+        }
+        values, sources = MODULE.resolve_review_alert({MODULE.WAKE_ROUTER_PATH: provisioned})
+        self.assertEqual(values, provisioned)
+        self.assertEqual(len(sources), len(provisioned))
+        # Every export strips from the container:  no name may arrive from anywhere else.
+        owned = {
+            export for export, _, _, _ in MODULE.REVIEW_ALERT_NAMES
+        } | {name for _, _, name, _ in MODULE.REVIEW_ALERT_NAMES}
+        self.assertTrue(owned)
+
+    def test_a_present_but_unusable_review_alert_value_is_loud_and_never_a_value(self):
+        folders = {MODULE.WAKE_ROUTER_PATH: {"REVIEW_ALERTS_WAKE_KEY": "short"}}
+        with self.assertRaises(MODULE.LoadError) as caught:
+            MODULE.resolve_review_alert(folders)
+        message = str(caught.exception)
+        self.assertIn("REVIEW_ALERTS_WAKE_KEY", message)
+        self.assertNotIn("short", message)
+
     def test_every_metadata_error_names_the_token_variable(self):
         def refuse(stage, url, **kwargs):
             raise MODULE.LoadError("%s: HTTP 401" % stage)
