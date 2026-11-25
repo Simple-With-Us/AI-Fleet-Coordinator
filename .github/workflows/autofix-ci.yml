@@ -179,8 +179,16 @@ jobs:
         if: steps.fallback_autofix.outcome == 'failure'
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          APP_FALLBACK: ${{ steps.app_commit.outputs.fallback }}
         run: |
           set -euo pipefail
+          # The App route deliberately runs this action when Ruff only changed workflow
+          # files, so those files fail instead of passing unnoticed.  That intentional
+          # failure is not the hosted service's bot-commit refusal and is never waived.
+          if [ "$APP_FALLBACK" = "true" ]; then
+            echo "::error::autofix-ci/action failed after the App route requested it for Ruff changes under .github/workflows; see its step above."
+            exit 1
+          fi
           head_name=$(git log -1 --format=%an "$HEAD_SHA")
           head_email=$(git log -1 --format=%ae "$HEAD_SHA")
           # The hosted service refuses heads whose recent commits are bot-authored
