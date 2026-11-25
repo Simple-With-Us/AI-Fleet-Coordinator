@@ -341,8 +341,8 @@ class RelayHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             relay, _ = self.open_pr(directory, Client())
             self.assertEqual(len(relay.pr_owners), 1)
-            # A denied call records audit only.
-            status, _ = relay.handle(ECHO_TOKEN, "merge_pr", {"repo": ARGS["repo"], "number": 1})
+            # A denied call (repo outside the seat's scope) records audit only.
+            status, _ = relay.handle(ECHO_TOKEN, "merge_pr", {"repo": "other/repo", "number": 1})
             self.assertEqual(status, 403)
             self.assertEqual(len(relay.pr_owners), 1)
 

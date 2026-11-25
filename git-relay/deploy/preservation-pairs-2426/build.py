@@ -5,6 +5,13 @@ must arrange separate review and qualified operator custody before activation.
 The live config.env and seats.json policy digests are execution-time
 observations: both are explicit required arguments, never hardcoded
 placeholders, and the build refuses to run without them.
+
+One root, one attempt. The engine keeps the supervisor journal of every attempt
+as audit evidence and refuses a root whose journal already exists
+(deploy_journal.Journal.arm), so a root admits exactly one attempt and a busy
+freeze can never be retried in place. `--name` gives a retry a root and unit of
+its own (`preservation-pairs-2426-a01`, `-a02`, ...); without it the build
+targets the original root. Nothing else differs between attempt roots.
 """
 
 import argparse
@@ -12,13 +19,15 @@ import ast
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 BEFORE = "f84708ceb6def508441af18770da5a91547c724ffda11e5e9d18a16b5455f132"
-AFTER = "65a92e57a31bdc984d3b9e7224b75ad899d64f0b754e92233e87315743e6eb77"
-ROOT = "/opt/git-relay/transactions/preservation-pairs-2426"
-UNIT = "git-relay-preservation-pairs-2426.service"
-PROOF_TEMPLATE = "9c3a676612c4e7d0bd966c0f2fe3ee0fae224f69453d09259a7076d5aea8f9b9"
+AFTER = "3f72088feb8e69b29431fb8811a4a29d3c0e5c51cbed947de34cecf2783323a3"
+DEFAULT_NAME = "preservation-pairs-2426"
+TRANSACTIONS = "/opt/git-relay/transactions"
+NAME = re.compile(r"preservation-pairs-2426(?:-a[0-9]{2,3})?")
+PROOF_TEMPLATE = "1a6aaa4d8e543cbbfaa36843cc1114d3a21193495621483da00539cdc440b0ec"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "536787ce91394b13e11620785d3a781aaac8ab8f38d5e7fa25757d82eba0d262",
@@ -39,6 +48,18 @@ def observed_digest(value, label):
     if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
         raise ValueError(label + " must be 64 lowercase hex characters")
     return value
+
+
+def transaction_name(value):
+    """(name, root, unit) for `--name`: the original root, or one numbered attempt root.
+
+    The name is the only thing an operator chooses, so it is held to the one
+    shape the engine's runner path and systemd unit rules both accept.
+    """
+    name = DEFAULT_NAME if value is None else value
+    if not isinstance(name, str) or NAME.fullmatch(name) is None:
+        raise ValueError("transaction name must be preservation-pairs-2426 or -aNN")
+    return name, TRANSACTIONS + "/" + name, "git-relay-" + name + ".service"
 
 
 def image(before, candidate):
@@ -100,17 +121,20 @@ def write_file(path, raw):
         stream.write(raw)
 
 
-def render_entry(template, raw_manifest, sources):
+def render_entry(template, raw_manifest, sources, root):
     module_hashes = {name: digest(raw) for name, raw in sources.items()}
     if not module_hashes:
         raise ValueError("runner module hashes are empty")
     manifest_placeholder = "MANIFEST_DIGEST_PLACEHOLDER"
     module_placeholder = "MODULE_HASHES = {}  # MODULE_HASHES_PLACEHOLDER"
-    for marker in (manifest_placeholder, module_placeholder):
+    root_placeholder = "ROOT_PATH_PLACEHOLDER"
+    for marker in (manifest_placeholder, module_placeholder, root_placeholder):
         if template.count(marker) != 1:
             raise ValueError("runner template placeholder drift")
-    entry = template.replace(manifest_placeholder, digest(raw_manifest)).replace(
-        module_placeholder, "MODULE_HASHES = " + repr(module_hashes)
+    entry = (
+        template.replace(manifest_placeholder, digest(raw_manifest))
+        .replace(module_placeholder, "MODULE_HASHES = " + repr(module_hashes))
+        .replace(root_placeholder, root)
     )
     if "PLACEHOLDER" in entry:
         raise ValueError("runner template placeholder remains")
@@ -141,13 +165,14 @@ def render_entry(template, raw_manifest, sources):
     if bindings != {
         "MANIFEST_DIGEST": digest(raw_manifest),
         "MODULE_HASHES": module_hashes,
-        "DIRECTORY": ROOT,
+        "DIRECTORY": root,
     }:
         raise ValueError("runner binding drift")
     return entry
 
 
-def build(repo, before, output, config, policy):
+def build(repo, before, output, config, policy, attempt=None):
+    _name, root, unit = transaction_name(attempt)
     here = Path(__file__).resolve().parent
     package = Path(repo) / "git-relay/git_relay"
     module = image(
@@ -155,15 +180,15 @@ def build(repo, before, output, config, policy):
         (package / "reviewed_preservation.py").read_bytes(),
     )
     sources = {}
-    for name, expected in MODULES.items():
-        raw = (package / name).read_bytes()
+    for filename, expected in MODULES.items():
+        raw = (package / filename).read_bytes()
         if digest(raw) != expected:
-            raise ValueError("finite recovery module drift: " + name)
-        if name == "deploy_runner.py":
+            raise ValueError("finite recovery module drift: " + filename)
+        if filename == "deploy_runner.py":
             if raw.count(b"git-relay-patch-1429.service") != 1:
                 raise ValueError("runner unit anchor drift")
-            raw = raw.replace(b"git-relay-patch-1429.service", UNIT.encode())
-        sources["git_relay/" + name] = raw
+            raw = raw.replace(b"git-relay-patch-1429.service", unit.encode())
+        sources["git_relay/" + filename] = raw
     proof = render_proof((here / "runtime_proof.py").read_bytes(), policy)
     sources["git_relay/deploy_proof.py"] = proof
     metadata = {"uid": 0, "gid": 0, "mode": 420}
@@ -178,11 +203,11 @@ def build(repo, before, output, config, policy):
                 "meta": metadata,
             },
         ],
-        "runner": ROOT + "/runner.py",
-        "unit": UNIT,
+        "runner": root + "/runner.py",
+        "unit": unit,
     }
     raw_manifest = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
-    entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources)
+    entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources, root)
     output = Path(output)
     output.mkdir(mode=0o700, exist_ok=False)
     for name, raw in sources.items():
@@ -201,6 +226,8 @@ def build(repo, before, output, config, policy):
         "runner": digest(entry.encode()),
         "proof": digest(proof),
         "images": [AFTER],
+        "root": root,
+        "unit": unit,
     }
 
 
@@ -219,7 +246,17 @@ if __name__ == "__main__":
         required=True,
         help="execution-time sha256 of the physical seats.json policy file (digest only)",
     )
+    parser.add_argument(
+        "--name",
+        help="attempt root: preservation-pairs-2426 (default) or preservation-pairs-2426-aNN; "
+        "a root admits one attempt, so every retry builds under a new name",
+    )
     args = parser.parse_args()
     config = observed_digest(args.config_sha256, "config digest")
     policy = observed_digest(args.policy_sha256, "policy digest")
-    print(json.dumps(build(args.repo, args.before, args.output, config, policy), sort_keys=True))
+    print(
+        json.dumps(
+            build(args.repo, args.before, args.output, config, policy, args.name),
+            sort_keys=True,
+        )
+    )

@@ -137,7 +137,7 @@ class CheckPages(unittest.TestCase):
 
 
 class CheckPageRelayBoundary(unittest.TestCase):
-    def relay(self, tmp, *, enabled=True, listed=True, checks=True):
+    def relay(self, tmp, *, enabled=True, checks=True):
         import json
         import os
 
@@ -149,7 +149,7 @@ class CheckPageRelayBoundary(unittest.TestCase):
         seats = {
             "swu-wise": {
                 "token": "w" * 32,
-                "actions": ["wf_check_runs_page", "wf_check_run_get"] if listed else ["wf_runs"],
+                "actions": ["wf_check_runs_page", "wf_check_run_get"],
                 "repos": [REPO],
                 "app_slug": "swu-wise",
                 "mint_permissions": perms,
@@ -163,16 +163,15 @@ class CheckPageRelayBoundary(unittest.TestCase):
             workflow_verbs_enabled=enabled,
         )
 
-    def test_disabled_unlisted_wrong_caller_repo_and_missing_ceiling_never_mint(self):
+    def test_disabled_wrong_caller_repo_and_missing_ceiling_never_mint(self):
         import tempfile
 
         for action in ("wf_check_runs_page", "wf_check_run_get"):
-            for case in ("disabled", "unlisted", "caller", "repo", "ceiling", "badargs"):
+            for case in ("disabled", "caller", "repo", "ceiling", "badargs"):
                 with self.subTest(action=action, case=case), tempfile.TemporaryDirectory() as tmp:
                     r = self.relay(
                         tmp,
                         enabled=case != "disabled",
-                        listed=case != "unlisted",
                         checks=case != "ceiling",
                     )
                     args = {"repo": "Other/Repo" if case == "repo" else REPO, "head_sha": SHA}

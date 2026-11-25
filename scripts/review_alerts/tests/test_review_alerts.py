@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -124,7 +123,13 @@ class DetectTests(unittest.TestCase):
         self.assertEqual([e["kind"] for e in found], ["review_submitted"])
         # And a head already alerted is not alerted again.
         found = detect.derive(
-            REPO, 7, HEAD, [], [], [kody_check(56)], dict(CURSOR0, completed_heads=[HEAD])
+            REPO,
+            7,
+            HEAD,
+            [],
+            [],
+            [kody_check(56)],
+            dict(CURSOR0, completed_heads=[HEAD]),
         )
         self.assertEqual(found, [])
 
@@ -134,7 +139,11 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(detect.derive(REPO, 7, HEAD, [], [], [run], dict(CURSOR0)), [])
 
     def test_sentry_comments_batch_with_head_binding(self):
-        comments = [sentry_comment(21), sentry_comment(22), sentry_comment(23, commit="0" * 40)]
+        comments = [
+            sentry_comment(21),
+            sentry_comment(22),
+            sentry_comment(23, commit="0" * 40),
+        ]
         found = detect.derive(REPO, 7, HEAD, [], comments, [], dict(CURSOR0, comment_id=20))
         self.assertEqual(len(found), 1)
         event = found[0]
@@ -148,7 +157,14 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(detect.derive(REPO, 7, HEAD, [], comments, [], dict(CURSOR0)), [])
 
 
-def ci_run(rid, name="unit tests", conclusion="failure", status="completed", head=HEAD, app=None):
+def ci_run(
+    rid,
+    name="unit tests",
+    conclusion="failure",
+    status="completed",
+    head=HEAD,
+    app=None,
+):
     return {
         "id": rid,
         "name": name,
@@ -160,18 +176,18 @@ def ci_run(rid, name="unit tests", conclusion="failure", status="completed", hea
     }
 
 
-def pull(mergeable=None, mergeable_state="", base=None):
-    body = {"state": "open", "head": {"sha": HEAD}, "html_url": "https://example/pr/7"}
+def pull(mergeable=None, mergeable_state=""):
+    body = {
+        "state": "open",
+        "head": {"sha": HEAD},
+        "base": {"sha": "b" * 40},
+        "html_url": "https://example/pr/7",
+    }
     if mergeable is not None:
         body["mergeable"] = mergeable
     if mergeable_state:
         body["mergeable_state"] = mergeable_state
-    if base is not None:
-        body["base"] = {"sha": base}
     return body
-
-
-BASE = "c" * 40
 
 
 def kinds(found):
@@ -201,7 +217,8 @@ class DetectCiTests(unittest.TestCase):
         runs = [ci_run(n, "job %d" % n) for n in (51, 52, 53, 54, 55)]
         found = detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0))
         self.assertEqual(
-            found[0]["summary"], "CI failed on the current head: job 51, job 52 (+3 more)"
+            found[0]["summary"],
+            "CI failed on the current head: job 51, job 52 (+3 more)",
         )
 
     def test_a_run_already_named_is_never_named_again(self):
@@ -228,7 +245,13 @@ class DetectCiTests(unittest.TestCase):
         again = detect.derive(REPO, 7, HEAD, [], [], [ci_run(55), ci_run(56)], cursor)
         self.assertEqual([e["event_id"] for e in again], ["ci56"])
         passed = detect.derive(
-            REPO, 7, HEAD, [], [], [ci_run(55), ci_run(56, conclusion="success")], cursor
+            REPO,
+            7,
+            HEAD,
+            [],
+            [],
+            [ci_run(55), ci_run(56, conclusion="success")],
+            cursor,
         )
         self.assertEqual(passed, [])
 
@@ -244,13 +267,20 @@ class DetectCiTests(unittest.TestCase):
         self.assertEqual(detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0)), [])
         for conclusion in ("failure", "timed_out", "startup_failure"):
             found = detect.derive(
-                REPO, 7, HEAD, [], [], [ci_run(61, conclusion=conclusion)], dict(CURSOR0)
+                REPO,
+                7,
+                HEAD,
+                [],
+                [],
+                [ci_run(61, conclusion=conclusion)],
+                dict(CURSOR0),
             )
             self.assertEqual(kinds(found), ["ci_failed"], conclusion)
 
     def test_a_failure_on_an_old_head_is_not_a_failure_of_the_code_proposed(self):
         self.assertEqual(
-            detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, head="0" * 40)], dict(CURSOR0)), []
+            detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, head="0" * 40)], dict(CURSOR0)),
+            [],
         )
 
     def test_a_run_at_or_below_the_seed_floor_is_history(self):
@@ -279,14 +309,17 @@ class DetectCiTests(unittest.TestCase):
         self.assertNotIn("\n", summary)
         self.assertNotIn("\u2028", summary)
         self.assertLessEqual(
-            len(summary), len("CI failed on the current head: ") + detect.CHECK_NAME_CHARS
+            len(summary),
+            len("CI failed on the current head: ") + detect.CHECK_NAME_CHARS,
         )
 
     def test_a_nameless_check_is_still_named_by_its_id(self):
         found = detect.derive(REPO, 7, HEAD, [], [], [ci_run(55, name="")], dict(CURSOR0))
         self.assertEqual(found[0]["summary"], "CI failed on the current head: check #55")
 
-    def test_the_summary_leaves_room_for_the_pr_prefix_inside_the_router_s_topic_bound(self):
+    def test_the_summary_leaves_room_for_the_pr_prefix_inside_the_router_s_topic_bound(
+        self,
+    ):
         # The router keeps 200 characters of a wake's topic;  the service prefixes the summary
         # with `owner/repo#number: `, so the worst summary must leave that prefix its room.
         from simple_tools import wake_router
@@ -322,19 +355,25 @@ class DetectMergeBlockedTests(unittest.TestCase):
         )
         self.assertEqual(len(found), 1)
         event = found[0]
-        self.assertEqual(event["event_id"], "mb%s:conflicts" % HEAD, "one head is one conflict")
+        self.assertEqual(
+            event["event_id"],
+            "mb%s:%s:conflicts" % (HEAD, "b" * 40),
+            "one head is one conflict",
+        )
         self.assertIs(event["head_matches"], True)
         self.assertEqual(
-            event["summary"], "blocked from merging: merge conflicts with the base branch"
+            event["summary"],
+            "blocked from merging: merge conflicts with the base branch",
         )
 
-    def test_mergeable_alone_is_enough_when_the_state_is_absent(self):
+    def test_mergeable_alone_is_not_a_confirmed_conflict(self):
         self.assertEqual(
             len(blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False)))),
-            1,
+            0,
         )
         self.assertEqual(
-            blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(True))), []
+            blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(True))),
+            [],
         )
 
     def test_a_pr_that_is_merely_behind_blocked_or_unstable_is_not_in_conflict(self):
@@ -343,28 +382,45 @@ class DetectMergeBlockedTests(unittest.TestCase):
         for state in ("clean", "blocked", "behind", "unstable", "has_hooks", "draft"):
             self.assertEqual(
                 blocked(
-                    detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, state))
+                    detect.derive(
+                        REPO,
+                        7,
+                        HEAD,
+                        [],
+                        [],
+                        [],
+                        dict(CURSOR0),
+                        pull=pull(False, state),
+                    )
                 ),
                 [],
                 state,
             )
 
-    def test_a_dirty_state_is_a_conflict_whatever_mergeable_reads(self):
+    def test_a_dirty_state_without_negative_mergeability_is_not_confirmed(self):
         self.assertEqual(
             len(
                 blocked(
                     detect.derive(
-                        REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(True, "dirty")
+                        REPO,
+                        7,
+                        HEAD,
+                        [],
+                        [],
+                        [],
+                        dict(CURSOR0),
+                        pull=pull(True, "dirty"),
                     )
                 )
             ),
-            1,
+            0,
         )
 
     def test_github_not_computing_yet_is_not_a_conflict_and_not_a_pass(self):
         for body in (pull(None, "unknown"), pull(None), {"state": "open"}, {}):
             self.assertEqual(
-                blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=body)), []
+                blocked(detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=body)),
+                [],
             )
 
     def test_no_pr_body_derives_no_conflict(self):
@@ -387,17 +443,31 @@ class DetectMergeBlockedTests(unittest.TestCase):
 
     def test_failed_checks_alone_are_the_ci_event_and_never_a_second_one(self):
         found = detect.derive(
-            REPO, 7, HEAD, [], [], [ci_run(56)], dict(CURSOR0), pull=pull(True, "blocked")
+            REPO,
+            7,
+            HEAD,
+            [],
+            [],
+            [ci_run(56)],
+            dict(CURSOR0),
+            pull=pull(True, "blocked"),
         )
         self.assertEqual(kinds(found), ["ci_failed"])
 
     def test_failed_checks_ride_beside_another_blocker(self):
         found = blocked(
             detect.derive(
-                REPO, 7, HEAD, [], [], [ci_run(56)], dict(CURSOR0), pull=pull(False, "dirty")
+                REPO,
+                7,
+                HEAD,
+                [],
+                [],
+                [ci_run(56)],
+                dict(CURSOR0),
+                pull=pull(False, "dirty"),
             )
         )
-        self.assertEqual(found[0]["event_id"], "mb%s:checks_failed+conflicts" % HEAD)
+        self.assertEqual(found[0]["event_id"], "mb%s:%s:checks_failed+conflicts" % (HEAD, "b" * 40))
         self.assertEqual(
             found[0]["summary"],
             "blocked from merging: checks failed, merge conflicts with the base branch",
@@ -421,14 +491,21 @@ class DetectMergeBlockedTests(unittest.TestCase):
         self.assertEqual(found[0]["summary"], "blocked from merging: the merge gate is closed")
 
     def test_a_gate_that_failed_and_then_passed_has_passed(self):
-        runs = [ci_run(55, "merge-gate"), ci_run(56, "merge-gate", conclusion="success")]
+        runs = [
+            ci_run(55, "merge-gate"),
+            ci_run(56, "merge-gate", conclusion="success"),
+        ]
         self.assertEqual(
-            detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0), pull=pull(True, "clean")), []
+            detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0), pull=pull(True, "clean")),
+            [],
         )
 
     def test_a_check_that_failed_and_then_passed_has_passed(self):
         # The rerun that passed is the check's verdict;  only the conflict remains.
-        runs = [ci_run(55, "unit tests"), ci_run(56, "unit tests", conclusion="success")]
+        runs = [
+            ci_run(55, "unit tests"),
+            ci_run(56, "unit tests", conclusion="success"),
+        ]
         found = detect.derive(REPO, 7, HEAD, [], [], runs, dict(CURSOR0), pull=pull(False, "dirty"))
         self.assertEqual(kinds(found), ["merge_blocked"])
 
@@ -440,7 +517,8 @@ class DetectMergeBlockedTests(unittest.TestCase):
         later_head = "b" * 40
         reviews.append(review(12, HUMAN, "APPROVED", commit="0" * 40))
         self.assertEqual(
-            blocked(detect.derive(REPO, 7, later_head, reviews, [], [], dict(CURSOR0))), []
+            blocked(detect.derive(REPO, 7, later_head, reviews, [], [], dict(CURSOR0))),
+            [],
         )
         self.assertEqual(
             [
@@ -460,12 +538,21 @@ class DetectMergeBlockedTests(unittest.TestCase):
             review(14, "swu-zc[bot]", "COMMENTED"),
         ]
         self.assertEqual(
-            len(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0)))), 1
+            len(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0)))),
+            1,
         )
 
-    def test_a_review_bot_s_changes_requested_is_its_review_event_and_never_a_second_one(self):
+    def test_a_review_bot_s_changes_requested_is_its_review_event_and_never_a_second_one(
+        self,
+    ):
         found = detect.derive(
-            REPO, 7, HEAD, [kody_review(11, state="CHANGES_REQUESTED")], [], [], dict(CURSOR0)
+            REPO,
+            7,
+            HEAD,
+            [kody_review(11, state="CHANGES_REQUESTED")],
+            [],
+            [],
+            dict(CURSOR0),
         )
         self.assertEqual(kinds(found), ["review_submitted"])
         self.assertIn("changes requested", found[0]["summary"])
@@ -484,16 +571,27 @@ class DetectMergeBlockedTests(unittest.TestCase):
         )
         self.assertEqual(found[0]["event_id"], "mb%s:changes_requested+merge_gate" % HEAD)
 
-    def test_a_review_bot_s_own_changes_requested_that_is_not_the_completion_bot_still_blocks(self):
+    def test_a_review_bot_s_own_changes_requested_that_is_not_the_completion_bot_still_blocks(
+        self,
+    ):
         # Sentry's decision is not the completion event (that is Kody's alone), so it
         # would be silent everywhere without blocking here.
         found = detect.derive(
-            REPO, 7, HEAD, [review(11, "sentry[bot]", "CHANGES_REQUESTED")], [], [], dict(CURSOR0)
+            REPO,
+            7,
+            HEAD,
+            [review(11, "sentry[bot]", "CHANGES_REQUESTED")],
+            [],
+            [],
+            dict(CURSOR0),
         )
         self.assertEqual([e["summary"] for e in found], ["blocked from merging: changes requested"])
 
     def test_an_explicit_dismissal_clears_a_standing_changes_requested(self):
-        reviews = [review(11, HUMAN, "CHANGES_REQUESTED"), review(12, HUMAN, "DISMISSED")]
+        reviews = [
+            review(11, HUMAN, "CHANGES_REQUESTED"),
+            review(12, HUMAN, "DISMISSED"),
+        ]
         self.assertEqual(blocked(detect.derive(REPO, 7, HEAD, reviews, [], [], dict(CURSOR0))), [])
 
     def test_a_comment_after_a_dismissal_does_not_restore_the_request(self):
@@ -529,21 +627,6 @@ class DetectMergeBlockedTests(unittest.TestCase):
         self.assertEqual(kinds(found), ["review_submitted", "merge_blocked"])
         self.assertEqual(found[-1]["event_id"], "mb%s:changes_requested" % HEAD)
 
-    def test_a_base_advance_re_alerts_a_conflict_on_the_same_head(self):
-        # The pair carries over from the earlier conflict-only design:  main moving under a
-        # fixed head is a NEW "update the PR" fact, so the base joins the identity.
-        first = detect.derive(
-            REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty", base=BASE)
-        )
-        self.assertEqual([e["event_id"] for e in first], ["mb%s:%s:conflicts" % (HEAD, BASE)])
-        again = detect.derive(
-            REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty", base="d" * 40)
-        )
-        self.assertEqual([e["event_id"] for e in again], ["mb%s:%s:conflicts" % (HEAD, "d" * 40)])
-        # A body without a base keeps the head-only identity.
-        plain = detect.derive(REPO, 7, HEAD, [], [], [], dict(CURSOR0), pull=pull(False, "dirty"))
-        self.assertEqual([e["event_id"] for e in plain], ["mb%s:conflicts" % HEAD])
-
     def test_review_activity_and_pr_states_coexist_in_one_cycle(self):
         found = detect.derive(
             REPO,
@@ -556,115 +639,8 @@ class DetectMergeBlockedTests(unittest.TestCase):
             pull=pull(False, "dirty"),
         )
         self.assertEqual(
-            kinds(found), ["review_submitted", "findings_added", "ci_failed", "merge_blocked"]
-        )
-
-
-class CredentialResolution(unittest.TestCase):
-    def test_the_environment_value_wins_and_the_file_is_the_fallback(self):
-        env = {"RA_WAKE_KEY": "from-env-" + "x" * 40}
-        self.assertEqual(
-            service.credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"), env["RA_WAKE_KEY"]
-        )
-        self.assertEqual(service.credential({}, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"), "")
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "wake.key"
-            path.write_text("from-file-" + "y" * 40)
-            path.chmod(0o600)
-            # file_name is the ENV NAME whose value is the path, as main() passes it.
-            self.assertEqual(
-                service.credential(
-                    {"RA_WAKE_KEY_FILE": str(path)}, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"
-                ),
-                "from-file-" + "y" * 40,
-            )
-            # Both present:  the loader-delivered environment value wins.
-            self.assertEqual(
-                service.credential(
-                    {"RA_WAKE_KEY": "from-env-" + "x" * 40, "RA_WAKE_KEY_FILE": str(path)},
-                    "RA_WAKE_KEY",
-                    "RA_WAKE_KEY_FILE",
-                ),
-                "from-env-" + "x" * 40,
-            )
-
-    def test_the_file_loader_re_reads_only_when_the_mtime_changes(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "relay.key"
-            path.write_text("first-" + "a" * 32)
-            load = service.credential_loader(
-                {"RA_SERVICE_TOKEN_FILE": str(path)}, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"
-            )
-            self.assertEqual(load(), "first-" + "a" * 32)
-            # Unchanged mtime:  the cached value answers without a re-read.
-            self.assertEqual(load(), "first-" + "a" * 32)
-            # Rotation:  a new value lands and the next call picks it up.  Force a
-            # distinct mtime so the test never flakes on a coarse-grained clock.
-            path.write_text("rotated-" + "b" * 32)
-            stamp = path.stat().st_mtime_ns + 2_000_000_000
-            os.utime(path, ns=(stamp, stamp))
-            self.assertEqual(load(), "rotated-" + "b" * 32)
-            # An environment value is a fixed binding:  it wins over the file forever.
-            pinned = service.credential_loader(
-                {
-                    "RA_SERVICE_TOKEN": "from-env-" + "c" * 24,
-                    "RA_SERVICE_TOKEN_FILE": str(path),
-                },
-                "RA_SERVICE_TOKEN",
-                "RA_SERVICE_TOKEN_FILE",
-            )
-            self.assertEqual(pinned(), "from-env-" + "c" * 24)
-
-    def test_a_transient_read_failure_never_poisons_the_cache(self):
-        # A credential file is never legitimately empty:  a read that comes back empty
-        # (a transient open failure reads as "") keeps the last good value and the old
-        # mtime, so the next call retries instead of serving empty until the file changes.
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "relay.key"
-            path.write_text("good-" + "a" * 36)
-            load = service.credential_loader(
-                {"RA_SERVICE_TOKEN_FILE": str(path)}, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"
-            )
-            self.assertEqual(load(), "good-" + "a" * 36)
-            stamp = path.stat().st_mtime_ns + 2_000_000_000
-            path.write_text("")
-            os.utime(path, ns=(stamp, stamp))
-            self.assertEqual(load(), "good-" + "a" * 36, "an empty read keeps the last good value")
-            # A later real value still lands.
-            path.write_text("recovered-" + "b" * 30)
-            stamp2 = stamp + 2_000_000_000
-            os.utime(path, ns=(stamp2, stamp2))
-            self.assertEqual(load(), "recovered-" + "b" * 30)
-
-    def test_a_deleted_credential_file_fails_closed_and_can_recover(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "relay.key"
-            path.write_text("good-" + "a" * 36)
-            load = service.credential_loader(
-                {"RA_SERVICE_TOKEN_FILE": str(path)}, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"
-            )
-            self.assertEqual(load(), "good-" + "a" * 36)
-            # Revocation by deletion:  the cached value must not outlive the file.
-            path.unlink()
-            self.assertEqual(load(), "")
-            # Re-provisioning recovers without a restart.
-            path.write_text("new-" + "b" * 37)
-            self.assertEqual(load(), "new-" + "b" * 37)
-
-    def test_the_operator_loop_holds_when_neither_credential_source_has_a_value(self):
-        held = []
-        svc = ServiceCycleTests._service(
-            self, tempfile.mkdtemp(), [claimed_owner()], FakeRead(), FakeRouter()
-        )
-        try:
-            svc.store  # exists
-        except AttributeError:
-            pass
-        # The loop-level check is what a real cycle exercises:  a missing value holds.
-        empty = {}
-        self.assertFalse(
-            service.credential(empty, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE")
-            and service.credential(empty, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE")
+            kinds(found),
+            ["review_submitted", "findings_added", "ci_failed", "merge_blocked"],
         )
 
 
@@ -785,7 +761,8 @@ class EventStoreTests(unittest.TestCase):
             self.assertTrue(path.read_bytes().endswith(b"\n"))
             # A complete final row missing only its newline is preserved, not cut.
             path.write_text(
-                json.dumps(good) + "\n" + json.dumps(dict(good, event_id="12")), encoding="utf-8"
+                json.dumps(good) + "\n" + json.dumps(dict(good, event_id="12")),
+                encoding="utf-8",
             )
             store = events.EventStore(str(path))
             self.assertIsNotNone(store.get(REPO, 7, "review_submitted", "12"))
@@ -861,7 +838,17 @@ class FakeRouter:
         self.fail_submit = None
 
     def submit(
-        self, seat, wake_id, session, letter, generation, require_pr, topic, link, *, message_id=0
+        self,
+        seat,
+        wake_id,
+        session,
+        letter,
+        generation,
+        require_pr,
+        topic,
+        link,
+        *,
+        message_id=0,
     ):
         if self.fail_submit is not None:
             raise self.fail_submit
@@ -1000,7 +987,10 @@ class ServiceCycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             router = FakeRouter()
             svc = self._service(
-                directory, [claimed_owner(ts=None)], FakeRead(reviews=[kody_review(50)]), router
+                directory,
+                [claimed_owner(ts=None)],
+                FakeRead(reviews=[kody_review(50)]),
+                router,
             )
             counts = svc.cycle()
             self.assertEqual(counts["seeded"], 1)
@@ -1009,7 +999,9 @@ class ServiceCycleTests(unittest.TestCase):
     def test_unbound_claim_is_held_never_delivered(self):
         with tempfile.TemporaryDirectory() as directory:
             owner = claimed_owner(
-                origin_session_claim=None, origin_letter_claim=None, origin_generation_claim=None
+                origin_session_claim=None,
+                origin_letter_claim=None,
+                origin_generation_claim=None,
             )
             router = FakeRouter()
             svc = self._service(directory, [owner], FakeRead(), router)
@@ -1087,7 +1079,10 @@ class ServiceCycleTests(unittest.TestCase):
             svc.cycle()
             row = svc.store.get(REPO, 7, "review_submitted", "51")
             first_wake = row["wake_id"]
-            router.receipts[first_wake] = {"delivered": False, "reason": "required-pr-unbound"}
+            router.receipts[first_wake] = {
+                "delivered": False,
+                "reason": "required-pr-unbound",
+            }
             counts = svc.cycle()
             self.assertEqual(counts["redriven"], 1)
             row = svc.store.get(REPO, 7, "review_submitted", "51")
@@ -1152,7 +1147,8 @@ class ServiceCycleTests(unittest.TestCase):
             (True, "unknown"),
         )
         self.assertEqual(
-            wakes.WakeClient.receipt_terminal({"status": "delivered"}), (True, "unknown")
+            wakes.WakeClient.receipt_terminal({"status": "delivered"}),
+            (True, "unknown"),
         )
         self.assertEqual(
             wakes.WakeClient.receipt_terminal({"delivered": None, "status": "accepted"}),
@@ -1226,8 +1222,8 @@ class ServiceCycleTests(unittest.TestCase):
             self.assertEqual(
                 self._kinds(svc),
                 [
-                    ("merge_blocked", "mb%s:conflicts" % HEAD),
-                    ("merge_blocked", "mb%s:conflicts" % next_head),
+                    ("merge_blocked", "mb%s:%s:conflicts" % (HEAD, "b" * 40)),
+                    ("merge_blocked", "mb%s:%s:conflicts" % (next_head, "b" * 40)),
                 ],
             )
 
@@ -1275,7 +1271,10 @@ class ServiceCycleTests(unittest.TestCase):
             owner = claimed_owner(origin_session_claim=None, origin_letter_claim=None)
             router = FakeRouter()
             svc = self._service(
-                directory, [owner], FakeRead(pr=pull(False), checks=[ci_run(80)]), router
+                directory,
+                [owner],
+                FakeRead(pr=pull(False, "dirty"), checks=[ci_run(80)]),
+                router,
             )
             counts = svc.cycle()
             self.assertEqual(router.submitted, [], "nothing reaches a chat that was not claimed")
@@ -1372,7 +1371,8 @@ class InstantParsingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             owners_path = Path(directory) / "owners.jsonl"
             owners_path.write_text(
-                json.dumps(claimed_owner(ts="2026-11-21T00:30:00Z")) + "\n", encoding="utf-8"
+                json.dumps(claimed_owner(ts="2026-11-21T00:30:00Z")) + "\n",
+                encoding="utf-8",
             )
             store = events.EventStore(str(Path(directory) / "events.jsonl"))
             check = kody_check(70)

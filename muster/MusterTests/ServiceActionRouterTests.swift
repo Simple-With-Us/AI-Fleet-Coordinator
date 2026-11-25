@@ -3,6 +3,11 @@ import XCTest
 /// Every action case,  and which machine it reaches.  A new case cannot compile without a
 /// sample,  so this covers it the day it is added.
 final class OpsActionPlaceTests: XCTestCase {
+    func testLegacySeatMCPIsNotAnOperatorService() {
+        XCTAssertNil(FleetServiceRegistry.descriptor(for: "seat-mcp"))
+        XCTAssertNotNil(FleetServiceRegistry.descriptor(for: ManagedServices.mcpServerID))
+    }
+
     private func builder() -> OpsCommandBuilder {
         OpsCommandBuilder(repoRoot: URL(fileURLWithPath: "/example/repo"),
                           home: URL(fileURLWithPath: "/example/home"),

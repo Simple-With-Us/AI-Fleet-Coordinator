@@ -53,7 +53,9 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// a reader that is not there is not installed,  and anything else is the
     /// no-answer case.  A refusal is never reported as a timeout (AFC-592).
     static func from(_ error: Error, name: String) -> FleetSecretError {
+        if let error = error as? FleetSecretError { return error }
         if let exit = error as? CommandExitError {
+            if exit.status == 124 { return .unavailable(name) }
             return exit.status == 3 ? .missing(name) : .refused(name)
         }
         if isMissingCommand(error) { return .notInstalled }
@@ -63,7 +65,8 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// Map a failure of a read that has no key of its own (names, doctor):
     /// an exit is a refusal, never "absent" — there is no key to be absent.
     static func fromNonKeyRead(_ error: Error, name: String) -> FleetSecretError {
-        if error is CommandExitError { return .refused(name) }
+        if let error = error as? FleetSecretError { return error }
+        if let exit = error as? CommandExitError { return exit.status == 124 ? .unavailable(name) : .refused(name) }
         if isMissingCommand(error) { return .notInstalled }
         return .unavailable(name)
     }
@@ -104,17 +107,13 @@ public struct FleetSecrets: SecretResolving {
 
     public func secret(named name: String) throws -> String {
         guard Self.isValidName(name) else { throw FleetSecretError.invalidName(name) }
-        // A menu bar app inherits no shell PATH, so the reader is named by its
-        // full path.
         let value: String
         do {
-            value = try commands.run(readerExecutable,
-                                     ["get", name, "--folder", Self.valueFolder,
-                                      "--project", Self.valueProject,
-                                      "--account", Self.valueAccount],
-                                     environment: readerEnvironment, timeout: 20)
+            value = try runReader(["get", name, "--folder", Self.valueFolder,
+                                   "--project", Self.valueProject],
+                                  project: Self.valueProject, folder: Self.valueFolder)
         } catch {
-            // Exit 3 is "absent";  any other failure is not (AFC-592).
+            if isCancellation(error) { throw CancellationError() }
             throw FleetSecretError.from(error, name: name)
         }
         guard !value.isEmpty else { throw FleetSecretError.missing(name) }
@@ -195,23 +194,41 @@ public extension FleetSecrets {
         }
     }
 
-    private var readerEnvironment: [String: String] {
-        let bin = home.appendingPathComponent(".local/bin")
-        return ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin:\(bin.path)", "HOME": home.path]
-    }
-    private var readerExecutable: String {
-        readerURL.path
+    static let readerTimeout: TimeInterval = 45
+    static let consumer = "muster-data-reader"
+    /// The finite declaration is selected by operation and exact existing account.
+    /// These paths describe source contracts, not provisioned grants or Keychain items.
+    static func declaredAccount(project: String, folder: String) throws -> String {
+        switch (project, folder) {
+        case ("fleet-ops", "/"): return "muster-fleetops-ro"
+        case ("ai-fleet-coordinator", "/"): return "muster-afc-ro"
+        case ("ai-fleet-coordinator", "/code-mirrors"): return "muster-afc-code-mirrors-ro"
+        case ("ai-fleet-coordinator", "/wake-router"): return "muster-afc-wake-router-ro"
+        default: throw FleetSecretError.invalidName(folder)
+        }
     }
 
-    /// Names at one path, through the `names` verb only.  This path never calls `get`.
-    func secretNames(path: String) throws -> [String] {
-        guard Self.isValidPath(path) else { throw FleetSecretError.invalidName(path) }
-        let text: String
+    private func runReader(_ arguments: [String], project: String, folder: String) throws -> String {
+        let account = try Self.declaredAccount(project: project, folder: folder)
+        let declaration = home.appendingPathComponent(".config/infisical/muster")
+            .appendingPathComponent(account + ".json").path
+        let args = ["-I", readerURL.path] + arguments + [
+            "--consumer-binding", declaration, "--consumer", Self.consumer,
+            "--consumer-account", account]
         do {
-            text = try commands.run(readerExecutable, ["names", "--folder", path],
-                                    environment: readerEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
-        return try Self.parseNamesByPath([(path, text)]).first?.names ?? []
+            return try commands.run("/usr/bin/python3", args,
+                                    environment: ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+                                    timeout: Self.readerTimeout)
+        } catch let exit as CommandExitError where exit.status == 2 &&
+            (exit.errorOutput.contains("can't open file '\(readerURL.path)': [Errno 2]") ||
+             exit.errorOutput.contains("can't open file \"\(readerURL.path)\": [Errno 2]")) {
+            throw FleetSecretError.notInstalled
+        }
+    }
+
+    /// Names at one supported path, with the default Fleet-OPS project unchanged.
+    func secretNames(path: String) throws -> [String] {
+        try Self.parseNamesByPath([(path, try secretNamesText(path: path))]).first?.names ?? []
     }
 
     /// The Infisical project the fleet's knobs live in,  by the name the reader's
@@ -247,6 +264,8 @@ public extension FleetSecrets {
     /// The arguments for one `names` read:  the folder,  and the project when one is named.
     static func namesArguments(path: String, project: String?) throws -> [String] {
         guard isValidPath(path) else { throw FleetSecretError.invalidName(path) }
+        let selectedProject = project ?? "fleet-ops"
+        _ = try declaredAccount(project: selectedProject, folder: path)
         guard let project else { return ["names", "--folder", path] }
         guard listableProjects.contains(project) else { throw FleetSecretError.invalidName(project) }
         return ["names", "--folder", path, "--project", project]
@@ -255,9 +274,11 @@ public extension FleetSecrets {
     private func secretNamesText(path: String, project: String? = nil) throws -> String {
         let arguments = try Self.namesArguments(path: path, project: project)
         do {
-            return try commands.run(readerExecutable, arguments,
-                                    environment: readerEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
+            return try runReader(arguments, project: project ?? "fleet-ops", folder: path)
+        } catch {
+            if isCancellation(error) { throw CancellationError() }
+            throw FleetSecretError.fromNonKeyRead(error, name: path)
+        }
     }
 
     /// The doctor keys the panel shows, with their plain labels, in the order shown.
@@ -274,16 +295,13 @@ public extension FleetSecrets {
         ("failure_reason", "Why The Read Failed"),
     ]
 
-    /// The label for a doctor key,  or nil when the key is not one the panel shows.
-    ///
-    /// The list is exact:  the reader's report holds no per-project keys,  and a key
-    /// the panel does not name is dropped rather than shown.
+    /// Only the selected reader's fixed metadata contract reaches this panel.
     static func doctorLabel(_ key: String) -> String? {
         doctorLabels.first(where: { $0.key == key })?.label
     }
 
-    /// Parse the doctor's report:  only the keys `doctorLabel` names survive, as booleans,
-    /// counts and short words.  Anything else is dropped.
+    /// Parse only the declared reader's booleans, names count and fixed refusal reason.
+    /// Unknown fields and arbitrary diagnostic strings never reach the screen.
     static func parseDoctor(_ text: String) throws -> [String: String] {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -295,18 +313,18 @@ public extension FleetSecrets {
             if let number = value as? NSNumber {
                 // JSON true and false arrive as NSNumber too, and a count of 0 or 1 would
                 // read as a boolean if it were asked first, so the type is checked.
-                if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                if CFGetTypeID(number) == CFBooleanGetTypeID(), key != "names_count", key != "failure_reason" {
                     out[key] = number.boolValue ? "true" : "false"
-                } else if key.hasSuffix("_count") {
+                } else if CFGetTypeID(number) != CFBooleanGetTypeID(), key == "names_count",
+                          number.doubleValue.isFinite, number.doubleValue >= 0,
+                          number.doubleValue <= Double(Int.max),
+                          number.doubleValue.rounded() == number.doubleValue {
                     out[key] = number.stringValue
                 }
                 continue
             }
-            guard let string = value as? String else { continue }
-            let allowed = key == "failure_reason" ? "[^A-Za-z0-9 ._,'()/-]" : "[^A-Za-z0-9._-]"
-            let limit = key == "failure_reason" ? 60 : 40
-            if !string.isEmpty, string.count <= limit,
-               string.range(of: allowed, options: .regularExpression) == nil {
+            if key == "failure_reason", let string = value as? String,
+               string == "consumer-binding-refused" {
                 out[key] = string
             }
         }
@@ -339,12 +357,14 @@ public extension FleetSecrets {
     func doctorReport() throws -> [String: String] {
         let text: String
         do {
-            text = try commands.run(readerExecutable, ["doctor"],
-                                    environment: readerEnvironment, timeout: 20)
+            text = try runReader(["doctor"], project: "fleet-ops", folder: "/")
         } catch let exit as CommandExitError {
-            if let report = try? Self.parseDoctor(exit.output), !report.isEmpty { return report }
+            if exit.status != 124, let report = try? Self.parseDoctor(exit.output), !report.isEmpty { return report }
             throw FleetSecretError.fromNonKeyRead(exit, name: "doctor")
-        } catch { throw FleetSecretError.fromNonKeyRead(error, name: "doctor") }
+        } catch {
+            if isCancellation(error) { throw CancellationError() }
+            throw FleetSecretError.fromNonKeyRead(error, name: "doctor")
+        }
         return try Self.parseDoctor(text)
     }
 }

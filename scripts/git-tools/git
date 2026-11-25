@@ -126,7 +126,7 @@ wf_run_artifacts wf_release_assets wf_release_asset_get wf_pr_list wf_pr_files w
 wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_job_get wf_workflow_get
 wf_artifact_get wf_artifacts_page wf_caches_page wf_cache_usage wf_run_attempt_get wf_run_attempt_jobs
 wf_run_pending_deployments wf_repo_variables wf_repo_variable_get wf_issue_events wf_issue_timeline
-wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_deploy_keys wf_org_installations
+wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_collaborator_permission wf_repo_collaborators wf_repo_teams wf_deploy_keys wf_org_installations
 wf_branch_rules wf_rulesets
 wf_secrets_org_actions wf_secret_key_org_actions wf_secret_repos_org_actions wf_secrets_org_dependabot wf_secret_key_org_dependabot wf_secret_repos_org_dependabot wf_secrets_org_codespaces wf_secret_key_org_codespaces wf_secret_repos_org_codespaces wf_secrets_repo_actions wf_secret_key_repo_actions wf_secrets_repo_dependabot wf_secret_key_repo_dependabot wf_secrets_repo_codespaces wf_secret_key_repo_codespaces wf_secrets_env_actions wf_secret_key_env_actions wf_org_variables wf_org_variable_repos
 wf_hook_get wf_hook_deliveries wf_org_hooks wf_org_hook_get wf_deploy_key_get wf_env_branch_policies wf_env_variables""".split()
@@ -544,6 +544,7 @@ _REFUSAL_REASONS = frozenset(
         "read_too_large",
         "bad_request_auto_merge_method_mismatch",
         "bad_request_auto_merge_not_armed",
+        "bad_request_base_unverifiable",
         "bad_request_auto_merge_refused",
         "bad_request_content_too_large",
         "bad_request_default_branch_protected",

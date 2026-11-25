@@ -103,9 +103,12 @@ class Reads(unittest.TestCase):
             self.relay.handle("wrong", "service_read", dict(repo=REPO, verb="pull", number=7))[0],
             401,
         )
+        # A repo outside the seat's scope is refused (the action allowlist is retired).
         self.assertEqual(
             self.relay.handle(
-                TOKEN, "open_pr", dict(repo=REPO, base="main", head="b", title="t", body="b")
+                TOKEN,
+                "open_pr",
+                dict(repo="Simple-With-Us/other", base="main", head="b", title="t", body="b"),
             )[0],
             403,
         )

@@ -60,5 +60,10 @@ async function main(){
  const rpc=connect({WebSocket,url:`ws://127.0.0.1:${original.port}/ws`,token,codec,frame:codecModule.frame,parser:codecModule.parser,timeoutMs:10000});
  try{const result=await run(request,rpc,verify);process.stdout.write(JSON.stringify({result})+'\n')}finally{await rpc.close();lines.close()}
 }
-if(require.main===module){main().catch(()=>{process.stdout.write(JSON.stringify({error:'native-driver-refused-or-uncertain'})+'\n');process.exitCode=1})}
-module.exports={privateRead,hostSnapshot};
+if(require.main===module){main().catch(error=>{process.stdout.write(JSON.stringify({error:'native-driver-refused-or-uncertain',diagnostic:diagnostic(error)})+'\n');process.exitCode=1})}
+function diagnostic(error){
+ const stages=new Set(['validate','verify','readiness','listen','helloConversationV4','initializeConversationV4','subscribeConversationV4','unsubscribeConversationV4','sendConversationCommandV4','queryConversationCommandsV4']);
+ const codes=new Set(['project.remote-project-required','project.host-mismatch','project.cwd-not-in-roots','project.session-lineage-invalid','project.remote-single-root-required','rpc-refused','rpc-timeout','readiness-timeout','binding-changed','session-not-ready','event-invalid','decode-refused','connection-closed','transport-error','readiness-changed','subscription-invalid','frame-binding','snapshot-binding-or-regression','snapshot-wire-binding','frame-assembly-refused']);
+ return {stage:stages.has(error?.nativeStage)?error.nativeStage:'driver',code:codes.has(error?.nativeCode)?error.nativeCode:codes.has(error?.message)?error.message:'refused-or-uncertain'};
+}
+module.exports={privateRead,hostSnapshot,diagnostic};

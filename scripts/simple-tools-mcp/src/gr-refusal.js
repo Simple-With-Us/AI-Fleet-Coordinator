@@ -47,6 +47,10 @@ const BAD_REQUEST_REASONS = new Map([
   ["auto-merge is not armed", "bad_request_auto_merge_not_armed"],
   ["auto-merge enable was refused", "bad_request_auto_merge_refused"],
   ["auto-merge is armed with a different method", "bad_request_auto_merge_method_mismatch"],
+  ["base file unverifiable", "bad_request_base_unverifiable"],
+  ["base commit unverifiable", "bad_request_base_unverifiable"],
+  ["patch path refused", "bad_request_workflow_path_permission"],
+  ["invalid patch message", "bad_request_invalid_arguments"],
 ]);
 
 /** The relay's fixed head, ref and identity fences:  the caller's expected
@@ -263,6 +267,7 @@ const REASON_TEXT = Object.freeze({
   bad_request_auto_merge_not_armed: "A follow-up read shows squash, merge, or rebase auto-merge is off.  Sending the call again is safe.",
   bad_request_auto_merge_refused: "GitHub refused the enable, and a follow-up read shows auto-merge is off.",
   bad_request_auto_merge_method_mismatch: "A follow-up read shows auto-merge is on with a different merge method.  Read the pull request before enabling again.",
+  bad_request_base_unverifiable: "The base the call pins (file, blob or commit) could not be verified:  the head moved, the blob id does not match, or the base is unreadable at that pin.  Read the current state, then send the call again with the fresh value.  Nothing was written.",
 });
 
 /** Fixed caller-facing text for a reason id, or null when there is none. */

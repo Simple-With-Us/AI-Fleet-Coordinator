@@ -187,6 +187,8 @@ class CreateRepoTests(unittest.TestCase):
         self.assertEqual(len(minter.mints), 1)
 
     def test_deny_without_an_explicit_grant(self):
+        # create_repo keeps its per-seat entitlement after the action-allowlist
+        # retirement:  it mints namespace-admin tokens outside the seat ceiling.
         script = Script([])
         status, body, script, minter, _audit = drive(
             script, {"repo": "Simple-With-Us/Widget"}, actions=("open_pr",)
