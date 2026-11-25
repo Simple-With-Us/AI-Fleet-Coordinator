@@ -33,3 +33,18 @@ def require_safe_fields(**fields):
             raise FleetRagError('credential_scan_unavailable:' + field) from None
         if found is not None:
             raise FleetRagError('refused_secret:' + field)
+    # A credential split across fields passes every isolated scan yet persists
+    # combined in one payload, so the joined payload is scanned as well.
+    string_fields = [
+        fields[name] for name in ('query', 'text', 'title', 'url')
+        if isinstance(fields.get(name), str)
+    ]
+    combined = ''.join(string_fields)
+    if len(string_fields) > 1:
+        try:
+            scanner = _scanner()
+            found = scanner(combined)
+        except Exception:
+            raise FleetRagError('credential_scan_unavailable:combined') from None
+        if found is not None:
+            raise FleetRagError('refused_secret:combined')
