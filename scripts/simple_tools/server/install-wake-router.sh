@@ -19,7 +19,8 @@
 #      with ~/.local/share/afc-wake-router/current pointing at it.  Nothing is imported or run from
 #      a working checkout;  the knob check below runs the archive's code.  The router's ExecStart
 #      names its release folder, so its running process shows which release it uses:  a release
-#      is removed only when it is neither the newest nor the one that process runs from;
+#      is removed only when it is neither the newest nor the one that process runs from, and
+#      never when this script did not create it or when a unit names it;
 #   2. writes ~/.config/systemd/user/afc-wake-router.service and afc-wake-tls.service from the
 #      archive's templates, with the router's ExecStart pointing at the installed release.  A unit
 #      already there that this script did not write is never overwritten;
@@ -40,6 +41,11 @@
 #                      run would refuse, listing every reason)
 #   --start            also start both units, or restart a unit that is running stale code.
 #                      Refused while delivery is armed (WAKE_ROUTER_DELIVERY_ENABLED true)
+#   --replace-running-program   allow --start to replace a running router process that is not
+#                      this installer's own release entry point (another seat's qualification
+#                      launcher, say).  The
+#                      process is named and the refusal is explicit;  without this the install
+#                      refuses rather than swap the running program silently
 #   --uninstall        stop, disable and remove exactly what this script installed, and move the
 #                      token back to the staging file
 #   --tailnet-addr A   the server's tailnet IPv4 address (Tailscale's CGNAT /10);  default: `tailscale ip -4`
@@ -177,6 +183,7 @@ def parse_args(argv):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--start", action="store_true")
     parser.add_argument("--controlled-upgrade", action="store_true")
+    parser.add_argument("--replace-running-program", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--tailnet-addr", default="")
     parser.add_argument("--tls-cert", default="")
@@ -474,8 +481,101 @@ def running_releases(host, proc_root, releases):
     return found, ""
 
 
-def prune_releases(host, proc_root, releases, sha):
-    """Remove every release that is neither the newest nor one the running router uses."""
+# The router's own entry point:  the program the unit's ExecStart runs, in a release this
+# installer owns.  It creates every release it owns under a 40-hex name, and the path has to
+# resolve under its own release root, so another seat's program in a release of another name is
+# never taken for the router's own.
+ROUTER_ENTRY = re.compile(r".*/releases/([0-9a-f]{40})/scripts/simple-chat$")
+# An interpreter is not the program:  python, python3, python3.11, python3.12 and the like.
+INTERPRETER = re.compile(r"python(\d+(\.\d+)*)?")
+
+
+def running_router_program(host, proc_root, base):
+    """(program, foreign).  The program the running router process runs, and whether it is
+    something other than this installer's own entry point.  A process that cannot be read or
+    named counts as foreign, because a program that cannot be named cannot be replaced safely."""
+    code, out, _err = host.systemctl("show", "--property=MainPID", "--value", ROUTER_UNIT)
+    pid = out.strip()
+    if code != 0 or not re.fullmatch(r"[0-9]{1,10}", pid):
+        return "a process systemctl cannot name (exit %d)" % code, True
+    if int(pid) == 0:
+        return "", False
+    try:
+        argv = [
+            raw.decode("utf-8", "replace")
+            for raw in (proc_root / pid / "cmdline").read_bytes().split(b"\0")
+            if raw
+        ]
+    except OSError:
+        return "the router's process %s, which cannot be read" % pid, True
+    # The program is the first argument that is neither a flag nor an interpreter:  a later
+    # argument that happens to name a release entry point is not the program either.
+    named = [
+        arg for arg in argv
+        if not arg.startswith("-") and not INTERPRETER.fullmatch(os.path.basename(arg))
+    ]
+    if not named:
+        return (" ".join(argv[:2]) if argv else "the router's process %s" % pid), True
+    program = named[0]
+    if ROUTER_ENTRY.fullmatch(program):
+        root = os.path.realpath(str(base / "releases"))
+        if os.path.realpath(program).startswith(root + os.sep):
+            return program, False
+    return program, True
+
+
+def check_running_program(host, proc_root, base, plan, args):
+    """The unit names the release the router runs;  a running process that is not this
+    installer's own entry point would be replaced by a restart, so that is refused unless the
+    operator says so.  This reads the process and the unit only;  it changes nothing."""
+    program, foreign = running_router_program(host, proc_root, base)
+    if not foreign:
+        if program:
+            say("the running router uses %s" % program)
+        return
+    if args.controlled_upgrade:
+        # The controlled upgrade has its own custody preflight, which refuses a running process
+        # that is not the release the unit names.
+        say("the running router process runs %s, which is not this installer's own release entry "
+            "point;  the controlled upgrade checks that custody itself and does not take "
+            "--replace-running-program" % program)
+        return
+    if not args.start:
+        say("the running router process runs %s, which is not this installer's own release entry "
+            "point;  the units are not started, so nothing is replaced now" % program)
+        return
+    if args.replace_running_program:
+        say("the running router process runs %s, which is not this installer's own release entry "
+            "point;  replacing it was asked for explicitly" % program)
+        return
+    plan.refuse("the running %s process runs %s, which is not this installer's own release entry "
+                "point;  a restart would replace it;  pass --replace-running-program to do that "
+                "anyway" % (ROUTER_UNIT, program))
+
+
+def unit_named_releases(unit_dir):
+    """The release names the installer's own units and their drop-ins name.  A release one of
+    them names is never pruned:  a drop-in may still point at it."""
+    names = set()
+    for unit in UNITS:
+        paths = [unit_dir / unit]
+        paths += sorted(path for path in unit_dir.glob(unit + "*") if path.is_file())
+        drop_ins = unit_dir / (unit + ".d")
+        if drop_ins.is_dir():
+            paths += sorted(path for path in drop_ins.iterdir() if path.is_file())
+        for path in paths:
+            try:
+                body = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for match in re.finditer(r"releases/([^/\s\"']+)/scripts/", body):
+                names.add(match.group(1))
+    return names
+
+
+def prune_releases(host, proc_root, releases, sha, protected=()):
+    """Remove every release that is neither the newest nor one the running router uses.  A
+    release this installer did not create, or that a unit names, is never removed."""
     running, problem = running_releases(host, proc_root, releases)
     if running is None:
         say("%s;  every installed release is kept" % problem)
@@ -483,6 +583,12 @@ def prune_releases(host, proc_root, releases, sha):
     keep = {sha} | running
     for old in sorted(releases.iterdir()):
         if old.name in keep:
+            continue
+        if old.name in protected:
+            say("kept release %s (a unit names it)" % old.name)
+            continue
+        if not re.fullmatch(r"[0-9a-f]{40}", old.name):
+            say("kept release %s (this installer did not create it)" % old.name)
             continue
         if old.is_dir() and not old.is_symlink():
             shutil.rmtree(old)
@@ -536,6 +642,7 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
     for unit in UNITS:
         if (unit_dir / unit).exists() and not ours(unit_dir / unit):
             plan.refuse("%s exists and was not written by this script;  move it aside first" % (unit_dir / unit))
+    check_running_program(host, proc_root, base, plan, args)
 
     code, out, _err = host.run(["loginctl", "show-user", user, "--property=Linger", "--value"])
     if code != 0 or out.strip() != "yes":
@@ -711,9 +818,10 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
             return 1
         say("enabled %s" % " and ".join(UNITS))
 
+        protected = unit_named_releases(unit_dir)
         if not args.start:
             say("not started;  run again with --start, or `systemctl --user start %s`" % " ".join(UNITS))
-            prune_releases(host, proc_root, releases, sha)
+            prune_releases(host, proc_root, releases, sha, protected)
             return 0
         if upgrade is not None:
             upgrade.promote()
@@ -731,7 +839,7 @@ def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
                 say("systemctl --user %s %s failed" % (verb, unit))
                 return 1
             say("%s %s" % ("restarted" if verb == "restart" else "started", unit))
-        prune_releases(host, proc_root, releases, sha)
+        prune_releases(host, proc_root, releases, sha, protected)
         return 0
     except BaseException as original:
         if "upgrade" in locals() and upgrade is not None:
