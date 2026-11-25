@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.code-main-keeper:  keep ~/Code caught up with origin/main.
+
+  One synchronization implementation lives in scripts/fleet_lanes/code_main_sync.py (OPS-1087).  The
+  server runs that file from a systemd timer, and this job runs the same file from the installed Code
+  mirror bundle, so both hosts share one algorithm.  The shared loop reads CODE_MIRROR_INTERVAL_SECONDS
+  from Infisical prod /code-mirrors before each sweep, through the read-only code-mirrors-settings-read
+  binding on the keychain service infisical-service-token, so the cadence is the shared setting and
+  not a number written here.
+
+  Each sweep runs the host's own authorization bootstrap, /Users/jay/apps/code-main-keeper.sh, which
+  carries the relay route and the seat bearer file path.  That bearer path is private deployment
+  inventory, so it is deliberately not written into this plist: the bootstrap holds it.  Every fetch
+  goes through the relay's read-only /git/ route, so this job holds no GitHub credential.
+
+  The job fast-forwards only clean main clones that track origin/main.  A dirty clone is skipped and
+  reported, never reset, cleaned or stashed.
+
+  Install:  cp this file to ~/Library/LaunchAgents/ and
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.code-main-keeper.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.code-main-keeper
+  Log:      ~/apps/logs/code-main-keeper.log, written by the sweep the bootstrap runs
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.code-main-keeper</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/jay/.local/share/code-mirrors/scripts/code-main-keeper.sh</string>
+    <string>--loop</string>
+    <string>--sweep-command</string>
+    <string>/Users/jay/apps/code-main-keeper.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/apps/logs/code-main-keeper.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/apps/logs/code-main-keeper.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

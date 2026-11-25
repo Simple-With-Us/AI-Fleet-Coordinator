@@ -39,9 +39,6 @@ FILES = (
 # The first shared runtime shipped this exact closure before Docs was added.
 # Named explicitly:  deriving it positionally lets any middle-of-list addition move the
 # boundary and break existing-bundle recognition on hosts that hold the original set.
-# The retired reader's own files are gone from the repo, so they cannot be part of a
-# closure this installer can produce;  a host that still holds them is recognized by the
-# allowed directory list below and its bundle is replaced, not refused.
 LEGACY_FILES = (
     "code-main-keeper.sh",
     "fleet_lanes/__init__.py",
@@ -81,6 +78,14 @@ LEGACY_DOCS_FILES = (
     "fleet_docs/__main__.py",
     "fleet_docs/pipeline.py",
     "fleet_docs/snapshot.py",
+)
+# The retired reader's own two files were part of the closure on every host that installed the
+# shared runtime before the reader was retired, so a bundle that still holds them is a real host
+# state and not damage.  They are gone from the repo, so this installer can never produce them;
+# it recognizes that bundle and replaces it, which is how the retired reader leaves the host.
+RETIRED_READER_FILES = (
+    "fleet_secrets/__init__.py",
+    "fleet_secrets/core.py",
 )
 
 
@@ -148,7 +153,11 @@ def install(source, destination, source_commit):
             raise ValueError("Required runtime dependency missing: " + name)
         payload[name] = path.read_bytes()
     if destination.exists():
-        allowed = {"manifest.json"} | {"scripts/" + name for name in FILES}
+        allowed = (
+            {"manifest.json"}
+            | {"scripts/" + name for name in FILES}
+            | {"scripts/" + name for name in RETIRED_READER_FILES}
+        )
         allowed_dirs = {
             "scripts",
             "scripts/fleet_lanes",
@@ -172,11 +181,15 @@ def install(source, destination, source_commit):
         if not (destination / "manifest.json").is_file():
             raise ValueError("Existing bundle has no source manifest")
         previous = json.loads((destination / "manifest.json").read_text())
-        if previous.get("schema") != 1 or set(previous.get("files", {})) not in (
-            set(FILES),
-            set(LEGACY_FILES),
-            set(LEGACY_DOCS_FILES),
-        ):
+        recognized_closures = (
+            frozenset(FILES),
+            frozenset(LEGACY_FILES),
+            frozenset(LEGACY_DOCS_FILES),
+            frozenset(FILES) | frozenset(RETIRED_READER_FILES),
+            frozenset(LEGACY_FILES) | frozenset(RETIRED_READER_FILES),
+            frozenset(LEGACY_DOCS_FILES) | frozenset(RETIRED_READER_FILES),
+        )
+        if previous.get("schema") != 1 or frozenset(previous.get("files", {})) not in recognized_closures:
             raise ValueError("Existing bundle manifest is not recognized")
         for name, digest in previous["files"].items():
             target = destination / "scripts" / name

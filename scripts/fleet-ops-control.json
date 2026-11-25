@@ -3,6 +3,7 @@
   "mac": {
     "agents": [
       {"label": "com.jay.botfleet-server", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.code-main-keeper", "actions": ["start", "stop", "restart"], "role": "updater", "stopConsequence": "Stopping this stops the Mac keeping ~/Code caught up with origin/main, so the Code clones fall behind until it starts again."},
       {"label": "com.jay.fleet-api-health", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the ST and CT health report, so Muster's API health rows go out of date and then read as not known."},
       {"label": "com.jay.fleet-gdrive-backup", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-bearer-status", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the bearer status report and its alarms, so Muster's Bearers panel goes out of date and then reads as not known."},
@@ -29,7 +30,6 @@
     "pm2Apps": [
       {"name": "botfleet-mcp", "actions": ["start", "stop", "restart"]},
       {"name": "shellular", "actions": ["start", "stop", "restart"]},
-      {"name": "code-main-keeper", "actions": ["start", "stop", "restart"]},
       {"name": "vision-worker", "actions": ["start", "stop", "restart"]},
       {"name": "xcode-health", "actions": ["start", "stop", "restart"]},
       {"name": "agy-acp", "actions": ["start", "stop", "restart"]},
