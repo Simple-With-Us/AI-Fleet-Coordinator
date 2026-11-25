@@ -770,6 +770,8 @@ def _linear_comments(raw: Any) -> dict[str, Any]:
         "last_tick": None,
         "errors": None,
         "last_error": None,
+        "created": None,
+        "updated": None,
     }
     if not isinstance(raw, dict):
         return out
@@ -778,6 +780,8 @@ def _linear_comments(raw: Any) -> dict[str, Any]:
     out["last_tick"] = _when(raw.get("last_tick"))
     out["errors"] = _count(raw.get("errors"))
     out["last_error"] = _code(raw.get("last_error"))
+    out["created"] = _count(raw.get("created"))
+    out["updated"] = _count(raw.get("updated"))
     return out
 
 
