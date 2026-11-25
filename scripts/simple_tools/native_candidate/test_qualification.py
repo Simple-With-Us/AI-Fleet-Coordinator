@@ -47,7 +47,7 @@ class QualificationTests(unittest.TestCase):
         p.write_text(json.dumps(x))
         p.chmod(0o600)
 
-    def make(self, expires=200):
+    def make(self, expires=200, qualification_generation=None):
         return Qualification(
             self.root,
             vars(self.target),
@@ -60,6 +60,19 @@ class QualificationTests(unittest.TestCase):
             lambda code: code,
             lambda *a: self.check,
             clock=lambda: self.now,
+            qualification_generation=qualification_generation,
+            source_boundary=(
+                dict(
+                    repo="owner/repo",
+                    number=12,
+                    review_floor=100,
+                    check_floor=200,
+                    complete=True,
+                    epoch=100,
+                )
+                if qualification_generation is not None
+                else None
+            ),
         )
 
     def tearDown(self):
@@ -68,6 +81,195 @@ class QualificationTests(unittest.TestCase):
 
     def call(self, riders=()):
         return self.q(self.target, self.head, riders, "t-1234567890123456")
+
+    @patch(
+        "native_fixture_package.native_event_eligibility.persisted_event",
+        return_value=True,
+    )
+    def test_prospective_namespace_preserves_original_and_remains_cap_one(self, eligibility):
+        self.call()
+        original = {p.name: p.read_bytes() for p in self.q.store.folder.iterdir() if p.is_file()}
+        self.q.close()
+        self.q = self.make(qualification_generation="protocol2550-v2")
+        self.head = SimpleNamespace(wake_id="ra-future", message_id=124, link_note="")
+        self.write_pending()
+        pending = self.root / "pending/ra-new.json"
+        value = json.loads(pending.read_text())
+        value["wake"].update(wake_id="ra-future", message_id=124)
+        future = self.root / "pending/ra-future.json"
+        future.write_text(json.dumps(value))
+        future.chmod(0o600)
+        self.assertEqual(self.call(), "unknown")
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(
+            {
+                p.name: p.read_bytes()
+                for p in (self.root / "native-qualification").iterdir()
+                if p.is_file()
+            },
+            original,
+        )
+        self.q.close()
+        self.q = self.make(qualification_generation="protocol2550-v2")
+        self.assertEqual(self.call(), "native-qualification-slot-consumed")
+        self.assertEqual(len(self.sent), 2)
+
+    def test_new_namespace_excludes_old_journal_before_reservation(self):
+        self.q.close()
+        self.q = self.make(qualification_generation="protocol2550-v2")
+        from native_fixture_package.zcode_native import digest
+
+        folder = self.root / "native-commands"
+        folder.mkdir()
+        journal = folder / (digest({"wake_key": self.head.wake_id}) + ".json")
+        journal.write_text("unreadable or uncertain original")
+        self.assertEqual(self.call(), "native-qualification-prior-command")
+        self.assertFalse((self.q.store.folder / "slot.claim").exists())
+        self.assertEqual(self.sent, [])
+        self.assertEqual(journal.read_text(), "unreadable or uncertain original")
+
+    def test_generation_cannot_escape_private_namespace(self):
+        for name in ["", "../old", "/tmp/other", "UPPER", True, "a" * 65]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.make(qualification_generation=name)
+
+    def test_generation_contract_is_immutable_before_first_claim(self):
+        self.q.close()
+        self.q = self.make(qualification_generation="immutable-boundary")
+        contract = (self.q.store.folder / "generation.json").read_bytes()
+        self.q.close()
+        self.q = self.make(qualification_generation="immutable-boundary")
+        self.assertEqual((self.q.store.folder / "generation.json").read_bytes(), contract)
+        with self.assertRaises(ValueError):
+            self.make(expires=199, qualification_generation="immutable-boundary")
+        self.assertFalse((self.q.store.folder / "slot.claim").exists())
+        self.assertEqual((self.q.store.folder / "generation.json").read_bytes(), contract)
+
+    def test_namespace_without_source_export_cannot_reserve(self):
+        self.q.close()
+        self.q = self.make(qualification_generation="needs-proof")
+        self.assertEqual(self.call(), "fallback")
+        self.assertFalse((self.q.store.folder / "slot.claim").exists())
+        self.assertEqual(self.sent, [])
+
+    @patch(
+        "native_fixture_package.native_event_eligibility.persisted_event",
+        return_value=True,
+    )
+    def test_namespace_concurrent_events_reserve_only_once(self, eligibility):
+        self.q.close()
+        self.q = self.make(qualification_generation="concurrent-generation")
+        entered, release = threading.Event(), threading.Event()
+
+        def native(*args):
+            self.sent.append(args)
+            entered.set()
+            release.wait(2)
+            return "unknown"
+
+        self.q.native = native
+        thread = threading.Thread(target=self.call)
+        thread.start()
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(self.call(), "native-qualification-slot-consumed")
+        release.set()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue((self.q.store.folder / "generation.json").exists())
+
+    def test_changed_generation_epoch_or_expiry_cannot_rearm_unused_slot(self):
+        self.q.close()
+        self.q = self.make(qualification_generation="frozen-window")
+        original = (self.q.store.folder / "generation.json").read_bytes()
+        for epoch, expires in [(99, 200), (100, 199), (100, None)]:
+            with (
+                self.subTest(epoch=epoch, expires=expires),
+                self.assertRaises(ValueError),
+            ):
+                Qualification(
+                    self.root,
+                    vars(self.target),
+                    "/fixture",
+                    epoch,
+                    expires,
+                    lambda *a: None,
+                    lambda *a: None,
+                    lambda *a: "fixture",
+                    lambda *a: None,
+                    lambda *a: True,
+                    qualification_generation="frozen-window",
+                )
+        self.assertEqual((self.q.store.folder / "generation.json").read_bytes(), original)
+        self.assertFalse((self.q.store.folder / "slot.claim").exists())
+
+    def test_same_generation_rejects_different_complete_source_boundary(self):
+        self.q.close()
+        self.q = self.make(qualification_generation="same-source-boundary")
+        boundary = dict(
+            repo="owner/repo",
+            number=12,
+            review_floor=101,
+            check_floor=200,
+            complete=True,
+            epoch=100,
+        )
+        with self.assertRaises(ValueError):
+            Qualification(
+                self.root,
+                vars(self.target),
+                "/fixture",
+                100,
+                200,
+                lambda *a: None,
+                lambda *a: None,
+                lambda *a: "fixture",
+                lambda *a: None,
+                lambda *a: True,
+                qualification_generation="same-source-boundary",
+                source_boundary=boundary,
+            )
+
+    def test_named_generation_rejects_missing_bad_boundary_before_files(self):
+        for expires, boundary in [
+            (None, None),
+            (float("nan"), None),
+            (3701, None),
+            (200, None),
+            (200, {}),
+            (
+                200,
+                dict(
+                    repo="owner/repo",
+                    number=12,
+                    review_floor=100,
+                    check_floor=200,
+                    complete=False,
+                    epoch=100,
+                ),
+            ),
+        ]:
+            with (
+                self.subTest(expires=expires, boundary=boundary),
+                self.assertRaises(ValueError),
+            ):
+                Qualification(
+                    self.root,
+                    vars(self.target),
+                    "/fixture",
+                    100,
+                    expires,
+                    lambda *a: None,
+                    lambda *a: None,
+                    lambda *a: "fixture",
+                    lambda *a: None,
+                    lambda *a: True,
+                    qualification_generation="invalid-no-write",
+                    source_boundary=boundary,
+                )
+            self.assertFalse(
+                (self.root / "native-qualification-generations/invalid-no-write").exists()
+            )
 
     def test_event_driven_wait_and_restart_cap1(self):
         self.q.close()
