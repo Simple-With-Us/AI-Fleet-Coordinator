@@ -414,6 +414,68 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(model.rows.map(\.place), [.server, .noEavesdropper])
     }
 
+    /// A server reading where CLAUDE has one live session and one ended one,  MA runs a job,
+    /// and JET does neither.
+    static let busyServerJSON = #"""
+    {"schema": 1, "generated_at": "2026-10-24T05:50:37Z", "instance": "server",
+     "status_updated": "2026-10-24T05:51:00Z",
+     "seats": [{"seat": "CLAUDE", "connected": true, "jobs": 0,
+                "leases": [{"letter": "A", "platform": "claude-code", "alive": true},
+                           {"letter": "B", "platform": "claude-code", "alive": false}]},
+               {"seat": "MA", "connected": true, "jobs": 1, "leases": []},
+               {"seat": "JET", "connected": true, "jobs": 0, "leases": []}],
+     "skipped": [], "disabled": []}
+    """#
+
+    /// A server seat with a live session or a running job is working,  from the server's
+    /// current reading alone,  and the Working and With Sessions filters find it (Sentry on
+    /// #2535).  The Mac columns still say they are not read here.
+    func test_a_server_seat_with_a_live_session_or_a_job_is_working() async throws {
+        let busy = try Self.serverReading(Self.busyServerJSON)
+        let model = try await read(roster: ["CLAUDE", "MA", "JET"], runner: healthyRunner(), server: .some(busy))
+        let claude = try XCTUnwrap(model.rows.first { $0.seat == "CLAUDE" })
+        let ma = try XCTUnwrap(model.rows.first { $0.seat == "MA" })
+        let jet = try XCTUnwrap(model.rows.first { $0.seat == "JET" })
+
+        XCTAssertEqual(claude.serverActivity, ServerSeatActivity(liveSessions: 1, jobs: 0))
+        XCTAssertTrue(claude.isWorking)
+        XCTAssertTrue(claude.matches(filter: .working, search: ""))
+        XCTAssertTrue(claude.matches(filter: .withSessions, search: ""))
+        XCTAssertNotNil(claude.openSessions.notHereReason)
+
+        XCTAssertEqual(ma.serverActivity, ServerSeatActivity(liveSessions: 0, jobs: 1))
+        XCTAssertTrue(ma.matches(filter: .working, search: ""))
+        XCTAssertFalse(ma.matches(filter: .withSessions, search: ""))
+
+        XCTAssertEqual(jet.serverActivity, ServerSeatActivity(liveSessions: 0, jobs: 0))
+        XCTAssertFalse(jet.isWorking)
+        XCTAssertFalse(jet.matches(filter: .working, search: ""))
+        XCTAssertFalse(jet.matches(filter: .withSessions, search: ""))
+    }
+
+    /// A reading that is not current never says a seat is working now.
+    func test_a_stale_reading_never_marks_a_seat_working() async throws {
+        let busy = try Self.serverReading(Self.busyServerJSON)
+        let model = try await read(
+            roster: ["CLAUDE", "MA"],
+            runner: healthyRunner(),
+            server: .some(busy),
+            now: SeatActivityTests.clock + 600
+        )
+        for row in model.rows {
+            XCTAssertEqual(row.place, .server, row.seat)
+            XCTAssertNil(row.serverActivity, row.seat)
+            XCTAssertFalse(row.isWorking, row.seat)
+        }
+    }
+
+    /// No server reading leaves no seat working.
+    func test_no_server_reading_marks_no_seat_working() async throws {
+        let model = try await read(roster: ["CLAUDE"], runner: healthyRunner(), server: .some(nil))
+        XCTAssertNil(model.rows.first?.serverActivity)
+        XCTAssertEqual(model.rows.first?.isWorking, false)
+    }
+
     // MARK: Where each seat is held (SEATS-4, HOSTAUDIT-08)
 
     /// A seat the partition gives to the server reads as held by the server,  and its
