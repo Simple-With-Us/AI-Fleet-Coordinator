@@ -42,6 +42,13 @@ final class SeatActivityTests: XCTestCase {
         return ServerEavesdropperReading.reading(of: status)
     }
 
+    /// How many times a read asked the server.  It is this suite's own:  the store suite's
+    /// `Counter` is nested there and is not in scope here.
+    actor ServerReadCounter {
+        private(set) var value = 0
+        func bump() { value += 1 }
+    }
+
     // MARK: The fake CLI
 
     /// A fake fleet chat CLI,  so a test never touches the network.
@@ -92,7 +99,7 @@ final class SeatActivityTests: XCTestCase {
         roster: [String] = ["CLAUDE"],
         runner: ChatRunning,
         server: ServerEavesdropperReading?? = nil,
-        serverReads: Counter? = nil,
+        serverReads: ServerReadCounter? = nil,
         now: TimeInterval = SeatActivityTests.clock
     ) async throws -> SeatActivityModel {
         let reading: ServerEavesdropperReading? = try server ?? Self.serverReading()
@@ -389,7 +396,7 @@ final class SeatActivityTests: XCTestCase {
 
     /// One read asks the server once,  and an empty roster asks it nothing.
     func test_a_read_asks_the_server_once_and_an_empty_roster_not_at_all() async throws {
-        let reads = Counter()
+        let reads = ServerReadCounter()
         _ = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner(), serverReads: reads)
         let afterOne = await reads.value
         XCTAssertEqual(afterOne, 1)
