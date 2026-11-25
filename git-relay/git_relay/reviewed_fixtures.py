@@ -42,6 +42,12 @@ from .secret_scan import find_secret
 # gr_workflow_dispatch checks.  Added lines introduce no new dedicated secret pattern.
 _REVIEWED_FIXTURES = frozenset(
     {
+        # CT #3197 endpoint regression; full-file provenance in the README.
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/src/admin/__tests__/reviewQueueFailures.test.ts",
+            "ef488ddc69bec439d19097ac231e04bf0016a9d6330906d544da04a258f51d48",
+        ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/fleet_lanes/tests/test_install_mcp.py",

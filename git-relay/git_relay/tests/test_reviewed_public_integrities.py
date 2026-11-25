@@ -48,8 +48,16 @@ class ReviewedPublicIntegrityTests(TestCase):
             (root / "scripts/simple_tools/secretscan.py").read_bytes(),
             (root / "git-relay/git_relay/patch_secretscan.py").read_bytes(),
         )
-        self.assertEqual(len(_REVIEWED_FIXTURES), 13)
-        self.assertTrue(all(repo == REPO for repo, _path, _digest in _REVIEWED_FIXTURES))
+        self.assertEqual(len(_REVIEWED_FIXTURES), 14)
+        self.assertEqual(sum(repo == REPO for repo, _path, _digest in _REVIEWED_FIXTURES), 13)
+        self.assertEqual(
+            {row for row in _REVIEWED_FIXTURES if row[0] != REPO},
+            {(
+                "Simple-With-Us/Congress.Trade",
+                "app/src/admin/__tests__/reviewQueueFailures.test.ts",
+                "ef488ddc69bec439d19097ac231e04bf0016a9d6330906d544da04a258f51d48",
+            )},
+        )
         self.assertEqual(len(patch_secretscan._REVIEWED_PUBLIC_INTEGRITIES), 4)
 
     def test_relay_full_file_gate_keeps_loaded_and_own_provider_checks(self):
