@@ -2,6 +2,7 @@
 
     simple-chat wake-deliver          one delivery on this host;  JSON in on stdin, JSON out
     simple-chat wake-ssh-gate         the forced command for the router's ssh key
+    simple-chat wake-key-line         the authorized_keys line that forces that key to the gate
 
 The router itself is the one service for every platform (`wake_service`, `simple-chat
 wake-router serve`), which builds the CLAUDE seat from `make_platform` here, with `DEFAULTS` as
@@ -85,17 +86,33 @@ With either missing the recheck is `failed` with `registry-not-configured`.  The
 WAKE_ROUTER_MAC_SSH alone names where the Mac is reached.  The Mac imports the platform table
 (wake_service, and fleet_knobs under it) only for a delivery:  the gate's preflight and its
 refusals never need it, and a delivery that cannot import it answers `failed` with
-`platform-table-unavailable`.  A router from before this
-envelope sends `{"session_id", "wake"}` and reads a flat answer.
-It has no generation to check, so it is delivered to on the router's own check, as it always was.
+`platform-table-unavailable`.  A router from before this envelope sent
+`{"session_id", "wake"}` and read a flat answer, with no generation to check.  Every router has
+sent the envelope since #1778, so that shape is now refused as a bad request and nothing runs
+(AFC-836):  the path that skipped the Mac's recheck is gone.
 
-The ssh key.  Install the router's key on the Mac with a forced command, so it can do nothing else:
+The ssh key.  Install the router's key on the Mac with a forced command, so it can do nothing else.
+No installer edits authorized_keys.  On the Mac, from its runtime checkout, this prints the line:
 
-    command="<home>/.local/bin/simple-chat wake-ssh-gate",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding <key-type> <public-key> wake-router
+    simple-chat wake-key-line [--from SOURCE]
 
-The gate reads SSH_ORIGINAL_COMMAND and compares it, whole, with the only two commands the router
-sends:  the preflight's `true` and `REMOTE_COMMAND`.  It never hands the string to a shell, and it
-refuses anything else.  Without it a forced command would run the preflight as a delivery.
+It is what `router_key_line` builds:  `restrict`, which turns off a terminal, forwarding and the
+rest;  `from=`, which admits only the router's host;  and `command=`, this checkout's own
+`scripts/simple-chat wake-ssh-gate`, named by absolute path.  The gate reads SSH_ORIGINAL_COMMAND
+and compares it, whole, with the only two commands the router sends:  the preflight's `true` and
+`REMOTE_COMMAND`.  It never hands the string to a shell, and refuses anything else with exit 126.
+Without it a forced command would run the preflight as a delivery.
+
+Whether the line is in place is checked, not assumed:  the preflight's `true` passes for a gated key
+and an ungated one alike.  `gate_check` sends over the router's own ssh invocation one command no
+router ever sends (`GATE_PROBE_COMMAND`).  The gate refuses it with 126 and its own line on stderr,
+which is `gated`;  a key with no forced command runs it and prints the marker, which is
+`unrestricted`;  a key forced to another command refuses it without that line.  The router answers
+the check at `GET /route-check/<SEAT>` for its routine bearer (`Router.route_check`, one ssh per
+ask), and `simple-chat daemon gate-check` sends that ask.  What each seat's route last answered is
+in its health (`Router.route_answer_health`, `Router.route_check_health`):  code words and counts
+for a delivery's answer and never its time, because health needs no key and the time of that answer
+is the time of a wake;  a check's own time is said, since an operator asked for it.
 
 Python 3.11+, standard library only.
 """
@@ -145,6 +162,34 @@ REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat wake-deliver'
 PREFLIGHT_COMMAND = "true"
 ENV_SSH_COMMAND = "SSH_ORIGINAL_COMMAND"
 GATE_REFUSED = 126  # never ssh's own 255, which the sender reads as a host that did not answer
+#: The verb the router's key is forced to (`router_key_line`), and the one line the gate writes
+#: for a command it refuses:  the check reads that line back to tell this gate from any other.
+GATE = "wake-ssh-gate"
+GATE_REFUSED_LINE = "wake-ssh-gate: that command is not allowed on this key\n"
+#: What the gate check sends:  a command no router ever sends, which a key with no forced command
+#: runs, printing GATE_PROBE.  Nothing else is asked of the far side.
+GATE_PROBE = "wake-gate-probe"
+GATE_PROBE_COMMAND = "echo " + GATE_PROBE
+#: What the gate check answers (AFC-836), in the order the module docstring gives them.
+CHECK_GATED = "gated"
+CHECK_UNRESTRICTED = "unrestricted"
+CHECK_OTHER_COMMAND = "another-command"
+CHECK_KEY_REFUSED = "key-refused"
+CHECK_UNREACHABLE = "unreachable"
+CHECK_FAILED = "failed"
+CHECK_NO_DESTINATION = "no-ssh-destination"
+ROUTE_CHECKS = (
+    CHECK_GATED,
+    CHECK_UNRESTRICTED,
+    CHECK_OTHER_COMMAND,
+    CHECK_KEY_REFUSED,
+    CHECK_UNREACHABLE,
+    CHECK_FAILED,
+    CHECK_NO_DESTINATION,
+)
+#: One source an authorized_keys `from=` may name here:  an address or a host name, nothing that
+#: closes a quote or opens an option.  A line may name several, separated by commas.
+KEY_FROM_RE = re.compile(r"[A-Za-z0-9.:*?\-]{1,255}")
 BAD_REQUEST = "bad-request"
 BAD_REQUEST_EXIT = 2
 UNKNOWN_PLATFORM = "unknown-platform"
@@ -657,6 +702,59 @@ def deliver_remote_turn(
     return WR.turn_result(delivery, answer.get("turn"), turn_id, riders)
 
 
+def _ssh_to(dest: str) -> list[str]:
+    """The ssh the router makes to `dest`, with no command yet.  The gate check sends by the same
+    invocation, so it proves the key the router offers and no other."""
+    return [
+        "ssh",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=%d" % SSH_CONNECT_TIMEOUT,
+        "--",
+        dest,
+    ]
+
+
+def gate_check(dest: object, *, runner: Runner = subprocess.run) -> dict[str, Any]:
+    """Whether the key this host offers `dest` is forced to the gate (AFC-836), one word of
+    ROUTE_CHECKS and the exit status.  It sends `GATE_PROBE_COMMAND` by the router's own invocation.
+    The gate refuses it, 126 with `GATE_REFUSED_LINE` on stderr:  `gated`.  A key with no forced
+    command runs it and prints `GATE_PROBE`:  `unrestricted`.  A 126 without that line is
+    `another-command`.  ssh's own 255 is `key-refused` when the far side answered and would not take
+    the key (ssh says "Permission denied"), and `unreachable` otherwise or on a timeout.  A
+    destination in no shape the route takes, ssh that could not run, and any other answer are
+    `failed`.  The answer never carries the destination, a host name or any of ssh's own text, which
+    names both:  the gate refused the probe, so nothing ran there."""
+    if not isinstance(dest, str) or not SSH_DEST_RE.fullmatch(dest):
+        return {"answer": CHECK_NO_DESTINATION, "exit": None}
+    try:
+        proc = runner(
+            _ssh_to(dest) + [GATE_PROBE_COMMAND],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=SSH_PREFLIGHT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"answer": CHECK_UNREACHABLE, "exit": None}
+    except Exception:  # noqa: BLE001 - the answer is a word, never a crash
+        return {"answer": CHECK_FAILED, "exit": None}
+    if proc.returncode == GATE_REFUSED:
+        answer = CHECK_GATED if GATE_REFUSED_LINE in str(proc.stderr or "") else CHECK_OTHER_COMMAND
+    elif GATE_PROBE in [line.strip() for line in str(proc.stdout or "").splitlines()]:
+        answer = CHECK_UNRESTRICTED
+    elif "Permission denied" in str(proc.stderr or ""):
+        answer = CHECK_KEY_REFUSED
+    elif proc.returncode == SSH_UNREACHABLE:
+        answer = CHECK_UNREACHABLE
+    else:
+        answer = CHECK_FAILED
+    return {"answer": answer, "exit": proc.returncode}
+
+
 def _remote(
     env: Mapping[str, str],
     config: Mapping[str, Any],
@@ -683,8 +781,7 @@ def _remote(
     dest = str(config.get("mac_ssh") or "").strip()
     if not SSH_DEST_RE.fullmatch(dest):
         return WR.Delivery("refused", "ssh", code="no-ssh-destination"), None, False
-    remote = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % SSH_CONNECT_TIMEOUT]
-    remote += ["--", dest]
+    remote = _ssh_to(dest)
     # Nothing can have run yet, so every failure of this preflight is safe to try again.
     try:
         check = runner(
@@ -1098,21 +1195,11 @@ def _dispatch(
     return _module_delivery(entry, request, env, turn)
 
 
-def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
-    """A router from before the envelope:  `{"session_id", "wake"}` in, a flat Delivery out.  It
-    names no generation, so there is nothing to recheck against.  Remove this once the server is
-    updated:  it exists only for that rollout, and it is the one path that skips the recheck."""
-    try:
-        session_id = str(request["session_id"])
-        wake = _wake_from(request["wake"])
-    except (ValueError, KeyError, TypeError, AttributeError):
-        return asdict(WR.Delivery("refused", code=BAD_REQUEST))
-    return asdict(_deliver_here(env, session_id, wake))
-
-
 def _handle(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
-    if "platform" not in request and "target" not in request and "session_id" in request:
-        return _deliver_legacy(request, env)
+    # Every request is the envelope (module docstring, The wire).  The flat shape a router from
+    # before it sent, `{"session_id", "wake"}`, names no generation, so it was delivered without
+    # the Mac's recheck;  it is gone (AFC-836), and such a request now falls through to the checks
+    # below and is refused as a bad request, with nothing run.
     # A turn's offer is set apart, and a `turn_dispatch` the sender wrote is dropped:  only
     # `_module_delivery` marks a request for a module that takes turns (wake_router, Turns).
     turn = request.get("turn")
@@ -1170,7 +1257,7 @@ def wake_ssh_gate_main(
         return 0
     if command == REMOTE_COMMAND:
         return wake_deliver_main(stdin, stdout, env)
-    stderr.write("wake-ssh-gate: that command is not allowed on this key\n")
+    stderr.write(GATE_REFUSED_LINE)
     return GATE_REFUSED
 
 
@@ -1180,3 +1267,49 @@ def deliver_entry() -> int:
 
 def gate_entry() -> int:
     return wake_ssh_gate_main(sys.stdin, sys.stdout, sys.stderr, dict(os.environ))
+
+
+def gate_script() -> str:
+    """The absolute path of the `scripts/simple-chat` of the checkout this code is running from."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "simple-chat")
+
+
+def _sources_ok(source: str) -> bool:
+    """Whether every address or host name a `from=` list names is in the one shape it may have.
+    A list with an empty part names nothing, which the shape never allows."""
+    return bool(source) and all(KEY_FROM_RE.fullmatch(part) for part in source.split(","))
+
+
+def router_key_line(source: str = "<server-ip>") -> str:
+    """The authorized_keys line that lets the router's key reach this host's gate and do nothing
+    else (AFC-836).  The owner of the host that answers (the Mac) adds it with the router's public
+    key:  no installer edits authorized_keys.  Run it there, `simple-chat wake-key-line`, to print
+    it with that host's own checkout path.
+
+    It names this checkout's own `scripts/simple-chat` by absolute path.  `restrict` turns off a
+    terminal, forwarding and the rest, and `from=` admits the router's host alone:  `source` is one
+    address or host name, or several separated by commas.  One that would close the quote or open
+    an option puts the placeholder back, and so does a checkout path that cannot be quoted."""
+    script = gate_script()
+    if '"' in script or "\\" in script or any(ord(c) < 32 for c in script):
+        script = "<absolute path of scripts/simple-chat>"
+    if source != "<server-ip>" and not _sources_ok(source):
+        source = "<server-ip>"
+    return 'restrict,from="%s",command="%s %s" <key-type> <public-key> wake-router' % (
+        source,
+        script,
+        GATE,
+    )
+
+
+def router_key_line_main(argv: list[str], stdout: TextIO) -> int:
+    """`wake-key-line [--from SOURCE]`:  print the authorized_keys line of `router_key_line`, with
+    this host's own checkout path.  It reads nothing and writes nothing."""
+    source = "<server-ip>"
+    if argv and argv[0] == "--from" and len(argv) == 2 and _sources_ok(argv[1]):
+        source = argv[1]
+    elif argv:
+        stdout.write("usage: simple-chat wake-key-line [--from SOURCE]\n")
+        return 2
+    stdout.write(router_key_line(source) + "\n")
+    return 0
