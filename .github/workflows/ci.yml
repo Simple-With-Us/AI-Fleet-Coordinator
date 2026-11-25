@@ -292,22 +292,24 @@ jobs:
     # AFC-882:  these three discovers used to share one step.  On 2026-11-22 three
     # consecutive runs of this job were read as hanging inside test_operator_linear
     # (EngineTests) because the shared step's output reached the in-progress log in
-    # buffered bursts that froze at the same byte count while the suite was in fact
-    # still running, and each run was then cancelled by the next push before the step
-    # could settle.  The completed logs show all three runs progressing well past
-    # that module (the third finished all 7,141 simple_tools tests, OK, in 579s), so
-    # no test was hanging:  the shared, buffered step hid which suite was running
-    # and how far it had got, and the job's length did the rest.  Each discover now
-    # has its own named step and runs unbuffered (python3 -u), so progress streams
-    # line by line and a genuine stall names the suite and the test it stopped on.
+    # buffered bursts that froze at the same byte count.  The completed logs prove
+    # less than that reading claimed, and only this much:  the third run finished
+    # all 7,141 simple_tools tests, OK, in 579s and completed the job;  the first
+    # two progressed well past that module and were cancelled by the next push
+    # before they could settle;  and no completed log shows a stall (no timestamp
+    # gap over 32 seconds).  What no log can prove is why the in-progress view
+    # froze where it did, so the split does not close that question:  each discover
+    # now has its own named step and runs unbuffered (python3 -u), so progress
+    # streams line by line and a genuine stall names the suite and the exact test
+    # it stopped on, which is the evidence a suite-level fix would need.
     - name: simple-tools tests
       timeout-minutes: 12
       run: cd scripts && python3 -u -m unittest discover -s simple_tools/tests -t . -v
     - name: simple-tools stdio launcher tests
-      timeout-minutes: 5
+      timeout-minutes: 2
       run: cd scripts && python3 -u -m unittest discover -s simple_tools/stdio_launcher/tests -t . -v
     - name: WhatsApp bridge tests
-      timeout-minutes: 5
+      timeout-minutes: 2
       run: cd scripts && python3 -u -m unittest discover -s whatsapp_bridge/tests -t . -v
     # The Operator's session registry:  the letter allocation, the two letter spaces,
     # the registry CLI, and the secret scan that guards every title.  The files sit at
