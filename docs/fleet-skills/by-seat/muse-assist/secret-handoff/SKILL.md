@@ -157,7 +157,7 @@ Empty `success:true` on a filtered Bearer call means "valid, not scoped to that 
 
 ## Canon
 
-- `~/apps/FLEET-PROTOCOL.md` § Secret handoff, Infisical, Coolify, grep trap, loaded-key byte dumps, leak response
+- The repository `AGENTS.md` Infisical rules
 - `<YOUR_SKILLS_DIR>/secret-safety/SKILL.md`
 - Coordinator `docs/rollouts/2026-08-15-secret-file-grep-ban.md`
 - Coordinator `docs/rollouts/2026-09-18-secret-guard-od.md`

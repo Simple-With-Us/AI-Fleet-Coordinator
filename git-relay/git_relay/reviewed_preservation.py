@@ -30,15 +30,18 @@ REVIEWED_PRESERVATIONS: frozenset[tuple[str, str, str, str]] = frozenset(
         # docs/security/reviewed-fixture-pairs-preservation.md.
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
-            "scripts/fleet_rag/tests/test_recall.py",
-            "b78c76d6927ad12c90972e39a336b38d38102cef823e0957194ca359729a65b4",
-            "d9cd1d0ac5529a2d7dbe81f595038c0210ca6c236a87947bdd8528034543ef73",
-        ),
-        (
-            "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/fleet_rag/tests/test_ingest.py",
             "e970e451e414d3efd963abed5d544f0713fe2b2934901c032fe8b01898085d2e",
             "1eaa804f7514122721888bd9f49c41a4088d827a28855391739d97c334008634",
+        ),
+        # RENEWED (Jay, Nov 23, 2026, in chat): the Nov 21 recall tuple (base b78c76d6…,
+        # result d9cd1d0a…) is RETIRED — OPS-1102 #2473 drifted that base, and a renewal
+        # replaces, not extends:  same fixtures, same refusal flips, live base only.
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/fleet_rag/tests/test_recall.py",
+            "8a6911c37d2f27d75be7193552b1b9402c4f4f5f3777c2ff350aded37ab6b32e",
+            "de6b309011f0d0f043dfb209584d71989f6a599128d7eaa3ae5703d54dc5aa31",
         ),
     }
 )

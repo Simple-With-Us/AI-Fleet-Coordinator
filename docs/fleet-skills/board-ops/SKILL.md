@@ -85,7 +85,7 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 
 ## Canon
 
-- `~/apps/FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle
+- `docs/protocols/linear-fleet-guide.md` (The Claim Lifecycle)
 - `scripts/linear-board/README.md` and `docs/protocols/linear-migration.md` in AI-Fleet-Coordinator
 - The MCP guide:  `guide` with `section` = "Tools by Family"
 - The CLI fallback help:  `simple-board --help` / `simple-board file --help`

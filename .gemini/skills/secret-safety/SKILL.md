@@ -108,7 +108,7 @@ confirmed leak vector (agent transcript).  **Never run:**
 - `COOLIFY_AGENTS` = **full** deploy/admin → agent ops / GH deploy only — **never** as the app's stats `COOLIFY_API_TOKEN`
 - If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`, not `COOLIFY_AGENTS`
 
-Canonical: `~/apps/FLEET-PROTOCOL.md` § Secrets and Credentials.
+Canonical: the repository `AGENTS.md` Infisical rules (sole source of truth).
 
 **Anything else** — a database column, a cloud vault, a `.env` file, a config JSON, a password manager entry, a token field in some other API's response.  Same rule regardless of source: fetching it is sometimes unavoidable, and once it's fetched, the job shifts from "prevent access" to "prevent it from propagating any further than the one place it's actually needed" — don't let it flow into a second place (a log line, a repeated command, a written file, your own explanatory text) without the inline-redaction technique above.
 

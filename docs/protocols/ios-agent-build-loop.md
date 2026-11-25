@@ -1,6 +1,6 @@
 # iOS agent build loop (owner ruling 2026-08-13 — ALL seats, ALL apps)
 
-> Moved from `FLEET-PROTOCOL.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in FLEET-PROTOCOL.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
+> Moved from `FLEET-PROTOCOL.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  This file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
 Owner: do **not** stand up, debug, or "fix" Xcode MCP (`XcodeBuildMCP`, `xcrun mcpbridge`, `build_sim`).  We are not using that path.
 
@@ -15,7 +15,7 @@ Architecture unless the file you are editing already differs:
 - `@Observable` + `@MainActor` on stores (never `ObservableObject`)
 - `NavigationStack` + value-based `NavigationLink` (never `NavigationView` / destination-closure links)
 - Light is the product default theme
-- Two spaces between sentences in every human-readable string, including App Store listing and review notes (see § Two spaces between sentences)
+- Two spaces between sentences in every human-readable string, including App Store listing and review notes (see § Sentence Gap)
 
 Signing / TestFlight last-mile stays `scripts/ios-ship-testflight.sh` + `/Users/jay/apps/ios-fleet/README.md`.  Do not debug code-signing by guessing.
 

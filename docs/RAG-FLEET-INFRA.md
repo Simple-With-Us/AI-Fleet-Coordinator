@@ -416,6 +416,10 @@ curl -sS https://recall.jays.services/recall/search \
   -d '{"query":"handoff file grep trap","limit":3}'
 ```
 
+### MiniMax Code seats on the owner's Mac (hosted route, seat bearer)
+
+Two hosted routes reach the corpus with the seat's own fleet bearer, the mode-0600 file `~/.secrets/fleet-tools/<seat>`, one file per seat, never shared.  The `recall` CLI is the first: `scripts/recall` routes `search` and `stats` to the hosted service by default when the process declares a seat (`AGENT_SEAT`, `AGENT_LAUNCH_SEAT` or `AGENT_TAG`) or supplies `SIMPLE_TOOLS_BEARER`, and it reads the seat's own file through `fleet_bearer.own_bearer()`.  No credential reaches a command line, a config file or a log line.  The hosted Fleet Tools MCP at `https://agents.simplewithus.com/mcp` is the second: it serves the five recall tools (`recall_search`, `recall_stats`, `recall_contribute`, `recall_correct`, `recall_retract`) beside the rest of the fleet toolset, and an MCP client reaches it through an on-demand launcher that reads the seat file at runtime and hands it to `mcp-remote` as an `Authorization` header.  The MiniMax launcher is `~/apps/mcp-servers/fleet-tools-minimax-launch.sh`, registered as the stdio MCP server `fleet-tools`; every other platform copies the pattern for its own seat file the way `fleet-tools-codex-launch.sh` does for Codex.  The local stdio `fleet-recall` server (`python3 ~/apps/fleet-rag/fleet-recall-mcp.py`) is a separate route: it reads Qdrant and TEI directly and needs the consumer's own scoped Infisical binding (`FLEET_RECALL_INFISICAL_TOKEN`, or its mode-0600 `FLEET_RECALL_INFISICAL_TOKEN_FILE`).  Without that binding every call answers `missing credentials: TEI_URL, TEI_API_KEY, QDRANT_URL, QDRANT_FLEET_COLLECTION`, and the hosted routes are the ones that work.  Verify a MiniMax seat with one live `recall -- "<query>"`: it returns hits, and the bearer is never printed.
+
 ## Credentials
 
 Canonical in **Infisical shared / prod** (project `18f563a3-9c88-454c-96eb-28fc9678f3ba`):

@@ -112,6 +112,22 @@ FAILURE_SIGNATURES = (("project_token_login_failed", "model-auth-login-failed"),
 #: interactive input queue, so a prompt is in one of these tables or nowhere.
 TRANSCRIPT_TABLES = (("input_history", "text"), ("message", "data"))
 
+# Diagnostic categories only for an already nonzero child exit. Exact CLI-owned
+# line templates, never arbitrary exception text. Matching a category cannot
+# change delivery certainty, retry eligibility, or a clean-exit classification.
+CLI_EXIT_CATEGORIES = (
+    (r"^Error: Failed to load environment file: [^\r\n]+$", "cli-env-file-load"),
+    (r"^Error: ZCode app factory is unavailable\.$", "cli-app-factory-unavailable"),
+    (r"^Error: Provider Registry runtime is unavailable\.$", "cli-provider-runtime-unavailable"),
+    (r"^Error: Session not found: [^\r\n]+$", "cli-session-not-found"),
+    (r"^Error: Session is not active and not persisted: [^\r\n]+$", "cli-session-not-persisted"),
+    (
+        r"^\[zcode\] process error kind=(?:uncaughtException|unhandledRejection) "
+        r"origin=(?:uncaughtException|unhandledRejection)$",
+        "cli-process-error",
+    ),
+)
+
 DEFAULTS: Mapping[str, Any] = {
     **WR.ROUTER_DEFAULTS,
     "local_host": "server",
@@ -705,7 +721,9 @@ def deliver_local(
 
             # The child's output is drained while it runs, into a rolling buffer that never
             # holds more than the tail the classifier reads.
-            tail, reader = _read_tail(getattr(child, "stdout", None), OUTPUT_SCAN_CAP)
+            # One sentinel byte records that the rolling tail was truncated. The
+            # classifier still scans at most OUTPUT_SCAN_CAP characters.
+            tail, reader = _read_tail(getattr(child, "stdout", None), OUTPUT_SCAN_CAP + 1)
             try:
                 child.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
@@ -727,7 +745,7 @@ def deliver_local(
                 reader.join(timeout=OUTPUT_JOIN_SECONDS)
             output = bytes(tail)
             returncode = getattr(child, "returncode", 0)
-            failure = _failure_signature(output)
+            failure = _failure_signature(output, include_cli_errors=returncode != 0)
             if returncode == 0 and not failure:
                 # A clean exit is not the outcome either:  the transcript decides, so a prompt
                 # the store says is in neither table ran nothing and the try may be repeated.
@@ -763,17 +781,20 @@ def deliver_local(
                 legacy_lock.close()
 
 
-def _failure_signature(output: object) -> str:
+def _failure_signature(output: object, *, include_cli_errors: bool = False) -> str:
     """The typed code for a documented failure in the child's own output, or "".
 
     The raw output never leaves this function:  it is scanned in a bounded tail, the tail the
     shared wake contract names, because a child's output can quote the prompt, the session or
     a token, and a receipt is a durable record.  A failure line that the child carried on
-    past is stale by construction, so it is not read as a failure:  the turn went on after it,
-    and the router would run the same turn again.  No signature match is no code:  the failure
-    is never guessed."""
+    past is outside the bounded window and ignored. CLI error categories are opt-in
+    only for nonzero exits and never determine certainty or retry eligibility. A
+    quoted matching line is at most a category, never evidence of nonexecution.
+    No signature match is no code: the failure is never guessed."""
     if isinstance(output, bytes):
-        text = output.decode("utf-8", "replace")
+        # Preserve the historical byte-capped auth suffix exactly. The extra
+        # reader byte is boundary metadata, never substantive scan content.
+        text = output[-OUTPUT_SCAN_CAP:].decode("utf-8", "replace")
     elif isinstance(output, str):
         text = output
     else:
@@ -782,6 +803,17 @@ def _failure_signature(output: object) -> str:
     for needle, code in FAILURE_SIGNATURES:
         if needle in window:
             return code
+    if include_cli_errors:
+        # The bounded suffix may begin inside a quoted/prefixed line. The reader
+        # retains one extra byte so truncation is observable even before decoding.
+        # Drop that incomplete first line for new anchored categories only; keep
+        # the historical auth-signature scan above unchanged.
+        if len(output) > OUTPUT_SCAN_CAP or len(text) > OUTPUT_SCAN_CAP:
+            boundary = re.search(r"[\r\n]", window)
+            window = window[boundary.end() :] if boundary else ""
+        for pattern, code in CLI_EXIT_CATEGORIES:
+            if re.search(pattern, window, re.MULTILINE):
+                return code
     return ""
 
 

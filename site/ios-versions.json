@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-23T08:23:25Z",
+  "updatedAt": "2026-11-24T21:17:21Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -46,7 +46,7 @@
     },
     "net.dealdex": {
       "marketingVersion": "0.1.0",
-      "build": "202611180257",
+      "build": "202611241417",
       "appleId": 6804249232,
       "displayName": "DealDex"
     },
@@ -81,13 +81,13 @@
     },
     "com.socratictrade.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611230134",
+      "build": "202611241437",
       "appleId": 6815511597,
       "displayName": "Socratic-Trade"
     },
     "com.simplewithus.codecaps.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611210543",
+      "build": "202611240427",
       "appleId": 6814623846,
       "displayName": "CodeCaps Companion"
     },

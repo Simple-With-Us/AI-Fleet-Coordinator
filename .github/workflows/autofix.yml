@@ -12,13 +12,10 @@ on:
   pull_request_review_comment:
     types: [created]
 
-# The reusable's GITHUB_TOKEN is capped by these grants:  marker comments
-# (issues: write), PR reads (pull-requests: read), and the no-app push
-# fallback (contents: write).  Owner-approved 2026-10-21.
-permissions:
-  contents: write
-  pull-requests: read
-  issues: write
+# The reusable's GITHUB_TOKEN is capped by the job-level permissions below:
+# marker comments (issues: write), PR reads (pull-requests: read), artifact
+# reads (actions: read), and the no-app push fallback (contents: write).
+permissions: {}
 
 concurrency:
   group: pr-autofix-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
