@@ -20,7 +20,13 @@ def main():
             raise SystemExit("unsafe runner anchor")
     package = DIRECTORY / "runner-package"
     for name, digest in MODULE_HASHES.items():
+        if Path(name).is_absolute() or ".." in Path(name).parts:
+            raise SystemExit("unsafe module path")
         p = package / name
+        try:
+            p.relative_to(package)
+        except ValueError:
+            raise SystemExit("unsafe module path")
         for parent in [p.parent, package]:
             s = parent.lstat()
             if not stat.S_ISDIR(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022:
