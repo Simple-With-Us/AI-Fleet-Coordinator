@@ -716,7 +716,7 @@ def _flush_also_paths(writer: Writer, pending: list[dict]) -> None:
     pending.clear()
 
 
-def _sync_provenance(doc, rows, adopted, writer, stats):
+def _sync_provenance(doc, rows, adopted, writer, stats, *, verify=False):
     """Refresh metadata only after receiver body and primary owner match the canonical doc."""
     if writer.dry_run or writer.qd is None or not rows:
         return
@@ -732,12 +732,21 @@ def _sync_provenance(doc, rows, adopted, writer, stats):
         "source_alias_count",
     )
     annotation = {name: rows[0]["payload"][name] for name in fields if name in rows[0]["payload"]}
-    if not annotation:
+    if not annotation and not verify:
         return
-    expected = {
-        pid: content_hash(_chunk_body(row["payload"]["text"])) for row, pid in zip(rows, adopted)
-    }
-    ids = list(expected)
+    if not hasattr(writer, "provenance_pending"):
+        writer.provenance_pending = {}
+    for row, pid in zip(rows, adopted):
+        writer.provenance_pending.setdefault(pid, []).append(
+            (content_hash(_chunk_body(row["payload"]["text"])), doc.doc_id, doc.source, annotation)
+        )
+        if len(writer.provenance_pending) >= 256:
+            _flush_provenance(writer, stats)
+
+
+def _flush_provenance(writer, stats):
+    pending = getattr(writer, "provenance_pending", {})
+    ids = list(pending)
     for start in range(0, len(ids), 256):
         response = writer.qd._call(
             writer.qd._cpath("/points"),
@@ -750,14 +759,16 @@ def _sync_provenance(doc, rows, adopted, writer, stats):
             if (
                 not isinstance(payload, dict)
                 or not isinstance(payload.get("text"), str)
-                or content_hash(_chunk_body(payload["text"])) != expected[point_id]
+                or any(content_hash(_chunk_body(payload["text"])) != item[0] for item in pending[point_id])
             ):
                 raise FleetRagError("unchanged document receiver content verification failed")
-            if payload.get("doc_id") != doc.doc_id or payload.get("source") != doc.source:
-                continue  # Shared chunks keep their actual primary document and its provenance.
-            if any(payload.get(name) != value for name, value in annotation.items()):
-                writer.annotate(point_id, annotation)
-                stats["chunks_provenance_updated"] = stats.get("chunks_provenance_updated", 0) + 1
+            for _, doc_id, source, annotation in pending[point_id]:
+                if payload.get("doc_id") != doc_id or payload.get("source") != source:
+                    continue  # Shared chunks keep their actual primary document and its provenance.
+                if any(payload.get(name) != value for name, value in annotation.items()):
+                    writer.annotate(point_id, annotation)
+                    stats["chunks_provenance_updated"] = stats.get("chunks_provenance_updated", 0) + 1
+    pending.clear()
 
 
 def _sync_unchanged_chunks(
@@ -813,9 +824,12 @@ def _sync_unchanged_chunks(
     # shared with another document is not a duplicate body.
     extras = [i for i in old_ids if i not in adopted and i not in replaced_ids]
     new_ids = adopted + extras
-    _sync_provenance(doc, rows, adopted, writer, stats)
+    _sync_provenance(doc, rows, adopted, writer, stats, verify=new_ids != old_ids)
     if new_ids == old_ids:
         return False
+    # Ordinary metadata-only refreshes share batches, but a repoint must verify
+    # every adopted receiver body before state changes or a valid copy is retired.
+    _flush_provenance(writer, stats)
     others: set[str] = set()
     for did, rec in state.items():
         if did == doc.doc_id or not isinstance(rec, dict):
@@ -902,7 +916,14 @@ def process_group(
         writer.delete(stale)
         stats["chunks_deleted"] += len(stale)
         if not writer.dry_run:
+            previous = state.get(doc.doc_id)
+            marker = (
+                {"source_reconciliation_marker": "ingest-v1"}
+                if previous is None or isinstance(previous, dict) and previous.get("source_reconciliation_marker") == "ingest-v1"
+                else {}
+            )
             state[doc.doc_id] = {
+                **marker,
                 "doc_hash": doc_hash,
                 "chunk_ids": new_ids,
                 "updated_at": int(doc.updated_at_ms or 0),
@@ -1242,6 +1263,7 @@ def _run_locked(
     pending_prunes: list[tuple[str, set[str], dict, set[str]]] = []
 
     for name in names:
+        writer.provenance_pending = {}
         sources.take_source_read_receipt(name)
         stats = _empty_stats()
         report["per_source"][name] = stats
@@ -1362,6 +1384,7 @@ def _run_locked(
                     seen_chunks,
                     pending_annotations,
                 )
+            _flush_provenance(writer, stats)
             if (
                 linear_receipt is not None
                 and linear_receipt.get("full")
@@ -1563,6 +1586,7 @@ def _prune_candidates(name: str, yielded: set[str], state: dict) -> list[str]:
         for did, rec in state.items()
         if isinstance(rec, dict)
         and rec.get("source") == name
+        and rec.get("source_reconciliation_marker") == "ingest-v1"
         and did not in yielded
         # Coverage work supplies no authority to delete preserved library history.
         and not (name == "doc" and did.startswith("doc/library/"))
