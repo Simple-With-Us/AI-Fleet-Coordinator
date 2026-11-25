@@ -35,6 +35,9 @@ DDL = (
     " created_at_ms INTEGER, updated_at_ms INTEGER)"
 )
 
+#: The letters the fixture hands out,  in the order the registry hands them out.
+ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 
 class ReconcileTests(Base):
     """A chat whose letter the assigner no longer holds loses its prefix,  and nothing else does."""
@@ -174,6 +177,28 @@ class ReconcileTests(Base):
         )
 
     # ---- the pass -------------------------------------------------------------------------
+
+    def lettered(self, sid: str, *, label: str, title: str, seen: float) -> None:
+        """A chat the pass offers:  its note,  its stored title,  and nothing else."""
+        self.add(sid, title=title)
+        self.name(sid, "%s: %s" % (label, title))
+        path = PL.note_path(self.env(), PM.SEAT, sid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        note = {
+            "session_id": sid,
+            "platform": PM.SPEC.platform,
+            "location": "mac",
+            "state": "open",
+            "label": label,
+            "labels": [label],
+            "title": title,
+            "shown": "%s: %s" % (label, title),
+            "want": "%s: %s" % (label, title),
+            "titled": True,
+            "updated_at": seen,
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh, sort_keys=True)
 
     def test_a_chat_the_sweep_closed_loses_its_letter_prefix(self) -> None:
         self.add("m-0001", title="Fix Login")
@@ -388,6 +413,77 @@ class ReconcileTests(Base):
         self.assertEqual(done["retired"], [])
         self.assertEqual(self.title_of("m-0021"), "%s: Fix Login" % label)
         self.assertTrue(PL.lettered(self.note("m-0021")))
+
+    def test_a_chat_behind_the_live_holders_is_still_reached(self) -> None:
+        # Fifty live holders sit in front of a stale prefix in the order the pass reads.  They take no write and keep
+        # their place,  so a fixed slice would offer the same fifty for ever and the stale title behind them would
+        # never be cleaned.  The pass walks the list round,  and the next pass reaches it.
+        #
+        # The chats are written as notes rather than started:  the registry's letter space is twenty-six pairs,  and
+        # a host with fifty live holders is a real shape the fixture cannot hold.  The assigner's answers are the
+        # fixture's too,  and the pass's own order and its budget are what this case is about.
+        holders = []
+        labels = {}
+        for index in range(50):
+            sid = "m-11%02d" % index
+            label = "%s%s" % (ALPHABET[index // 26], ALPHABET[index % 26])
+            labels[sid] = label
+            self.lettered(sid, label=label, title="Fix %d" % index, seen=self.old)
+            holders.append(sid)
+        stale = "m-1199"
+        self.lettered(stale, label="ZY", title="Fix Stale", seen=self.now - 3601.0)
+        titles = {sid: self.title_of(sid) for sid in holders}
+        notes = {sid: self.note(sid) for sid in holders}
+
+        def answer(env, spec, where, sid, timeout=0):
+            if sid == stale:
+                return {"registered": False, "record_id": "", "letters": []}
+            label = labels[sid]
+            return {
+                "registered": True,
+                "record_id": "rec-" + label,
+                "letters": [label],
+                "label": label,
+                "holds_no_letter": False,
+            }
+
+        def holder(env, spec, letter, timeout=0):
+            return ("live", "rec-" + letter)
+
+        # The first pass offers the fifty holders,  which are live and are left exactly as they are.
+        with mock.patch.object(PL, "_reconcile_answer", answer), mock.patch.object(
+            PL, "_letter_holder", holder
+        ):
+            first = self.reconcile()
+        self.assertEqual(first["retired"], [])
+        self.assertEqual(first["asked"], 50)
+        for sid in holders:
+            self.assertEqual(self.title_of(sid), titles[sid])
+            self.assertEqual(self.note(sid), notes[sid])
+
+        # The next pass starts where the last one stopped,  and the stale title is cleaned.
+        with mock.patch.object(PL, "_reconcile_answer", answer), mock.patch.object(
+            PL, "_letter_holder", holder
+        ):
+            second = self.reconcile()
+        self.assertIn(stale, second["retired"])
+        self.assertEqual(self.title_of(stale), "Fix Stale")
+        for sid in holders:
+            self.assertEqual(self.title_of(sid), titles[sid])
+            self.assertEqual(self.note(sid), notes[sid])
+
+    def test_the_walk_wraps_round_to_the_beginning(self) -> None:
+        # The walk is round:  a list shorter than the limit is walked from its beginning again,  so the last chat
+        # examined does not hide the first one for ever.
+        self.add("m-1201", title="Fix Login")
+        self.start("m-1201", at=self.old)
+        self.add("m-1202", title="Fix Signup")
+        self.start("m-1202", at=self.old)
+
+        self.reconcile()
+        again = self.reconcile()
+        self.assertEqual(again["asked"], 2)
+        self.assertEqual(again["retired"], [])
 
     def test_an_assigner_that_does_not_answer_changes_nothing(self) -> None:
         self.add("m-0008", title="Fix Login")

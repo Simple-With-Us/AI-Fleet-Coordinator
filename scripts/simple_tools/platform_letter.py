@@ -5145,6 +5145,28 @@ def _letter_holder(
     return ("live", record_id)
 
 
+def _walk_from(
+    rows: list[dict[str, Any]], cursor: str, limit: int
+) -> tuple[list[dict[str, Any]], str]:
+    """The next `limit` rows to examine,  starting just after the cursor's row,  and the cursor to leave behind.
+
+    The pass walks the list round.  A chat whose letter is still live takes no write and keeps its place in the
+    order,  so a fixed slice would offer the same chats for ever,  and a chat behind them would never be examined
+    at all.  Starting after the last chat examined moves the walk on,  and a list shorter than the limit wraps back
+    to its beginning.
+
+    A cursor that names no row in the list (the chat is gone,  or the list has changed under it) starts the walk at
+    the beginning."""
+    ids = [str(row.get("session_id") or "") for row in rows]
+    start = 0
+    if cursor and cursor in ids:
+        start = ids.index(cursor) + 1
+    walked = rows[start:] + rows[:start]
+    batch = walked[:limit]
+    following = str(batch[-1].get("session_id") or "") if batch else cursor
+    return batch, following
+
+
 def reconcile_letters(
     spec: PlatformSpec,
     env: Mapping[str, str],
@@ -5176,7 +5198,8 @@ def reconcile_letters(
       question is never a "retire".
 
     The pass is throttled by its own stamp beside the notes,  and one pass asks about at most
-    RECONCILE_MAX_CHATS chats,  the quietest first."""
+    RECONCILE_MAX_CHATS chats,  the quietest first.  It walks that list round from a cursor it keeps in its own
+    stamp,  so a chat that is always live cannot hold the same chats from being offered for ever."""
     if spec.title_writer is None or not seat or where not in LOCATIONS:
         return {"skipped": "this platform writes no title, or this host names no location"}
     adopt = isinstance(spec.seat, str) and spec.seat == seat
@@ -5207,10 +5230,19 @@ def reconcile_letters(
         floor=GONE_QUIET_SECONDS,
         limit=GONE_SCAN_ALL,
     )
+    # The cursors are this pass's own,  in its own stamp:  where it stopped last time,  for the chats it asks
+    # about and for the chats whose title write is owed.  A chat that is always live takes no write and keeps its
+    # place in the order,  so a fixed slice would offer the same chats for ever and a chat behind them would never
+    # be examined.
+    outcome_state = stamp.get("outcome") if isinstance(stamp.get("outcome"), dict) else {}
+    cursor = str(outcome_state.get("cursor") or "")
+    owed_cursor = str(outcome_state.get("owed_cursor") or "")
+    batch, following = _walk_from(list(candidates.values()), cursor, RECONCILE_MAX_CHATS)
+    owed_batch, owed_following = _walk_from(list(owed.values()), owed_cursor, RECONCILE_MAX_CHATS)
     asked = 0
     retired: list[str] = []
     failures: list[dict[str, str]] = []
-    for row in list(candidates.values())[:RECONCILE_MAX_CHATS]:
+    for row in batch:
         sid = row["session_id"]
         # One chat's failure never stops the pass:  the rest of the host's chats are still worth retiring,  and
         # the failure is recorded with its session id and the exception's type,  never with anything it carries.
@@ -5264,7 +5296,7 @@ def reconcile_letters(
     # that says so,  and the title still carries the prefix.  The pass retries that write here,  so a chat whose
     # letter is already gone does not wait for the gone sweep to notice it.  No assigner call is made for these:
     # their registration is closed already,  and the retire path is the one that owes the title.
-    for row in list(owed.values())[:RECONCILE_MAX_CHATS]:
+    for row in owed_batch:
         sid = row["session_id"]
         try:
             chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
@@ -5281,14 +5313,31 @@ def reconcile_letters(
             failures.append({"sid": sid, "error": type(exc).__name__})
             continue
     recorded = _record_outcome(
-        path, now, {"asked": asked, "retired": len(retired), "failed": len(failures)}
+        path,
+        now,
+        {
+            "asked": asked,
+            "retired": len(retired),
+            "failed": len(failures),
+            "cursor": following,
+            "owed_cursor": owed_following,
+        },
     )
     if not recorded:
-        recorded = _record_outcome(path, now, {"error": "the outcome could not be saved"})
+        recorded = _record_outcome(
+            path,
+            now,
+            {
+                "error": "the outcome could not be saved",
+                "cursor": following,
+                "owed_cursor": owed_following,
+            },
+        )
     return {
         "asked": asked,
         "retired": sorted(retired),
         "failures": failures,
+        "cursor": following,
         "recorded": recorded,
     }
 
