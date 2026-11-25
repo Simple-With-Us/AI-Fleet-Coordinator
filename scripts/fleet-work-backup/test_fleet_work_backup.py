@@ -3499,7 +3499,7 @@ class MiscCase(unittest.TestCase):
         original = client.bounded_fetch_project
         values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "RESTIC_FLEET_WORK_PASSWORD": "fixture password"}
         with ScopedReadAPI(
-            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+            values, project=str(uuid.uuid4()), path=fwb.CREDENTIAL_FOLDER, token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
         ) as api:
             calls = []
             def read(project, folder, env, **options):
@@ -3577,7 +3577,7 @@ class MiscCase(unittest.TestCase):
             "RESTIC_FLEET_WORK_PASSWORD": "env password",
         }
         with ScopedReadAPI(
-            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+            values, project=str(uuid.uuid4()), path=fwb.CREDENTIAL_FOLDER, token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
         ) as api:
             calls = []
             def read(project, folder, env, **options):
@@ -3616,7 +3616,7 @@ class MiscCase(unittest.TestCase):
         original = client.bounded_fetch_project
         values = {"B2_FLEET_WORK_KEY_ID": "public fixture", "BACKBLAZE_MASTER_KEY_ID": "fixture master"}
         with ScopedReadAPI(
-            values, project=str(uuid.uuid4()), path="/", token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
+            values, project=str(uuid.uuid4()), path=fwb.CREDENTIAL_FOLDER, token_name=fwb.CREDENTIAL_TOKEN_ACCOUNT
         ) as api:
             calls = []
             def read(project, folder, env, **options):

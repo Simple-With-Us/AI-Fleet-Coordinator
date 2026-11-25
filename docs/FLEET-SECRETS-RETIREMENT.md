@@ -110,11 +110,11 @@ The project ids are infrastructure identifiers and stay out of this public repos
 | `seat-mcp-ro` | Fleet-OPS | `/seat-mcp` | the seat MCP token | Mac |
 | `worker-health-ro` | Fleet-OPS | `/` | the fleet worker health key (the name is in neither project) | Mac |
 | `zulip-provision-ro` | Fleet-OPS | `/zulip_operator` | the Zulip bot provisioner | Mac |
-| `fleet-work-backup-ro` | Fleet-OPS | `/` | the backup job's credentials (it reads the Fleet-OPS root) | server |
+| `fleet-work-backup-ro` | Fleet-OPS | `/global-api-keys` | the backup job's credentials (it reads the Fleet-OPS /global-api-keys folder) | server |
 | `fleet-mode-digest-ro` | Fleet-OPS | `/global-api-keys` | the weekly fleet-mode digest | Mac |
 | `infra-phase0-ro` | Fleet-OPS | `/global-api-keys` | the ST-MCP infra phase 0 | Mac |
-| `install-seat-key-ro` | Fleet-OPS | `/` | the seat-key handoff's root names (it reads the Fleet-OPS root) | Mac |
-| `install-seat-key-zulip-ro` | Fleet-OPS | `/zulip` | the seat-key handoff's Zulip credentials | Mac |
+| `install-seat-key-ro` | Fleet-OPS | `/global-api-keys` | the seat-key handoff's generic names (it reads the Fleet-OPS /global-api-keys folder) | Mac + server |
+| `install-seat-key-zulip-ro` | Fleet-OPS | `/zulip` | the seat-key handoff's Zulip credentials | Mac + server |
 | `ios-testflight-freshness-ro` | Fleet-OPS | `/asc` | the TestFlight freshness check | Mac |
 | `sheet-read-ro` | Fleet-OPS | `/google-sheets-sa` | the sheet reader | both |
 | `zulip-linkifiers-operator-ro` | Fleet-OPS | `/zulip_operator` | the linkifier's Operator credential | server |
@@ -158,10 +158,12 @@ The project ids are infrastructure identifiers and stay out of this public repos
 fallback read the same credential from the same folder on the same host,  so they are rotated together.
 
 
-Two folders above are the Fleet-OPS root `/`, because that is the folder those consumers read:  `fleet-work-backup-ro` and
-`install-seat-key-ro` both resolve their names from the root, and a grant scoped to a subfolder cannot
-serve them.  The linkifier's root retry (`zulip-linkifiers-root-ro`) is the same case:  it reads the root
-after `/zulip`.
+The linkifier's root retry (`zulip-linkifiers-root-ro`) is the one Fleet-OPS root grant left among the
+consumers that read a root folder:  it reads the root after `/zulip`.
+`fleet-work-backup-ro` and `install-seat-key-ro` are held to `/global-api-keys` instead:  their names are
+literals in that folder, and the Fleet-OPS root is a cross-folder alias layer whose raw route returns an
+unexpanded reference rather than the value, so a root grant could not serve them (verified against the
+provider on Nov 25 2026).
 A grant covers exactly its folder and no other:  a token scoped to `/` does not reach a subfolder, so a consumer that
 reads two folders holds two tokens.  The Fleet-OPS project root is a cross-folder alias layer, so a name at the root
 is a reference to a name in a subfolder and the raw route returns the reference rather than the value;  the shared
