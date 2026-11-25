@@ -99,6 +99,11 @@ queue.  A host that cannot answer proves nothing:  the delivery is busy and wai
 that is restarting costs a retry and not a wrong enqueue.  The receipt names the route it took,
 `codex-desktop` on the Mac and `codex-daemon` on the server.
 
+The daemon's answer is kept for a few seconds per thread, and the cache is bounded:  the
+expired answers go first, and then the oldest ones, so a router that lives for weeks does
+not keep one entry for every thread it ever asked about.  The transport is built
+once per host kind and kept, so the cached answer is the answer a later wake uses, and the
+delivery and the exclusion read the same host setting, so they name one host.
 
 ## The pinned owner
 
