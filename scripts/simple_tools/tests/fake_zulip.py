@@ -71,7 +71,13 @@ class _ChannelNames(dict):
 
     The realm shows the coordination channel as Work-In-Progress and a seat may type it in any
     case (AFC-482), so a lookup finds the name the realm already has before it adds a new one.
+    Every path that reads, writes, removes or copies a name goes through `_known`, so no spelling
+    of a channel can raise KeyError or add a second entry for it (Kody review on AFC-482).
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        dict.__init__(self)
+        self.update(*args, **kwargs)
 
     def _known(self, name: Any) -> Any:
         if dict.__contains__(self, name):
@@ -88,15 +94,48 @@ class _ChannelNames(dict):
     def __setitem__(self, name: Any, value: Any) -> None:
         dict.__setitem__(self, self._known(name), value)
 
+    def __delitem__(self, name: Any) -> None:
+        dict.__delitem__(self, self._known(name))
+
     def get(self, name: Any, default: Any = None) -> Any:
         return dict.get(self, self._known(name), default)
 
     def setdefault(self, name: Any, default: Any = None) -> Any:
         return dict.setdefault(self, self._known(name), default)
 
+    def pop(self, name: Any, *default: Any) -> Any:
+        return dict.pop(self, self._known(name), *default)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        if len(args) > 1:
+            raise TypeError("update expected at most 1 argument, got %d" % len(args))
+        if args:
+            other = args[0]
+            pairs = ((key, other[key]) for key in other.keys()) if hasattr(other, "keys") else other
+            for key, value in pairs:
+                self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
+
+    def copy(self) -> "_ChannelNames":
+        return _ChannelNames(self)
+
+    def __or__(self, other: Any) -> "_ChannelNames":
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def __ior__(self, other: Any) -> "_ChannelNames":
+        self.update(other)
+        return self
+
 
 class _ChannelSet(set):
     """A set of channel names, matched without regard to case like `_ChannelNames`."""
+
+    def __init__(self, names: Any = ()) -> None:
+        set.__init__(self)
+        self.update(names)
 
     def _known(self, name: Any) -> Any:
         folded = str(name).casefold()
@@ -113,6 +152,29 @@ class _ChannelSet(set):
         known = self._known(name)
         if known is not None:
             set.discard(self, known)
+
+    def remove(self, name: Any) -> None:
+        known = self._known(name)
+        if known is None:
+            raise KeyError(name)
+        set.remove(self, known)
+
+    def update(self, *others: Any) -> None:
+        for other in others:
+            for name in other:
+                self.add(name)
+
+    def copy(self) -> "_ChannelSet":
+        return _ChannelSet(self)
+
+    def __or__(self, other: Any) -> "_ChannelSet":
+        merged = self.copy()
+        merged.update(other)
+        return merged
+
+    def __ior__(self, other: Any) -> "_ChannelSet":
+        self.update(other)
+        return self
 
 
 def _by_name(name: str) -> str:
