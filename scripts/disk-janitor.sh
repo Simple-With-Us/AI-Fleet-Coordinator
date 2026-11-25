@@ -1041,7 +1041,22 @@ if [ "$FREE_KNOWN" = 1 ] && [ "$free" -lt "$LOW_FREE" ]; then
     # safe-only when the band is tight.  `--band=full` here because this branch
     # only runs below LOW_FREE; the engine still refuses the semi-safe tier
     # itself if swap or load is elevated.  Bounded at 300s via the watchdog.
-    janitor_watchdog 300 "hoghunter-clean" -- "$HOGHUNTER_CLEAN" --clean --band=full
+    #
+    # 2026-11-24 (Claude, AFC-888): the engine also gets its own time budget,
+    # derived from the watchdog so the two numbers cannot drift apart.  With no
+    # --budget-sec the engine ran unbounded and the watchdog killed it mid-work
+    # (Nov 19 and Nov 22: WATCHDOG killed phase=hoghunter-clean after 300s,
+    # reclaimed=0G).  With a budget it stops starting new work on its own,
+    # finishes inside the watchdog, writes its partial-run record and reports
+    # the bytes it really freed.  The grace is the time it needs after the
+    # budget runs out: the delete in flight, the record and the summary.  This
+    # mirrors HogHunter's scripts/vacuum/engine.py, which derives its reclaim
+    # budget from TICK_WATCHDOG_SEC the same way.
+    HOGHUNTER_WATCHDOG_SECS=300
+    HOGHUNTER_GRACE_SECS=60
+    HOGHUNTER_BUDGET_SECS=$((HOGHUNTER_WATCHDOG_SECS - HOGHUNTER_GRACE_SECS))
+    janitor_watchdog "$HOGHUNTER_WATCHDOG_SECS" "hoghunter-clean" -- \
+      "$HOGHUNTER_CLEAN" --clean --band=full --budget-sec="$HOGHUNTER_BUDGET_SECS"
     actions="${actions}hoghunter "
 
     # 2026-10-04 (MINIMAX, board e30a863e): CleanMyMac CLI is a FREE PUBLIC BETA
