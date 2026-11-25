@@ -294,10 +294,17 @@ def _enqueue_locked(directory, key, record):
     names = []
     size = 0
     for name in entries:
-        if name == key + ".json" or name.startswith("cancelled-"):
+        if name == key + ".json":
+            continue
+        if name.startswith("cancelled-"):
+            # Sentinels are empty markers, but their bytes still count
+            # toward the spool so creating them is never free.
+            size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
+            continue
+        if PENDING.fullmatch(name) and name[:-5] in cancelled_keys:
             continue
         size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
-        if PENDING.fullmatch(name) and name[:-5] not in cancelled_keys:
+        if PENDING.fullmatch(name):
             names.append(name)
     if len(names) >= MAX_PENDING or size + len(json.dumps(record).encode()) > MAX_SPOOL:
         raise OutboxError("note-outbox-full")
