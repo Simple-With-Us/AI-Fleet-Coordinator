@@ -103,14 +103,18 @@ class TestPolicy(unittest.TestCase):
         self.assertIsNone(policy.authenticate("x" * 32))
         self.assertIsNone(policy.authenticate(""))
 
-    def test_authorize_enforces_action_and_repo_allowlists(self):
+    def test_authorize_enforces_repo_scope_and_create_repo_entitlement(self):
         policy = SeatPolicy(SEATS_JSON)
         self.assertIsNone(policy.authorize("swu-echo", "open_pr", "example/fixture-repo"))
-        self.assertIsNotNone(policy.authorize("swu-prime", "open_pr", "example/x"))
+        # The retired per-seat action allowlist no longer gates unlisted actions.
+        self.assertIsNone(policy.authorize("swu-prime", "open_pr", "example/x"))
         self.assertIsNotNone(policy.authorize("swu-echo", "open_pr", "example/other-repo"))
         self.assertIsNone(policy.authorize("swu-prime", "comment_pr", "example/other-repo"))
         self.assertIsNotNone(policy.authorize("swu-prime", "comment_pr", "other-org/SWU"))
         self.assertIsNotNone(policy.authorize("ghost", "open_pr", "example/x"))
+        # create_repo keeps its explicit per-seat entitlement (namespace mint).
+        self.assertIsNotNone(policy.authorize("swu-echo", "create_repo", "example/fixture-repo"))
+        self.assertIsNotNone(policy.authorize("swu-prime", "create_repo", "example/x"))
 
     def test_rate_limit_denies_after_the_cap(self):
         policy = SeatPolicy(SEATS_JSON, rate_per_hour=2)
@@ -403,7 +407,7 @@ class TestHttpSurface(unittest.TestCase):
     def test_policy_denial_gets_403(self):
         status, body = self._post(
             "/v1/open_pr",
-            {"repo": "example/other-repo", "base": "main", "head": "f", "title": "t", "body": "b"},
+            {"repo": "other-org/SWU", "base": "main", "head": "f", "title": "t", "body": "b"},
             token=OTHER_TOKEN,
         )
         self.assertEqual(status, 403)
@@ -2150,10 +2154,10 @@ class TestValidationGate(unittest.TestCase):
                 outcomes=outcomes,
             )
             code, _ = relay.handle(
-                OTHER_TOKEN,  # swu-prime may only comment_pr
+                OTHER_TOKEN,  # repo outside swu-prime's scope
                 "open_pr",
                 {
-                    "repo": "example/fixture-repo",
+                    "repo": "other-org/not-in-scope",
                     "base": "main",
                     "head": "b",
                     "title": "t",
