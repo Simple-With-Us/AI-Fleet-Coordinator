@@ -156,6 +156,9 @@ public final class FleetServiceControl {
         guard let descriptor = FleetServiceRegistry.descriptor(for: serviceID) else {
             throw FleetServiceError.refused("That is not a fleet service.")
         }
+        if descriptor.policy == .retired && (action == .start || action == .restart) {
+            throw FleetServiceError.refused("That Mac service is retired. Use Operator on the server.")
+        }
         switch action {
         case .start:
             return try await setRunning(true, descriptor: descriptor, attempts: attempts)

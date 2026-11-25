@@ -14,9 +14,8 @@ import Foundation
 //   * `.admin`:  `FleetAdmin` directly,  for BotFleet Server and for a LaunchAgent the
 //     allowlist does not name.  Their start and stop are not something an allowlist argv
 //     can say,  so they have no plan,  no Touch ID and no audit row.  Stop still asks,
-//     BotFleet Server's Restart asks when a fresh read finds work in flight,  and the Mac
-//     eavesdropper's Restart always asks,  because it was retired at the one-listener cutover
-//     and a restart would bring it back
+//     BotFleet Server's Restart asks when a fresh read finds work in flight.  A retired
+//     service has no Start or Restart route,  even if a stale view asks for one.
 //
 // A start that Muster takes on its own (`ServiceReconciler`) asks `route(forStarting:)` for
 // the same route a Start button would take.  On `.ops` it runs the same helper with the same
@@ -42,9 +41,7 @@ enum MenuRoute: Equatable {
     var asksFirst: Bool {
         switch self {
         case .ops: return true
-        case .admin(let action, let serviceID):
-            if action == .stop { return true }
-            return action == .restart && FleetServices.restartAlwaysAsksBody(forServiceID: serviceID) != nil
+        case .admin(let action, _): return action == .stop
         }
     }
 
@@ -56,6 +53,8 @@ enum MenuRoute: Equatable {
     static func forService(_ action: ManagedServiceAction,
                            entry: FleetServiceEntry,
                            allowlist: OpsAllowlist?) -> MenuRoute? {
+        // Refuse a stale Start/Restart at the action boundary, not just in the visible row.
+        if entry.isRetired && !entry.availableActions.contains(action) { return nil }
         let verb: OpsVerb
         switch action {
         case .start: verb = .start
@@ -461,7 +460,7 @@ final class ServiceActionRouter: ObservableObject {
         }
         // A stop always asks.  A restart runs at once unless a fresh read says it could end
         // work in flight:  BotFleet Server refuses a stop for that work,  and a restart does
-        // not ask it.  The Mac's eavesdropper always asks before a restart.
+        // not ask it.  A retired listener has no restart route.
         var message: String?
         var word = "Stop"
         if managed == .stop {
