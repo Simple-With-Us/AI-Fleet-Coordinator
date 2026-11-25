@@ -123,6 +123,15 @@ class RefusalReportTests(unittest.TestCase):
         result = self.run_reporter("notes: something else went wrong\n")
         self.assertNotIn("NOTES-REFUSED-DELETE", result.stderr)
 
+    def test_the_captured_error_reaches_the_reader(self) -> None:
+        """A failure that is not the refusal still carries its own message."""
+        result = self.run_reporter("execution error: AppleEvent handler failed. (-10000)\n")
+        self.assertIn("AppleEvent handler failed", result.stderr)
+
+    def test_a_failure_with_no_captured_error_still_names_itself(self) -> None:
+        result = self.run_reporter("")
+        self.assertNotIn("NOTES-REFUSED-DELETE", result.stderr)
+
     def test_both_delete_stages_report_the_refusal(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         # The fetch stage and the delete stage each capture the AppleEvent error and name it.
@@ -159,6 +168,14 @@ class GuardResolutionTests(unittest.TestCase):
     def test_a_missing_guard_is_named_rather_than_left_silent(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("delete guard script missing", text)
+
+    def test_the_error_file_is_cleaned_up_on_every_exit(self) -> None:
+        """The error file the delete path makes must not be left behind."""
+        text = SCRIPT.read_text(encoding="utf-8")
+        # Initialized beside the other temp files, so the trap can always see it.
+        self.assertIn('_NOTES_ERR=""', text)
+        # And removed by the exit trap, on every exit path.
+        self.assertIn('[[ -z "${_NOTES_ERR:-}" ]] || rm -f "$_NOTES_ERR" 2>/dev/null', text)
 
 
 if __name__ == "__main__":

@@ -151,6 +151,7 @@ _LOG_INPUT_BYTES=""
 _LOG_CHANGES_FILE=""
 _LOG_LINKS_FILE=""
 _NOTES_OUT=""
+_NOTES_ERR=""
 _TMP_MADE=0
 _TITLE_REJECTED=0
 NOTE_ID=""
@@ -385,6 +386,7 @@ _on_exit() {
   [[ -z "${_LOG_CHANGES_FILE:-}" ]] || rm -f "$_LOG_CHANGES_FILE" 2>/dev/null
   [[ -z "${_LOG_LINKS_FILE:-}" ]] || rm -f "$_LOG_LINKS_FILE" 2>/dev/null
   [[ -z "${_NOTES_OUT:-}" ]] || rm -f "$_NOTES_OUT" 2>/dev/null
+  [[ -z "${_NOTES_ERR:-}" ]] || rm -f "$_NOTES_ERR" 2>/dev/null
   exit "$rc"
 }
 
@@ -767,6 +769,11 @@ JXA
 _notes_report_refusal() {
   local err_file="${1:-}"
   [ -n "$err_file" ] || return 0
+  # The osascript error itself is passed on first, so a failure that is not the refusal
+  # still reaches the reader with its own message instead of a bare exit code.
+  if [[ -s "$err_file" ]]; then
+    cat "$err_file" >&2
+  fi
   grep -q -- '-10000' "$err_file" 2>/dev/null || return 0
   echo "notes: NOTES-REFUSED-DELETE  Notes itself refused the note (AppleEvent -10000):  its body cannot be read or written through AppleEvents and the delete fails the same way, so only the Notes app can remove a note in this state." >&2
 }
