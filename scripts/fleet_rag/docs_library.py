@@ -372,7 +372,10 @@ def library_documents(
                     raise ValueError("invalid-generated-manifest")
                 if not isinstance(manifest.get("owner_repo"), str):
                     raise ValueError("invalid-generated-owner")
-                owner, name = manifest["owner_repo"].split("/")
+                owner_parts = manifest["owner_repo"].split("/")
+                if len(owner_parts) != 2:
+                    raise ValueError("invalid-generated-owner")
+                owner, name = owner_parts
                 if owner.casefold() not in APPROVED_OWNERS or name != child.name:
                     raise ValueError("invalid-generated-owner")
                 repo = repo_by_name.get(name.casefold())
