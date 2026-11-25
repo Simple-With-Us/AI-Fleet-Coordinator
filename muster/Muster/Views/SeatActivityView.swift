@@ -6,8 +6,9 @@ import SwiftUI
 /// only thing it runs is the fleet chat CLI's read-only verbs,  and the seat it reads as
 /// is a bot seat.
 ///
-/// Rows sit under the machine whose eavesdropper holds the seat,  from the seat partition,
-/// and each row names that machine.  A seat the Mac holds reads from the Mac's eavesdropper.
+/// Rows sit under the machine whose eavesdropper holds the seat,  from the server
+/// eavesdropper's own reading (AFC-837),  and each row names that machine.  The Mac's
+/// eavesdropper is retired,  so no Mac file says where a seat is held or what it is doing.
 /// A seat the server holds reads from the server's eavesdropper,  through the server's control
 /// helper (`ServerEavesdropperStatusStore`):  its cells show the server's facts only from a
 /// current reading,  and otherwise say why there are none (`ServerSeatRowPresentation`).
@@ -189,14 +190,6 @@ struct SeatActivityView: View {
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
                 .help("A seat is working when it has a live session on the Mac, or the Mac's eavesdropper is running a wake for it.")
-            // Whether a session on this Mac is woken again on a new message, from the same state
-            // as the rows.  Each session's own watcher is in its line.
-            if let rewake = model.rewake {
-                Label(SeatActivityText.display(rewake.sentence), systemImage: rewake.isProblem ? "exclamationmark.triangle" : "arrow.uturn.backward.circle")
-                    .font(.subheadline)
-                    .foregroundStyle(rewake.isProblem ? Color.orange : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             HStack(spacing: 8) {
                 if let readAt = model.readAt {
                     Text("Read \(FleetTime.clock(readAt))")
@@ -224,30 +217,20 @@ struct SeatActivityView: View {
             Text("Sources")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(SeatActivityText.display(sourcesText(model)))
+            Text(SeatActivityText.display(SeatActivityView.sourcesText))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func sourcesText(_ model: SeatActivityModel) -> String {
-        let path = model.listenerPath.isEmpty ? "its state file" : model.listenerPath
-        var text = "Sessions, eavesdropper state and quota come from the Mac's eavesdropper,  \(path)"
-        if let written = model.listenerWrittenAt {
-            text += ",  written \(FleetTime.clock(written))."
-        } else {
-            text += ",  which could not be used this time."
-        }
+    /// Where every column comes from,  in the code's two-space style.
+    static var sourcesText: String {
         let minutes = Int(ReducedEavesdropperStatus.freshnessWindow / 60)
-        text += "  A seat held by the server shows what the server's eavesdropper says,  read through the server's control helper,"
-            + "  and an answer more than \(minutes) minutes old is shown only as old evidence."
-        text += "  A Mac seat's sessions are the ones the Mac's eavesdropper holds,  and a server seat's are the ones the server's eavesdropper holds."
-        if !model.partitionPath.isEmpty {
-            text += "  Where each seat is held comes from the seat partition,  \(model.partitionPath)."
-        }
-        text += "  Last posts come from Zulip,  and the panel only reads them."
-        return text
+        return "Where each seat is held,  and a server seat's sessions and state,  come from the server's eavesdropper,"
+            + "  read through the server's control helper,  and an answer more than \(minutes) minutes old is shown only as old evidence."
+            + "  The Mac's eavesdropper is retired,  so nothing is read from its state file,  its configuration or the Mac's copy of the seat partition."
+            + "  Last posts come from Zulip,  and the panel only reads them."
     }
 
     /// What could not be read,  across every seat.
