@@ -41,7 +41,7 @@ surface but the four chat panes named below.
 **Owner ruling 2026-10-29:  every message, not only fleet or public text.**  The rule applies to
 every message any bot writes to Jay or to anyone else:  Grok Bot and BotFleet app chat replies,
 Zulip, GitHub, Linear, email and docs.  Only code and code comments are exempt.  Only
-use the `&nbsp;` HTML entity in the MiniMax Code, Claude Code and Z Code chat panes, the one exception;
+use the `&nbsp;` HTML entity in the MiniMax Code, Claude Code, Z Code and Antigravity chat panes, the one exception;
 everywhere else write the real U+00A0 character.
 
 - **The chat-pane exception: the Claude Code Code tab, the MiniMax Code chat pane, the Z Code chat pane and the Antigravity chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.`  Only use the entity in these four panes.
