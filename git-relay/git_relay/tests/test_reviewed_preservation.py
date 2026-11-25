@@ -33,9 +33,15 @@ class ReviewedPreservationTests(unittest.TestCase):
             return candidate.apply_reviewed_patch(self.repo, self.path, base, edits, known)
 
     def run_unregistered(self, base, edits, known=()):
-        # No synthetic record: the real registry holds no record for this
-        # repo/path, so every non-default result must refuse.
-        return candidate.apply_reviewed_patch(self.repo, self.path, base, edits, known)
+        # A record whose base matches but whose result does not: the render
+        # reaches the registered-pair branch and must refuse as unreviewed,
+        # so a fail-open there cannot hide behind the default patch path.
+        with patch.object(
+            candidate,
+            "REVIEWED_PRESERVATIONS",
+            frozenset({self.record(base, b"other-result")}),
+        ):
+            return candidate.apply_reviewed_patch(self.repo, self.path, base, edits, known)
 
     def test_default_dedicated_refusal_unchanged(self):
         with self.assertRaises(ValueError):
