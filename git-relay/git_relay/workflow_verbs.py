@@ -8194,12 +8194,24 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
             content.get("type") != "file"
             or content.get("path") != path
             or content.get("sha") != blob_sha
-            or content.get("encoding") != "base64"
         ):
             raise Refused("base file unverifiable")
+        encoded = content.get("content")
+        if content.get("encoding") != "base64" or not isinstance(encoded, str):
+            # The contents API withholds content over 1 MB (encoding "none"):
+            # fetch the same pinned blob through Git Data.  The path/commit pin
+            # above still binds it;  the bytes are re-hashed and re-scanned below.
+            blob = _obj(self._get(f"/repos/{repo}/git/blobs/{blob_sha}"))
+            if (
+                blob.get("sha") != blob_sha
+                or blob.get("encoding") != "base64"
+                or not isinstance(blob.get("content"), str)
+            ):
+                raise Refused("base file unverifiable")
+            encoded = blob["content"]
         finding = None
         try:
-            raw = base64.b64decode("".join(content["content"].split()), validate=True)
+            raw = base64.b64decode("".join(encoded.split()), validate=True)
             if (
                 len(raw) > MAX_FILE_RAW
                 or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()

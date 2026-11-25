@@ -544,6 +544,7 @@ _REFUSAL_REASONS = frozenset(
         "read_too_large",
         "bad_request_auto_merge_method_mismatch",
         "bad_request_auto_merge_not_armed",
+        "bad_request_base_unverifiable",
         "bad_request_auto_merge_refused",
         "bad_request_content_too_large",
         "bad_request_default_branch_protected",

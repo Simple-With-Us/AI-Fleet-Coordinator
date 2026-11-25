@@ -65,6 +65,34 @@ class PatchTests(unittest.TestCase):
             args["path"],
         )
 
+    def test_large_base_falls_back_to_git_blob(self):
+        args, replies = self.setup_case()
+        raw = b"const apiKey = " + b"stsProviderCredential(provider);\n" + b"other = old;\n"
+        replies[3] = dict(
+            type="file", path=args["path"], sha=blob(raw), encoding="none", content=None
+        )
+        replies.insert(
+            4,
+            dict(sha=blob(raw), encoding="base64", content=base64.b64encode(raw).decode()),
+        )
+        c = Client(*replies)
+        out = Multi(c).run("wf_file_patch", args)
+        self.assertEqual(out["commit"], "e" * 40)
+        blob_gets = [p for m, p, *_ in c.calls if m == "GET" and "/git/blobs/" in p]
+        self.assertEqual(blob_gets, [f"/repos/{REPO}/git/blobs/{blob(raw)}"])
+
+    def test_blob_fallback_mismatch_refuses_before_write(self):
+        args, replies = self.setup_case()
+        raw = b"const apiKey = " + b"stsProviderCredential(provider);\n" + b"other = old;\n"
+        replies[3] = dict(
+            type="file", path=args["path"], sha=blob(raw), encoding="none", content=None
+        )
+        replies.insert(4, dict(sha="f" * 40, encoding="base64", content="eA=="))
+        c = Client(*replies)
+        with self.assertRaises(Refused):
+            Multi(c).run("wf_file_patch", args)
+        self.assertTrue(all(m == "GET" for m, *_ in c.calls))
+
     def test_pins_fail_before_write(self):
         for at, change in [
             (0, dict(default_branch="feature/x")),
