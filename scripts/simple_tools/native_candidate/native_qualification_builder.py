@@ -120,7 +120,9 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
         result = qualifier(target, head, (), turn_id, fallback=turn_fallback)
         if isinstance(result, adapter.WR.Turn):
             return result
-        return adapter.WR.Turn(result, unreadable=result.outcome in ("unknown", "refused"))
+        return adapter.WR.Turn(
+            result, unreadable=result.outcome in ("unknown", "refused")
+        )
 
     platform = dataclasses.replace(base, deliver=deliver, deliver_turn=deliver_turn)
     # Caller owns bounded query-only follow-up and cleanup; no permanent schedule.
