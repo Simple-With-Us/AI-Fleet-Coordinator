@@ -57,9 +57,14 @@ handlers") is retried under a new root, never in place:
   the unit-bound `manifest.json`, `runner.py` and
   `runner-package/git_relay/deploy_runner.py` differ between attempt roots.
 
-On the release host the original root was consumed by the attempt of
-2026-11-23 (busy at the freeze, restored, journal kept), so retries there
-start at `-a01`.
+On the release host the original root is spent, so retries there start at
+`-a01`. Its journal holds two attempts that reached the relay: on 2026-11-23
+the relay was busy at the freeze and was resumed unchanged, and on 2026-11-24
+a package restaged into that same root - its proof still pinning the
+pre-#2513 image - passed the freeze, applied the new module, failed the
+runtime proof and restored the old module, each step as designed. Both are
+why every attempt is built and staged as a root of its own, and why a staged
+package is never edited or rebuilt in place.
 
 ## Exact execution runbook
 
@@ -132,7 +137,11 @@ merging this PR.
          /opt/git-relay/transactions/<name>/runner-package/git_relay/
 
    The root must be new: nothing else may be written into it, and a root
-   that already holds a `supervisor.json` is spent. `manifest.json` is
+   that already holds a `supervisor.json` is spent. Rebuilding into a spent
+   root is refused at preflight, and a package assembled outside the builder
+   carries no proof-to-image binding: the builder is what ties the proof's
+   CANDIDATE to the manifest's `after`, so a mismatch costs a relay stop and
+   an automatic rollback before it is detected. `manifest.json` is
    exactly `{"config", "files", "runner", "unit"}` with the single row
    `{"root": "code", "name": "reviewed_preservation.py", "before":
    f84708ce…, "after": 3f72088f…, "meta": {"uid": 0, "gid": 0, "mode": 420}}`
