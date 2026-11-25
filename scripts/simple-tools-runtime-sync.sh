@@ -10,7 +10,8 @@
 # LaunchAgent com.jay.simple-tools-runtime-sync runs this every 120 seconds.  Each run:
 #   1. retrieves only the fixed approved public source (60 second caps), and only the change
 #      since the last run:  the stage is seeded with the objects this host already holds, so a
-#      run costs a delta instead of the whole history;
+#      run costs a delta instead of the whole history;  until the operator's approval file
+#      exists the run stays on the prior origin transport instead of holding with no fetch;
 #   2. if origin/main differs from the runtime HEAD AND the worktree has no tracked changes, checks out
 #      origin/main detached;
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
@@ -98,11 +99,15 @@ main() {
   mkdir -p "$(dirname "$LOG")" "$STATE_DIR"
   [ -e "$PAUSE_FILE" ] && exit 0
 
-  # Explicit operator approval is required before enabling this fixed public-source
-  # mode. This is not a fallback when caller-authenticated simple-git refuses.
+  # Explicit operator approval is required before enabling this fixed public-source mode, and
+  # the mode is not a fallback when caller-authenticated simple-git refuses.  Until the approval
+  # file exists the job stays on the transport it used before, so a host without the file keeps
+  # updating instead of standing still behind main with nothing but a log line.
+  local retrieval="public-source"
   if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then
-    log "PUBLIC-SOURCE-NOT-APPROVED  updater transport adoption is held"
-    exit 0
+    retrieval="origin"
+    log "PUBLIC-SOURCE-NOT-APPROVED  using the prior origin transport until the operator approves it"
+    fetch_public_runtime() { GIT_TERMINAL_PROMPT=0 rgit fetch -q origin; }
   fi
 
   # One run at a time.  A lock older than 10 minutes belongs to a dead run.
@@ -158,7 +163,11 @@ main() {
   fi
 
   if ! fetch_public_runtime; then
-    log "FETCH-FAILED  fixed public-source retrieval failed; no credential fallback"
+    if [ "$retrieval" = "public-source" ]; then
+      log "FETCH-FAILED  fixed public-source retrieval failed; no credential fallback"
+    else
+      log "FETCH-FAILED  git fetch origin did not finish; will retry next run"
+    fi
     exit 0
   fi
 
