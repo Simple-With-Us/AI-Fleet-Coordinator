@@ -898,7 +898,8 @@
     {
       "identity": "MM",
       "app_slug": "swu-minimax",
-      "profile": "fleet"
+      "profile": "fleet",
+      "title_tag": "MM"
     },
     {
       "identity": "OPENCODE",

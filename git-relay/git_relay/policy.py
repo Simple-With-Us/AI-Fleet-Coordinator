@@ -43,9 +43,53 @@ _LEADING_BRACKET = re.compile(r"^\[([^\[\]]{1,64})\]")
 
 
 def _derived_title_tag(seat: str) -> str:
-    """The default bracket tag for a seat:  swu-echo -> ECHO."""
+    """The default bracket tag for a seat:  swu-echo -> ECHO.
+
+    A seat name that is not a string (a number in the policy file, say) is refused
+    with this module's own PolicyError, never an AttributeError from removeprefix.
+    """
+    if not isinstance(seat, str):
+        raise PolicyError(f"seat {seat!r}: the seat name must be a string")
     name = seat.removeprefix("swu-")
     return name.upper()[:32]
+
+
+def effective_title_tag(seat: str, pinned: str | None = None) -> str:
+    """The bracket tag a seat's titles carry:  the pinned one, else the derived one.
+
+    The deploy renderer and the runtime must agree on this, so both call it here
+    rather than each deciding on its own what a seat's tag is.
+    """
+    return pinned if pinned is not None else _derived_title_tag(seat)
+
+
+def check_title_tags(seat_tags: dict[str, str]) -> None:
+    """Refuse title tags that collide across seats, or one that extends another.
+
+    A conforming bracket is the tag followed by end-of-bracket, space or colon,
+    so if one seat's tag equals another's ("MM" vs "MM") or is another's tag
+    plus a space/colon suffix ("MM" vs "MM SS"), the shorter seat's check would
+    accept the longer seat's brackets as its own and the visible creator would
+    be ambiguous.  The deploy renderer calls this too, so a policy file the
+    runtime would refuse never renders.
+    """
+    tag_owners: dict[str, str] = {}
+    for seat, tag in seat_tags.items():
+        other = tag_owners.get(tag)
+        if other is not None:
+            raise PolicyError(f"seats {other!r} and {seat!r} share title tag {tag!r}")
+        tag_owners[tag] = seat
+    ordered = sorted(tag_owners)
+    for i, shorter in enumerate(ordered):
+        for longer in ordered[i + 1 :]:
+            if not longer.startswith(shorter):
+                break
+            if longer[len(shorter)] in " :":
+                raise PolicyError(
+                    f"title tag {longer!r} of seat {tag_owners[longer]!r} extends "
+                    f"{shorter!r} of seat {tag_owners[shorter]!r}: a {shorter!r} "
+                    "bracket would read as either seat's"
+                )
 
 
 def _repo_pattern_allows(patterns, repo: str) -> bool:
@@ -563,7 +607,7 @@ class SeatPolicy:
             title_tag = cfg.get("title_tag")
             if title_tag is not None and not isinstance(title_tag, str):
                 raise PolicyError(f"seat {seat!r}: title_tag must be a string")
-            final_tag = title_tag if title_tag is not None else _derived_title_tag(seat)
+            final_tag = effective_title_tag(seat, title_tag)
             if not _TITLE_TAG.fullmatch(final_tag):
                 raise PolicyError(
                     f"seat {seat!r}: title tag {final_tag!r} must be 1-32 chars of "
@@ -650,24 +694,7 @@ class SeatPolicy:
         # plus a space/colon suffix ("MM" vs "MM SS"), the shorter seat's
         # check would accept the longer seat's brackets as its own and the
         # visible creator would be ambiguous.  Refuse at config load.
-        tag_owners: dict[str, str] = {}
-        for seat, cfg in self._seats.items():
-            tag = cfg["title_tag"]
-            other = tag_owners.get(tag)
-            if other is not None:
-                raise PolicyError(f"seats {other!r} and {seat!r} share title tag {tag!r}")
-            tag_owners[tag] = seat
-        ordered = sorted(tag_owners)
-        for i, shorter in enumerate(ordered):
-            for longer in ordered[i + 1 :]:
-                if not longer.startswith(shorter):
-                    break
-                if longer[len(shorter)] in " :":
-                    raise PolicyError(
-                        f"title tag {longer!r} of seat {tag_owners[longer]!r} extends "
-                        f"{shorter!r} of seat {tag_owners[shorter]!r}: a {shorter!r} "
-                        "bracket would read as either seat's"
-                    )
+        check_title_tags({seat: cfg["title_tag"] for seat, cfg in self._seats.items()})
         if rate_per_hour < 1:
             raise PolicyError("rate_per_hour must be at least 1")
         if write_rate_per_hour < 1:
