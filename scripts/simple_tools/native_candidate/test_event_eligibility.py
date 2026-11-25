@@ -1,10 +1,8 @@
-import importlib
-import os
 import hashlib
+import importlib
 import unittest
 
 # Existing package fixture loads source modules without changing installed adapters.
-import test_integration
 
 eligible = importlib.import_module("native_fixture_package.native_event_eligibility").eligible_event
 
@@ -87,6 +85,7 @@ class PersistedEligibilityTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
+
         from native_fixture_package.native_event_eligibility import persisted_event
 
         boundary = dict(

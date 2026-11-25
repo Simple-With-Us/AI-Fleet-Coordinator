@@ -1,6 +1,7 @@
 import unittest
-from review_alerts.source_boundary import snapshot
+
 from review_alerts import github_read
+from review_alerts.source_boundary import snapshot
 
 
 class Boundary(unittest.TestCase):

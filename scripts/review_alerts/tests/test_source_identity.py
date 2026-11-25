@@ -1,7 +1,7 @@
 import tempfile
-import unittest
-from review_alerts.tests import test_review_alerts as t
+
 from review_alerts.service import source_identity
+from review_alerts.tests import test_review_alerts as t
 
 
 class Identity(t.ServiceCycleTests):

@@ -4,10 +4,9 @@ Caller supplies a complete, frozen preactivation upstream identity census and a
 read-only producer mapping. Detection/acceptance times never prove source age.
 """
 
-import re
-import math
 import hashlib
-
+import math
+import re
 
 SINGLE_SOURCE_KINDS = {
     "review_submitted": "review_floor",
@@ -82,6 +81,7 @@ def eligible_event(boundary, row, wake_id, message_id):
 
 def persisted_event(state, generation, boundary, head):
     from pathlib import Path
+
     from .native_custody import read_private
 
     try:

@@ -526,8 +526,8 @@ class Wake:
 def source_event(value, wake):
     # Producer-authenticated metadata only; never a payload authority claim.
     # Invalid/missing evidence retains ordinary delivery, not native qualification.
-    import math
     import hashlib
+    import math
 
     if not isinstance(value, dict) or set(value) != {
         "repo",

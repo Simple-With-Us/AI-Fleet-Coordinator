@@ -129,6 +129,7 @@ class CoherentQualification(AuthenticatedHttpIdentity):
     def test_real_accepted_identity_eligibility_and_concurrent_single_reservation(self):
         import threading
         from types import SimpleNamespace
+
         from native_fixture_package.native_qualification import Qualification
 
         self.body["require_session"] = "sess_01234567-89ab-cdef-0123-456789abcdef"
