@@ -167,8 +167,11 @@ def _reason_token(message: str) -> str:
 
 
 def _unavailable(exc) -> bool:
-    return (isinstance(exc, TimeoutError) or getattr(exc, "code", None) == 124
-            or getattr(exc, "failure_kind", None) == "unavailable")
+    return (
+        isinstance(exc, TimeoutError)
+        or getattr(exc, "code", None) == 124
+        or getattr(exc, "failure_kind", None) == "unavailable"
+    )
 
 
 def _declared_context(args, folder: str):
@@ -252,8 +255,12 @@ def _declared_context(args, folder: str):
             declaration["tokenName"], env, home, bounded_keychain=True
         )
     except (FI.SecretsError, TimeoutError) as exc:
-        raise ReaderError("consumer-binding-store-unavailable" if _unavailable(exc) else "consumer-binding-store-refused",
-                          124 if _unavailable(exc) else 4) from None
+        raise ReaderError(
+            "consumer-binding-store-unavailable"
+            if _unavailable(exc)
+            else "consumer-binding-store-refused",
+            124 if _unavailable(exc) else 4,
+        ) from None
     if not token:
         raise ReaderError("consumer-binding-store-unavailable")
     # Only nonsecret project and exact scope metadata reaches the canonical reader.
@@ -296,8 +303,10 @@ def _declared_read(args, folder: str) -> int:
             sys.stdout.write("".join(name + "\n" for name in found))
     except (FI.SecretsError, TimeoutError) as exc:
         raise ReaderError(
-            "consumer-binding-read-unavailable" if _unavailable(exc) else "consumer-binding-read-refused",
-            124 if _unavailable(exc) else EXIT_ABSENT if exc.code == 3 else 4
+            "consumer-binding-read-unavailable"
+            if _unavailable(exc)
+            else "consumer-binding-read-refused",
+            124 if _unavailable(exc) else EXIT_ABSENT if exc.code == 3 else 4,
         ) from None
     except FI.UsageError:
         raise ReaderError("consumer-binding-read-refused") from None
