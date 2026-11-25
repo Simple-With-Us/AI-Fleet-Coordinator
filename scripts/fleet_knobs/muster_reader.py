@@ -51,9 +51,15 @@ def fetch_named(names, *, project_id: str, path: str) -> dict[str, str]:
         if project != project_id:
             raise source.FetchFailed("muster-binding-refused")
         return fi.bounded_fetch_project(
-            project, path, env, token=token, names=names,
-            timeout=_READ_TIMEOUT, strict_records=True,
-            require_finite_expiry=True, expected_identity=expected,
+            project,
+            path,
+            env,
+            token=token,
+            names=names,
+            timeout=_READ_TIMEOUT,
+            strict_records=True,
+            require_finite_expiry=True,
+            expected_identity=expected,
         )
     except reader["ReaderError"] as exc:
         reason = {
@@ -66,5 +72,7 @@ def fetch_named(names, *, project_id: str, path: str) -> dict[str, str]:
     except (fi.SecretsError, fi.UsageError) as exc:
         reason = getattr(exc, "reason", None)
         raise source.FetchFailed(
-            "token-expired-or-invalid" if reason == "token-expired-or-invalid" else "scoped-read-failed"
+            "token-expired-or-invalid"
+            if reason == "token-expired-or-invalid"
+            else "scoped-read-failed"
         ) from None
