@@ -189,7 +189,7 @@ merging this PR.
    operator must additionally confirm afterward: the module imports in the
    running service, `sha256sum` of
    `/opt/git-relay/git-relay/git_relay/reviewed_preservation.py` equals
-   `3f72088f…`, `/healthz` still answers 200, and a rejection still refuses
+   `97cac773…`, `/healthz` still answers 200, and a rejection still refuses
    unapproved pairs (an unreviewed credential-shaped patch on an admitted
    path is still refused by the normal route). Then remove the proof bearer
    from the root that ran and from every root staged for a retry.
@@ -215,6 +215,6 @@ with the module (the unit test pins the first relationship):
   execution time ("reviewed preservation module candidate drift");
 - a change to a pinned engine module refreshes its `MODULES` entry (as #2504
   did after #2440);
-- once this release is installed, the installed image is `3f72088f…`: a later
+- once this release is installed, the installed image is `97cac773…`: a later
   release of the module starts from that as its BEFORE, in this directory or
   a successor prepared for it.
