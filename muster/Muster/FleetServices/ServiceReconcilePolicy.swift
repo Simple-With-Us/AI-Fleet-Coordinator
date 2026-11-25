@@ -83,8 +83,6 @@ public enum ServicePolicyTable {
             "The Mac's eavesdropper was retired at the Nov 10 one-listener cutover, and the server listener holds every seat, so Muster never starts or stops it."),
         row("shellular", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
-        row("code-main-keeper", .keepRunning,
-            "A long-running job in the pm2 ecosystem file that keeps the Mac's copy of main current, and starting it again is safe."),
         row("vision-worker", .keepRunning,
             "A long-running worker in the pm2 ecosystem file, and starting it again is safe."),
         row("xcode-health", .keepRunning,

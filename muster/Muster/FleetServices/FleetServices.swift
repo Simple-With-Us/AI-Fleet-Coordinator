@@ -109,7 +109,6 @@ public enum FleetServiceRegistry {
         companion,
         operatorEavesdropper,
         pm2("shellular", "Shellular"),
-        pm2("code-main-keeper", "Code Main Keeper"),
         pm2("vision-worker", "Vision Worker"),
         pm2("xcode-health", "Xcode Health"),
         pm2("agy-acp", "Antigravity ACP"),

@@ -41,8 +41,8 @@ final class ServiceReconcilePolicyTests: XCTestCase {
 
     func testSupportedKeepRunningServicesAreExplicitAndDoNotIncludeSeatMCP() {
         let keeping = ServicePolicyTable.rows.filter { $0.source == .servicesList && $0.policy == .keepRunning }
-        XCTAssertEqual(keeping.count, 6)
-        for id in ["shellular", "code-main-keeper", "vision-worker", "xcode-health", "agy-acp", "grok-acp"] {
+        XCTAssertEqual(keeping.count, 5)
+        for id in ["shellular", "vision-worker", "xcode-health", "agy-acp", "grok-acp"] {
             XCTAssertEqual(ServicePolicyTable.policy(for: id), .keepRunning, id)
         }
         XCTAssertNil(ServicePolicyTable.row(for: "seat-mcp"))

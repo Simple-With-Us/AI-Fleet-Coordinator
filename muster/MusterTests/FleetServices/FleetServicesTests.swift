@@ -12,7 +12,7 @@ final class FleetServicesTests: XCTestCase {
     func testEveryProcessBotFleetStartsIsInTheRegistry() {
         let ids = FleetServiceRegistry.all.map(\.id)
         // The supported pm2 applications in this admin view.
-        for appName in ["shellular", "code-main-keeper", "vision-worker", "xcode-health",
+        for appName in ["shellular", "vision-worker", "xcode-health",
                         "agy-acp", "grok-leader", "grok-acp", "clutch-web",
                         "botfleet-mcp"] {
             XCTAssertTrue(ids.contains(appName), "\(appName) is missing from the registry")
@@ -22,7 +22,7 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertTrue(ids.contains("app.botfleet.companion"))
         XCTAssertTrue(ids.contains("com.jay.operator"))
         XCTAssertFalse(ids.contains("seat-mcp"))
-        XCTAssertEqual(ids.count, 12)
+        XCTAssertEqual(ids.count, 11)
     }
 
     /// The Mac's eavesdropper (`com.jay.operator`) is on the Services list as a LaunchAgent,
