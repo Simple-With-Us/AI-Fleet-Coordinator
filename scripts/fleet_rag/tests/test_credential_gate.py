@@ -57,6 +57,8 @@ class CredentialGateTests(unittest.TestCase):
             self.assertEqual(str(failure.exception), 'refused_secret:' + field)
             scrub.assert_not_called()
 
+    def test_credential_split_across_fields_is_refused_combined(self):
+   
     def test_missing_or_failed_scanner_refuses_with_fixed_field_code(self):
         cases = [mock.patch.dict(sys.modules, {'simple_tools.secretscan': None}),
                  mock.patch.object(secretscan, 'scan', side_effect=RuntimeError(synthetic_credential()))]
