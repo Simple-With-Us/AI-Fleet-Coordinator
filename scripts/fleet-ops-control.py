@@ -3177,7 +3177,11 @@ def reduce_router_health(document, now):
             "registry_configured": registry_configured,
             # The Mac route token beside the state (AFC-835 pass-through):  whether a
             # Mac destination is named for this seat, never the destination itself.
-            "mac_route": _operator_text(entry.get("mac_route"), OPERATOR_PLATFORM_RE),
+            # Only the router's own two tokens may stand;  anything else (a
+            # destination-shaped alias included) reads as unsaid.
+            "mac_route": _operator_text(entry.get("mac_route"), OPERATOR_PLATFORM_RE)
+            if entry.get("mac_route") in ("configured", "no-ssh-destination")
+            else None,
             "reason": reason,
         }
         seats.append(row)
