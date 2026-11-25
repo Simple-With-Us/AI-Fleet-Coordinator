@@ -279,9 +279,9 @@ def _enqueue_locked(directory, key, record):
     except FileNotFoundError:
         pass
     entries = os.listdir(directory)
+    # First pass:  collect the cancelled keys before any counting, so a
+    # pending file listed before its sentinel is still filtered.
     cancelled_keys = set()
-    names = []
-    size = 0
     for name in entries:
         if name.startswith("cancelled-") and ".tmp-" in name:
             try:
@@ -291,7 +291,10 @@ def _enqueue_locked(directory, key, record):
             continue
         if name.startswith("cancelled-"):
             cancelled_keys.add(name[10:])
-        if name == key + ".json":
+    names = []
+    size = 0
+    for name in entries:
+        if name == key + ".json" or name.startswith("cancelled-"):
             continue
         size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
         if PENDING.fullmatch(name) and name[:-5] not in cancelled_keys:
@@ -533,6 +536,8 @@ def reconcile_coding(root=None, metadata_reader=None, limit=100):
                 queued += 1
         with _locked(root) as directory:
             latest = _read(directory, "coding-metadata.json", maximum=2 * 1024 * 1024)
+            if not isinstance(latest, dict) or not isinstance(latest.get("fingerprints"), dict):
+                raise OutboxError("coding-metadata-state-invalid")
             latest["fingerprints"][doc_id] = observed[doc_id]
             _atomic(directory, "coding-metadata.json", latest, maximum=2 * 1024 * 1024)
     return {
