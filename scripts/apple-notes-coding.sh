@@ -760,12 +760,25 @@ function run() {
 JXA
 }
 
+# Notes can refuse a note outright.  Every read and every write of the body fails with
+# AppleEvent -10000 and the delete fails the same way, so the tool cannot remove a note
+# whose body AppleEvents cannot handle at all.  Name that, so the reader is not left with
+# a bare exit code and no cause.
+_notes_report_refusal() {
+  local err_file="${1:-}"
+  [ -n "$err_file" ] || return 0
+  grep -q -- '-10000' "$err_file" 2>/dev/null || return 0
+  echo "notes: NOTES-REFUSED-DELETE  Notes itself refused the note (AppleEvent -10000):  its body cannot be read or written through AppleEvents and the delete fails the same way, so only the Notes app can remove a note in this state." >&2
+}
+
 if [[ "$MODE" == "delete" ]]; then
   _SCRIPTS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
   _NOTES_OUT=$(mktemp /tmp/apple-note-delete.XXXXXX)
+  _NOTES_ERR=$(mktemp /tmp/apple-note-delete-err.XXXXXX)
   _jxa_rc=0
-  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_fetch >"$_NOTES_OUT" || _jxa_rc=$?
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_fetch >"$_NOTES_OUT" 2>"$_NOTES_ERR" || _jxa_rc=$?
   if [[ "$_jxa_rc" != "0" ]]; then
+    _notes_report_refusal "$_NOTES_ERR"
     echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
     exit 1
   fi
@@ -773,9 +786,21 @@ if [[ "$MODE" == "delete" ]]; then
     echo "no note with that id in the Coding folder" >&2
     exit 3
   fi
-  _delete_guard="${_SCRIPTS_ROOT}/notes_delete_guard.py"
-  if [[ ! -f "$_delete_guard" ]]; then
-    echo "notes: delete guard script missing at $_delete_guard" >&2
+  # The guard imports simple_tools.notes from its own directory, so it has to sit next to the
+  # package.  The tracked copy lives beside simple_tools/, so its sibling guard is the right
+  # one;  the live copy at ~/apps/ has no package beside it, so it reaches into the managed
+  # runtime, where the package and the matching guard both live.
+  _delete_guard=""
+  for _guard_candidate in \
+    "${_SCRIPTS_ROOT}/notes_delete_guard.py" \
+    "${SIMPLE_TOOLS_RUNTIME:-$HOME/apps/lanes/_managed/fleet/simple-tools-runtime}/scripts/notes_delete_guard.py"; do
+    if [[ -f "$_guard_candidate" ]]; then
+      _delete_guard="$_guard_candidate"
+      break
+    fi
+  done
+  if [[ -z "$_delete_guard" ]]; then
+    echo "notes: delete guard script missing (looked beside the helper and in the managed runtime)" >&2
     exit 1
   fi
   _guard_rc=0
@@ -789,8 +814,9 @@ if [[ "$MODE" == "delete" ]]; then
   fi
   TITLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("title") or "")' "$_NOTES_OUT")
   _jxa_rc=0
-  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_do >"$_NOTES_OUT" || _jxa_rc=$?
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_do >"$_NOTES_OUT" 2>"$_NOTES_ERR" || _jxa_rc=$?
   if [[ "$_jxa_rc" != "0" ]]; then
+    _notes_report_refusal "$_NOTES_ERR"
     echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
     exit 1
   fi
