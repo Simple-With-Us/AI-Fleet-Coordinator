@@ -180,6 +180,8 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           APP_FALLBACK: ${{ steps.app_commit.outputs.fallback }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           # The App route deliberately runs this action when Ruff only changed workflow
@@ -189,16 +191,23 @@ jobs:
             echo "::error::autofix-ci/action failed after the App route requested it for Ruff changes under .github/workflows; see its step above."
             exit 1
           fi
-          head_name=$(git log -1 --format=%an "$HEAD_SHA")
-          head_email=$(git log -1 --format=%ae "$HEAD_SHA")
           # The hosted service refuses heads whose recent commits are bot-authored
           # ("refusing to patch repeated bot commits", a 500 from the service, not a
-          # formatting result).  That refusal must not red the check:  no autofix was
-          # applied, and the files are formatted by hand instead.  A failure on a
-          # human-authored head is a real autofix failure and still fails the job.
-          if [[ "$head_name" == *"[bot]" ]] || [[ "$head_email" == *"[bot]@"* ]]; then
-            echo "::warning::autofix-ci/action refused the bot-authored head ${HEAD_SHA} (${head_name});  no autofix was applied.  Format the changed Python files by hand (ruff format)."
+          # formatting result).  That refusal must not red the check.  Bot authorship
+          # is read from the GitHub-resolved author and committer logins of the last
+          # ten commits, never from raw git author strings, which anyone can set:
+          # when recent history carries bot App commits, that refusal is the service's
+          # only bot-specific failure, so warn and pass (no autofix was applied;  the
+          # files are formatted by hand instead).  Anything else still fails the job,
+          # and a head GitHub cannot resolve here (a fork head) fails closed, as before.
+          logins=$(gh api "repos/${GH_REPO}/commits?sha=${HEAD_SHA}&per_page=10" --jq '.[] | ((.author.login // "") + " " + (.committer.login // ""))' 2>/dev/null || true)
+          if [ -z "$logins" ]; then
+            echo "::error::autofix-ci/action failed and the head ${HEAD_SHA} could not be resolved on GitHub to classify it;  see its step above."
+            exit 1
+          fi
+          if grep -q '\[bot\]' <<< "$logins"; then
+            echo "::warning::autofix-ci/action refused the bot-carried head ${HEAD_SHA};  no autofix was applied.  Format the changed Python files by hand (ruff format)."
             exit 0
           fi
-          echo "::error::autofix-ci/action failed on the non-bot head ${HEAD_SHA} (${head_name});  see its step above."
+          echo "::error::autofix-ci/action failed on the non-bot head ${HEAD_SHA};  see its step above."
           exit 1
