@@ -167,7 +167,30 @@ jobs:
           echo "::notice::The autofix App id (vars.SWU_AUTOFIX_GITHUB_APP_ID) or key (secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY) is not available to this run, so autofix-ci/action handles it;  bot-authored heads are not covered, because the autofix.ci service refuses repeated bot commits."
 
       - uses: autofix-ci/action@v1
+        id: fallback_autofix
         # Forks, pushes to main, and same-repo PRs without the App token.
         if: steps.push_token.outputs.token == '' || steps.app_commit.outputs.fallback == 'true'
+        # The gate below decides what a failure means;  this step never fails the job itself.
+        continue-on-error: true
         with:
           fail-fast: false
+
+      - name: Gate The Fallback Result
+        if: steps.fallback_autofix.outcome == 'failure'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          head_name=$(git log -1 --format=%an "$HEAD_SHA")
+          head_email=$(git log -1 --format=%ae "$HEAD_SHA")
+          # The hosted service refuses heads whose recent commits are bot-authored
+          # ("refusing to patch repeated bot commits", a 500 from the service, not a
+          # formatting result).  That refusal must not red the check:  no autofix was
+          # applied, and the files are formatted by hand instead.  A failure on a
+          # human-authored head is a real autofix failure and still fails the job.
+          if [[ "$head_name" == *"[bot]" ]] || [[ "$head_email" == *"[bot]@"* ]]; then
+            echo "::warning::autofix-ci/action refused the bot-authored head ${HEAD_SHA} (${head_name});  no autofix was applied.  Format the changed Python files by hand (ruff format)."
+            exit 0
+          fi
+          echo "::error::autofix-ci/action failed on the non-bot head ${HEAD_SHA} (${head_name});  see its step above."
+          exit 1
