@@ -41,8 +41,8 @@ final class ServiceReconcilePolicyTests: XCTestCase {
 
     func testSupportedKeepRunningServicesAreExplicitAndDoNotIncludeSeatMCP() {
         let keeping = ServicePolicyTable.rows.filter { $0.source == .servicesList && $0.policy == .keepRunning }
-        XCTAssertEqual(keeping.count, 6)
-        for id in ["shellular", "code-main-keeper", "vision-worker", "xcode-health", "agy-acp", "grok-acp"] {
+        XCTAssertEqual(keeping.count, 5)
+        for id in ["shellular", "vision-worker", "xcode-health", "agy-acp", "grok-acp"] {
             XCTAssertEqual(ServicePolicyTable.policy(for: id), .keepRunning, id)
         }
         XCTAssertNil(ServicePolicyTable.row(for: "seat-mcp"))
@@ -73,8 +73,45 @@ final class ServiceReconcilePolicyTests: XCTestCase {
         guard let data = try? Data(contentsOf: file) else { throw XCTSkip("The allowlist file is not in this checkout.") }
         let allowlist = try XCTUnwrap(OpsAllowlist.parse(data))
         let named = Set(allowlist.macAgents.map(\.name))
-        XCTAssertEqual(named, Set(ServicePolicyTable.agentLabels),
-                       "The policy table and scripts/fleet-ops-control.json name different LaunchAgents.")
+        // The allowlist names every LaunchAgent Muster may act on.  The ones on the
+        // Services list are managed by their own row,  and the rest are the ones the
+        // policy table leaves alone.
+        let listed = Set(FleetServiceRegistry.all.compactMap { descriptor -> String? in
+            if case .launchAgent(let label) = descriptor.kind { return label }
+            return nil
+        })
+        for name in named {
+            XCTAssertTrue(ServicePolicyTable.agentLabels.contains(name) || listed.contains(name),
+                          "\(name) is named by the allowlist and by neither the Services list nor the policy table.")
+        }
+        XCTAssertEqual(Set(ServicePolicyTable.agentLabels), named.subtracting(listed),
+                       "The policy table leaves alone a LaunchAgent the allowlist does not name, or names one it does.")
+    }
+
+    /// One surface owns the start of a service.
+    ///
+    /// An allowlisted LaunchAgent that the Services list also starts has two owners:  a
+    /// deliberate ops-control stop would be undone by Muster's next look, because the
+    /// stop never reaches the owner-stops record.  So the allowlist names every agent
+    /// Muster may act on, and the Services list holds the ones Muster starts on its own,
+    /// and the two never name the same LaunchAgent.
+    func testAnAllowlistedAgentMusterAlsoStartsWouldHaveTwoOwners() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let file = root.appendingPathComponent("scripts/fleet-ops-control.json")
+        guard let data = try? Data(contentsOf: file) else { throw XCTSkip("The allowlist file is not in this checkout.") }
+        let allowlist = try XCTUnwrap(OpsAllowlist.parse(data))
+        let named = Set(allowlist.macAgents.map(\.name))
+        // The LaunchAgents on the Services list that Muster starts by itself.
+        let started = Set(FleetServiceRegistry.all.compactMap { descriptor -> String? in
+            guard case .launchAgent(let label) = descriptor.kind else { return nil }
+            let policy = ServicePolicyTable.policy(for: descriptor.id)
+            return (policy == .keepRunning || policy == .startAtLoginOnly) ? label : nil
+        })
+        XCTAssertTrue(named.intersection(started).isEmpty,
+                      "These LaunchAgents are allowlisted and started by Muster as well: "
+                      + named.intersection(started).sorted().joined(separator: ", "))
     }
 
     func testAServiceNobodyWroteARowForIsLeftAlone() {

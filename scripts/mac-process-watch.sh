@@ -108,7 +108,6 @@ grok_leader_lock_held() {
 # this script already omits it;  this tracked copy had not caught up.
 expect_pm2=(
   shellular
-  code-main-keeper
   vision-worker
   xcode-health
   agy-acp
@@ -125,6 +124,7 @@ expect_pm2=(
 # harnessBootstrapPlist for Macs that only have the legacy-named plist).
 expect_launchd=(
   "com.jay.claude-remote-control com.jay.claude-remote-control.plist"
+  "com.jay.code-main-keeper com.jay.code-main-keeper.plist"
   "app.botfleet.server app.botfleet.server.plist com.jay.botfleet-server"
 )
 BOTFLEET_LABEL="app.botfleet.server"

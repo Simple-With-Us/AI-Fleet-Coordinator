@@ -88,8 +88,9 @@ final class MachineStatusTests: XCTestCase {
     }
 
     private static let allowlist = OpsAllowlist(
-        macAgents: [OpsAllowlist.Entry(name: OpsNames.fetchAgentLabel, actions: ["start", "stop", "restart"])],
-        pm2Apps: ["botfleet-mcp", "shellular", "code-main-keeper", "vision-worker", "xcode-health",
+        macAgents: [OpsAllowlist.Entry(name: OpsNames.fetchAgentLabel, actions: ["start", "stop", "restart"]),
+                    OpsAllowlist.Entry(name: "com.jay.code-main-keeper", actions: ["start", "stop", "restart"])],
+        pm2Apps: ["botfleet-mcp", "shellular", "vision-worker", "xcode-health",
                   "agy-acp", "grok-leader", "grok-acp", "clutch-web"].map {
             OpsAllowlist.Entry(name: $0, actions: ["start", "stop", "restart"])
         },
@@ -105,7 +106,7 @@ final class MachineStatusTests: XCTestCase {
         var states: [String: ManagedServiceState] = [
             "botfleet-mcp": .running, "app.botfleet.server": .running, "app.botfleet.companion": .notInstalled,
             "com.jay.operator": .stopped,
-            "shellular": .running, "code-main-keeper": .running, "vision-worker": .running,
+            "shellular": .running, "com.jay.code-main-keeper": .running, "vision-worker": .running,
             "xcode-health": .running, "agy-acp": .stopped, "grok-leader": .stopped,
             "grok-acp": .running, "clutch-web": .running,
         ]
@@ -178,10 +179,10 @@ final class MachineStatusTests: XCTestCase {
                 Stop On The Mac\u{2026}
             BotFleet Companion:  not installed
             Operator Eavesdropper:  retired (since the Nov 10 one-listener cutover)
-            Shellular:  running
+            Code Main Keeper:  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
-            Code Main Keeper:  running
+            Shellular:  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
             Vision Worker:  running
@@ -564,7 +565,7 @@ final class MachineStatusTests: XCTestCase {
     }
 
     private static let pm2SilentStates: [String: ManagedServiceState] = [
-        "shellular": .unknown, "code-main-keeper": .unknown, "vision-worker": .unknown,
+        "shellular": .unknown, "vision-worker": .unknown,
         "xcode-health": .unknown, "agy-acp": .unknown, "grok-leader": .unknown,
         "grok-acp": .unknown, "clutch-web": .unknown,
     ]
@@ -573,7 +574,7 @@ final class MachineStatusTests: XCTestCase {
         let services = Self.macServices(changing: Self.pm2SilentStates)
         XCTAssertFalse(services.pm2Answered)
         let menu = MachineMenu(inputs(services: services, status: try statusReading(), tools: try toolsReading()))
-        assertLines(menu, contain: ["pm2 did not answer, so 8 services are not known."])
+        assertLines(menu, contain: ["pm2 did not answer, so 7 services are not known."])
         XCTAssertEqual(menu.mac.health, .notKnown)
         let shellular = actions(in: menu.mac.items).filter { $0.serviceID == "shellular" }
         XCTAssertTrue(shellular.isEmpty)

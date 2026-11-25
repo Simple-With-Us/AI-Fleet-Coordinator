@@ -59,14 +59,6 @@ module.exports = {
       error_file: `${logs}/shellular-error.log`,
     }),
     app({
-      name: "code-main-keeper",
-      script: `${home}/apps/code-main-keeper-daemon.sh`,
-      interpreter: "bash",
-      cwd: `${home}/apps`,
-      out_file: `${home}/apps/logs/code-main-keeper.pm2.out.log`,
-      error_file: `${home}/apps/logs/code-main-keeper.pm2.err.log`,
-    }),
-    app({
       name: "vision-worker",
       script: `${home}/vision-worker/run-vision-worker.sh`,
       interpreter: "bash",

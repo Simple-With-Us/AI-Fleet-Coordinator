@@ -117,7 +117,7 @@ EXPLICIT_RULES = (
     ("AFC", "launchd", "com.jay.sim-idle-reaper", True),
     ("AFC", "launchd", "com.jays.weekly-fleet-mode-digest", True),
     ("AFC", "pm2", "seat-mcp", True),
-    ("AFC", "pm2", "code-main-keeper", True),
+    ("AFC", "launchd", "com.jay.code-main-keeper", True),
     ("AFC", "systemd", "cf-usage-watchdog.service", True),
     ("AFC", "systemd", "fleet-cli-git-update.service", True),
     ("AFC", "systemd", "fleet-coding-memory.service", True),

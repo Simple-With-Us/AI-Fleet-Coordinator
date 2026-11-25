@@ -99,6 +99,16 @@ public enum FleetServiceRegistry {
         kind: .launchAgent(label: "com.jay.operator"),
         policy: .retired)
 
+    /// The Mac's Code mirror keeper:  it fast-forwards the clean `~/Code` clones to
+    /// `origin/main`.  It is a launchd agent since the Nov 25, 2026 cutover, and it took
+    /// the place of the pm2 `code-main-keeper` app, so the service Muster knows is the
+    /// same one with a new supervisor.
+    public static let codeMainKeeper = FleetServiceDescriptor(
+        id: "com.jay.code-main-keeper",
+        title: "Code Main Keeper",
+        kind: .launchAgent(label: "com.jay.code-main-keeper"),
+        policy: .alwaysOn)
+
     /// When the retired Mac listener was retired,  in the words its row uses.
     public static let retiredSince = "the Nov 10 one-listener cutover"
 
@@ -108,8 +118,8 @@ public enum FleetServiceRegistry {
         server,
         companion,
         operatorEavesdropper,
+        codeMainKeeper,
         pm2("shellular", "Shellular"),
-        pm2("code-main-keeper", "Code Main Keeper"),
         pm2("vision-worker", "Vision Worker"),
         pm2("xcode-health", "Xcode Health"),
         pm2("agy-acp", "Antigravity ACP"),

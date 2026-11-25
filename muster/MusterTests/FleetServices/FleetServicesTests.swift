@@ -12,7 +12,7 @@ final class FleetServicesTests: XCTestCase {
     func testEveryProcessBotFleetStartsIsInTheRegistry() {
         let ids = FleetServiceRegistry.all.map(\.id)
         // The supported pm2 applications in this admin view.
-        for appName in ["shellular", "code-main-keeper", "vision-worker", "xcode-health",
+        for appName in ["shellular", "vision-worker", "xcode-health",
                         "agy-acp", "grok-leader", "grok-acp", "clutch-web",
                         "botfleet-mcp"] {
             XCTAssertTrue(ids.contains(appName), "\(appName) is missing from the registry")
@@ -22,6 +22,10 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertTrue(ids.contains("app.botfleet.companion"))
         XCTAssertTrue(ids.contains("com.jay.operator"))
         XCTAssertFalse(ids.contains("seat-mcp"))
+        // The Code mirror keeper is a launchd agent since the Nov 25, 2026 cutover,  so
+        // the pm2 app name is gone and the label is the service's id.
+        XCTAssertTrue(ids.contains("com.jay.code-main-keeper"))
+        XCTAssertFalse(ids.contains("code-main-keeper"))
         XCTAssertEqual(ids.count, 12)
     }
 

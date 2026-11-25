@@ -437,6 +437,10 @@ class AllowlistNotesTests(Base):
     # and the RAG mirror have no role: neither word the allowlist uses (`reporting`, `updater`)
     # describes them.
     MAC_NOTES = {
+        "com.jay.code-main-keeper": (
+            "updater",
+            "Stopping this stops the Mac keeping ~/Code caught up with origin/main, so the Code clones fall behind until it starts again.",
+        ),
         "com.jay.fleet-rag-mirror": (
             None,
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
