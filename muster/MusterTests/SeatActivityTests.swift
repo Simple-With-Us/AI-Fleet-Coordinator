@@ -2,66 +2,11 @@ import XCTest
 
 /// The Seat Activity panel:  what it reads,  how it fails,  and how many calls it makes.
 ///
-/// Every test here runs against a fake fleet chat CLI,  an eavesdropper state file and a seat
-/// partition in a temporary directory.  Nothing here touches the network,  Jay's home
-/// directory or a real Zulip account.
+/// Every test here runs against a fake fleet chat CLI and a fixed server eavesdropper reading
+/// (the reduced_status v1 document).  Nothing here touches the network,  a Mac file,  Jay's
+/// home directory or a real Zulip account.
 final class SeatActivityTests: XCTestCase {
     // MARK: The fixtures
-
-    /// The eavesdropper's own published state,  with one seat that has one live lease and
-    /// one dead one.
-    private let listenerJSON = """
-    {
-      "pid": 22135,
-      "version": "3.2.1",
-      "updated": 1792821067.0,
-      "disabled": [],
-      "skipped_seats": {},
-      "pause": {},
-      "seats": {
-        "CLAUDE": {
-          "bot": "Claude",
-          "connected": true,
-          "paused": false,
-          "jobs": 1,
-          "leases": [
-            {
-              "lease_id": "claude-code-11075-1792560932",
-              "platform": "claude-code",
-              "alive": true,
-              "why": "ok",
-              "topics": 2,
-              "watcher": true,
-              "pending": 0
-            },
-            {
-              "lease_id": "claude-code-2269-1791503138",
-              "platform": "claude-code",
-              "alive": false,
-              "why": "pid gone",
-              "topics": 0,
-              "watcher": false,
-              "pending": 0
-            }
-          ]
-        }
-      }
-    }
-    """
-
-    /// The seat partition,  in the shape of `docs/protocols/simple-tools-partition.toml`.
-    private let partitionTOML = """
-    version = 1
-
-    [seats]
-    CLAUDE = "mac"
-    CODEX = "mac"
-    OPENCODE = "mac"
-    MA = "server"
-    JET = "server"
-    GB-FIXER = "server"
-    BF-BUILDER = "none"
-    """
 
     /// The user list,  as `muster-service users` prints it.
     private let usersJSON = """
@@ -75,12 +20,26 @@ final class SeatActivityTests: XCTestCase {
     {"id": 1001, "sender_id": 9001, "channel": "Work-In-Progress", "topic": "fleet tools doctor", "dm": false, "sender_email": "claude-bot@example.test", "sender_full_name": "Claude", "timestamp": 1792821027, "content": "[CLAUDE] fleet-tools-doctor on worker-01.example.test:  5 failing checks."}
     """
 
-    /// The listener fixture with one more field on the CLAUDE seat.
-    private func listener(claudeField field: String) -> String {
-        listenerJSON.replacingOccurrences(
-            of: "\"jobs\": 1,",
-            with: "\"jobs\": 1,\n          \(field),"
-        )
+    /// The server eavesdropper's reduced status,  current at the tests' clock (05:51:07 UTC on
+    /// Oct 24, 2026):  four seats it holds,  one it skipped and one its settings turn off.
+    static let serverJSON = #"""
+    {"schema": 1, "generated_at": "2026-10-24T05:50:37Z", "instance": "server",
+     "status_updated": "2026-10-24T05:51:00Z",
+     "seats": [{"seat": "CLAUDE", "bot": "Claude", "connected": true},
+               {"seat": "MA", "bot": "Muse Assist", "connected": true},
+               {"seat": "JET", "connected": true},
+               {"seat": "GB-FIXER", "connected": false}],
+     "skipped": [{"seat": "OPENCODE", "reason": "routine_missing"}],
+     "disabled": ["CODEX"]}
+    """#
+
+    /// The clock every read here is judged against.
+    static let clock: TimeInterval = 1792821067
+
+    /// The fixture,  read as the store reads it.
+    static func serverReading(_ text: String = serverJSON) throws -> ServerEavesdropperReading {
+        let status = try JSONDecoder().decode(ReducedEavesdropperStatus.self, from: Data(text.utf8))
+        return ServerEavesdropperReading.reading(of: status)
     }
 
     // MARK: The fake CLI
@@ -128,92 +87,53 @@ final class SeatActivityTests: XCTestCase {
 
     // MARK: The reading
 
-    /// A temporary directory that goes away after the test.
-    private func scratchDirectory(fileManager: FileManager = .default) throws -> URL {
-        let root = fileManager.temporaryDirectory
-            .appendingPathComponent("muster-seat-activity-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? fileManager.removeItem(at: root)
-        }
-        return root
-    }
-
-    /// An eavesdropper state location in a temporary directory.
-    private func listenerLocation(
-        state: String?,
-        config: String? = nil,
-        fileManager: FileManager = .default
-    ) throws -> ListenerStateLocation {
-        let root = try scratchDirectory(fileManager: fileManager)
-        var location = ListenerStateLocation(home: root)
-        location.root = root.appendingPathComponent(".simple-tools", isDirectory: true)
-        try fileManager.createDirectory(at: location.root, withIntermediateDirectories: true)
-        if let state {
-            let listener = location.root.appendingPathComponent("listener", isDirectory: true)
-            try fileManager.createDirectory(at: listener, withIntermediateDirectories: true)
-            try state.write(
-                to: listener.appendingPathComponent("status.json"),
-                atomically: true,
-                encoding: .utf8
-            )
-        }
-        if let config {
-            try config.write(to: location.configURL, atomically: true, encoding: .utf8)
-        }
-        return location
-    }
-
-    /// A partition file in a temporary directory,  or a path to nothing.
-    private func partitionFile(_ text: String?) throws -> URL {
-        let root = try scratchDirectory()
-        let url = root.appendingPathComponent("simple-tools-partition.toml")
-        if let text {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        }
-        return url
-    }
-
-    /// Read the panel over a roster.
+    /// Read the panel over a roster,  with the server reading given,  or none at all.
     private func read(
         roster: [String] = ["CLAUDE"],
         runner: ChatRunning,
-        listener: String? = nil,
-        partition: String? = nil,
-        config: String? = nil,
-        now: TimeInterval = 1792821067
+        server: ServerEavesdropperReading?? = nil,
+        serverReads: Counter? = nil,
+        now: TimeInterval = SeatActivityTests.clock
     ) async throws -> SeatActivityModel {
-        let location = try listenerLocation(state: listener, config: config)
+        let reading: ServerEavesdropperReading? = try server ?? Self.serverReading()
         let reader = SeatActivityReader(
-            location: location,
             runner: runner,
             now: { Date(timeIntervalSince1970: now) },
-            partitionURL: try partitionFile(partition ?? partitionTOML)
+            serverReading: {
+                await serverReads?.bump()
+                return reading
+            }
         )
         return await reader.read(roster: roster)
     }
 
     // MARK: The healthy seat
 
-    /// A seat everything answered for reads as known in every column.
-    func test_a_healthy_seat_reads_every_column_as_known() async throws {
-        let model = try await read(runner: healthyRunner(), listener: listenerJSON)
+    /// A seat the server's current reading holds is placed with the server,  its Mac columns
+    /// say they are not read here,  and nothing is a problem (AFC-837).
+    func test_a_seat_the_server_holds_is_placed_by_the_servers_reading() async throws {
+        let model = try await read(runner: healthyRunner())
         let row = try XCTUnwrap(model.rows.first)
 
         XCTAssertEqual(row.seat, "CLAUDE")
         XCTAssertEqual(row.botName, "Claude")
-        XCTAssertEqual(row.place, .mac)
-        XCTAssertEqual(row.openSessions, .known(1))
-        XCTAssertEqual(row.listener, .known(.connected(jobs: 1)))
-        XCTAssertEqual(row.quota, .known(.notReported))
-        XCTAssertFalse(row.postSaysAtQuota)
+        XCTAssertEqual(row.place, .server)
+        for fact in [row.openSessions.notHereReason, row.listener.notHereReason, row.quota.notHereReason] {
+            let reason = try XCTUnwrap(fact)
+            XCTAssertTrue(reason.contains("server"), reason)
+            XCTAssertTrue(reason.contains("not read here"), reason)
+        }
+        XCTAssertTrue(row.sessions.isEmpty)
+        XCTAssertFalse(row.runningWake)
         XCTAssertFalse(row.hasUnknown)
+        XCTAssertFalse(row.needsAttention)
+        XCTAssertTrue(row.lastPost.isKnown)
         XCTAssertEqual(model.problems, [])
     }
 
     /// The last post carries the time and a label,  and never the body.
     func test_the_last_post_carries_a_time_and_a_label_and_never_the_body() async throws {
-        let model = try await read(runner: healthyRunner(), listener: listenerJSON)
+        let model = try await read(runner: healthyRunner())
         let row = try XCTUnwrap(model.rows.first)
         let post = try XCTUnwrap(row.lastPost.value)
 
@@ -226,8 +146,7 @@ final class SeatActivityTests: XCTestCase {
     /// A seat with no post at all reads as no post,  and not as a failure.
     func test_a_seat_with_no_post_reads_as_no_post() async throws {
         let model = try await read(
-            runner: healthyRunner(search: ""),
-            listener: listenerJSON
+            runner: healthyRunner(search: "")
         )
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertEqual(row.lastPost, .known(.none))
@@ -244,13 +163,13 @@ final class SeatActivityTests: XCTestCase {
             }
             throw ChatCLIError.commandNotFound("/nowhere/simple-chat")
         }
-        let model = try await read(runner: runner, listener: listenerJSON)
+        let model = try await read(runner: runner)
         let row = try XCTUnwrap(model.rows.first)
 
         XCTAssertFalse(row.lastPost.isKnown)
         XCTAssertNotNil(row.lastPost.reason)
-        // The known part stays known:  the eavesdropper's own file was read fine.
-        XCTAssertEqual(row.openSessions, .known(1))
+        // Where the seat is held stays known:  the server's reading was read fine.
+        XCTAssertEqual(row.place, .server)
     }
 
     /// A missing binary leaves the Zulip column unknown,  and the row says why.
@@ -258,7 +177,7 @@ final class SeatActivityTests: XCTestCase {
         let runner = FakeChatRunner { _ in
             throw ChatCLIError.commandNotFound("/nowhere/simple-chat")
         }
-        let model = try await read(runner: runner, listener: listenerJSON)
+        let model = try await read(runner: runner)
 
         XCTAssertEqual(model.rows.count, 1)
         let row = try XCTUnwrap(model.rows.first)
@@ -275,8 +194,7 @@ final class SeatActivityTests: XCTestCase {
         }
         let model = try await read(
             roster: ["CLAUDE", "OPENCODE"],
-            runner: runner,
-            listener: listenerJSON
+            runner: runner
         )
         XCTAssertEqual(model.rows.count, 2)
         for row in model.rows {
@@ -294,7 +212,7 @@ final class SeatActivityTests: XCTestCase {
         let runner = FakeChatRunner { _ in
             ChatCLIResult(exitCode: 3, stdout: "", stderr: "muster-service: refused (pins-missing)\n")
         }
-        let model = try await read(roster: ["CLAUDE", "OPENCODE"], runner: runner, listener: listenerJSON)
+        let model = try await read(roster: ["CLAUDE", "OPENCODE"], runner: runner)
         XCTAssertEqual(runner.calls.count, 1)
         XCTAssertEqual(runner.calls.first?.processArguments.first, "muster-service")
         let problem = try XCTUnwrap(model.problems.first)
@@ -332,44 +250,11 @@ final class SeatActivityTests: XCTestCase {
         }
     }
 
-    /// An eavesdropper state file that cannot be read leaves the eavesdropper columns unknown.
-    func test_an_unreadable_listener_state_leaves_the_listener_columns_unknown() async throws {
-        let model = try await read(runner: healthyRunner(), listener: nil)
-        let row = try XCTUnwrap(model.rows.first)
-
-        XCTAssertFalse(row.openSessions.isKnown)
-        XCTAssertFalse(row.listener.isKnown)
-        XCTAssertFalse(row.quota.isKnown)
-        XCTAssertNotEqual(row.openSessions, .known(0))
-        XCTAssertNotNil(row.openSessions.reason)
-        XCTAssertEqual(model.problems.count, 1)
-    }
-
-    /// A seat the Mac holds that its eavesdropper publishes nothing about has unknown
-    /// sessions,  and not zero.
-    func test_a_mac_seat_the_listener_does_not_publish_has_unknown_sessions_and_not_zero() async throws {
-        let model = try await read(
-            roster: ["OPENCODE"],
-            runner: healthyRunner(),
-            listener: listenerJSON
-        )
-        let row = try XCTUnwrap(model.rows.first)
-
-        XCTAssertEqual(row.seat, "OPENCODE")
-        XCTAssertEqual(row.place, .mac)
-        XCTAssertFalse(row.openSessions.isKnown)
-        XCTAssertNotNil(row.openSessions.reason)
-        XCTAssertNotEqual(row.openSessions, .known(0))
-        XCTAssertFalse(row.listener.isKnown)
-        XCTAssertTrue(row.needsAttention)
-    }
-
     /// A seat the realm knows no bot for has an unknown Zulip column.
     func test_a_seat_with_no_bot_has_an_unknown_zulip_column() async throws {
         let model = try await read(
             roster: ["GROK"],
-            runner: healthyRunner(),
-            listener: listenerJSON
+            runner: healthyRunner()
         )
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertFalse(row.lastPost.isKnown)
@@ -389,22 +274,11 @@ final class SeatActivityTests: XCTestCase {
                 return ChatCLIResult(exitCode: 0, stdout: "", stderr: "")
             }
         }
-        let model = try await read(runner: runner, listener: listenerJSON)
+        let model = try await read(runner: runner)
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertFalse(row.lastPost.isKnown)
         XCTAssertTrue(row.lastPost.reason?.contains("deactivated") == true)
         XCTAssertEqual(model.requestsMade, 1)
-    }
-
-    /// The row says which parts are unknown,  so a reader knows what not to believe.
-    func test_the_row_names_the_parts_that_are_unknown() async throws {
-        let model = try await read(runner: healthyRunner(), listener: nil)
-        let row = try XCTUnwrap(model.rows.first)
-        let columns = row.unknowns.map { $0.column }
-        XCTAssertTrue(columns.contains("sessions"))
-        XCTAssertTrue(columns.contains("eavesdropper"))
-        XCTAssertTrue(columns.contains("quota"))
-        XCTAssertFalse(columns.contains("last post"))
     }
 
     // MARK: No seat list (DEGRADED-WALK-15)
@@ -413,7 +287,7 @@ final class SeatActivityTests: XCTestCase {
     /// showing an idle fleet.
     func test_an_empty_roster_makes_no_calls_and_says_there_is_no_seat_list() async throws {
         let runner = healthyRunner()
-        let model = try await read(roster: [], runner: runner, listener: listenerJSON)
+        let model = try await read(roster: [], runner: runner)
         XCTAssertEqual(model.rows.count, 0)
         XCTAssertEqual(model.requestsMade, 0)
         XCTAssertEqual(model.requestCeiling, 0)
@@ -424,6 +298,115 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertTrue(model.headline.contains("no seat list"))
     }
 
+    // MARK: Where each seat is held,  from the server (AFC-837)
+
+    /// A seat the server skipped or turns off is still the server's:  its row shows what the
+    /// server says about it,  never a Mac answer.
+    func test_a_skipped_or_turned_off_seat_is_still_the_servers() async throws {
+        let model = try await read(roster: ["OPENCODE", "CODEX"], runner: healthyRunner())
+        XCTAssertEqual(model.rows.map(\.place), [.server, .server])
+        XCTAssertEqual(model.problems, [])
+    }
+
+    /// With no server reading,  every place is not known and says why under the row,  the Mac
+    /// columns are never filled in,  and the panel says once that the server was not read.
+    func test_no_server_reading_leaves_every_place_not_known_and_never_a_mac_value() async throws {
+        let model = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner(), server: .some(nil))
+        for row in model.rows {
+            guard case .notKnown(let why) = row.place else {
+                return XCTFail("\(row.seat) must be not known,  got \(row.place)")
+            }
+            XCTAssertTrue(why.contains("was not read"), why)
+            XCTAssertTrue(row.notes.contains { $0.column == "held by" && $0.isProblem })
+            XCTAssertTrue(row.needsAttention)
+            for fact in [row.openSessions.isKnown, row.listener.isKnown, row.quota.isKnown] {
+                XCTAssertFalse(fact, row.seat)
+            }
+            XCTAssertNotNil(row.listener.notHereReason)
+            XCTAssertTrue(row.lastPost.isKnown, "the last post is read whatever the server says")
+        }
+        XCTAssertEqual(model.groups.map(\.kind), [.notKnown])
+        XCTAssertTrue(model.problems.contains { $0.contains("server's eavesdropper was not read") }, "\(model.problems)")
+        XCTAssertTrue(model.otherServerSeats.isEmpty)
+        XCTAssertTrue(model.headline.contains("Muster cannot say who holds 2 seats."), model.headline)
+    }
+
+    /// A refusal from the server's helper leaves every place not known,  with the helper's
+    /// own reason,  and no Mac source is read instead.
+    func test_a_server_refusal_leaves_places_not_known_with_its_reason() async throws {
+        let why = "The server's control helper does not have the eavesdropper status read yet."
+        let model = try await read(runner: healthyRunner(), server: .some(.notRead(why)))
+        XCTAssertEqual(model.rows.first?.place, .notKnown(why))
+        XCTAssertTrue(model.problems.contains { $0.contains(why) }, "\(model.problems)")
+
+        let unavailable = try await read(runner: healthyRunner(), server: .some(.unavailable(.containerNotRunning)))
+        XCTAssertEqual(unavailable.rows.first?.place, .notKnown(ServerEavesdropperUnavailable.containerNotRunning.cause))
+    }
+
+    /// A reading that is not current still places the seats it lists with the server,  whose
+    /// rows then say the answer is old,  but never calls an unlisted seat unheld.
+    func test_a_stale_reading_keeps_listed_seats_on_the_server_and_unlisted_ones_not_known() async throws {
+        let model = try await read(
+            roster: ["CLAUDE", "BF-BUILDER"],
+            runner: healthyRunner(),
+            now: SeatActivityTests.clock + 600
+        )
+        XCTAssertEqual(model.rows.first { $0.seat == "CLAUDE" }?.place, .server)
+        let unlisted = try XCTUnwrap(model.rows.first { $0.seat == "BF-BUILDER" })
+        guard case .notKnown(let why) = unlisted.place else {
+            return XCTFail("an unlisted seat in a stale reading must be not known,  got \(unlisted.place)")
+        }
+        XCTAssertTrue(why.contains("not current"), why)
+        XCTAssertTrue(model.problems.contains { $0.contains("not current") }, "\(model.problems)")
+        XCTAssertTrue(model.otherServerSeats.isEmpty, "a stale reading names no other seat")
+    }
+
+    /// The rows sit in groups by where the server says each seat is held.
+    func test_the_rows_are_grouped_by_where_the_server_holds_each_seat() async throws {
+        let model = try await read(roster: ["MA", "CLAUDE", "BF-BUILDER"], runner: healthyRunner())
+        XCTAssertEqual(model.groups.map(\.kind), [.server, .noEavesdropper])
+        XCTAssertEqual(model.groups.first?.rows.map(\.seat), ["MA", "CLAUDE"])
+    }
+
+    /// The seats the server holds that the roster does not are named,  skipped and turned-off
+    /// seats included,  so the server's half of the fleet is not silently missing.
+    func test_server_seats_the_roster_does_not_hold_are_named() async throws {
+        let model = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner())
+        XCTAssertEqual(model.otherServerSeats, ["CODEX", "GB-FIXER", "JET", "OPENCODE"])
+        let note = try XCTUnwrap(model.otherServerSeatsNote)
+        XCTAssertTrue(note.contains("server's eavesdropper also holds 4 seats"), note)
+        XCTAssertTrue(note.contains("CODEX, GB-FIXER, JET, OPENCODE"), note)
+    }
+
+    /// The headline counts the server's seats and never speaks for a Mac seat.
+    func test_the_headline_counts_the_servers_seats() async throws {
+        let model = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner())
+        let shown = SeatActivityText.display(model.headline)
+        XCTAssertTrue(shown.contains("6 seats are held by the server."), shown)
+        XCTAssertFalse(shown.contains("held by the Mac"), shown)
+        XCTAssertFalse(shown.contains("  "))
+    }
+
+    /// One read asks the server once,  and an empty roster asks it nothing.
+    func test_a_read_asks_the_server_once_and_an_empty_roster_not_at_all() async throws {
+        let reads = Counter()
+        _ = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner(), serverReads: reads)
+        let afterOne = await reads.value
+        XCTAssertEqual(afterOne, 1)
+        _ = try await read(roster: [], runner: healthyRunner(), serverReads: reads)
+        let afterEmpty = await reads.value
+        XCTAssertEqual(afterEmpty, 1)
+    }
+
+    /// A user list that fails still leaves every seat placed by the server.
+    func test_a_failed_user_list_still_places_every_seat() async throws {
+        let runner = FakeChatRunner { _ in
+            ChatCLIResult(exitCode: 3, stdout: "", stderr: "muster-service: refused (credential-unreadable)\n")
+        }
+        let model = try await read(roster: ["CLAUDE", "BF-BUILDER"], runner: runner)
+        XCTAssertEqual(model.rows.map(\.place), [.server, .noEavesdropper])
+    }
+
     // MARK: Where each seat is held (SEATS-4, HOSTAUDIT-08)
 
     /// A seat the partition gives to the server reads as held by the server,  and its
@@ -431,8 +414,7 @@ final class SeatActivityTests: XCTestCase {
     func test_a_server_seat_reads_as_held_by_the_server_and_not_unknown() async throws {
         let model = try await read(
             roster: ["CLAUDE", "MA"],
-            runner: healthyRunner(),
-            listener: listenerJSON
+            runner: healthyRunner()
         )
         let row = try XCTUnwrap(model.rows.first { $0.seat == "MA" })
         XCTAssertEqual(row.place, .server)
@@ -447,19 +429,9 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertTrue(row.lastPost.isKnown)
     }
 
-    /// The Mac's fleet-wide pause does not reach a seat the server holds.
-    func test_a_mac_pause_does_not_mark_a_server_seat_paused() async throws {
-        let paused = listenerJSON.replacingOccurrences(
-            of: "\"pause\": {}",
-            with: "\"pause\": {\"*\": {\"by\": \"owner\"}}"
-        )
-        let model = try await read(roster: ["MA"], runner: healthyRunner(), listener: paused)
-        XCTAssertNotNil(model.rows.first?.listener.notHereReason)
-    }
-
     /// A seat held by no eavesdropper says so,  and is not a fault.
     func test_a_seat_with_no_eavesdropper_reads_as_held_by_none() async throws {
-        let model = try await read(roster: ["BF-BUILDER"], runner: healthyRunner(), listener: listenerJSON)
+        let model = try await read(roster: ["BF-BUILDER"], runner: healthyRunner())
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertEqual(row.place, .noEavesdropper)
         XCTAssertNotNil(row.openSessions.notHereReason)
@@ -473,297 +445,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertFalse(unknownColumns.contains("quota"))
     }
 
-    /// The rows sit in groups by where each seat is held,  Mac first.
-    func test_the_rows_are_grouped_by_where_each_seat_is_held() async throws {
-        let model = try await read(
-            roster: ["MA", "CLAUDE", "BF-BUILDER"],
-            runner: healthyRunner(),
-            listener: listenerJSON
-        )
-        XCTAssertEqual(model.groups.map(\.kind), [.mac, .server, .noEavesdropper])
-        XCTAssertEqual(model.groups.first?.rows.map(\.seat), ["CLAUDE"])
-    }
-
-    /// Inside a group,  the rows that need a look come first.
-    func test_rows_that_need_a_look_come_first_in_their_group() async throws {
-        let model = try await read(
-            roster: ["CLAUDE", "OPENCODE"],
-            runner: healthyRunner(),
-            listener: listenerJSON
-        )
-        XCTAssertEqual(model.groups.first?.rows.map(\.seat), ["OPENCODE", "CLAUDE"])
-    }
-
-    /// The server seats the roster does not hold are named,  so the server's half of the
-    /// fleet is not silently missing.
-    func test_server_seats_the_roster_does_not_hold_are_named() async throws {
-        let model = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner(), listener: listenerJSON)
-        XCTAssertEqual(model.otherServerSeats, ["GB-FIXER", "JET"])
-        let note = try XCTUnwrap(model.otherServerSeatsNote)
-        XCTAssertTrue(note.contains("GB-FIXER, JET"))
-        XCTAssertTrue(note.contains("2 seats"))
-    }
-
-    /// An unreadable partition makes every seat's place not known,  and says why.
-    func test_an_unreadable_partition_leaves_every_place_not_known() async throws {
-        let model = try await read(
-            roster: ["CLAUDE"],
-            runner: healthyRunner(),
-            listener: listenerJSON,
-            partition: "this is not a partition"
-        )
-        let row = try XCTUnwrap(model.rows.first)
-        if case .notKnown = row.place {} else { XCTFail("the place must be not known, got \(row.place)") }
-        XCTAssertTrue(model.problems.contains { $0.contains("seat partition could not be read") })
-        // The Mac's own state is still read for the seat.
-        XCTAssertEqual(row.openSessions, .known(1))
-        XCTAssertTrue(row.notes.contains { $0.column == "held by" && $0.isProblem })
-    }
-
-    /// The partition the Mac's eavesdropper names wins over Muster's own copy.
-    func test_the_partition_the_eavesdropper_names_wins() async throws {
-        let named = try partitionFile("version = 1\n\n[seats]\nCLAUDE = \"mac\"\nCODEX = \"server\"\n")
-        let state = listenerJSON.replacingOccurrences(
-            of: "\"pid\": 22135,",
-            with: "\"pid\": 22135,\n  \"partition_file\": \"\(named.path)\","
-        )
-        let model = try await read(roster: ["CODEX"], runner: healthyRunner(), listener: state)
-        XCTAssertEqual(model.rows.first?.place, .server)
-        XCTAssertEqual(model.partitionPath, named.path)
-    }
-
-    /// A seat section in the Mac's file that names the server is refused there,  and the
-    /// row says so.
-    func test_a_seat_section_that_names_the_server_is_flagged() async throws {
-        let model = try await read(
-            roster: ["CODEX"],
-            runner: healthyRunner(),
-            listener: listenerJSON,
-            config: "[seat.CODEX]\ninstance = \"server\"\nenabled = true\n"
-        )
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.place, .markedForTheServer)
-        XCTAssertTrue(row.needsAttention)
-        XCTAssertEqual(model.groups.first?.kind, .notKnown)
-    }
-
-    /// A state file another instance wrote is not taken as the Mac's.
-    func test_a_state_file_from_another_instance_is_not_believed() async throws {
-        let state = listenerJSON.replacingOccurrences(
-            of: "\"pid\": 22135,",
-            with: "\"pid\": 22135,\n  \"instance\": \"server\","
-        )
-        let model = try await read(runner: healthyRunner(), listener: state)
-        XCTAssertFalse(model.rows.first?.openSessions.isKnown ?? true)
-        XCTAssertTrue(model.problems.first?.contains("server instance") == true)
-    }
-
-    // MARK: The headline (SEATS-3, SEATS-35)
-
-    /// The headline says how many Mac seats are connected and working,  scoped to the Mac,
-    /// and how many the server holds.
-    func test_the_headline_counts_mac_seats_and_names_the_server() async throws {
-        let model = try await read(
-            roster: ["CLAUDE", "MA"],
-            runner: healthyRunner(),
-            listener: listenerJSON
-        )
-        let shown = SeatActivityText.display(model.headline)
-        XCTAssertTrue(shown.contains("1 of 1 seat held by the Mac is connected, and 1 is working on the Mac."), shown)
-        XCTAssertTrue(shown.contains("3 seats are held by the server."), shown)
-        XCTAssertFalse(shown.contains("cannot read"), shown)
-        XCTAssertTrue(shown.contains(".\u{00A0} "), shown)
-        XCTAssertFalse(shown.contains("  "))
-    }
-
-    /// The headline never counts a Mac seat whose state could not be read as connected.
-    func test_the_headline_says_when_the_mac_state_could_not_be_read() async throws {
-        let model = try await read(roster: ["CLAUDE", "CODEX"], runner: healthyRunner(), listener: nil)
-        XCTAssertTrue(model.headline.contains("is not known"), model.headline)
-        XCTAssertFalse(model.headline.contains("0 of"))
-    }
-
-    /// With one Mac seat unread,  the count says only what is known:  never a flat "of 2 are connected".
-    func test_the_headline_says_known_to_be_connected_when_a_seat_is_unread() async throws {
-        let model = try await read(roster: ["CLAUDE", "CODEX"], runner: healthyRunner(), listener: listenerJSON)
-        XCTAssertTrue(
-            model.headline.contains("1 of 2 seats held by the Mac is known to be connected"),
-            model.headline
-        )
-        XCTAssertTrue(model.headline.contains("The state of 1 of them could not be read."), model.headline)
-    }
-
-    /// The fixture with a second seat the eavesdropper publishes without any lease list.
-    private var listenerWithSeatOfUnknownSessions: String {
-        listenerJSON.replacingOccurrences(
-            of: "\"seats\": {",
-            with: "\"seats\": {\n    \"CODEX\": {\"bot\": \"Codex\", \"connected\": true, \"paused\": false, \"jobs\": 0},"
-        )
-    }
-
-    /// With one seat working and another whose sessions could not be read,  the working
-    /// count is a floor,  and the headline says how many seats could not be counted.
-    func test_the_headline_says_at_least_when_a_seats_sessions_are_unknown() async throws {
-        let state = listenerWithSeatOfUnknownSessions
-        XCTAssertNotEqual(state, listenerJSON, "the fixture edit must land")
-        let model = try await read(roster: ["CLAUDE", "CODEX"], runner: healthyRunner(), listener: state)
-        let codex = try XCTUnwrap(model.rows.first { $0.seat == "CODEX" })
-        XCTAssertTrue(codex.listener.isKnown)
-        XCTAssertFalse(codex.openSessions.isKnown)
-        XCTAssertTrue(model.headline.contains("at least 1 is working on the Mac."), model.headline)
-        XCTAssertFalse(model.headline.contains("and 1 is working"), model.headline)
-        XCTAssertTrue(model.headline.contains("The sessions of 1 of them could not be read."), model.headline)
-    }
-
-    /// With no seat known to be working and a seat whose sessions are unknown,  the headline
-    /// does not say that none is working.
-    func test_the_headline_does_not_say_zero_working_when_sessions_are_unknown() async throws {
-        let model = try await read(
-            roster: ["CODEX"],
-            runner: healthyRunner(),
-            listener: listenerWithSeatOfUnknownSessions
-        )
-        XCTAssertTrue(model.headline.contains("none is known to be working on the Mac."), model.headline)
-        XCTAssertFalse(model.headline.contains("0 are working"), model.headline)
-        XCTAssertTrue(model.headline.contains("The sessions of 1 of them could not be read."), model.headline)
-    }
-
-    /// A lease whose "alive" is missing or of the wrong type is not a dead lease:  with no
-    /// lease known to be alive,  the seat's sessions are unknown and not zero.
-    func test_leases_that_do_not_say_alive_make_the_sessions_unknown_not_zero() async throws {
-        let state = listenerJSON
-            .replacingOccurrences(of: "\"alive\": true,", with: "\"alive\": \"yes\",")
-            .replacingOccurrences(of: "\"alive\": false,", with: "")
-        XCTAssertNotEqual(state, listenerJSON, "the fixture edit must land")
-        let model = try await read(runner: healthyRunner(), listener: state)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.sessions.count, 2)
-        XCTAssertTrue(row.sessions.allSatisfy { $0.alive == nil })
-        XCTAssertFalse(row.openSessions.isKnown)
-        XCTAssertNotEqual(row.openSessions, .known(0))
-        XCTAssertNotNil(row.openSessions.reason)
-        XCTAssertFalse(row.isWorking)
-    }
-
-    /// A lease that does not say alive does not hide one that does:  the count stays known.
-    func test_one_live_lease_keeps_the_count_known_beside_one_that_does_not_say() async throws {
-        let state = listenerJSON.replacingOccurrences(of: "\"alive\": false,", with: "")
-        XCTAssertNotEqual(state, listenerJSON, "the fixture edit must land")
-        let model = try await read(runner: healthyRunner(), listener: state)
-        XCTAssertEqual(try XCTUnwrap(model.rows.first).openSessions, .known(1))
-    }
-
-    /// A configuration file that is there but cannot be read is said to be a problem,  because
-    /// it could hide a seat the Mac refuses.  A missing one is normal and says nothing.
-    func test_an_unreadable_configuration_is_a_problem_and_a_missing_one_is_not() async throws {
-        let location = try listenerLocation(state: listenerJSON)
-        try FileManager.default.createDirectory(at: location.configURL, withIntermediateDirectories: true)
-        let reader = SeatActivityReader(
-            location: location,
-            runner: healthyRunner(),
-            now: { Date(timeIntervalSince1970: 1792821067) },
-            partitionURL: try partitionFile(partitionTOML)
-        )
-        let model = await reader.read(roster: ["CLAUDE"])
-        XCTAssertTrue(
-            model.problems.contains { $0.contains("configuration") && $0.contains("could not be read") },
-            "\(model.problems)"
-        )
-        let missing = try await read(runner: healthyRunner(), listener: listenerJSON)
-        XCTAssertEqual(missing.problems, [])
-    }
-
-
-    /// The seats with a live session are counted on the Mac only.
-    func test_seats_with_sessions_counts_live_mac_leases() async throws {
-        let model = try await read(roster: ["CLAUDE", "MA"], runner: healthyRunner(), listener: listenerJSON)
-        XCTAssertEqual(model.seatsWithSessions.map(\.seat), ["CLAUDE"])
-    }
-
-    // MARK: Sessions and wakes (SEATS-23)
-
-    /// A lease's letter,  title and verified machine are read,  and an ended lease is
-    /// kept with its reason.
-    func test_session_letters_titles_and_hosts_are_read() async throws {
-        // The fixture's own indentation is gone once the literal is read,  so the first
-        // lease's last field is matched by its value and the lease id after it.
-        let state = listenerJSON.replacingOccurrences(
-            of: "\"pending\": 0\n        },",
-            with: "\"pending\": 1, \"session_id\": \"abc\", \"letter\": \"B\", "
-                + "\"title\": \"Fix the panel\", \"verified_host\": \"mac\"\n        },"
-        )
-        XCTAssertNotEqual(state, listenerJSON, "the fixture edit must land")
-        let model = try await read(runner: healthyRunner(), listener: state)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.sessions.count, 2)
-        let live = try XCTUnwrap(row.sessions.first)
-        XCTAssertEqual(live.letter, "B")
-        XCTAssertEqual(live.title, "Fix the panel")
-        XCTAssertEqual(live.verifiedHost, .mac)
-        XCTAssertTrue(live.line.contains("B Fix the panel"))
-        XCTAssertTrue(live.line.contains("on the Mac"))
-        XCTAssertTrue(live.line.contains("1 waiting"))
-        let ended = try XCTUnwrap(row.sessions.last)
-        XCTAssertEqual(ended.alive, false)
-        XCTAssertTrue(ended.line.contains("ended"))
-        XCTAssertTrue(ended.line.contains("pid gone"))
-    }
-
-    /// A running wake makes the seat working,  even with no live session.
-    func test_a_running_wake_makes_the_seat_working() async throws {
-        let state = listener(claudeField: "\"running\": \"wake-123\",\n          \"last_event\": 1792821060.0")
-            .replacingOccurrences(of: "\"alive\": true", with: "\"alive\": false")
-        let model = try await read(runner: healthyRunner(), listener: state)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.openSessions, .known(0))
-        XCTAssertTrue(row.runningWake)
-        XCTAssertTrue(row.isWorking)
-        XCTAssertEqual(row.lastEvent, Date(timeIntervalSince1970: 1792821060))
-    }
-
-    /// A seat with no running wake and no live session is not working.
-    func test_a_seat_with_nothing_running_is_not_working() async throws {
-        let state = listener(claudeField: "\"running\": null")
-            .replacingOccurrences(of: "\"alive\": true", with: "\"alive\": false")
-        let model = try await read(runner: healthyRunner(), listener: state)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertFalse(row.runningWake)
-        XCTAssertFalse(row.isWorking)
-    }
-
     // MARK: The quota (SEATS-22)
-
-    /// The quota column is the eavesdropper's own reading:  exhausted,  with when it resets.
-    func test_an_exhausted_quota_reads_from_the_listener() async throws {
-        let state = listener(claudeField: """
-        "quota": {"known": true, "exhausted": true, "remaining": 0, "reset_at": "2026-10-24T21:00:00Z", "reason": "weekly cap", "source": "codecaps"}
-        """)
-        let model = try await read(runner: healthyRunner(), listener: state)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.quota, .known(.exhausted(resetAt: FleetTime.parse("2026-10-24T21:00:00Z"))))
-        XCTAssertEqual(row.quota.value?.label, "Exhausted")
-        XCTAssertTrue(row.needsAttention)
-        XCTAssertTrue(row.notes.contains { $0.column == "quota" && $0.text == "weekly cap" })
-    }
-
-    /// A quota with room reads as the percentage left.
-    func test_a_quota_with_room_reads_as_the_percentage_left() async throws {
-        let state = listener(claudeField: """
-        "quota": {"known": true, "exhausted": false, "remaining": 42.7, "reset_at": null}
-        """)
-        let model = try await read(runner: healthyRunner(), listener: state)
-        XCTAssertEqual(model.rows.first?.quota.value?.label, "42% left")
-    }
-
-    /// A quota the snapshot cannot speak for reads as not reported,  never as fine.
-    func test_an_unknown_quota_reads_as_not_reported() async throws {
-        let state = listener(claudeField: """
-        "quota": {"known": false, "exhausted": false, "remaining": null, "reset_at": null}
-        """)
-        let model = try await read(runner: healthyRunner(), listener: state)
-        XCTAssertEqual(model.rows.first?.quota, .known(.notReported))
-        XCTAssertEqual(model.rows.first?.quota.value?.label, "Not reported")
-    }
 
     /// A zero that is not the provider's own verdict is not shown as an empty quota.
     func test_a_zero_that_is_not_exhausted_is_not_shown_as_empty() {
@@ -787,13 +469,12 @@ final class SeatActivityTests: XCTestCase {
             with: "[CLAUDE] I am at quota for this week."
         )
         let model = try await read(
-            runner: healthyRunner(search: message),
-            listener: listenerJSON
+            runner: healthyRunner(search: message)
         )
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertTrue(row.postSaysAtQuota)
-        // The quota column is still the eavesdropper's reading,  not the post's words.
-        XCTAssertEqual(row.quota, .known(.notReported))
+        // The quota column never takes the post's words.
+        XCTAssertFalse(row.quota.isKnown)
     }
 
     /// A last post that could not be read never says the seat is at quota.
@@ -806,7 +487,7 @@ final class SeatActivityTests: XCTestCase {
                 return ChatCLIResult(exitCode: 5, stdout: "", stderr: "Zulip API error")
             }
         }
-        let model = try await read(runner: runner, listener: listenerJSON)
+        let model = try await read(runner: runner)
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertFalse(row.lastPost.isKnown)
         XCTAssertFalse(row.postSaysAtQuota)
@@ -822,49 +503,6 @@ final class SeatActivityTests: XCTestCase {
     }
 
     // MARK: The eavesdropper's own states
-
-    /// A paused seat reads as paused,  whatever else the eavesdropper says.
-    func test_a_paused_seat_reads_as_paused() async throws {
-        let paused = listenerJSON.replacingOccurrences(
-            of: "\"pause\": {}",
-            with: "\"pause\": {\"CLAUDE\": {\"by\": \"owner\", \"ts\": 1792820000}}"
-        )
-        let model = try await read(runner: healthyRunner(), listener: paused)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.listener, .known(.paused))
-    }
-
-    /// A seat the eavesdropper's configuration turned off reads as off,  and not unknown.
-    func test_a_disabled_seat_reads_as_off() async throws {
-        let disabled = listenerJSON.replacingOccurrences(
-            of: "\"disabled\": []",
-            with: "\"disabled\": [\"OPENCODE\"]"
-        )
-        let model = try await read(
-            roster: ["OPENCODE"],
-            runner: healthyRunner(),
-            listener: disabled
-        )
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.listener, .known(.off))
-    }
-
-    /// A seat the eavesdropper could not start reads as skipped,  and the reason is shown
-    /// under the row (SEATS-24, COPY-54).
-    func test_a_skipped_seat_shows_the_listeners_reason_under_the_row() async throws {
-        let skipped = listenerJSON.replacingOccurrences(
-            of: "\"skipped_seats\": {}",
-            with: "\"skipped_seats\": {\"OPENCODE\": [\"no muse binary\"]}"
-        )
-        let model = try await read(
-            roster: ["OPENCODE"],
-            runner: healthyRunner(),
-            listener: skipped
-        )
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.listener, .known(.skipped("no muse binary")))
-        XCTAssertTrue(row.notes.contains { $0.column == "eavesdropper" && $0.text.contains("no muse binary") })
-    }
 
     /// A connected seat with no jobs reads as plain Connected.
     func test_a_connected_seat_with_no_jobs_reads_as_connected() {
@@ -887,8 +525,7 @@ final class SeatActivityTests: XCTestCase {
         let runner = healthyRunner()
         let model = try await read(
             roster: ["CLAUDE", "OPENCODE"],
-            runner: runner,
-            listener: listenerJSON
+            runner: runner
         )
         XCTAssertEqual(model.requestCeiling, 3)
         XCTAssertEqual(model.requestsMade, 3)
@@ -903,8 +540,7 @@ final class SeatActivityTests: XCTestCase {
         let runner = healthyRunner()
         let model = try await read(
             roster: ["GROK"],
-            runner: runner,
-            listener: listenerJSON
+            runner: runner
         )
         XCTAssertEqual(model.requestsMade, 1)
         XCTAssertEqual(runner.calls.count, 1)
@@ -915,7 +551,7 @@ final class SeatActivityTests: XCTestCase {
         let runner = FakeChatRunner { _ in
             ChatCLIResult(exitCode: 3, stdout: "", stderr: "no credential")
         }
-        let model = try await read(roster: ["CLAUDE", "OPENCODE"], runner: runner, listener: listenerJSON)
+        let model = try await read(roster: ["CLAUDE", "OPENCODE"], runner: runner)
         XCTAssertEqual(model.requestsMade, 1)
         XCTAssertEqual(runner.calls.count, 1)
     }
@@ -992,79 +628,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(SeatActivityText.label(long).count, SeatActivityText.maximumLabelLength + 1)
     }
 
-    // MARK: The freshness window (TESTS-19)
-
-    /// The window is sixty seconds.
-    func test_the_listener_freshness_window_is_sixty_seconds() {
-        XCTAssertEqual(SeatActivityReader.defaultMaximumListenerAge, 60)
-    }
-
-    /// A file exactly sixty seconds old is still believed.
-    func test_a_listener_state_sixty_seconds_old_is_read() async throws {
-        let model = try await read(runner: healthyRunner(), listener: listenerJSON, now: 1792821067 + 60)
-        XCTAssertEqual(model.rows.first?.openSessions, .known(1))
-    }
-
-    /// A file sixty-one seconds old is not.
-    func test_a_listener_state_sixty_one_seconds_old_is_not_read() async throws {
-        let model = try await read(runner: healthyRunner(), listener: listenerJSON, now: 1792821067 + 61)
-        XCTAssertFalse(model.rows.first?.openSessions.isKnown ?? true)
-        XCTAssertTrue(model.problems.first?.contains("61 seconds ago") == true)
-    }
-
     // MARK: Review fixes (Kody and Sentry on #926)
-
-    /// An eavesdropper state file the eavesdropper stopped writing is not believed.
-    func test_a_stale_listener_state_leaves_the_listener_columns_unknown() async throws {
-        let model = try await read(
-            runner: healthyRunner(),
-            listener: listenerJSON,
-            now: 1792821067 + 3 * 3600
-        )
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertFalse(row.openSessions.isKnown)
-        XCTAssertFalse(row.listener.isKnown)
-        XCTAssertNotEqual(row.openSessions, .known(1))
-        XCTAssertEqual(model.problems.count, 1)
-        XCTAssertTrue(model.problems[0].contains("3 hours ago"))
-    }
-
-    /// An eavesdropper state file that names no time is not believed either.
-    func test_a_listener_state_with_no_time_is_unknown() async throws {
-        let undated = listenerJSON.replacingOccurrences(of: "\"updated\": 1792821067.0,", with: "")
-        let model = try await read(runner: healthyRunner(), listener: undated)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertFalse(row.openSessions.isKnown)
-        XCTAssertFalse(row.listener.isKnown)
-    }
-
-    /// A fresh file inside the window is still believed.
-    func test_a_listener_state_inside_the_window_is_read() async throws {
-        let model = try await read(runner: healthyRunner(), listener: listenerJSON, now: 1792821067 + 30)
-        XCTAssertEqual(model.rows.first?.openSessions, .known(1))
-    }
-
-    /// A wakes-only pause keeps the connection state and says the wakes are paused.
-    func test_a_wakes_only_pause_keeps_the_connection_state() async throws {
-        let paused = listenerJSON.replacingOccurrences(
-            of: "\"pause\": {}",
-            with: "\"pause\": {\"CLAUDE\": {\"wakes_only\": true, \"by\": \"owner\", \"ts\": 1792820000}}"
-        )
-        let model = try await read(runner: healthyRunner(), listener: paused)
-        let row = try XCTUnwrap(model.rows.first)
-        XCTAssertEqual(row.listener, .known(.wakesPaused(connected: true)))
-        XCTAssertEqual(row.listener.value?.label, "Connected, wakes paused")
-    }
-
-    /// A full pause in the fleet-wide scope wins over a wakes-only pause for the seat.
-    func test_a_full_pause_wins_over_a_wakes_only_pause() async throws {
-        let paused = listenerJSON.replacingOccurrences(
-            of: "\"pause\": {}",
-            with: "\"pause\": {\"CLAUDE\": {\"wakes_only\": true}, \"*\": {\"by\": \"owner\"}}"
-        )
-        let model = try await read(runner: healthyRunner(), listener: paused)
-        XCTAssertEqual(model.rows.first?.listener, .known(.paused))
-    }
 
     /// The quota markers match whole words,  and a negation turns them off.
     func test_the_quota_markers_match_whole_words_and_respect_negation() {
@@ -1162,7 +726,7 @@ final class SeatActivityTests: XCTestCase {
             }
             return ChatCLIResult(exitCode: 0, stdout: "", stderr: "")
         }
-        let model = try await read(runner: runner, listener: listenerJSON)
+        let model = try await read(runner: runner)
         XCTAssertEqual(model.problems.count, 1)
         XCTAssertEqual(model.requestsMade, 1)
     }
