@@ -509,8 +509,14 @@ class PrControls(unittest.TestCase):
         cases = (
             ("Required status checks are not passing", AUTO_MERGE_REFUSED_CHECKS),
             ("Pull request is not mergeable", AUTO_MERGE_REFUSED_MERGEABLE),
-            ("Base branch is not allowed to auto-merge", AUTO_MERGE_REFUSED_BASE),
+            ("Base branch does not allow auto-merge", AUTO_MERGE_REFUSED_BASE),
             ("This repository does not allow auto-merge", AUTO_MERGE_REFUSED_REPO),
+            # The unhyphenated spelling is classified the same way.
+            ("Auto merge is not allowed for this repository", AUTO_MERGE_REFUSED_REPO),
+            ("Base branch is not allowed to auto merge", AUTO_MERGE_REFUSED_BASE),
+            # A message that merely mentions a base branch is not an auto-merge
+            # refusal about that branch,  so it keeps the generic answer.
+            ("Base branch is protected", AUTO_MERGE_REFUSED),
             ("Something else entirely", AUTO_MERGE_REFUSED),
         )
         for message, expected in cases:

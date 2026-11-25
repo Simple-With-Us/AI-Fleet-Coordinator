@@ -96,9 +96,15 @@ _AUTO_MERGE_REFUSAL_REASONS = (
     ("status checks are not passing", AUTO_MERGE_REFUSED_CHECKS),
     ("required status checks", AUTO_MERGE_REFUSED_CHECKS),
     ("is not mergeable", AUTO_MERGE_REFUSED_MERGEABLE),
-    ("base branch", AUTO_MERGE_REFUSED_BASE),
+    # The base-branch needles are anchored,  so a message that merely mentions a
+    # base branch is not read as an auto-merge refusal about that branch.
+    ("base branch does not allow", AUTO_MERGE_REFUSED_BASE),
+    ("base branch is not allowed", AUTO_MERGE_REFUSED_BASE),
+    # GitHub spells it both ways,  so both are classified.
     ("does not allow auto-merge", AUTO_MERGE_REFUSED_REPO),
+    ("does not allow auto merge", AUTO_MERGE_REFUSED_REPO),
     ("auto-merge is not allowed", AUTO_MERGE_REFUSED_REPO),
+    ("auto merge is not allowed", AUTO_MERGE_REFUSED_REPO),
 )
 
 
