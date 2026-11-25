@@ -345,7 +345,11 @@ static int mp_js_id_eq(const unsigned char *t1, size_t s1, size_t l1,
         long lb = mp_key_decode(t2, s2, l2, b, MP_MAX_KEY_BYTES);
         if (la >= 0 && lb >= 0)
             return la == lb && !memcmp(a, b, (size_t)la);
-        if (la < 0 && lb < 0) {
+        /* A stack decode failure is a capacity refusal, never proof the ids differ:
+         * the 4-byte \uXXXX reserve can reject an escaped spelling near the bound
+         * while its plain spelling fits.  Decode both fully on the heap whenever
+         * either side fails;  the span length always bounds the decoded length. */
+        {
             unsigned char *ha = malloc(l1 + 4), *hb = malloc(l2 + 4);
             if (!ha || !hb) { free(ha); free(hb); return 0; }
             la = mp_key_decode(t1, s1, l1, ha, l1);
@@ -357,7 +361,6 @@ static int mp_js_id_eq(const unsigned char *t1, size_t s1, size_t l1,
             free(hb);
             return eq;
         }
-        return 0;  /* one side decoded and the other did not:  never the same id */
     }
     return l1 == l2 && !memcmp(t1 + s1, t2 + s2, l1);
 }
@@ -579,15 +582,17 @@ static const char *mp_credentials_present(const unsigned char *frame, size_t len
         if (regcomp(&rx, pattern, REG_EXTENDED | REG_NOSUB)) return "credential_refused_scan";
         rx_ready = 1;  /* process-lifetime compile, no per-frame regcomp/malloc */
     }
-    static unsigned char decoded[MP_MAX_BYTES + 4];  /* bounded scratch, like sse_buf */
+    /* Sized for the largest string the frame policy admits (file-write arguments):
+     * every admitted span decodes inside the buffer, and every wipe stays in it. */
+    static unsigned char decoded[MP_MAX_FILE_ARGS + 4];
     const char *found = NULL;
     for (size_t p = 0; p < len && !found;) {
         if (frame[p] != '"') { ++p; continue; }
         size_t start = p;
         if (!mp_js_string(frame, len, &p)) { found = "credential_refused_scan"; break; }
-        long n = mp_key_decode(frame, start, p - start, decoded, MP_MAX_BYTES);
-        if (n < 0) {  /* decoded output never exceeds the span:  wipe what may be written */
-            mp_wipe(decoded, p - start);
+        long n = mp_key_decode(frame, start, p - start, decoded, MP_MAX_FILE_ARGS);
+        if (n < 0) {  /* partial decode:  wipe bounded by the buffer, not the span */
+            mp_wipe(decoded, p - start < sizeof decoded ? p - start : sizeof decoded);
             found = "credential_refused_scan";
             break;
         }
