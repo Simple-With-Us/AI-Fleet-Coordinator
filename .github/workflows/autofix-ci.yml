@@ -167,7 +167,48 @@ jobs:
           echo "::notice::The autofix App id (vars.SWU_AUTOFIX_GITHUB_APP_ID) or key (secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY) is not available to this run, so autofix-ci/action handles it;  bot-authored heads are not covered, because the autofix.ci service refuses repeated bot commits."
 
       - uses: autofix-ci/action@v1
+        id: fallback_autofix
         # Forks, pushes to main, and same-repo PRs without the App token.
         if: steps.push_token.outputs.token == '' || steps.app_commit.outputs.fallback == 'true'
+        # The gate below decides what a failure means;  this step never fails the job itself.
+        continue-on-error: true
         with:
           fail-fast: false
+
+      - name: Gate The Fallback Result
+        if: steps.fallback_autofix.outcome == 'failure'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          APP_FALLBACK: ${{ steps.app_commit.outputs.fallback }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The App route deliberately runs this action when Ruff only changed workflow
+          # files, so those files fail instead of passing unnoticed.  That intentional
+          # failure is not the hosted service's bot-commit refusal and is never waived.
+          if [ "$APP_FALLBACK" = "true" ]; then
+            echo "::error::autofix-ci/action failed after the App route requested it for Ruff changes under .github/workflows; see its step above."
+            exit 1
+          fi
+          # The hosted service refuses bot-authored heads ("refusing to patch
+          # repeated bot commits", a 500 from the service, not a formatting result).
+          # That refusal must not red the check.  Bot authorship is read from the
+          # head commit's GitHub-resolved author and committer logins, never from
+          # raw git author strings, which anyone can set:  a bot-resolved head is
+          # the case the service refuses, so warn and pass (no autofix was applied;
+          # the files are formatted by hand instead).  Anything else still fails
+          # the job — including a human-topped branch over bot history, which
+          # fails closed rather than waiving — and a head GitHub cannot resolve
+          # here (a fork head) fails closed, as before.
+          logins=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}" --jq '((.author.login // "") + " " + (.committer.login // ""))' 2>/dev/null || true)
+          if [ -z "$logins" ]; then
+            echo "::error::autofix-ci/action failed and the head ${HEAD_SHA} could not be resolved on GitHub to classify it;  see its step above."
+            exit 1
+          fi
+          if grep -q '\[bot\]' <<< "$logins"; then
+            echo "::warning::autofix-ci/action refused the bot-authored head ${HEAD_SHA};  no autofix was applied.  Format the changed Python files by hand (ruff format)."
+            exit 0
+          fi
+          echo "::error::autofix-ci/action failed on the non-bot head ${HEAD_SHA};  see its step above."
+          exit 1
