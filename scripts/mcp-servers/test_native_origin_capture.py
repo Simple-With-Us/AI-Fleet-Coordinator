@@ -266,6 +266,7 @@ class CallShapeProbeHardening(unittest.TestCase):
 
     def test_one_armed_generation_emits_at_most_once_across_threads(self):
         import threading
+
         from contextlib import redirect_stderr
 
         with tempfile.TemporaryDirectory() as d:

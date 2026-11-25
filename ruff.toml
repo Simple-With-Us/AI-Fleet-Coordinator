@@ -55,6 +55,8 @@ extend-exclude = [
 "scripts/fleet_rag/**" = "py310"
 
 [lint.per-file-ignores]
+# Exact digest/census fixture also keeps reviewed import spacing.
+"scripts/mcp-servers/test_native_origin_capture.py" = ["I001"]
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
 
 # The fleet_config package has the same 3.9 contract:  it runs on the fleet's Macs
