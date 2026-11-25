@@ -638,13 +638,13 @@ def main(argv=None) -> int:
 
     router = wakes.WakeClient(
         str(env.get("RA_ROUTER_URL") or "http://127.0.0.1:8794"),
-        lambda: wake_key,
+        lambda: credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"),
     )
     # Rollout gate:  never send a real wake to a router without hold semantics.
     router.check_required_session_support(selftest_seat, probe_id=str(int(time.time())))
     gh = github_read.ServiceReadClient(
         str(env.get("RA_RELAY_URL") or "http://127.0.0.1:8471"),
-        lambda: token,
+        lambda: credential(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"),
     )
     repos = {r.strip() for r in str(env.get("RA_REPOS") or "").split(",") if r.strip()}
     if not repos:

@@ -158,23 +158,33 @@ OPERATOR_NAMES = frozenset(
 #: not exported and the review loop then holds with its own named reason.  PRESENT but unusable is loud
 #: (a LoadError), because a value that exists but cannot serve must never look like "disabled on purpose".
 REVIEW_ALERT_NAMES: tuple[tuple[str, str, str, str], ...] = (
-    ("REVIEW_ALERTS_WAKE_KEY", WAKE_ROUTER_PATH, "REVIEW_ALERTS_WAKE_KEY", r"[!-~]{32,512}"),
+    # The two credentials:  the Infisical secret keys carry the review-alerts name;  the
+    # exported names are what the service and the loop read (RA_*).
+    ("RA_WAKE_KEY", WAKE_ROUTER_PATH, "REVIEW_ALERTS_WAKE_KEY", r"[!-~]{32,512}"),
     (
-        "REVIEW_ALERTS_SERVICE_READ_TOKEN",
+        "RA_SERVICE_TOKEN",
         WAKE_ROUTER_PATH,
         "REVIEW_ALERTS_SERVICE_READ_TOKEN",
         r"[!-~]{32,512}",
     ),
+    # The settings knobs.  The two JSON maps allow spaces:  operators may store them
+    # pretty-printed, and a space is not a defect in a JSON value.
     ("RA_ENABLED", WAKE_ROUTER_PATH, "RA_ENABLED", r"[A-Za-z0-9_.:=,-]{1,64}"),
     ("RA_REPOS", WAKE_ROUTER_PATH, "RA_REPOS", r"[A-Za-z0-9_./,#-]{1,512}"),
-    ("RA_SEAT_MAP_JSON", WAKE_ROUTER_PATH, "RA_SEAT_MAP_JSON", r"[!-~]{2,4096}"),
-    ("RA_PLATFORM_MAP_JSON", WAKE_ROUTER_PATH, "RA_PLATFORM_MAP_JSON", r"[!-~]{2,4096}"),
-    ("RA_STATE_DIR", WAKE_ROUTER_PATH, "RA_STATE_DIR", r"/[!-~]{1,256}"),
+    ("RA_SEAT_MAP_JSON", WAKE_ROUTER_PATH, "RA_SEAT_MAP_JSON", r"[ -~]{2,4096}"),
+    ("RA_PLATFORM_MAP_JSON", WAKE_ROUTER_PATH, "RA_PLATFORM_MAP_JSON", r"[ -~]{2,4096}"),
+    ("RA_STATE_DIR", WAKE_ROUTER_PATH, "RA_STATE_DIR", r"/[ -~]{1,256}"),
     ("RA_SELFTEST_SEAT", WAKE_ROUTER_PATH, "RA_SELFTEST_SEAT", r"[A-Z][A-Z0-9_-]{0,31}"),
     ("RA_INTERVAL_S", WAKE_ROUTER_PATH, "RA_INTERVAL_S", r"[0-9]{1,6}"),
-    ("RA_RELAY_URL", WAKE_ROUTER_PATH, "RA_RELAY_URL", r"[!-~]{1,256}"),
-    ("RA_ROUTER_URL", WAKE_ROUTER_PATH, "RA_ROUTER_URL", r"[!-~]{1,256}"),
+    ("RA_RELAY_URL", WAKE_ROUTER_PATH, "RA_RELAY_URL", r"[ -~]{1,256}"),
+    ("RA_ROUTER_URL", WAKE_ROUTER_PATH, "RA_ROUTER_URL", r"[ -~]{1,256}"),
 )
+
+
+def review_alert_sources(folder: str) -> frozenset[str]:
+    """The source names REVIEW_ALERT_NAMES reads from one folder."""
+    return frozenset(source for _, where, source, _ in REVIEW_ALERT_NAMES if where == folder)
+
 
 #: Names whose only source is Infisical and that are not per seat:  (the name exported to the daemon, its one
 #: folder, its one name there, the pattern a usable value matches).  A container copy of an exported or a source
@@ -607,7 +617,7 @@ def wake_router_values(env: Mapping[str, str], **kw) -> dict[str, str]:
         token_name=WAKE_ROUTER_TOKEN,
         expected_paths=(WAKE_ROUTER_PATH,),
         stage="read %s" % WAKE_ROUTER_PATH,
-        keep=infisical_only_sources(WAKE_ROUTER_PATH),
+        keep=infisical_only_sources(WAKE_ROUTER_PATH) | review_alert_sources(WAKE_ROUTER_PATH),
         **kw,
     )
 

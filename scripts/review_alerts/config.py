@@ -10,8 +10,8 @@ from pathlib import Path
 from .operator_pr_origin import Held
 
 #: The two credential values may arrive as loader-delivered environment values (the
-#: sanctioned Infisical transport) instead of file paths;  a file name wins when both
-#: are present.
+#: sanctioned Infisical transport) instead of file paths;  the environment value wins
+#: when both are present.
 NAMES = frozenset(
     (
         "RA_ENABLED",

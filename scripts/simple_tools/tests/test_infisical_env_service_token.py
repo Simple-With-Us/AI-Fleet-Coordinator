@@ -345,12 +345,13 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         self.assertEqual(values, {})
         self.assertEqual(sources, [])
         provisioned = {
+            # The Infisical secret keys carry the review-alerts names for the credentials.
             "REVIEW_ALERTS_WAKE_KEY": "k" * 40,
             "REVIEW_ALERTS_SERVICE_READ_TOKEN": "t" * 40,
             "RA_ENABLED": "true",
             "RA_REPOS": "Simple-With-Us/AI-Fleet-Coordinator",
-            "RA_SEAT_MAP_JSON": '{"swu-zc":"ZC"}',
-            "RA_PLATFORM_MAP_JSON": '{"ZC":"zcode"}',
+            "RA_SEAT_MAP_JSON": '{"swu-zc": "ZC"}',
+            "RA_PLATFORM_MAP_JSON": '{"ZC": "zcode"}',
             "RA_STATE_DIR": "/data/review-alerts",
             "RA_SELFTEST_SEAT": "ZC",
             "RA_INTERVAL_S": "900",
@@ -358,7 +359,24 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
             "RA_ROUTER_URL": "http://127.0.0.1:8794",
         }
         values, sources = MODULE.resolve_review_alert({MODULE.WAKE_ROUTER_PATH: provisioned})
-        self.assertEqual(values, provisioned)
+        # The exports are the RA_* names the service reads;  the credential sources are
+        # the review-alerts keys.
+        self.assertEqual(
+            values,
+            {
+                "RA_WAKE_KEY": "k" * 40,
+                "RA_SERVICE_TOKEN": "t" * 40,
+                "RA_ENABLED": "true",
+                "RA_REPOS": "Simple-With-Us/AI-Fleet-Coordinator",
+                "RA_SEAT_MAP_JSON": '{"swu-zc": "ZC"}',
+                "RA_PLATFORM_MAP_JSON": '{"ZC": "zcode"}',
+                "RA_STATE_DIR": "/data/review-alerts",
+                "RA_SELFTEST_SEAT": "ZC",
+                "RA_INTERVAL_S": "900",
+                "RA_RELAY_URL": "http://127.0.0.1:8471",
+                "RA_ROUTER_URL": "http://127.0.0.1:8794",
+            },
+        )
         self.assertEqual(len(sources), len(provisioned))
         # Every export strips from the container:  no name may arrive from anywhere else.
         owned = {
