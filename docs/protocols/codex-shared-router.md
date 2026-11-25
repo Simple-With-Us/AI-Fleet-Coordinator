@@ -103,8 +103,8 @@ The daemon's answer is kept for a few seconds per thread, and the cache is bound
 expired answers go first, and then the oldest ones, so a router that lives for weeks does
 not keep one entry for every thread it ever asked about.  The transport is built
 once per host kind and kept, so the cached answer is the answer a later wake uses, and the
-delivery and the exclusion read the same host setting at the moment they act, so they name
-one host.
+delivery and the exclusion each read the host setting when they act, so a refreshed host
+moves both of them.
 
 ## The pinned owner
 
