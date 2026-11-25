@@ -209,7 +209,12 @@ def build(repo, before, output, config, policy, attempt=None):
     raw_manifest = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
     entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources, root)
     output = Path(output)
+    if output.is_symlink() or output.exists():
+        raise ValueError("scratch output already exists or is a symlink")
     output.mkdir(mode=0o700, exist_ok=False)
+    info = output.lstat()
+    if not output.is_dir() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise ValueError("scratch output must be owner-only")
     for name, raw in sources.items():
         target = output / "runner-package" / name
         private_dir(target.parent.parent)
