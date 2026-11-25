@@ -397,20 +397,16 @@ def archived_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set
 # is a pair the owner's own chats cannot have.
 #
 # The fleet's rule is already there:  a session a launcher started never takes a letter,  because
-# the launcher says so in the environment.  Two kinds of MiniMax Code session do not say so:  a
-# BotFleet bot run (the app starts a chat for the bot,  in a BotFleet workspace)  and the
-# runtime's own work (a background task,  a cron row,  a turn of a task).  They are the app's own
-# runs and not chats anyone addresses,  and on Nov 25, 2026 they held twenty-one of this seat's
-# twenty-six main pairs on the Mac,  so a new chat of the owner's was refused into a "??: " title.
+# the launcher says so in the environment.  A BotFleet bot run does not say so:  the app starts a
+# chat for the bot,  in a BotFleet workspace.  It is the app's own run and not a chat anyone
+# addresses,  and on Nov 25, 2026 such runs held twenty-one of this seat's twenty-six main pairs on
+# the Mac,  so a new chat of the owner's was refused into a "??: " title.
 #
-# So the store is asked what a session is:  a workspace under the BotFleet folder,  or one of the
-# runtime's own purposes,  is a machine run.  A machine run never takes a letter,  and a machine
-# run that is over frees the pair it held.
+# So the store is asked what a session is:  a workspace under the BotFleet folder is a machine run.
+# A machine run never takes a letter,  and a machine run that is over frees the pair it held.
 
 #: A workspace under this path is a BotFleet bot run.
 BOTFLEET_WORKSPACE = ".botfleet"
-#: The purposes the runtime gives its own work.  A session with one of them is the app's own run.
-MACHINE_PURPOSES = ("local-background-task:", "cron:", "local-task:")
 #: The statuses the runtime reports a session as over.
 DEAD_STATUSES = ("aborted", "error", "interrupted")
 #: The statuses that mean the session is still at work.
@@ -424,12 +420,16 @@ MACHINE_COLUMNS = ("workspace_dir", "project_workspace_dir", "purpose")
 
 
 def _machine_run(row: Mapping[str, Any]) -> bool:
-    """True for a store row that is one of the app's own runs,  and not one of the owner's chats."""
+    """True for a store row that is one of the app's own runs,  and not one of the owner's chats.
+
+    A BotFleet bot run works in a BotFleet workspace,  and that is the whole test.  The runtime's own
+    purposes are not one:  a row whose purpose names a background task or a turn of a task is a chat of
+    its own,  and the ones that carry a letter today (AW, CI, CL  and the rest) must keep taking one.
+    A cron row is headless already,  because its own session kind is not a chat kind."""
     for key in ("workspace_dir", "project_workspace_dir"):
         if BOTFLEET_WORKSPACE in str(row.get(key) or ""):
             return True
-    purpose = str(row.get("purpose") or "")
-    return any(purpose.startswith(prefix) for prefix in MACHINE_PURPOSES)
+    return False
 
 
 def _machine_names(columns: set[str]) -> list[str]:
@@ -444,7 +444,8 @@ def over_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str
     has rested untouched for two weeks is over as well:  the app started it,  nobody addresses it,
     and the pair it holds is a pair the owner's own chats cannot have.  A run that is still at work
     is never named,  and a store that cannot be read,  or one that does not say what a session is,
-    names none.  Ids only."""
+    names none.  A chat of the owner is never named here:  he archives it,  and the archive releases
+    the pair (AFC-855).  Ids only."""
     path = store_file(env)
     if not path or not os.path.isfile(path):
         return set()
@@ -565,11 +566,10 @@ def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]
     A chat the app has archived:  the archive flag is the session store's own `archived` column,
     the same one `minimax_wake.py` reads before it wakes a chat (AFC-855).
 
-    A machine run that is over (`over_sessions`):  a BotFleet bot run and the runtime's own work
-    are the app's own runs,  nobody addresses them,  and a pair one of them holds is a pair the
-    owner's own chats cannot have.  Measured on Nov 25, 2026:  twenty-one of this seat's
-    twenty-six main pairs were held by such runs,  and a new chat was refused into a "??: " title
-    because of it.
+    A machine run that is over (`over_sessions`):  a BotFleet bot run is the app's own run,  nobody
+    addresses it,  and a pair it holds is a pair the owner's own chats cannot have.  Measured on
+    Nov 25, 2026:  twenty-one of this seat's twenty-six main pairs were held by such runs,  and a
+    new chat was refused into a "??: " title because of it.
 
     A chat the store does not know at all,  and that nobody has addressed for an hour
     (`absent_sessions`):  a chat that was deleted or pruned is gone for good,  and the row the

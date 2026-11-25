@@ -373,12 +373,20 @@ class MachineRunTests(MachineRunBase):
         self.add("m-0001", workspace=OWNER)
         self.assertEqual(self.kind("m-0001"), "chat")
 
-    def test_the_runtimes_own_work_is_headless(self) -> None:
-        self.add("m-0001", workspace=OWNER, purpose="local-background-task:bg_abc")
-        self.add("m-0002", workspace=OWNER, purpose="cron:mavis:poll-pr-513")
-        self.add("m-0003", workspace=OWNER, purpose="local-task:turn_abc:call_01")
-        for sid in ("m-0001", "m-0002", "m-0003"):
-            self.assertEqual(self.kind(sid), "headless")
+    def test_a_cron_run_is_headless(self) -> None:
+        # A cron row is headless because its own session kind is not a chat kind,  and not because of its
+        # purpose:  the kind of a session is what says what it is.
+        self.add("m-0001", kind="cron", workspace=OWNER, purpose="cron:mavis:poll-pr-513")
+        self.assertEqual(self.kind("m-0001"), "headless")
+
+    def test_a_task_of_the_owner_is_a_chat(self) -> None:
+        # The runtime's own background work and a turn of a task are chats of their own,  and the ones that
+        # carry a letter today (AW, CI, CL  and the rest) must keep taking one.  Only a BotFleet bot run is
+        # the app's own run.
+        self.add("m-0001", kind="task", parent="m-0000", workspace=OWNER, purpose="local-task:turn_abc:call_01")
+        self.add("m-0002", kind="task", parent="m-0000", workspace=OWNER, purpose="local-background-task:bg_abc")
+        self.assertEqual(self.kind("m-0001"), "subagent")
+        self.assertEqual(self.kind("m-0002"), "subagent")
 
     def test_a_store_that_does_not_say_what_a_session_is_leaves_the_chat_a_chat(self) -> None:
         # A store from before the runtime wrote the columns says nothing at all,  and any doubt keeps the chat a
@@ -392,6 +400,16 @@ class MachineRunTests(MachineRunBase):
             )
         conn.close()
         self.assertEqual(self.kind("m-0001"), "chat")
+
+    def test_a_task_of_the_owner_still_takes_a_letter(self) -> None:
+        # A sub-thread the owner started is a chat,  and it takes a letter after its parent's.
+        self.add("m-0001", kind="task", parent="m-0000", workspace=OWNER, purpose="local-task:turn_abc:call_01")
+        out = self.run_hook(
+            PM.SPEC,
+            {"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+        )
+        self.assertNotEqual(out, "")
+        self.assertIsNotNone(self.fake.lookup("minimax", "mac", PL.SCOPE, "m-0001"))
 
     def test_a_machine_run_never_gets_a_letter_in_the_hook(self) -> None:
         self.add("m-0001", workspace=BOTFLEET)
