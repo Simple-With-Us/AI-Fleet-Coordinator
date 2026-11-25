@@ -264,24 +264,41 @@ def enqueue_id(doc_id, root=None, now=None):
         "queued_at": stamp,
     }
     with _locked(root) as directory:
-        try:
-            os.unlink("cancelled-" + key, dir_fd=directory)
-        except FileNotFoundError:
-            pass
-        entries = os.listdir(directory)
-        cancelled_keys = {entry[10:] for entry in entries if entry.startswith("cancelled-")}
-        names = []
-        size = 0
-        for name in entries:
-            if name == key + ".json":
-                continue
-            size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
-            if PENDING.fullmatch(name) and name[:-5] not in cancelled_keys:
-                names.append(name)
-        if len(names) >= MAX_PENDING or size + len(json.dumps(record).encode()) > MAX_SPOOL:
-            raise OutboxError("note-outbox-full")
-        _atomic(directory, key + ".json", record)
+        _enqueue_locked(directory, key, record)
     return {"state": "queued", "key": key, "version": version}
+
+
+def _enqueue_locked(directory, key, record):
+    """Enqueue one record while the spool lock is already held.
+
+    Orphaned cancelled-sentinel temp files (a crash between create and
+    rename in cancel()) are removed here and never count against the spool.
+    """
+    try:
+        os.unlink("cancelled-" + key, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+    entries = os.listdir(directory)
+    cancelled_keys = set()
+    names = []
+    size = 0
+    for name in entries:
+        if name.startswith("cancelled-") and ".tmp-" in name:
+            try:
+                os.unlink(name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            continue
+        if name.startswith("cancelled-"):
+            cancelled_keys.add(name[10:])
+        if name == key + ".json":
+            continue
+        size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
+        if PENDING.fullmatch(name) and name[:-5] not in cancelled_keys:
+            names.append(name)
+    if len(names) >= MAX_PENDING or size + len(json.dumps(record).encode()) > MAX_SPOOL:
+        raise OutboxError("note-outbox-full")
+    _atomic(directory, key + ".json", record)
 
 
 def current(root, key, version):
@@ -435,7 +452,14 @@ def cancel(doc_id, root=None):
             os.fsync(fd)
         finally:
             os.close(fd)
-        os.rename(sentinel_tmp, "cancelled-" + key, src_dir_fd=directory, dst_dir_fd=directory)
+        try:
+            os.rename(sentinel_tmp, "cancelled-" + key, src_dir_fd=directory, dst_dir_fd=directory)
+        except BaseException:
+            try:
+                os.unlink(sentinel_tmp, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            raise
         os.fsync(directory)
 
 
@@ -483,17 +507,30 @@ def reconcile_coding(root=None, metadata_reader=None, limit=100):
     queued = 0
     for doc_id in changed[:limit]:
         key = _key(doc_id)
+        # Read, decide and enqueue under one lock:  an interleaved cancel or
+        # drain between the read and the enqueue must not resurrect a note.
         with _locked(root) as directory:
             pending = _read(directory, key + ".json")
-        if (
-            not pending
-            or pending.get("cancelled")
-            or pending.get("delivery_state") == "permanent"
-        ):
-            # A permanently failed delivery must not block a later update to
-            # the same note from being enqueued again.
-            enqueue_id(doc_id, root=root)
-            queued += 1
+            if (
+                not pending
+                or pending.get("cancelled")
+                or pending.get("delivery_state") == "permanent"
+            ):
+                # A permanently failed delivery must not block a later update
+                # to the same note from being enqueued again.
+                _enqueue_locked(
+                    directory,
+                    key,
+                    {
+                        "schema": 2,
+                        "doc_id": doc_id,
+                        "version": uuid.uuid4().hex,
+                        "attempts": 0,
+                        "next_attempt": 0,
+                        "queued_at": time.time(),
+                    },
+                )
+                queued += 1
         with _locked(root) as directory:
             latest = _read(directory, "coding-metadata.json", maximum=2 * 1024 * 1024)
             latest["fingerprints"][doc_id] = observed[doc_id]
