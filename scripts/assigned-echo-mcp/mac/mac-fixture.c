@@ -547,6 +547,65 @@ int main(void) {
         n = handle("{\"jsonrpc\":\"2.0\",\"id\":93,\"method\":\"tools/call\",\"params\":{\"name\":\"identities\",\"arguments\":{}}}");
         CHECK("near-match media type refused by core", n && strstr((char *)out, "outcome_unknown"));
     }
+    /* PR 1630 review:  the scanner scratch must hold the largest string the frame
+     * policy admits.  A file-write-sized benign string scans clean;  the same span
+     * with a malformed escape refuses with the cleanup wipe inside the buffer
+     * (ASan catches any overrun). */
+    {
+        size_t big = MP_MAX_BYTES + 2048;
+        unsigned char *giant = malloc(big + 64);
+        CHECK("giant string allocation", giant != NULL);
+        size_t gl = 0;
+        giant[gl++] = '"';
+        memset(giant + gl, 'A', big);
+        gl += big;
+        giant[gl++] = '"';
+        CHECK("oversize benign string scans clean", mp_credentials_present(giant, gl) == NULL);
+        memcpy(giant + gl - 7, "\\u00zz", 6);
+        CHECK("oversize malformed string refuses, wipe bounded",
+              mp_credentials_present(giant, gl) != NULL);
+        free(giant);
+    }
+
+    /* PR 1630 review:  response-id equality when an escaped spelling near the key
+     * bound overflows the stack decode (4-byte \uXXXX reserve) while its plain
+     * spelling fits:  the heap fallback must still match, either or both sides. */
+    {
+        size_t nch = MP_MAX_KEY_BYTES - 2;
+        unsigned char *esc = malloc(nch * 6 + 3), *mix = malloc(nch * 6 + 3),
+                      *plain = malloc(nch + 3), *plain_b = malloc(nch + 3);
+        CHECK("id test allocations", esc && mix && plain && plain_b);
+        size_t e = 0, m = 0;
+        esc[e++] = '"';
+        for (size_t i = 0; i < nch; ++i) { memcpy(esc + e, "\\u0041", 6); e += 6; }
+        esc[e++] = '"';
+        mix[m++] = '"';
+        memset(mix + m, 'A', nch - 2);
+        m += nch - 2;
+        memcpy(mix + m, "\\u0041\\u0041", 12);
+        m += 12;
+        mix[m++] = '"';
+        plain[0] = '"';
+        memset(plain + 1, 'A', nch);
+        plain[nch + 1] = '"';
+        memcpy(plain_b, plain, nch + 2);
+        plain_b[nch] = 'B';
+        CHECK("escaped id matches plain spelling", mp_js_id_eq(esc, 0, e, plain, 0, nch + 2));
+        CHECK("two escaped spellings match on heap", mp_js_id_eq(esc, 0, e, mix, 0, m));
+        CHECK("plain long id matches itself", mp_js_id_eq(plain, 0, nch + 2, plain, 0, nch + 2));
+        CHECK("long ids differing in one char differ", !mp_js_id_eq(plain, 0, nch + 2, plain_b, 0, nch + 2));
+        CHECK("short escaped id still matches",
+              mp_js_id_eq((const unsigned char *)"\"\\u0078\"", 0, 8, (const unsigned char *)"\"x\"", 0, 3));
+        CHECK("short ids differ",
+              !mp_js_id_eq((const unsigned char *)"\"x\"", 0, 3, (const unsigned char *)"\"y\"", 0, 3));
+        CHECK("numeric id raw match", mp_js_id_eq((const unsigned char *)"42", 0, 2, (const unsigned char *)"42", 0, 2));
+        CHECK("numeric ids differ", !mp_js_id_eq((const unsigned char *)"42", 0, 2, (const unsigned char *)"43", 0, 2));
+        free(esc);
+        free(mix);
+        free(plain);
+        free(plain_b);
+    }
+
     printf(failures ? "\n%d FAILURES\n" : "\nALL FIXTURE CHECKS PASS\n", failures);
     return failures ? 1 : 0;
 }
