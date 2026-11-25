@@ -80,4 +80,9 @@ extend-exclude = [
 
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
-exclude = ["scripts/fleet_lanes/**", "scripts/fleet_config/**"]
+# Exact reviewed digest/census fixture. Keep lint enabled; formatting changes invalidate admission.
+exclude = [
+    "scripts/fleet_lanes/**",
+    "scripts/fleet_config/**",
+    "scripts/mcp-servers/test_native_origin_capture.py",
+]

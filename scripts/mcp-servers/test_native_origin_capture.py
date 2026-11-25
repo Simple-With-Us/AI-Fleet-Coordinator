@@ -129,6 +129,8 @@ class NativeCapture(unittest.TestCase):
             self.assertEqual(sent[-1]["params"]["arguments"]["origin_session_claim"], "wrong")
 
 
+
+
 class CallShapeProbe(unittest.TestCase):
     def arm(self, d, identity, *, size=0, mode=0o600):
         folder = Path(d) / ".simple-tools" / identity
@@ -183,7 +185,9 @@ class CallShapeProbe(unittest.TestCase):
             shape = json.loads(self.emit(d, "MC", {"name": "identities"}))
             self.assertEqual(shape["meta_type"], "missing-or-null")
             self.assertEqual(shape["other_key_count"], 0)
-            self.assertTrue(all(v == "missing-or-null" for v in shape["known_keys"].values()))
+            self.assertTrue(
+                all(v == "missing-or-null" for v in shape["known_keys"].values())
+            )
 
     def test_unarmed_or_unsafe_marker_never_emits(self):
         with tempfile.TemporaryDirectory() as d:
@@ -201,7 +205,6 @@ class CallShapeProbe(unittest.TestCase):
             for identity in ("../AG", "ag", "A G", ""):
                 self.assertEqual(self.emit(d, identity, {"name": "identities"}), "")
             self.assertTrue((Path(d) / ".simple-tools/AG/origin-call-shape.once").exists())
-
 
 class CallShapeProbeHardening(unittest.TestCase):
     def emit(self, d, identity, params):
@@ -263,6 +266,7 @@ class CallShapeProbeHardening(unittest.TestCase):
 
     def test_one_armed_generation_emits_at_most_once_across_threads(self):
         import threading
+
         from contextlib import redirect_stderr
 
         with tempfile.TemporaryDirectory() as d:
