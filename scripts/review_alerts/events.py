@@ -27,6 +27,7 @@ EVENT_FIELDS = (
     "number",
     "kind",
     "event_id",
+    "source_time",
     "epoch",
     "actor",
     "head",

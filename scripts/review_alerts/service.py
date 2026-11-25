@@ -127,6 +127,20 @@ RECEIPT_DEADLINE_S = 3600
 MAX_EPOCHS = 5
 
 
+def source_identity(row):
+    # Only supported single-source kinds. Old ledger rows have no source_time and
+    # use ordinary delivery; no backfill is inferred from detection timestamps.
+    if row.get("kind") not in ("review_submitted", "review_completed"):
+        return None
+    instant = _instant(row.get("source_time"))
+    if instant is None:
+        return None
+    return {
+        **{k: row.get(k) for k in ("repo", "number", "kind", "event_id", "epoch")},
+        "source_epoch": instant.timestamp(),
+    }
+
+
 class AlertService:
     def __init__(
         self,
@@ -339,6 +353,7 @@ class AlertService:
                     topic,
                     link,
                     message_id=base["message_id"],
+                    source_event=source_identity(base),
                 )
             except wakes.WakeRetryable:
                 # The wake may or may not have landed:  reconcile by receipt
@@ -440,7 +455,11 @@ class AlertService:
                         )
                     }
                     self._dispatch(
-                        owner or {}, event, "", counts, epoch=int(row.get("epoch") or 0) + 1
+                        owner or {},
+                        event,
+                        "",
+                        counts,
+                        epoch=int(row.get("epoch") or 0) + 1,
                     )
                     counts["redriven"] += 1
                 else:
@@ -508,7 +527,12 @@ class AlertService:
             self._finish(row, "held", "no-origin-claim")
             return
         head_note = "" if row.get("head_matches") else " (against an older head)"
-        topic = "%s#%s: %s%s" % (row["repo"], row["number"], row.get("summary") or "", head_note)
+        topic = "%s#%s: %s%s" % (
+            row["repo"],
+            row["number"],
+            row.get("summary") or "",
+            head_note,
+        )
         try:
             self.router.submit(
                 seat_for(str(owner.get("seat") or ""), self.seat_map),
@@ -520,6 +544,7 @@ class AlertService:
                 topic,
                 row.get("link") or "",
                 message_id=row["message_id"],
+                source_event=source_identity(row),
             )
         except wakes.WakeRetryable:
             return  # still unsettled;  next cycle reconciles
@@ -577,7 +602,15 @@ class AlertService:
             "pending": [
                 {
                     k: r.get(k)
-                    for k in ("repo", "number", "kind", "event_id", "epoch", "status", "ts")
+                    for k in (
+                        "repo",
+                        "number",
+                        "kind",
+                        "event_id",
+                        "epoch",
+                        "status",
+                        "ts",
+                    )
                 }
                 for r in self.store.pending()
             ],
@@ -646,7 +679,13 @@ def main(argv=None) -> int:
         return 2
     store = events.EventStore(os.path.join(state_dir, "events.jsonl"))
     service = AlertService(
-        store, gh, router, owners_path, seat_map_from(env), repos=repos, gate_seat=selftest_seat
+        store,
+        gh,
+        router,
+        owners_path,
+        seat_map_from(env),
+        repos=repos,
+        gate_seat=selftest_seat,
     )
     if "--once" in argv:
         counts = service.cycle()

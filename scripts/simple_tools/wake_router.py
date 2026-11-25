@@ -520,6 +520,53 @@ class Wake:
     require_letter: str = ""
     require_generation: int = 0
     require_pr: str = ""
+    source_event: dict | None = None  # authenticated review producer only
+
+
+def source_event(value, wake):
+    # Producer-authenticated metadata only; never a payload authority claim.
+    # Invalid/missing evidence retains ordinary delivery, not native qualification.
+    import math
+    import hashlib
+
+    if not isinstance(value, dict) or set(value) != {
+        "repo",
+        "number",
+        "kind",
+        "event_id",
+        "epoch",
+        "source_epoch",
+    }:
+        return None
+    repo, number, kind, event_id = (value.get(k) for k in ("repo", "number", "kind", "event_id"))
+    if (
+        not isinstance(repo, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+        or type(number) is not int
+        or number < 1
+    ):
+        return None
+    if (
+        kind not in ("review_submitted", "review_completed")
+        or not isinstance(event_id, str)
+        or not re.fullmatch(r"[1-9][0-9]{0,19}", event_id)
+    ):
+        return None
+    if (
+        type(value["epoch"]) is not int
+        or value["epoch"] != 0
+        or type(value["source_epoch"]) not in (int, float)
+        or not math.isfinite(value["source_epoch"])
+        or value["source_epoch"] <= 0
+    ):
+        return None
+    semantic = "%s#%d:%s:%s:e%d" % (repo, number, kind, event_id, value["epoch"])
+    if (
+        wake.require_pr != repo + "#" + str(number)
+        or wake.wake_id != "ra-" + hashlib.sha256(semantic.encode()).hexdigest()[:24]
+    ):
+        return None
+    return dict(value)
 
 
 def workspace_root(configured: object) -> str:
@@ -3671,7 +3718,11 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
                 return
             wake = wake_from_payload(payload, router.platform.mention)
             if scope == REVIEW_ALERT_SCOPE:
-                wake = replace(wake, credential_scope=REVIEW_ALERT_SCOPE)
+                wake = replace(
+                    wake,
+                    credential_scope=REVIEW_ALERT_SCOPE,
+                    source_event=source_event(payload.get("source_event"), wake),
+                )
             if payload.get("test") is True:
                 self._answer(200, router.test_answer(wake))
                 return
