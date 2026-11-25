@@ -47,8 +47,8 @@ import json
 import os
 import re
 import shutil
-import stat
 import sqlite3
+import stat
 import subprocess
 import threading
 import urllib.parse
@@ -247,9 +247,7 @@ def _data_here(root: Path, session_id: str) -> tuple[bool, bool, bool]:
             continue
         except OSError:
             continue
-        if want_dir and stat.S_ISDIR(st.st_mode):
-            mine = True
-        elif not want_dir and stat.S_ISREG(st.st_mode):
+        if want_dir and stat.S_ISDIR(st.st_mode) or not want_dir and stat.S_ISREG(st.st_mode):
             mine = True
     if mine:
         return True, True, unreadable
@@ -289,9 +287,7 @@ def _data_here(root: Path, session_id: str) -> tuple[bool, bool, bool]:
     return False, understood, unreadable
 
 
-def conversation_data_missing(
-    env: Mapping[str, str], session_id: str, root: Path | None
-) -> bool:
+def conversation_data_missing(env: Mapping[str, str], session_id: str, root: Path | None) -> bool:
     """True when the matched root holds no data for this conversation (AFC-840).
 
     A summary row alone is not proof the CLI can load the conversation:  with
