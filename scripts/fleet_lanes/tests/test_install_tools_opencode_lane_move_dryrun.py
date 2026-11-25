@@ -3,7 +3,10 @@ OpenCode context and a recording fake lane command, and an internal-worktree fix
 has spaces and mixed case must map to the repo's own lane slug.  Everything is hermetic:  the
 fixture worktree is a throwaway git repo under the test's temp tree, the plugin's HOME points at
 that tree so its worktree-root check sees the fixture, the lane command is a fake that records
-its argv and seat, and no volume or home path is written in this file.  Requires `node` (>= 22)
+its argv and seat, and no volume or home path is written in this file.  The log is the
+seat's own private record:  it is written into an owner-only state directory,  and a log
+directory that is a symlink to another directory is refused rather than written through.
+Requires `node` (>= 22)
 and the `amaro` type stripper resolvable through NODE_PATH;  without them the test skips,
 because a host without the runtime cannot run the artifact and the invariant tests pin the text.
 """
@@ -18,7 +21,7 @@ import unittest
 from fleet_lanes.install_tools import render_opencode_plugin
 
 DRIVER = r"""
-import { chmodSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const [tsPath, work] = [process.argv[2], process.argv[3]];
@@ -106,6 +109,13 @@ const checks = [];
 const fail = (name, detail) => checks.push("FAIL " + name + (detail ? ": " + detail : ""));
 const ok = (name) => checks.push("ok " + name);
 
+// "happy" is the ordinary run:  the log is written in the seat's own state directory.
+// "symlink" points that directory at another one,  and the plugin must refuse to
+// write the log through it.
+const mode = process.env.OPENCODE_DRYRUN_MODE || "happy";
+const LOG_DIR = process.env.HOME + "/.local/state/fleet-lanes";
+const LOG_PATH = LOG_DIR + "/lane-move.log";
+
 const mod = await import("file://" + pluginDir + "/index.js");
 await mod.default.setup(ctx);
 await new Promise((r) => setTimeout(r, 11000));
@@ -153,11 +163,30 @@ if (moved.length === 4) {
 } else {
   fail("total moves", JSON.stringify(moved));
 }
-const logText = readFileSync(process.env.HOME + "/.local/state/fleet-lanes/lane-move.log", "utf8");
-if (logText.includes('"moved"') && !logText.includes("example.invalid") && !logText.includes("git@")) {
-  ok("move log written without remote URLs");
+if (mode === "symlink") {
+  // The log directory is a symlink to another directory:  the plugin must not write
+  // the log through it,  and the mover must keep working without a log.
+  const target = process.env.OPENCODE_DRYRUN_LOG_TARGET;
+  if (!existsSync(target + "/lane-move.log")) {
+    ok("no log written through the symlinked log directory");
+  } else {
+    fail("symlinked log directory", "the log file was created at the symlink target");
+  }
 } else {
-  fail("move log", logText.slice(0, 300));
+  const logText = readFileSync(LOG_PATH, "utf8");
+  if (logText.includes('"moved"') && !logText.includes("example.invalid") && !logText.includes("git@")) {
+    ok("move log written without remote URLs");
+  } else {
+    fail("move log", logText.slice(0, 300));
+  }
+  // The log is the seat's own private record,  so the directory that holds it
+  // belongs to the seat alone.
+  const dirMode = statSync(LOG_DIR).mode & 0o777;
+  if (dirMode === 0o700) {
+    ok("log directory is owner-only (0700)");
+  } else {
+    fail("log directory mode", "0" + dirMode.toString(8));
+  }
 }
 
 const failures = checks.filter((line) => line.startsWith("FAIL"));
@@ -194,32 +223,68 @@ def fixture_worktree(work: str) -> str:
 
 
 class LaneMoveDryRun(unittest.TestCase):
-    def test_the_rendered_plugin_moves_an_internal_worktree_session_into_its_repo_lane(self):
+    def require_runtime(self):
+        """The dry run needs the runtime the plugin itself runs on:  node (>= 22) and
+        git.  A host without them cannot run the artifact, so the test skips."""
         if shutil.which("node") is None or not node_at_least_22():
             self.skipTest("node >= 22 is not on PATH")
         if shutil.which("git") is None:
             self.skipTest("git is not on PATH")
+
+    def run_dry_run(self, work: str, home: str, mode: str = "happy", log_target: str = ""):
+        """Drive the rendered plugin under Node with the fake OpenCode context and return
+        its printed lines and the finished process."""
+        ts_path = os.path.join(work, "index.ts")
+        with open(ts_path, "w", encoding="utf-8") as fh:
+            fh.write(render_opencode_plugin())
+        driver_path = os.path.join(work, "driver.mjs")
+        with open(driver_path, "w", encoding="utf-8") as fh:
+            fh.write(DRIVER)
+        proc = subprocess.run(
+            ["node", driver_path, ts_path, work],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={
+                **os.environ,
+                "HOME": home,
+                "NODE_PATH": os.environ.get("OPENCODE_DRYRUN_NODE_MODULES", ""),
+                "OPENCODE_DRYRUN_MODE": mode,
+                "OPENCODE_DRYRUN_LOG_TARGET": log_target,
+            },
+        )
+        out = (proc.stdout or "").strip().splitlines()
+        self.assertTrue(out, "the dry run printed nothing: " + proc.stderr[-1500:])
+        if out[0].startswith("SKIP"):
+            self.skipTest(out[0])
+        return out, proc
+
+    def test_the_rendered_plugin_moves_an_internal_worktree_session_into_its_repo_lane(self):
+        self.require_runtime()
         with tempfile.TemporaryDirectory(prefix="lane-move-dryrun-") as work:
             home = os.path.join(work, "home")
             fixture_worktree(work)
-            ts_path = os.path.join(work, "index.ts")
-            with open(ts_path, "w", encoding="utf-8") as fh:
-                fh.write(render_opencode_plugin())
-            driver_path = os.path.join(work, "driver.mjs")
-            with open(driver_path, "w", encoding="utf-8") as fh:
-                fh.write(DRIVER)
-            proc = subprocess.run(
-                ["node", driver_path, ts_path, work],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env={**os.environ, "HOME": home, "NODE_PATH": os.environ.get("OPENCODE_DRYRUN_NODE_MODULES", "")},
-            )
-            out = (proc.stdout or "").strip().splitlines()
-            self.assertTrue(out, "the dry run printed nothing: " + proc.stderr[-1500:])
-            if out[0].startswith("SKIP"):
-                self.skipTest(out[0])
+            out, proc = self.run_dry_run(work, home)
+            self.assertEqual(out[0], "PASS 9 checks", proc.stdout[-2000:] + proc.stderr[-1000:])
+
+    def test_the_rendered_plugin_refuses_to_write_the_log_through_a_symlinked_directory(self):
+        # The log holds the seat's private record of every lane move, so the plugin
+        # writes it only into a real directory of its own:  a log directory that is a
+        # symlink to somewhere else is refused, and the mover keeps working without a log.
+        self.require_runtime()
+        with tempfile.TemporaryDirectory(prefix="lane-move-symlink-") as work:
+            home = os.path.join(work, "home")
+            target = os.path.join(work, "log-target")
+            os.makedirs(os.path.join(home, ".local", "state"))
+            os.makedirs(target)
+            os.symlink(target, os.path.join(home, ".local", "state", "fleet-lanes"))
+            fixture_worktree(work)
+            out, proc = self.run_dry_run(work, home, mode="symlink", log_target=target)
             self.assertEqual(out[0], "PASS 8 checks", proc.stdout[-2000:] + proc.stderr[-1000:])
+            self.assertFalse(
+                os.path.exists(os.path.join(target, "lane-move.log")),
+                "the log was written through the symlinked directory",
+            )
 
 
 if __name__ == "__main__":

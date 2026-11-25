@@ -1629,7 +1629,7 @@ def render_opencode_plugin() -> str:
 // worktree root into its repo's fleet lane shortly after the session starts.  The guard registers tool
 // execute.before and throws to refuse a call; OpenCode surfaces the throw to the model and does not run the
 // tool.  A guard that cannot answer is a denial, never an allow.  The mover never blocks a chat.
-import { appendFileSync, mkdirSync, realpathSync, statSync, truncateSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, realpathSync, truncateSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -1950,16 +1950,42 @@ function laneMoveLogPath(): string {
   return join(homedir(), ".local", "state", "fleet-lanes", "lane-move.log");
 }
 
+// The log is the seat's own private record of every lane move, so the directory that
+// holds it is created owner-only (mode 0700;  the umask can only take bits away from
+// that) and is never used through a symlink, which would put the log wherever another
+// user pointed it.  lstat does not follow a link, so a symlinked directory is a link
+// here and not a directory.  Only the log's own directory is checked:  the seat's home
+// path may itself sit under a symlink (a shared volume, a linked home), and that is
+// the seat's own business.
+function laneMoveLogDirOk(dir: string): boolean {
+  try {
+    const info = lstatSync(dir);
+    return info.isDirectory() && !info.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 function laneMoveLog(kind: string, fields: Record<string, unknown>): void {
   try {
     const path = laneMoveLogPath();
+    const dir = dirname(path);
     try {
-      mkdirSync(dirname(path), { recursive: true });
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
     } catch {
       // a log directory that cannot be made is not worth a chat
     }
+    if (!laneMoveLogDirOk(dir)) {
+      // a log directory that is not a real directory is not a place to write the log
+      return;
+    }
     try {
-      if (statSync(path).size > LANE_MOVE_LOG_BYTES) truncateSync(path, 0);
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) {
+        // a log file that is a symlink is not a place to write the log
+        return;
+      }
+      if (info.size > LANE_MOVE_LOG_BYTES) truncateSync(path, 0);
     } catch {
       // a log that is not there yet is fine
     }
