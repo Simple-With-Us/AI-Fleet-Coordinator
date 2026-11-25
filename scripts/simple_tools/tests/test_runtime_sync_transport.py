@@ -52,6 +52,21 @@ def shell_branch(text: str, opener: str) -> tuple[str, str]:
             return before, "\n".join(lines[:index])
     raise AssertionError("the branch that %r opens never closes" % opener)
 
+
+def function_body(text: str, name: str) -> str:
+    """The body of a shell function, up to its closing brace or paren on a line of its own.
+
+    A shell function body is not a branch, so it closes on `}` or `)` rather than on
+    `fi`;  a subshell function carries `(` in place of `{`.
+    """
+    start = text.index(f"{name}() ")
+    lines = text[start:].splitlines()
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() in ("}", ")"):
+            return "\n".join(lines[1:index])
+    raise AssertionError("the function %s never closes" % name)
+
+
 class ShellBranchTests(unittest.TestCase):
     """The branch parser, on its own:  the shell's `fi` is the only boundary."""
 
@@ -98,6 +113,10 @@ class ShellBranchTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             shell_branch(script, self.OPENER)
+
+    def test_a_function_that_never_closes_is_refused(self) -> None:
+        with self.assertRaises(AssertionError):
+            function_body("rgit() {\n  true\n", "rgit")
 
 
 class RuntimeSyncTransportTests(unittest.TestCase):
@@ -176,8 +195,11 @@ class RuntimeSyncTransportTests(unittest.TestCase):
             text, 'if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then'
         )
         self.assertIn('retrieval="origin"', branch)
-        self.assertIn("fetch -q origin", branch)
-        # The origin transport exists nowhere else:  never as a fallback after a failure.
+        # The transport is chosen before the run lock is taken, so the fetch itself stays
+        # inside the lock and the branch itself carries no fetch.
+        self.assertIn('if [ "$retrieval" = "origin" ]; then', text)
+        self.assertIn("if ! rgit fetch -q origin", text)
+        self.assertEqual(text.count("fetch -q origin"), 1)
         self.assertNotIn("fetch -q origin", before)
 
     def test_the_public_source_transport_is_fixed_and_never_falls_back(self) -> None:
@@ -188,38 +210,41 @@ class RuntimeSyncTransportTests(unittest.TestCase):
             'log "FETCH-FAILED  fixed public-source retrieval failed; no credential fallback"',
             text,
         )
+        # Nothing after the approved branch reaches the origin transport.
+        approved = text.index("elif ! fetch_public_runtime; then")
+        self.assertNotIn("fetch -q origin", text[approved:])
 
-    def test_the_fallback_transport_never_waits_on_a_prompt(self) -> None:
+    def test_the_origin_transport_closes_every_prompt_path(self) -> None:
         """A launchd run has no terminal, so every interactive path must be closed.
 
         Git's own prompt is one of several:  an SSH passphrase, an SSH host key and a
         credential helper each ask on their own, and each one would hold the whole alarm
-        on every tick.  The fallback closes all of them at once.
+        on every tick.  The guards live in the git wrapper, so every call is closed and
+        a later call site cannot drop one silently.
         """
         text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn(
-            "GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never "
-            "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' "
-            "rgit -c credential.helper= fetch -q origin;",
-            text,
-        )
-        # Each guard is present on its own, so a later edit cannot drop one silently.
+        wrapper = function_body(text, "rgit")
         for guard in (
             "GIT_TERMINAL_PROMPT=0",
             "GCM_INTERACTIVE=never",
             "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes'",
-            "rgit -c credential.helper= fetch -q origin",
+            "-c credential.helper=",
         ):
-            self.assertIn(guard, text)
+            self.assertIn(guard, wrapper)
 
-    def test_the_fallback_guards_exist_only_inside_the_not_approved_branch(self) -> None:
-        """The approved transport is fixed and never borrows the fallback's guards."""
+    def test_the_approved_transport_reads_no_host_credential(self) -> None:
+        """The approved transport sees no host Git config, no credential and no agent."""
         text = SCRIPT.read_text(encoding="utf-8")
-        before, branch = shell_branch(
-            text, 'if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then'
-        )
-        self.assertIn("GIT_SSH_COMMAND", branch)
-        self.assertNotIn("GIT_SSH_COMMAND", before)
+        body = function_body(text, "fetch_public_runtime")
+        for guard in (
+            "env -i HOME=",
+            "GIT_CONFIG_NOSYSTEM=1",
+            "GIT_CONFIG_GLOBAL=/dev/null",
+            "GIT_TERMINAL_PROMPT=0",
+            "-c credential.helper=",
+            "-c core.hooksPath=/dev/null",
+        ):
+            self.assertIn(guard, body)
 
     def test_the_script_parses(self) -> None:
         result = subprocess.run(

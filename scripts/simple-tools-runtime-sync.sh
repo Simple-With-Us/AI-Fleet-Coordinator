@@ -42,7 +42,16 @@ export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %I:%M:%S%p')" "$*" >> "$LOG"; }
 
 # git with a hard time cap:  perl's alarm survives exec and kills a hung git.
-rgit() { perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" "$@"; }
+# Every interactive path is closed here as well.  A launchd run has no terminal to
+# answer a prompt on, and a prompt that waits holds the whole alarm on every tick.
+# Git's own prompt is only one of them:  an SSH passphrase, an SSH host key and a
+# credential helper each ask on their own, so the guards live in the wrapper and
+# cover every call instead of one call site.
+rgit() {
+  GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never \
+  GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
+  perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" -c credential.helper= "$@"
+}
 
 # Retrieve exactly one approved public repository/ref in an isolated bare repo.
 # Network Git sees no host Git config, credentials, SSH agent, hooks or proxy.
@@ -102,14 +111,11 @@ main() {
   # Explicit operator approval is required before enabling this fixed public-source mode, and
   # the mode is not a fallback when caller-authenticated simple-git refuses.  Until the approval
   # file exists the job stays on the transport it used before, so a host without the file keeps
-  # updating instead of standing still behind main with nothing but a log line.  That fallback
-  # disables every interactive path git and ssh can take, because a launchd run has no terminal
-  # to answer a prompt on and a stalled run holds the whole alarm on every tick.
+  # updating instead of standing still behind main with nothing but a log line.
   local retrieval="public-source"
   if [ ! -f "$STATE_DIR/runtime-public-source.approved" ]; then
     retrieval="origin"
     log "PUBLIC-SOURCE-NOT-APPROVED  using the prior origin transport until the operator approves it"
-    fetch_public_runtime() { GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' rgit -c credential.helper= fetch -q origin; }
   fi
 
   # One run at a time.  A lock older than 10 minutes belongs to a dead run.
@@ -164,12 +170,16 @@ main() {
     exit 1
   fi
 
-  if ! fetch_public_runtime; then
-    if [ "$retrieval" = "public-source" ]; then
-      log "FETCH-FAILED  fixed public-source retrieval failed; no credential fallback"
-    else
+  if [ "$retrieval" = "origin" ]; then
+    # The transport this job used before:  the runtime checkout's own origin.  rgit closes
+    # every interactive path git and ssh can take, because a launchd run has no terminal to
+    # answer a prompt on and a stalled run holds the whole alarm on every tick.
+    if ! rgit fetch -q origin; then
       log "FETCH-FAILED  git fetch origin did not finish; will retry next run"
+      exit 0
     fi
+  elif ! fetch_public_runtime; then
+    log "FETCH-FAILED  fixed public-source retrieval failed; no credential fallback"
     exit 0
   fi
 
