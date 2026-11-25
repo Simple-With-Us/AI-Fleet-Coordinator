@@ -52,7 +52,7 @@ class CollaboratorTests(unittest.TestCase):
     def test_empty_page(self):
         self.assertEqual(
             self.run_action([])[0],
-            dict(collaborators=[], page=1, has_more=False, affiliation="all"),
+            dict(collaborators=[], page=1, has_more=False, affiliation="all", permission=None),
         )
 
     def test_bad_inputs_fail_shape_without_network(self):
