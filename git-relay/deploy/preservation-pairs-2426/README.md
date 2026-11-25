@@ -146,7 +146,7 @@ merging this PR.
    an automatic rollback before it is detected. `manifest.json` is
    exactly `{"config", "files", "runner", "unit"}` with the single row
    `{"root": "code", "name": "reviewed_preservation.py", "before":
-   f84708ce…, "after": 3f72088f…, "meta": {"uid": 0, "gid": 0, "mode": 420}}`
+   3f72088f…, "after": 97cac773…, "meta": {"uid": 0, "gid": 0, "mode": 420}}`
    (the code root is already the `git_relay` directory, so the row name is
    the bare module filename). `runner` is this root's runner path and `unit`
    is `git-relay-<name>.service`.
