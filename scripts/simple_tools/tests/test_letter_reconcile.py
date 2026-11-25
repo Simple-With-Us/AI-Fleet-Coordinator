@@ -331,6 +331,16 @@ class ReconcileTests(Base):
         self.assertEqual(self.title_of("m-0019"), "Fix Login")
         self.assertNotIn("title_pending", self.note("m-0019"))
 
+    def forget_letters(self, sid: str) -> None:
+        """Take the record's letters out of the assigner,  so it holds the chat and no letter for it."""
+        conn = sqlite3.connect(self.fake.db)
+        with conn:
+            row = conn.execute(
+                "SELECT record_id FROM sessions WHERE native_session_id = ?", (sid,)
+            ).fetchone()
+            conn.execute("DELETE FROM alias_assignments WHERE record_id = ?", (str(row[0]),))
+        conn.close()
+
     def test_a_label_the_assigner_did_not_name_is_not_taken_from_the_history(self) -> None:
         # The assigner answers with the letters the record holds,  and with the one it holds now.  A label that is
         # missing,  or that does not look like one,  is no label at all:  the pass must not pick a letter out of the
@@ -343,6 +353,39 @@ class ReconcileTests(Base):
             answer = PL._reconcile_answer(self.env(), PM.SPEC, "mac", "m-0001")
         self.assertEqual(answer["label"], "")
         self.assertFalse(answer["holds_no_letter"])
+
+    def test_a_chat_the_assigner_holds_without_a_letter_loses_its_prefix(self) -> None:
+        # The assigner holds the chat and no letter for it:  the prefix in its title belongs to nobody,  and the
+        # pass takes it off.
+        self.add("m-0020", title="Fix Login")
+        self.start("m-0020", at=self.old)
+        label = self.note("m-0020")["label"]
+        self.assertEqual(self.title_of("m-0020"), "%s: Fix Login" % label)
+        self.forget_letters("m-0020")
+
+        done = self.reconcile()
+        self.assertIn("m-0020", done["retired"])
+        self.assertEqual(self.title_of("m-0020"), "Fix Login")
+        self.assertFalse(PL.lettered(self.note("m-0020")))
+
+    def test_an_answer_with_no_usable_label_leaves_the_title_alone(self) -> None:
+        # The assigner holds the chat and its letter history,  but names no label this pass can trust.  That is no
+        # evidence,  and the title is left exactly as it is.
+        self.add("m-0021", title="Fix Login")
+        self.start("m-0021", at=self.old)
+        label = self.note("m-0021")["label"]
+        answer = {
+            "registered": True,
+            "record_id": "rec-1",
+            "letters": [label],
+            "label": "",
+            "holds_no_letter": False,
+        }
+        with mock.patch.object(PL, "_reconcile_answer", return_value=answer):
+            done = self.reconcile()
+        self.assertEqual(done["retired"], [])
+        self.assertEqual(self.title_of("m-0021"), "%s: Fix Login" % label)
+        self.assertTrue(PL.lettered(self.note("m-0021")))
 
     def test_an_assigner_that_does_not_answer_changes_nothing(self) -> None:
         self.add("m-0008", title="Fix Login")

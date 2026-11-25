@@ -5243,6 +5243,11 @@ def reconcile_letters(
             # title happens to carry.
             current = str(held_answer.get("label") or "")
             if not LABEL_RE.fullmatch(current):
+                if held_answer.get("holds_no_letter"):
+                    # The registry holds this chat and no letter for it:  the prefix in its title is nobody's.
+                    if chat.write(_retire(chat, note, now)):
+                        retired.append(sid)
+                # Otherwise the assigner named no letter this pass can trust:  no evidence,  no change.
                 continue
             state, record_id = _letter_holder(env, spec, current)
             if state == "unknown":
