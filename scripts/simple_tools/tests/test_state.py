@@ -101,8 +101,15 @@ class StateTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 with state.stream_post_guard(timeout=0.03):
                     self.fail("entered other process guard")
-        finally:
             proc.communicate(timeout=2)
+        except BaseException:
+            proc.terminate()
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+            raise
         with state.stream_post_guard(timeout=0.1):
             pass
 
