@@ -263,6 +263,7 @@ final class ServiceActionRouterTests: XCTestCase {
     private struct Rig {
         let server: FleetAdminServer
         let admin: FleetAdmin
+        let control: FleetServiceControl
         let controller: OpsController
         let router: ServiceActionRouter
         let confirmations: ConfirmationLog
@@ -329,7 +330,7 @@ final class ServiceActionRouterTests: XCTestCase {
         while admin.services == nil, Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        return Rig(server: server, admin: admin, controller: controller, router: router,
+        return Rig(server: server, admin: admin, control: control, controller: controller, router: router,
                    confirmations: confirmations, notices: notices, runner: runner)
     }
 
@@ -761,28 +762,28 @@ final class ServiceActionRouterTests: XCTestCase {
         XCTAssertEqual(busy, FleetServices.restartBody(work: "1 bot turn"))
     }
 
-    /// The Mac's eavesdropper is not on the allowlist,  so it takes the direct route.  It was
-    /// retired,  and a restart would bring it back:  where the router is asked for one,  it always
-    /// asks first,  and its title says so.  Its row never offers one (`FleetServicesTests`).
-    func testRestartingTheOperatorEavesdropperAlwaysAsksFirst() async throws {
+    func testRetiredMacEavesdropperCannotBeRoutedToStartOrRestart() async throws {
         let rig = await makeRig()
         let id = FleetServiceRegistry.operatorEavesdropper.id
-        let restart = try action(.restart, id, on: rig)
-        XCTAssertEqual(restart.route, .admin(.restart, serviceID: id))
-        XCTAssertTrue(restart.route.asksFirst)
-        XCTAssertEqual(restart.title, "Restart On The Mac\u{2026}")
-        let warning = await rig.admin.restartWarning(for: id)
-        XCTAssertEqual(warning, FleetServices.operatorRestartBody)
-        XCTAssertNil(FleetServices.restartAlwaysAsksBody(forServiceID: "app.botfleet.companion"))
-        rig.confirmations.answer = false
-        rig.router.start(restart)
-        try await waitUntil { !rig.router.isBusy }
-        let request = try XCTUnwrap(rig.confirmations.requests.first)
-        XCTAssertEqual(request.word, "Restart")
-        XCTAssertEqual(request.title, "Operator Eavesdropper")
-        XCTAssertEqual(request.host, .mac)
-        XCTAssertEqual(request.message, FleetServices.operatorRestartBody)
-        XCTAssertNil(rig.router.actionState, "a declined restart runs nothing")
+        let entry = try XCTUnwrap(rig.admin.entries.first { $0.id == id })
+        XCTAssertNil(rig.router.action(.start, on: entry))
+        XCTAssertNil(rig.router.action(.restart, on: entry))
+        XCTAssertTrue(rig.confirmations.requests.isEmpty)
+        XCTAssertTrue(rig.runner.invocations.isEmpty)
+    }
+
+    func testDirectControllerAlsoRefusesToReviveRetiredMacEavesdropper() async throws {
+        let rig = await makeRig()
+        let id = FleetServiceRegistry.operatorEavesdropper.id
+        let actions: [ManagedServiceAction] = [.start, .restart]
+        for action in actions {
+            do {
+                _ = try await rig.control.perform(action, serviceID: id)
+                XCTFail("Reviving a retired Mac service must be refused")
+            } catch FleetServiceError.refused(let reason) {
+                XCTAssertEqual(reason, "That Mac service is retired. Use Operator on the server.")
+            }
+        }
     }
 
     func testAskingTheServerIsARunnerCallAndNeverAPlan() async throws {

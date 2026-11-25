@@ -91,8 +91,7 @@ public enum FleetServiceRegistry {
     /// Nov 10:  launchd booted it out,  and the server listener holds every seat.  It stays on
     /// the list so a copy that is running again is seen and said plainly,  and so a stopped one
     /// reads as retired,  never as a service that is down.  Its state is still launchd's.  Muster
-    /// never starts it,  and only a running copy offers a Stop.  Its restart,  where the router
-    /// is asked for one,  always asks first (`FleetServices.restartAlwaysAsksBody`).  The wake
+    /// never starts or restarts it,  and only a running copy offers a Stop.  The wake
     /// alerter (`com.jay.operator-wake-alerter`) is a separate agent and is not on this list.
     public static let operatorEavesdropper = FleetServiceDescriptor(
         id: "com.jay.operator",
@@ -541,19 +540,6 @@ public struct FleetServices: Equatable {
     public static func restartBody(work: String) -> String {
         "A restart of BotFleet Server on the Mac does not wait the way a stop does, so it can end this work.\u{00A0} Checked just now:  \(work) in flight."
     }
-
-    /// What restarting a service whose restart always asks first does,  or nil when its
-    /// restart runs at once.  On the direct route the router asks before this restart,  and
-    /// its button carries the ellipsis that says so.
-    public static func restartAlwaysAsksBody(forServiceID id: String) -> String? {
-        guard id == FleetServiceRegistry.operatorEavesdropper.id else { return nil }
-        return operatorRestartBody
-    }
-
-    /// What restarting the Mac's eavesdropper does.  It was retired,  so a restart brings back a
-    /// listener that should not be running.
-    public static let operatorRestartBody =
-        "The Operator Eavesdropper on the Mac was retired at \(FleetServiceRegistry.retiredSince), and the server listener holds every seat.\u{00A0} A restart starts it again on the Mac, where it should hold no seat."
 
     /// What stopping a LaunchAgent does.
     public static let launchAgentStopBody =
