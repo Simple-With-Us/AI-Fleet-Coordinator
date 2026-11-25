@@ -84,7 +84,10 @@ UNIT_ENV = ("PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_ENVIRONMENT")
 ENV_FILE = re.compile(r"(\S+) \(ignore_errors=(?:yes|no)\)")
 TOP_KEYS = {"//", "profiles", "seats"}
 PROFILE_KEYS = {"//", "actions", "mint_permissions", "repos"}
-SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert", "default_branch_paths"}
+SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert", "default_branch_paths", "title_tag"}
+# The bracket tag a seat's titles carry:  the same shape the relay accepts at runtime
+# (git_relay/policy.py: _TITLE_TAG), so a policy file cannot pin a tag the relay refuses.
+TITLE_TAG = re.compile(r"[A-Z0-9][A-Z0-9 _-]{0,31}")
 
 
 class PolicyFileError(ValueError):
@@ -177,6 +180,15 @@ def render(doc: dict) -> dict:
             seats[slug]["default_branch_paths"] = {
                 repo: list(paths) for repo, paths in grants.items()
             }
+        # The seat's own bracketed title tag, when the App slug does not derive one:  a
+        # seat called MM runs as swu-minimax, so its derived tag would be MINIMAX.
+        if "title_tag" in row:
+            tag = row["title_tag"]
+            if not isinstance(tag, str) or not TITLE_TAG.fullmatch(tag):
+                raise PolicyFileError(
+                    f"seat {identity!r}: title_tag must be 1-32 chars of A-Z 0-9 space dash underscore"
+                )
+            seats[slug]["title_tag"] = tag
     if not seats:
         raise PolicyFileError("the policy names no seat")
     return seats
