@@ -403,6 +403,35 @@ class TestAntigravityDeliverLocal(BaseTest):
         self.assertEqual(delivery2.outcome, "sent")
         self.assertTrue(ran)
 
+    def test_conversation_data_missing_refuses_before_launch(self) -> None:
+        self._insert(SID_VALID)
+        # The store's layout is understood (it holds another conversation's
+        # data) but this conversation's data is gone:  the CLI would run the
+        # turn in a new chat, so the wake is refused before anything launches.
+        store = self.root / "implicit"
+        store.mkdir()
+        (store / "99999999-9999-4999-8999-999999999999.pb").write_bytes(b"x")
+        calls: list = []
+        with mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"):
+            delivery = AGW.deliver_local(
+                self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=agy(0, calls=calls)
+            )
+        self.assertEqual(
+            (delivery.outcome, delivery.code), ("refused", "conversation-data-missing")
+        )
+        self.assertEqual(calls, [])
+
+    def test_conversation_data_present_proceeds(self) -> None:
+        self._insert(SID_VALID)
+        store = self.root / "implicit"
+        store.mkdir()
+        (store / ("%s.pb" % SID_VALID)).write_bytes(b"x")
+        with mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"):
+            delivery = AGW.deliver_local(
+                self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=agy(0)
+            )
+        self.assertEqual(delivery.outcome, "sent")
+
     def test_conversation_not_found(self) -> None:
         delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_ABSENT, self.wake())
         self.assertEqual((delivery.outcome, delivery.code), ("refused", "conversation-not-found"))

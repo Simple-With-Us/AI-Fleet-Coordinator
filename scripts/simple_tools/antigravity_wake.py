@@ -81,6 +81,7 @@ NEVER_RAN: frozenset[str] = frozenset(
         "bad-session-id",
         "no-ssh-destination",
         "conversation-not-found",
+        "conversation-data-missing",
         "conversation-subagent",
         "conversation-killed",
         "session-cwd-gone",
@@ -195,6 +196,57 @@ def find_conversation_record(
         except (sqlite3.Error, OSError):
             return None, "db-error"
     return None, None
+
+
+def _data_here(root: Path, session_id: str) -> tuple[bool, bool]:
+    """(this conversation's data is under `root`, `root` holds any conversation data).
+
+    The shapes are the ones the letter library already trusts a product root to
+    hold (`platform_letter_antigravity._root_knows_conversation`), plus the
+    implicit protobuf this host's CLI store keeps (`implicit/<id>.pb`)."""
+    mine = (
+        (root / "annotations" / ("%s.pbtxt" % session_id)).is_file()
+        or (root / "brain" / session_id).is_dir()
+        or (root / "conversations" / ("%s.db" % session_id)).is_file()
+        or (root / "conversations" / ("%s.pb" % session_id)).is_file()
+        or (root / "implicit" / ("%s.pb" % session_id)).is_file()
+    )
+    if mine:
+        return True, True
+    any_data = False
+    for folder, suffix in (("annotations", ".pbtxt"), ("conversations", ".db"), ("conversations", ".pb"), ("implicit", ".pb")):
+        try:
+            if any(name.endswith(suffix) for name in os.listdir(root / folder)):
+                any_data = True
+                break
+        except OSError:
+            continue
+    if not any_data:
+        try:
+            any_data = any(True for _ in os.scandir(root / "brain"))
+        except OSError:
+            any_data = False
+    return False, any_data
+
+
+def conversation_data_missing(env: Mapping[str, str], session_id: str) -> bool:
+    """True when a summaries row exists but the conversation's data does not (AFC-840).
+
+    A summary row alone is not proof the CLI can load the conversation:  with the
+    data gone it prints `conversation "<id>" not found` and runs the turn in a new
+    chat.  The refusal is made only when a candidate product root is understood
+    — it holds conversation data for other ids in a known shape — yet holds none
+    for this one.  A root with no data artifacts at all cannot be told apart
+    from a database-resident layout, so it never refuses:  the post-hoc
+    `resume-new-chat` naming (PR 2320) stays the guard there."""
+    roots = {db.parent for db in store_paths(env)}
+    understood = False
+    for root in roots:
+        mine, any_data = _data_here(root, session_id)
+        if mine:
+            return False
+        understood = understood or any_data
+    return understood
 
 
 def _excluded_ids(stores: list[Path], sids: list[str]) -> set[str]:
@@ -555,6 +607,11 @@ def deliver_local(
             cwd = _resolve_cwd(rec)
             if not cwd:
                 return WR.Delivery("refused", "resume", code="session-cwd-gone")
+
+            # Strict before launch (AFC-840):  a summary row whose conversation
+            # data is gone would make the CLI run the turn in a new chat.
+            if conversation_data_missing(env, session_id):
+                return WR.Delivery("refused", "resume", code="conversation-data-missing")
 
             child_env = _child_env(env)
             binary = _find_agy_binary(child_env)
