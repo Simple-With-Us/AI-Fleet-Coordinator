@@ -7,8 +7,11 @@ import Glibc
 
 // Reading the Seat Activity panel's sources.
 //
-// Three are local files on the Mac:  the Mac eavesdropper's own published state,  its
-// configuration file and the seat partition.  The last post comes from the fleet chat CLI's
+// Where each seat is held comes from the server eavesdropper's reduced status,  read through
+// the server's control helper (`ServerEavesdropperStatusStore`,  AFC-837).  No Mac file is a
+// source:  the Mac's eavesdropper is retired,  so its state file,  the seat sections of its
+// configuration file and the Mac's copy of the seat partition went stale.  The last post comes
+// from the fleet chat CLI's
 // read-only Operator service (`simple-chat muster-service`),  which is asked two things,  and
 // this file is the only place that asks it anything:
 //
@@ -761,34 +764,42 @@ actor SeatActivityGate {
 /// The reader makes at most one `users` call and one `last-post` call per seat,  and it
 /// counts every call it makes:  the ceiling is written down in `requestCeiling(forSeats:)`.
 struct SeatActivityReader {
-    /// Where the eavesdropper's state lives.
-    var location: ListenerStateLocation
+    /// How the server eavesdropper's reading is had.  It answers nil when there is none.
+    typealias ServerRead = @Sendable () async -> ServerEavesdropperReading?
+
     /// The fleet chat CLI.
     var runner: ChatRunning
     /// The clock.
     var now: () -> Date
     /// How many calls may run at once.
     var maximumConcurrentCalls: Int
-    /// The oldest eavesdropper state the panel still believes.
-    var maximumListenerAge: TimeInterval
-    /// The seat partition in Muster's own checkout,  used when the Mac's eavesdropper does
-    /// not name the copy it goes by.
-    var partitionURL: URL?
+    /// The server eavesdropper's reading,  the one source of where each seat is held.
+    var serverReading: ServerRead
 
     init(
-        location: ListenerStateLocation = ListenerStateLocation(),
         runner: ChatRunning? = nil,
         now: @escaping () -> Date = { Date() },
         maximumConcurrentCalls: Int = 8,
-        maximumListenerAge: TimeInterval = SeatActivityReader.defaultMaximumListenerAge,
-        partitionURL: URL? = ListenerPartition.defaultURL()
+        serverReading: @escaping ServerRead = { await SeatActivityReader.sharedServerReading() }
     ) {
-        self.location = location
         self.runner = runner ?? ChatCLI()
         self.now = now
         self.maximumConcurrentCalls = maximumConcurrentCalls
-        self.maximumListenerAge = maximumListenerAge
-        self.partitionURL = partitionURL
+        self.serverReading = serverReading
+    }
+
+    /// The youngest server reading the panel reuses instead of asking the server again.  The
+    /// panel's own server rows read the same store every minute,  so a refresh rarely asks twice.
+    static let serverReadingMaximumAge: TimeInterval = 60
+
+    /// The server eavesdropper's reading from the app's one store,  read again when it is older
+    /// than `serverReadingMaximumAge`.  The store joins a read already in flight,  so the panel
+    /// and its server rows never ask the server twice at once.
+    @MainActor
+    static func sharedServerReading() async -> ServerEavesdropperReading? {
+        let store = ServerEavesdropperStatusStore.shared
+        await store.refreshIfOlder(than: serverReadingMaximumAge)
+        return store.reading
     }
 
     /// What the panel says when the Operator read is unavailable.  It names the reason and
@@ -797,11 +808,6 @@ struct SeatActivityReader {
         "Muster reads Zulip only as the Operator,  and the Operator read is unavailable:  "
             + reason + "  No agent seat is read instead,  so every last post is unknown."
     }
-
-    /// The eavesdropper rewrites its state every few seconds while it runs
-    /// (`daemon.write_status`),  so a file a minute old belongs to an eavesdropper that has
-    /// stopped or hung,  and what it says about seats is no longer true.
-    static let defaultMaximumListenerAge: TimeInterval = 60
 
     /// The ceiling for one refresh over a roster.
     ///
@@ -826,14 +832,7 @@ struct SeatActivityReader {
         sources.roster = roster
         sources.readAt = now()
         sources.readingSeat = ChatLocator.readingIdentity
-        sources.listenerPath = location.statusURL.path
         sources.requestCeiling = SeatActivityReader.requestCeiling(forSeats: roster.count)
-
-        // The eavesdropper's own state:  one local file,  no call.
-        readListenerState(into: &sources)
-        // Who holds each seat:  the partition the eavesdropper says it goes by,  else the copy
-        // in Muster's own checkout,  and the seat sections of the Mac's own file.
-        readPartition(into: &sources)
 
         // The fleet chat CLI:  one `users` call,  then one call per seat.
         var requests = 0
@@ -845,6 +844,14 @@ struct SeatActivityReader {
             sources.requestsMade = requests
             return SeatActivityBuilder.build(sources)
         }
+
+        // Who holds each seat:  the server eavesdropper's reading,  read before the user list
+        // so a refusal there still leaves every seat placed.  A read with no answer leaves every
+        // place not known,  and nothing on the Mac is read instead.
+        sources.server = await serverReading()
+        // The server read joins the store's,  so its own clock may have moved on:  the reading
+        // is judged current at the moment it came back.
+        sources.readAt = now()
         do {
             let result = try await runner.run(ChatInvocation.users())
             requests += 1
@@ -931,88 +938,6 @@ struct SeatActivityReader {
         }
         return "The realm's record of this seat's bot names no user to ask about,  "
             + "so its last post is unknown."
-    }
-
-    /// Who holds each seat.
-    ///
-    /// The Mac's eavesdropper names the partition it goes by,  and that copy is the one that
-    /// decides what it runs,  so it wins over the copy in Muster's own checkout.  The Mac's
-    /// own file is read too:  a seat section there that names the server is refused by the
-    /// Mac's eavesdropper,  whatever the partition says.
-    private func readPartition(into sources: inout SeatActivityBuilder.Sources) {
-        var url = partitionURL
-        if let named = sources.listener?.partitionFile, !named.isEmpty {
-            url = URL(fileURLWithPath: named)
-        }
-        // A file named by another file is not read whole when it is far larger than any real one.
-        if let url,
-           let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let size = attributes[.size] as? Int,
-           size > LedgerParseCache.maximumFileBytes {
-            sources.partition = ListenerPartition(unreadable: "The file at \(url.path) is larger than Muster reads.")
-        } else {
-            sources.partition = ListenerPartition.load(from: url)
-        }
-        sources.partitionPath = url?.path ?? ""
-        let configPath = location.configURL.path
-        if let data = try? Data(contentsOf: location.configURL),
-           data.count <= LedgerParseCache.maximumFileBytes {
-            sources.config = ListenerConfigDocument(text: String(decoding: data, as: UTF8.self))
-        } else if FileManager.default.fileExists(atPath: configPath) {
-            // No file is normal:  the eavesdropper then has no seat sections to refuse.  A
-            // file that is there and cannot be read could hide a seat the Mac refuses.
-            sources.configProblem = "The Mac eavesdropper's configuration at \(configPath) could not be read,  "
-                + "so a seat it refuses because its section names the server may show under the Mac."
-        }
-    }
-
-    /// The eavesdropper's own published state,  read from one local file.
-    private func readListenerState(into sources: inout SeatActivityBuilder.Sources) {
-        let url = location.statusURL
-        let consequence = "so the state,  sessions and quota of every seat the Mac holds are unknown."
-        guard let data = try? Data(contentsOf: url) else {
-            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) could not be read,  " + consequence
-            return
-        }
-        guard let document = try? JSONDecoder().decode(ListenerStateDocument.self, from: data) else {
-            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) could not be read,  " + consequence
-            return
-        }
-        // An eavesdropper that stopped leaves its last file behind,  and every lease in it
-        // still says alive.  The file is only believed while the eavesdropper is still
-        // writing it.
-        guard let published = document.publishedAt else {
-            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) does not say when it was written,  "
-                + consequence
-            return
-        }
-        let age = now().timeIntervalSince(published)
-        guard abs(age) <= maximumListenerAge else {
-            sources.listenerProblem = "The Mac eavesdropper's state at \(url.path) was last written "
-                + SeatActivityReader.ageText(age) + ",  so the eavesdropper may have stopped,  and "
-                + String(consequence.dropFirst(3))
-            return
-        }
-        // The file names the instance that wrote it.  Only the Mac's own eavesdropper is
-        // read here,  so a file another instance wrote is not taken as the Mac's.
-        if let instance = document.instance, instance != ListenerPartition.thisInstance {
-            sources.listenerProblem = "The eavesdropper's state at \(url.path) says it was written by the "
-                + "\(SeatActivityText.label(instance)) instance,  not the Mac's,  " + consequence
-            return
-        }
-        sources.listener = document
-    }
-
-    /// How old a file is,  in words.
-    static func ageText(_ age: TimeInterval) -> String {
-        if age < 0 { return "in the future by this Mac's clock" }
-        let seconds = Int(age)
-        if seconds < 120 { return "\(seconds) seconds ago" }
-        let minutes = seconds / 60
-        if minutes < 120 { return "\(minutes) minutes ago" }
-        let hours = minutes / 60
-        if hours < 48 { return "\(hours) hours ago" }
-        return "\(hours / 24) days ago"
     }
 
     /// One seat's answer.
