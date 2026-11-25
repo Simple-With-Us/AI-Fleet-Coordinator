@@ -189,6 +189,36 @@ class RegistryCheckTest(unittest.TestCase):
             self.assertNotIn("value", token)
             self.assertNotIn("secret", token)
 
+    def test_a_malformed_peer_entry_is_a_read_failure(self) -> None:
+        peer = self.tmp / "peer.json"
+        peer.write_text(json.dumps({
+            "host": "peer",
+            "tokens": [
+                {"id": UNREGISTERED_SIDECAR["id"], "name": UNREGISTERED_SIDECAR["name"], "file": "peer.json"},
+                {"name": "no-id-here"},
+            ],
+        }), encoding="utf-8")
+        rows = self.write_rows([
+            registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"]),
+            registry_row(SERVER_SIDECAR["id"], SERVER_SIDECAR["name"]),
+        ])
+        result = self.run_check(
+            "--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows), "--inventory", str(peer),
+        )
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("malformed entry", result.stderr)
+        self.assertNotIn("every installed service token has a registry row", result.stdout)
+
+    def test_a_peer_inventory_that_is_not_a_list_is_a_read_failure(self) -> None:
+        peer = self.tmp / "peer.json"
+        peer.write_text(json.dumps({"host": "peer"}), encoding="utf-8")
+        rows = self.write_rows([registry_row(MAC_SIDECAR["id"], MAC_SIDECAR["name"])])
+        result = self.run_check(
+            "--sidecar-dir", str(self.sidecars), "--sheet-rows", str(rows), "--inventory", str(peer),
+        )
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("no token list", result.stderr)
+
     def test_the_inventory_print_carries_ids_and_names_only(self) -> None:
         result = self.run_check("--sidecar-dir", str(self.sidecars), "--print-inventory")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

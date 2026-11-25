@@ -104,6 +104,11 @@ export function readSidecars(directory) {
 
 // Another host's inventory, kept to the same fields as a local sidecar:  a
 // file handed over from another host is not trusted to hold only these keys.
+//
+// The file is a dedicated inventory, so every entry in it is an installed
+// token.  An entry that is not an object, or that names no token id, is a
+// malformed entry and a read failure:  dropping it would let an installed
+// token vanish and let the check report no gap.
 export function readPeerInventory(path) {
   let data;
   try {
@@ -116,10 +121,17 @@ export function readPeerInventory(path) {
     throw new Error(`the peer inventory ${path} has no token list`);
   }
   const peers = [];
-  for (const token of data.tokens) {
-    if (!token || typeof token !== 'object') continue;
+  const malformed = [];
+  for (const [index, token] of data.tokens.entries()) {
+    if (!token || typeof token !== 'object' || Array.isArray(token)) {
+      malformed.push(`entry ${index}`);
+      continue;
+    }
     const id = typeof token.id === 'string' ? token.id.trim() : '';
-    if (!id) continue;
+    if (!id) {
+      malformed.push(`entry ${index}`);
+      continue;
+    }
     peers.push({
       id,
       name: typeof token.name === 'string' ? token.name : '',
@@ -127,6 +139,9 @@ export function readPeerInventory(path) {
       expiresAt: token.expiresAt === null || token.expiresAt === undefined ? null : String(token.expiresAt),
       file: `${path}:${typeof token.file === 'string' ? token.file : ''}`,
     });
+  }
+  if (malformed.length) {
+    throw new Error(`the peer inventory ${path} has ${malformed.length} malformed entry: ${malformed.join(', ')}`);
   }
   return peers;
 }
