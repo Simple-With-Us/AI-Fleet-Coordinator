@@ -42,23 +42,20 @@ final class OneListenerCutoverTests: XCTestCase {
         XCTAssertTrue(repository.givesTheMacNoAgentSeat)
     }
 
-    // MARK: The Seats banner
+    // MARK: The Seats panel
 
-    /// The retired Mac listener's stale state file is not a problem once the partition gives
-    /// the Mac no agent seat, so the Seats panel banners nothing for it.  While the Mac still
-    /// held a seat, and when the partition could not be read at all, the same problem shows.
-    func test_the_retired_mac_listeners_stale_state_is_not_a_seats_problem() {
-        let stale = "The Mac eavesdropper's state was last written 12 days ago, so the eavesdropper may have stopped."
-        func problems(_ partition: ListenerPartition?) -> [String] {
-            var sources = SeatActivityBuilder.Sources()
-            sources.roster = ["CLAUDE"]
-            sources.partition = partition
-            sources.listenerProblem = stale
-            return SeatActivityBuilder.build(sources).problems
-        }
-        XCTAssertEqual(problems(allServer), [])
-        XCTAssertEqual(problems(beforeCutover), [stale])
-        XCTAssertTrue(problems(nil).contains(stale))
-        XCTAssertTrue(problems(ListenerPartition(unreadable: "It is missing.")).contains(stale))
+    /// The retired Mac listener is not a Seats source at all (AFC-837):  the panel places every
+    /// seat from the server's reading, so the Mac's stale state file can never be a Seats
+    /// problem, and no seat is placed with the Mac.
+    func test_the_retired_mac_listener_is_never_a_seats_source() throws {
+        var sources = SeatActivityBuilder.Sources()
+        sources.roster = ["CLAUDE", "MM"]
+        sources.readAt = Date(timeIntervalSince1970: SeatActivityTests.clock)
+        sources.server = try SeatActivityTests.serverReading()
+        let model = SeatActivityBuilder.build(sources)
+        XCTAssertEqual(model.problems, [])
+        XCTAssertEqual(model.rows.first { $0.seat == "CLAUDE" }?.place, .server)
+        XCTAssertFalse(model.rows.contains { $0.place == .mac })
+        XCTAssertFalse(model.groups.contains { $0.kind == .mac })
     }
 }
