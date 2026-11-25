@@ -5197,49 +5197,63 @@ def reconcile_letters(
     )
     asked = 0
     retired: list[str] = []
+    failures: list[dict[str, str]] = []
     for row in list(candidates.values())[:RECONCILE_MAX_CHATS]:
         sid = row["session_id"]
-        chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
-        note = chat.read()
-        if not lettered(note):
-            continue
-        label = str(note.get("label") or "")
-        if not LABEL_RE.fullmatch(label):
-            continue
-        if _seconds(note.get("updated_at")) != row["seen"]:
-            continue  # the chat ran since the scan:  it is in use,  not stale
-        current = _platform_title(chat)
-        source = current or str(note.get("shown") or "")
-        if not source or bare(source, held(note)) == source:
-            continue  # the title carries no letter of its own:  there is no prefix to take off
-        asked += 1
-        held_answer = _reconcile_answer(env, spec, where, sid)
-        if "error" in held_answer:
-            continue  # no answer:  the title is left as it is
-        if not held_answer["registered"]:
-            # The assigner holds no registration for this chat:  the letter in its title is nobody's.
+        # One chat's failure never stops the pass:  the rest of the host's chats are still worth retiring,  and
+        # the failure is recorded with its session id and the exception's type,  never with anything it carries.
+        try:
+            chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+            note = chat.read()
+            if not lettered(note):
+                continue
+            label = str(note.get("label") or "")
+            if not LABEL_RE.fullmatch(label):
+                continue
+            if _seconds(note.get("updated_at")) != row["seen"]:
+                continue  # the chat ran since the scan:  it is in use,  not stale
+            current_title = _platform_title(chat)
+            source = current_title or str(note.get("shown") or "")
+            if not source or bare(source, held(note)) == source:
+                continue  # the title carries no letter of its own:  there is no prefix to take off
+            asked += 1
+            held_answer = _reconcile_answer(env, spec, where, sid)
+            if "error" in held_answer:
+                continue  # no answer:  the title is left as it is
+            if not held_answer["registered"]:
+                # The assigner holds no registration for this chat:  the letter in its title is nobody's.
+                if chat.write(_retire(chat, note, now)):
+                    retired.append(sid)
+                continue
+            # The letter to ask about is the one the REGISTRY says this chat holds,  not the one the note
+            # remembers:  a chat the registry relabelled in place holds its new letter,  and the note's old label
+            # is simply behind.  Asking about the note's label would retire an alive chat for a prefix its own
+            # title happens to carry.
+            current = str(held_answer.get("label") or "")
+            if not LABEL_RE.fullmatch(current):
+                continue
+            state, record_id = _letter_holder(env, spec, current)
+            if state == "unknown":
+                continue  # the assigner did not answer about the letter:  no evidence,  no change
+            if state == "live" and record_id == held_answer["record_id"]:
+                continue  # the chat still holds its letter
+            # The letter is not this chat's:  it is not live,  or it is live under another record.
             if chat.write(_retire(chat, note, now)):
                 retired.append(sid)
+        except Exception as exc:  # noqa: BLE001 - one chat's failure never stops the pass
+            failures.append({"sid": sid, "error": type(exc).__name__})
             continue
-        # The letter to ask about is the one the REGISTRY says this chat holds,  not the one the note
-        # remembers:  a chat the registry relabelled in place holds its new letter,  and the note's old label
-        # is simply behind.  Asking about the note's label would retire an alive chat for a prefix its own
-        # title happens to carry.
-        current = str(held_answer.get("label") or "")
-        if not LABEL_RE.fullmatch(current):
-            continue
-        state, record_id = _letter_holder(env, spec, current)
-        if state == "unknown":
-            continue  # the assigner did not answer about the letter:  no evidence,  no change
-        if state == "live" and record_id == held_answer["record_id"]:
-            continue  # the chat still holds its letter
-        # The letter is not this chat's:  it is not live,  or it is live under another record.
-        if chat.write(_retire(chat, note, now)):
-            retired.append(sid)
-    recorded = _record_outcome(path, now, {"asked": asked, "retired": len(retired)})
+    recorded = _record_outcome(
+        path, now, {"asked": asked, "retired": len(retired), "failed": len(failures)}
+    )
     if not recorded:
         recorded = _record_outcome(path, now, {"error": "the outcome could not be saved"})
-    return {"asked": asked, "retired": sorted(retired), "recorded": recorded}
+    return {
+        "asked": asked,
+        "retired": sorted(retired),
+        "failures": failures,
+        "recorded": recorded,
+    }
 
 
 def repair_main(
@@ -5396,6 +5410,8 @@ def reconcile_main(
             continue
         for sid in done.get("retired") or []:
             stdout.write(head + "%s prefix retired\n" % sid[:8])
+        for failed_chat in done.get("failures") or []:
+            stdout.write(head + "%s failed (%s)\n" % (failed_chat["sid"][:8], failed_chat["error"]))
         stdout.write(
             head
             + "%d asked, %d retired\n"

@@ -283,6 +283,35 @@ class ReconcileTests(Base):
         self.assertIn("--location", argv)
         self.assertIn("mac", argv)
 
+    def test_one_failing_chat_does_not_stop_the_pass(self) -> None:
+        # Two stale chats,  and one of them makes the assigner call fail.  The other is still retired:  one
+        # chat's failure never stops the pass,  and the failure is recorded with its session id and the
+        # exception's type alone.
+        self.add("m-0016", title="Fix Login")
+        self.start("m-0016", at=self.old)
+        self.add("m-0017", title="Fix Signup")
+        self.start("m-0017", at=self.old)
+        self.add("m-0018", title="Fix Billing")
+        self.start("m-0018", at=self.old)
+        for sid in ("m-0016", "m-0017"):
+            self.age(sid, self.old)
+        ended = self.sweep()
+        self.assertEqual([row["native_session_id"] for row in ended["ended"]], ["m-0016", "m-0017"])
+
+        original = PL._reconcile_answer
+
+        def flaky(env, spec, where, sid, timeout=0):
+            if sid == "m-0016":
+                raise RuntimeError("the assigner call failed")
+            return original(env, spec, where, sid, timeout=timeout)
+
+        with mock.patch.object(PL, "_reconcile_answer", flaky):
+            done = self.reconcile()
+        self.assertNotIn("m-0016", done["retired"])
+        self.assertIn("m-0017", done["retired"])
+        self.assertEqual([row["sid"] for row in done["failures"]], ["m-0016"])
+        self.assertEqual(done["failures"][0]["error"], "RuntimeError")
+
     def test_an_assigner_that_does_not_answer_changes_nothing(self) -> None:
         self.add("m-0008", title="Fix Login")
         self.start("m-0008", at=self.old)
