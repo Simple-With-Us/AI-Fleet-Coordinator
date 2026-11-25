@@ -11,24 +11,49 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-25@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261125
 DTEND;VALUE=DATE:20261126
-SUMMARY:Fleet: 10 merged · 0 opened · 0 closed
-DESCRIPTION:10 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 27 merged · 0 opened · 0 closed
+DESCRIPTION:27 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#2412] (codex) Do Not Merge: Bind Muster’s N
- ative Reader To Its Declared Grant\n- [AI-Fleet-Coordinator#2537] (claude)
-  Spell Every Channel Default Work-In-Progress\n- [AI-Fleet-Coordinator#253
- 9] (instinct) Relay: retire the per-seat action allowlist so every feature
-  works for every seat\n- [AI-Fleet-Coordinator#2542] (chatgpt) Remove lega
- cy Seat MCP from Muster controls\n- [AI-Fleet-Coordinator#2544] (instinct)
-  Preserve durable alert outcomes and confirmed conflict pairs\n- [BotFleet
- #2211] (chatgpt) Remove legacy Seat MCP as a BotFleet option\n- [Socratic-
- Trade#5471] (zcode\, ag) ST-4668 — roadmap takeover: reconciliation agai
- nst main\, batch plan\, owner decisions\n- [Usage-Monitor#2083] (codex) Do
-  Not Merge: Use Synced ASC Credentials\n- [codecaps#554] (chatgpt) Add Ali
- baba and Xiaomi MiMo Token Plan quota readers\n- [codecaps#555] (chatgpt) 
- Add Alibaba Coding Plan quota monitoring for Qwen Code
+ ative Reader To Its Declared Grant\n- [AI-Fleet-Coordinator#2531] (claude)
+  fix(janitor): give the Hog Hunter phase a time budget inside its watchdog
+ \n- [AI-Fleet-Coordinator#2534] (claude) Muster: A Test Wake Result That C
+ annot Be Read Is Never Shown As A Pass\n- [AI-Fleet-Coordinator#2537] (cla
+ ude) Spell Every Channel Default Work-In-Progress\n- [AI-Fleet-Coordinator
+ #2539] (instinct) Relay: retire the per-seat action allowlist so every fea
+ ture works for every seat\n- [AI-Fleet-Coordinator#2542] (chatgpt) Remove 
+ legacy Seat MCP from Muster controls\n- [AI-Fleet-Coordinator#2544] (insti
+ nct) Preserve durable alert outcomes and confirmed conflict pairs\n- [AI-F
+ leet-Coordinator#2545] [ROB] AFC-882 Follow-On: Shard The Simple-Tools Dis
+ cover And Raise The Step Limits\n- [AI-Fleet-Coordinator#2546] (instinct) 
+ Use live registry context for native qualification\n- [AI-Fleet-Coordinato
+ r#2547] (instinct) Mint workflows:write for wf_branch_update moves touchin
+ g the workflows dir\n- [AI-Fleet-Coordinator#2548] (instinct) Preserve bou
+ nded origin-binding hold reason codes\n- [AI-Fleet-Coordinator#2549] (inst
+ inct\, minimax) Validate and preserve licensed — bridge composition\n- [
+ BotFleet#2209] (claude) Stop cron-tracking the auto-merge sweep and deboun
+ ce sub-hourly monitors (AFC-626)\n- [BotFleet#2211] (chatgpt) Remove legac
+ y Seat MCP as a BotFleet option\n- [BotFleet#2212] (zcode) Produce The Con
+ trol-Disposition Receipt From A Measured Verdict (Refs BF-2701)\n- [BotFle
+ et#2214] (muse-assist\, gemini) [ROB] Add — Flash Lite as a BotFleet mod
+ el option\n- [BotFleet#2216] (instinct) ensure-standing-testers: empty tes
+ ter list still assigns the build to the external group\n- [Congress.Trade#
+ 3202] (instinct) iOS: conflict faces\, Trades tab header paging\, one back
+ ground\, cream cards\, top fade\n- [ContactLogo#349] (claude) Stop cron-tr
+ acking the auto-merge sweep and debounce sub-hourly monitors (AFC-626)\n- 
+ [DealDex#610] (claude) Stop cron-tracking the auto-merge sweep and debounc
+ e sub-hourly monitors (AFC-626)\n- [FleetLink#222] (instinct) Ship every i
+ OS build to the external TestFlight group\n- [HogHunter#397] (claude) Stop
+  cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-
+ 626)\n- [Socratic-Trade#5471] (zcode\, ag) ST-4668 — roadmap takeover: r
+ econciliation against main\, batch plan\, owner decisions\n- [Socratic-Tra
+ de#5474] (instinct) Promote each shipped build into the external TestFligh
+ t group\n- [Usage-Monitor#2083] (codex) Do Not Merge: Use Synced ASC Crede
+ ntials\n- [codecaps#554] (chatgpt) Add Alibaba and Xiaomi MiMo Token Plan 
+ quota readers\n- [codecaps#555] (chatgpt) Add Alibaba Coding Plan quota mo
+ nitoring for Qwen Code
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-25
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -36,7 +61,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-24@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261124
 DTEND;VALUE=DATE:20261125
 SUMMARY:Fleet: 82 merged · 0 opened · 0 closed
@@ -102,7 +127,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-23@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261123
 DTEND;VALUE=DATE:20261124
 SUMMARY:Fleet: 89 merged · 0 opened · 0 closed
@@ -176,7 +201,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-22@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261122
 DTEND;VALUE=DATE:20261123
 SUMMARY:Fleet: 72 merged · 0 opened · 0 closed
@@ -245,7 +270,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-21@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261121
 DTEND;VALUE=DATE:20261122
 SUMMARY:Fleet: 114 merged · 0 opened · 0 closed
@@ -308,7 +333,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-20@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261121
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -372,7 +397,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
 SUMMARY:Fleet: 58 merged · 0 opened · 0 closed
@@ -438,7 +463,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -509,7 +534,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -551,7 +576,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -608,7 +633,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -669,7 +694,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -730,7 +755,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -788,7 +813,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -852,7 +877,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -920,7 +945,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -984,7 +1009,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 93 merged · 0 opened · 0 closed
@@ -1043,7 +1068,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -1098,7 +1123,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 55 merged · 0 opened · 0 closed
@@ -1151,7 +1176,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 48 merged · 0 opened · 0 closed
@@ -1206,7 +1231,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
@@ -1256,7 +1281,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261125T072725Z
+DTSTAMP:20261125T095610Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed

@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-25 01:27 CST · timezone America/Chicago_
+_Generated 2026-11-25 03:56 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,17 +11,34 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-25
 
-*10 PRs merged · 0 issues opened · 0 issues closed*
+*27 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** `Codex` [#2412](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2412): Do Not Merge: Bind Muster’s Native Reader To Its Declared Grant _(by jaywedgeworth22)_
+- **AFC** `Claude` [#2531](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2531): fix(janitor): give the Hog Hunter phase a time budget inside its watchdog _(by jaywedgeworth22)_
+- **AFC** `Claude` [#2534](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2534): Muster: A Test Wake Result That Cannot Be Read Is Never Shown As A Pass _(by jaywedgeworth22)_
 - **AFC** `Claude` [#2537](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2537): Spell Every Channel Default Work-In-Progress _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2539](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2539): Relay: retire the per-seat action allowlist so every feature works for every seat _(by jaywedgeworth22)_
 - **AFC** `ChatGPT` [#2542](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2542): Remove legacy Seat MCP from Muster controls _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2544](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2544): Preserve durable alert outcomes and confirmed conflict pairs _(by jaywedgeworth22)_
+- **AFC** [#2545](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2545): [ROB] AFC-882 Follow-On: Shard The Simple-Tools Discover And Raise The Step Limits _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2546](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2546): Use live registry context for native qualification _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2547](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2547): Mint workflows:write for wf_branch_update moves touching the workflows dir _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2548](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2548): Preserve bounded origin-binding hold reason codes _(by jaywedgeworth22)_
+- **AFC** `Instinct` `MiniMax` [#2549](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2549): Validate and preserve licensed — bridge composition _(by jaywedgeworth22)_
+- **BF** `Claude` [#2209](https://github.com/Simple-With-Us/BotFleet/pull/2209): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
 - **BF** `ChatGPT` [#2211](https://github.com/Simple-With-Us/BotFleet/pull/2211): Remove legacy Seat MCP as a BotFleet option _(by jaywedgeworth22)_
+- **BF** `Z Code` [#2212](https://github.com/Simple-With-Us/BotFleet/pull/2212): Produce The Control-Disposition Receipt From A Measured Verdict (Refs BF-2701) _(by jaywedgeworth22)_
+- **BF** `Muse Assist` `Gemini` [#2214](https://github.com/Simple-With-Us/BotFleet/pull/2214): [ROB] Add — Flash Lite as a BotFleet model option _(by jaywedgeworth22)_
+- **BF** `Instinct` [#2216](https://github.com/Simple-With-Us/BotFleet/pull/2216): ensure-standing-testers: empty tester list still assigns the build to the external group _(by jaywedgeworth22)_
+- **CT** `Instinct` [#3202](https://github.com/Simple-With-Us/Congress.Trade/pull/3202): iOS: conflict faces, Trades tab header paging, one background, cream cards, top fade _(by jaywedgeworth22)_
+- **CL** `Claude` [#349](https://github.com/Simple-With-Us/ContactLogo/pull/349): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
+- **DD** `Claude` [#610](https://github.com/Simple-With-Us/DealDex/pull/610): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
+- **FL** `Instinct` [#222](https://github.com/Simple-With-Us/FleetLink/pull/222): Ship every iOS build to the external TestFlight group _(by jaywedgeworth22)_
+- **HH** `Claude` [#397](https://github.com/Simple-With-Us/HogHunter/pull/397): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
 - **ST** `Z Code` `Antigravity` [#5471](https://github.com/Simple-With-Us/Socratic-Trade/pull/5471): ST-4668 — roadmap takeover: reconciliation against main, batch plan, owner decisions _(by jaywedgeworth22)_
+- **ST** `Instinct` [#5474](https://github.com/Simple-With-Us/Socratic-Trade/pull/5474): Promote each shipped build into the external TestFlight group _(by jaywedgeworth22)_
 - **UM** `Codex` [#2083](https://github.com/Simple-With-Us/Usage-Monitor/pull/2083): Do Not Merge: Use Synced ASC Credentials _(by jaywedgeworth22)_
 - **CC** `ChatGPT` [#554](https://github.com/Simple-With-Us/codecaps/pull/554): Add Alibaba and Xiaomi MiMo Token Plan quota readers _(by jaywedgeworth22)_
 - **CC** `ChatGPT` [#555](https://github.com/Simple-With-Us/codecaps/pull/555): Add Alibaba Coding Plan quota monitoring for Qwen Code _(by jaywedgeworth22)_
