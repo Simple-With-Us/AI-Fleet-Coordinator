@@ -586,9 +586,7 @@ def source_event(value, wake):
     import math
 
     base = {"repo", "number", "kind", "event_id", "epoch", "source_epoch"}
-    if not isinstance(value, dict) or not (
-        set(value) == base or set(value) == base | {"members"}
-    ):
+    if not isinstance(value, dict) or not (set(value) == base or set(value) == base | {"members"}):
         return None
     repo, number, kind, event_id = (value.get(k) for k in ("repo", "number", "kind", "event_id"))
     if (

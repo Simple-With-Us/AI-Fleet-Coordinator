@@ -39,7 +39,7 @@ current-head completion.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .events import FINDINGS_MEMBER_LIMIT
 
@@ -56,8 +56,9 @@ def _source_instant(text: str) -> float:
     except ValueError:
         return float("-inf")
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
+
 
 KODY_LOGIN = "kody-ai[bot]"
 SENTRY_LOGIN = "sentry[bot]"

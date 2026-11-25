@@ -17,10 +17,7 @@ def snapshot(reader, repo, number, epoch):
     reviews = reader.reviews(repo, number)
     checks = reader.check_runs(repo, head)
     comments = reader.review_comments(repo, number)
-    if any(
-        type(row.get("id")) is not int or row["id"] < 1
-        for row in reviews + checks + comments
-    ):
+    if any(type(row.get("id")) is not int or row["id"] < 1 for row in reviews + checks + comments):
         raise ValueError("boundary-source-id")
     return dict(
         repo=repo,

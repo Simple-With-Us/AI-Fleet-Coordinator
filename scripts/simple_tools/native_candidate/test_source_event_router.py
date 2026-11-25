@@ -72,9 +72,7 @@ class FindingsSourceIdentityTests(unittest.TestCase):
             source_epoch=1795222802.0,
             members=self.members,
         )
-        wake_id = (
-            "ra-" + hashlib.sha256(b"owner/repo#12:findings_added:c302:e0").hexdigest()[:24]
-        )
+        wake_id = "ra-" + hashlib.sha256(b"owner/repo#12:findings_added:c302:e0").hexdigest()[:24]
         payload = dict(
             wake_id=wake_id,
             message_id=55,
@@ -91,9 +89,7 @@ class FindingsSourceIdentityTests(unittest.TestCase):
     def test_proof_membership_isolated_from_caller_mutation(self):
         proof = W.source_event(self.row, self.wake)
         self.row["members"][0]["head"] = "b" * 40
-        self.row["members"].append(
-            {"id": 999, "at": "2026-11-21T01:00:03Z", "head": "b" * 40}
-        )
+        self.row["members"].append({"id": 999, "at": "2026-11-21T01:00:03Z", "head": "b" * 40})
         self.assertEqual(
             proof["members"],
             [
