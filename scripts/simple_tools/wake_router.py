@@ -1689,7 +1689,10 @@ class Router:
                 and self._route_check_stamp is not None
                 and self.clock() - self._route_check_stamp < ROUTE_CHECK_DEBOUNCE_S
             ):
-                return 200, {**answer, "check": {**self._route_check, "exit": self._route_check_exit}}
+                return 200, {
+                    **answer,
+                    "check": {**self._route_check, "exit": self._route_check_exit},
+                }
             self._route_checking = True
         try:
             dest = str(self.config.get("mac_ssh") or "").strip()
