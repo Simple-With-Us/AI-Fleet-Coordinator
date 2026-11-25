@@ -698,13 +698,29 @@ function run() {
       Application('Notes').delete(target);
       return wantId;
     }
+    //  AppleEvents will not carry a body past a certain size back out of Notes, and a note
+    //  the fleet writer wrote can be that large.  The plaintext still reads, and the delete
+    //  guard reads the plaintext, so the fetch reads what it can and lets the guard decide.
+    //  A body that fails to read is an empty body, never a fabricated one.
+    var body = '';
+    try {
+      body = target.body();
+    } catch (bodyError) {
+      body = '';
+    }
+    var plaintext = '';
+    try {
+      plaintext = target.plaintext();
+    } catch (plaintextError) {
+      plaintext = '';
+    }
     return ascii(JSON.stringify({
       title: target.name(),
       id: target.id(),
       created: iso(target.creationDate()),
       modified: iso(target.modificationDate()),
-      body: target.body(),
-      plaintext: target.plaintext()
+      body: body,
+      plaintext: plaintext
     }));
   }
   if (env('APPLE_NOTES_JXA_MODE') === 'list') {
