@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from git_relay import patch_secretscan as scanner
 from git_relay import reviewed_preservation as candidate
-from git_relay import secret_scan
 
 
 class ReviewedPreservationTests(unittest.TestCase):
