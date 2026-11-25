@@ -133,13 +133,15 @@ def store_paths(env: Mapping[str, str]) -> list[Path]:
     ]
 
 
-def find_conversation_record(
+def find_conversation_record_with_root(
     env: Mapping[str, str], session_id: str
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Read one conversation row from the summaries database, or (None, reason).
+) -> tuple[dict[str, Any] | None, str | None, Path | None]:
+    """Read one conversation row, its error and the root that served it.
 
-    Returns (record, None) on success, (None, None) if not found in any store, or
-    (None, error_code) if a database error occurred.
+    Returns (record, None, root) on success, (None, None, None) if not found in
+    any store, or (None, error_code, None) if a database error occurred.  The
+    data check probes the very root the row came from (AFC-840 review):  a
+    second scan could watch the row vanish and fail open.
     """
     for db in store_paths(env):
         if not db.is_file():
@@ -154,13 +156,13 @@ def find_conversation_record(
                 if "conversation_id" not in cols:
                     continue
                 if "not_fully_idle" not in cols:
-                    return None, "schema-missing-idle"
+                    return None, "schema-missing-idle", None
                 if "killed" not in cols:
-                    return None, "schema-missing-killed"
+                    return None, "schema-missing-killed", None
                 if "parent_conversation_id" not in cols:
-                    return None, "schema-missing-parent"
+                    return None, "schema-missing-parent", None
                 if "nesting_depth" not in cols:
-                    return None, "schema-missing-depth"
+                    return None, "schema-missing-depth", None
                 fields = [
                     "conversation_id",
                     "not_fully_idle",
@@ -189,38 +191,22 @@ def find_conversation_record(
                     }
                     for idx, col in enumerate(fields[5:], start=5):
                         data[col] = row[idx]
-                    return data, None
+                    return data, None, db.parent
             finally:
                 conn.close()
         except sqlite3.OperationalError:
-            return None, "db-operational-error"
+            return None, "db-operational-error", None
         except (sqlite3.Error, OSError):
-            return None, "db-error"
-    return None, None
+            return None, "db-error", None
+    return None, None, None
 
 
-def _matching_root(env: Mapping[str, str], session_id: str) -> Path | None:
-    """The product root whose summaries database holds this conversation's row.
-
-    The data check probes only this root (AFC-840 review):  another product's
-    store says nothing about whether this conversation can be loaded."""
-    for db in store_paths(env):
-        if not db.is_file():
-            continue
-        try:
-            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=1.0)
-            try:
-                row = conn.execute(
-                    "SELECT 1 FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
-                    (session_id,),
-                ).fetchone()
-            finally:
-                conn.close()
-        except (sqlite3.Error, OSError):
-            continue
-        if row is not None:
-            return db.parent
-    return None
+def find_conversation_record(
+    env: Mapping[str, str], session_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read one conversation row from the summaries database, or (None, reason)."""
+    record, error, _root = find_conversation_record_with_root(env, session_id)
+    return record, error
 
 
 def _data_here(root: Path, session_id: str) -> tuple[bool, bool, bool]:
@@ -649,7 +635,7 @@ def deliver_local(
                 if stale is not None:
                     return stale
 
-            rec, db_err = find_conversation_record(env, session_id)
+            rec, db_err, store_root = find_conversation_record_with_root(env, session_id)
             if db_err is not None:
                 return WR.Delivery("failed", "resume", code="store-%s" % db_err)
             if rec is None:
@@ -668,7 +654,7 @@ def deliver_local(
 
             # Strict before launch (AFC-840):  a summary row whose conversation
             # data is gone would make the CLI run the turn in a new chat.
-            if conversation_data_missing(env, session_id, _matching_root(env, session_id)):
+            if conversation_data_missing(env, session_id, store_root):
                 return WR.Delivery("refused", "resume", code="conversation-data-missing")
 
             child_env = _child_env(env)

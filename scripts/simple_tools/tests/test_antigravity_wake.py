@@ -636,7 +636,9 @@ class TestAntigravityDeliverLocal(BaseTest):
 
     def test_deliver_local_db_error_fails_bounded_retry(self) -> None:
         with mock.patch.object(
-            AGW, "find_conversation_record", return_value=(None, "db-operational-error")
+            AGW,
+            "find_conversation_record_with_root",
+            return_value=(None, "db-operational-error", None),
         ):
             delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_VALID, self.wake())
             self.assertEqual(
