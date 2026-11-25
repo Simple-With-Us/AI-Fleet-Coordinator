@@ -35,8 +35,7 @@
       {"name": "agy-acp", "actions": ["start", "stop", "restart"]},
       {"name": "grok-leader", "actions": ["start", "stop", "restart"]},
       {"name": "grok-acp", "actions": ["start", "stop", "restart"]},
-      {"name": "clutch-web", "actions": ["start", "stop", "restart"]},
-      {"name": "seat-mcp", "actions": ["start", "stop", "restart"]}
+      {"name": "clutch-web", "actions": ["start", "stop", "restart"]}
     ]
   },
   "server": {
