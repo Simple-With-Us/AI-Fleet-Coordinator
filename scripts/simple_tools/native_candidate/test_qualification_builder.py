@@ -98,13 +98,9 @@ class BuilderTests(unittest.TestCase):
                 self.assertTrue(native[1][1]["native_delivery_review_only"])
                 self.assertEqual(
                     native[1][3],
-                    builder.notification(
-                        head, "t-" + builder.digest({"wake_key": "ra-new"})[:16]
-                    ),
+                    builder.notification(head, "t-" + builder.digest({"wake_key": "ra-new"})[:16]),
                 )
-                self.assertEqual(
-                    config, {"workspace": tmp, "native_delivery_review_only": False}
-                )
+                self.assertEqual(config, {"workspace": tmp, "native_delivery_review_only": False})
                 self.assertIs(p.exclude, base.exclude)
                 p.deliver_turn(target, head, (head,), "t-1234567890123456")
                 self.assertEqual(calls[-1], "base-turn")
@@ -125,9 +121,7 @@ class BuilderTests(unittest.TestCase):
             self.assertNotIn(word, text)
 
     def test_launcher_changes_only_zcode_builder_and_no_recursive_base(self):
-        launch = importlib.import_module(
-            "native_fixture_package.native_qualification_launch"
-        )
+        launch = importlib.import_module("native_fixture_package.native_qualification_launch")
         original = lambda *a, **k: "original"
         zcode = SimpleNamespace(router_platform=original)
         candidate = SimpleNamespace()
@@ -140,9 +134,7 @@ class BuilderTests(unittest.TestCase):
             return ("qualified", "q", "driver", "custody")
 
         launch.install(zcode, candidate, SimpleNamespace(build=build), spec)
-        self.assertEqual(
-            zcode.router_platform({"HOME": "/fixture"}, {"existing": 1}), "qualified"
-        )
+        self.assertEqual(zcode.router_platform({"HOME": "/fixture"}, {"existing": 1}), "qualified")
         self.assertEqual(len(calls), 1)
         self.assertIs(calls[0][0][3], spec)
 
@@ -151,13 +143,9 @@ class BuilderTests(unittest.TestCase):
         import ast
 
         tree = ast.parse(source)
-        build = next(
-            n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build"
-        )
+        build = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build")
         native = next(
-            n
-            for n in build.body
-            if isinstance(n, ast.FunctionDef) and n.name == "native"
+            n for n in build.body if isinstance(n, ast.FunctionDef) and n.name == "native"
         )
         captured = []
         now = [101]
@@ -184,9 +172,7 @@ class BuilderTests(unittest.TestCase):
             "fresh": lambda *a: True,
         }
         exec(
-            compile(
-                ast.Module(body=[native], type_ignores=[]), "<native-deadline>", "exec"
-            ),
+            compile(ast.Module(body=[native], type_ignores=[]), "<native-deadline>", "exec"),
             env,
         )
         env["native"](
@@ -241,9 +227,7 @@ class BuilderTests(unittest.TestCase):
                     selected = target
                     q.clock = lambda: 101
                     if case == "unrelated":
-                        selected = SimpleNamespace(
-                            **{**vars(target), "session_id": "sess_other"}
-                        )
+                        selected = SimpleNamespace(**{**vars(target), "session_id": "sess_other"})
                     if case == "expired":
                         q.clock = lambda: 200
                     if case == "later":
@@ -282,13 +266,9 @@ class BuilderTests(unittest.TestCase):
         import ast
 
         tree = ast.parse(Path(builder.__file__).read_text())
-        build = next(
-            n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build"
-        )
+        build = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build")
         native = next(
-            n
-            for n in build.body
-            if isinstance(n, ast.FunctionDef) and n.name == "native"
+            n for n in build.body if isinstance(n, ast.FunctionDef) and n.name == "native"
         )
         now = [1000000]
         captured = []
@@ -315,9 +295,7 @@ class BuilderTests(unittest.TestCase):
             "fresh": lambda *a: True,
         }
         exec(
-            compile(
-                ast.Module(body=[native], type_ignores=[]), "<event-driven>", "exec"
-            ),
+            compile(ast.Module(body=[native], type_ignores=[]), "<event-driven>", "exec"),
             env,
         )
         env["native"](
@@ -339,9 +317,7 @@ class BuilderTests(unittest.TestCase):
 
                 class Live(Mapping):
                     def __getitem__(self, key):
-                        return (
-                            owner.registry[key] if key in owner.registry else raw[key]
-                        )
+                        return owner.registry[key] if key in owner.registry else raw[key]
 
                     def __iter__(self):
                         return iter(set(raw) | set(owner.registry))
@@ -378,9 +354,7 @@ class BuilderTests(unittest.TestCase):
                 return SimpleNamespace()
 
             adapter = SimpleNamespace(
-                router_platform=lambda *a, **kw: Platform(
-                    lambda *a: None, lambda *a: None
-                ),
+                router_platform=lambda *a, **kw: Platform(lambda *a: None, lambda *a: None),
                 state_dir=lambda e: Path(tmp),
                 _recheck=recheck,
                 _session_binding=lambda *a: ("ok", row),
@@ -400,9 +374,7 @@ class BuilderTests(unittest.TestCase):
                 patch.object(builder, "Qualification", side_effect=qualify),
                 patch.object(builder, "fresh", return_value=True),
             ):
-                platform, qualifier, driver, custody = builder.build(
-                    adapter, raw, config, spec
-                )
+                platform, qualifier, driver, custody = builder.build(adapter, raw, config, spec)
                 self.assertTrue(custody(target, tmp))
                 captured["native"](
                     target, SimpleNamespace(wake_id="ra-fresh"), "notification", "turn"
@@ -420,9 +392,7 @@ class BuilderTests(unittest.TestCase):
                 config.registry = {}
                 self.assertFalse(custody(target, tmp))
                 config.registry = {"address": "registry-two", "credential": "scope-two"}
-                self.assertFalse(
-                    custody(SimpleNamespace(**{**vars(target), "generation": 3}), tmp)
-                )
+                self.assertFalse(custody(SimpleNamespace(**{**vars(target), "generation": 3}), tmp))
                 row["directory"] = "/wrong"
                 self.assertFalse(custody(target, tmp))
                 self.assertEqual(raw, {"HOME": tmp})
@@ -463,9 +433,9 @@ class BuilderTests(unittest.TestCase):
                 self.assertIsInstance(context, wake_settings.RegistryEnv)
 
                 def verify(binding):
-                    return context.get(registry_api.URL_ENV) == settings.current[
-                        0
-                    ] and bool(context.get(registry_api.KEY_VAR))
+                    return context.get(registry_api.URL_ENV) == settings.current[0] and bool(
+                        context.get(registry_api.KEY_VAR)
+                    )
 
                 return kw["native_driver"]({}, verify=verify)
 
@@ -474,9 +444,7 @@ class BuilderTests(unittest.TestCase):
                 return SimpleNamespace()
 
             adapter = SimpleNamespace(
-                router_platform=lambda *a, **kw: Platform(
-                    lambda *a: None, lambda *a: None
-                ),
+                router_platform=lambda *a, **kw: Platform(lambda *a: None, lambda *a: None),
                 state_dir=lambda e: Path(tmp),
                 _recheck=lambda *a: None,
                 _session_binding=lambda *a: (
