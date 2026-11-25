@@ -42,7 +42,7 @@ class InstallTests(ListenerHarness):
     def install_env(self):
         return self.env(SIMPLE_TOOLS_STATE_DIR=None)
 
-    def test_install_writes_the_plist_logs_and_a_sample_config_and_prints_launchctl(self) -> None:
+    def test_install_writes_a_sample_config_and_no_launchagent(self) -> None:
         for name in ("Codex", "MM", "BF-Builder"):
             write_rc(
                 self.secrets_dir / ("%s-zuliprc" % name),
@@ -54,32 +54,11 @@ class InstallTests(ListenerHarness):
             "daemon", "install", "--python", sys.executable, env=self.install_env()
         )
         self.assertEqual(result.code, 0, result.err)
-        plist_file = self.home / "Library" / "LaunchAgents" / "com.jay.operator.plist"
-        data = plistlib.loads(plist_file.read_bytes())
-        self.assertEqual(data["Label"], "com.jay.operator")
-        self.assertEqual(
-            data["ProgramArguments"],
-            [sys.executable, str(self.home / ".local/bin/simple-chat"), "daemon", "run"],
-        )
-        self.assertTrue(data["KeepAlive"])
-        self.assertEqual(data["ThrottleInterval"], 30)
-        self.assertEqual(
-            data["ProcessType"], "Standard"
-        )  # Background starves at startup under a heavy load
-        self.assertEqual(data["StandardOutPath"], str(self.home / ".simple-tools/logs/launchd.out"))
-        self.assertEqual(data["StandardErrorPath"], str(self.home / ".simple-tools/logs/launchd.err"))
-        # Check the environment's own names and values, not the serialized text: the
-        # random temp-dir name in HOME and PATH can contain "KEY" by chance.
-        env = data["EnvironmentVariables"]
-        for env_name, env_value in env.items():
-            for secretish in ("KEY", "SECRET", "TOKEN", "PASSWORD"):
-                self.assertNotIn(secretish, env_name.upper())
-            self.assertNotIn("k" * 8, str(env_value))
-        for name in ("launchd.out", "launchd.err"):
-            self.assertEqual(mode_of(self.home / ".simple-tools/logs" / name), 0o600)
-        self.assertEqual(mode_of(self.home / ".simple-tools/logs"), 0o700)
-        self.assertIn("launchctl bootstrap gui/%d %s" % (os.getuid(), plist_file), result.out)
-        self.assertIn("does not run launchctl", result.out)
+        # The Mac listener is retired (AFC-836):  install writes no LaunchAgent,
+        # no launchd logs and no bootstrap line; the sample config is the only write.
+        self.assertFalse((self.home / "Library").exists())
+        self.assertIn("The Mac listener is retired", result.out)
+        self.assertNotIn("launchctl bootstrap", result.out)
         sample = (self.home / ".simple-tools" / "listener.toml").read_text()
         self.assertEqual(mode_of(self.home / ".simple-tools" / "listener.toml"), 0o600)
         # One listener, on the server, holds every seat (owner, Tue, Nov 10):  the Mac sample
@@ -102,8 +81,8 @@ class InstallTests(ListenerHarness):
         again = self.run_cli(
             "daemon", "install", "--python", sys.executable, env=self.install_env()
         )
-        self.assertIn("LaunchAgent already current", again.out)
         self.assertIn("config already present", again.out)
+        self.assertFalse((self.home / "Library").exists())
 
     def test_dry_run_and_uninstall(self) -> None:
         result = self.run_cli("daemon", "install", "--dry-run", env=self.install_env())
@@ -112,6 +91,10 @@ class InstallTests(ListenerHarness):
         self.assertFalse((self.home / "Library").exists())
         self.assertFalse((self.home / ".simple-tools").exists())
         self.run_cli("daemon", "install", "--python", sys.executable, env=self.install_env())
+        # A stale retired agent, as an old install left it:  uninstall removes it.
+        stale = self.home / "Library/LaunchAgents/com.jay.operator.plist"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"stale")
         result = self.run_cli("daemon", "uninstall", env=self.install_env())
         self.assertIn(
             "launchctl bootout gui/%d/com.jay.operator" % os.getuid(), result.out

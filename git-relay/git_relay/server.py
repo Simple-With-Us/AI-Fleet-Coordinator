@@ -422,17 +422,18 @@ class Relay:
         *,
         operator_bootstrap: bool = False,
     ) -> tuple[int, dict]:
-        if action == "service_read" and self.service_read_token is not None:
+        if action == "service_read" and service_read.configured_bearer(self, token):
             # The alert service's read lane:  its own bearer, no seat policy,
             # fixed verbs and an explicit repo allowlist.  It never mints for
             # a caller-chosen scope and never returns a token.
             #
-            # A configured lane owns the action outright:  the lane's own
-            # credential is the only one it accepts, and it answers every
-            # other bearer with its ordinary unauthenticated refusal.  A
-            # relay with no lane configured leaves the action to the normal
-            # policy path, where the seat's own grant, repository scope and
-            # quota apply.
+            # Only the configured bearer takes the lane.  Every other
+            # bearer, seat or stranger, falls through to the normal policy
+            # path below, where the seat's own grant, repository scope and
+            # quota apply:  an ordinary seat reader keeps its authenticated
+            # dispatch (and its own refusals) while the lane is configured.
+            # A relay with no lane configured leaves every bearer on that
+            # same path.
             return service_read.lane(self, token, args)
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.

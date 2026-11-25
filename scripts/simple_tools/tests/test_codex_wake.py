@@ -810,6 +810,29 @@ class CodexWakeTests(unittest.TestCase):
                     excluded = platform.exclude([server_target, mac_target])
                 self.assertEqual(excluded, {picked.session_id})
 
+    def test_the_exclusion_follows_the_host_the_settings_name_now(self):
+        # The host is a fact the local file re-reads, so a refreshed host moves the
+        # delivery and the exclusion together:  the exclusion judges the rows of the
+        # host that is being delivered for, not the one named when the platform was built.
+        settings = {"local_host": "server", "mac_ssh": "test@example.test"}
+        platform = CW.router_platform(
+            {"HOME": self.tmp.name},
+            settings,
+            transport=self.transport,
+        )
+        server_target = TargetWithGeneration(SID, letter="BC", host="server", generation=7)
+        mac_target = TargetWithGeneration(SID2, letter="BD", host="mac", generation=7)
+        row = PLC.Thread(SID2, source="exec", originator="codex_exec", thread_source="user")
+        with patch.object(PLC, "thread_row", return_value=row):
+            before = platform.exclude([server_target, mac_target])
+        # The server is the delivering host, so its engine row is this host's to exclude.
+        self.assertEqual(before, {SID})
+        settings["local_host"] = "mac"
+        with patch.object(PLC, "thread_row", return_value=row):
+            after = platform.exclude([server_target, mac_target])
+        # The Mac is the delivering host now, so its engine row is the one excluded.
+        self.assertEqual(after, {SID2})
+
     def test_the_router_builds_its_native_transport_once_per_host(self):
         # The daemon transport holds the few-seconds status cache, so the router keeps the
         # one it built:  a second wake for the same host reuses it, and a host change in

@@ -226,6 +226,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/__init__.py",
         "scripts/fleet_rag/contribute_guard.py",
         "scripts/fleet_rag/core.py",
+        "scripts/fleet_rag/credential_gate.py",
         "scripts/fleet_rag/doctor.py",
         "scripts/fleet_rag/fleet_bearer.py",
         "scripts/fleet_rag/health.py",

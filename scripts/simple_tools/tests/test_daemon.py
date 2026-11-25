@@ -1990,6 +1990,9 @@ class LinearCommentsHealthTests(DaemonHarness):
         def __init__(self) -> None:
             self.stopped: str | None = None
             self.ticks = 0
+            self.worker = type(
+                "Worker", (), {"comments_created": 2, "comments_updated": 3}
+            )()
 
         def tick(self, client: Any = None) -> None:
             self.ticks += 1
@@ -2033,7 +2036,8 @@ class LinearCommentsHealthTests(DaemonHarness):
 
     def test_a_running_engine_reports_its_tick(self):
         daemon = self.armed()
-        running = {"state": "running", "last_tick": None, "errors": 0, "last_error": None}
+        running = {"state": "running", "last_tick": None, "errors": 0, "last_error": None,
+                   "created": 2, "updated": 3}
         self.assertEqual(daemon.status()["linear_comments"], running)
         daemon.tick()
         running["last_tick"] = daemon.clock.time()
@@ -2050,7 +2054,7 @@ class LinearCommentsHealthTests(DaemonHarness):
         daemon.tick()
         self.assertEqual(
             daemon.status()["linear_comments"],
-            {"state": "running", "last_tick": None, "errors": 1, "last_error": "value_error"},
+            {"state": "running", "last_tick": None, "errors": 1, "last_error": "value_error", "created": 2, "updated": 3},
         )
         (event,) = self.log_events("linear-comments-error")
         self.assertIn("PRIVATE-MARKER-TWO", event["error"], "the log keeps the message")
@@ -2073,7 +2077,7 @@ class LinearCommentsHealthTests(DaemonHarness):
         at = daemon.clock.time()
         self.assertEqual(
             daemon.status()["linear_comments"],
-            {"state": "stopped", "since": at, "last_tick": None, "errors": 0, "last_error": None},
+            {"state": "stopped", "since": at, "last_tick": None, "errors": 0, "last_error": None, "created": 2, "updated": 3},
         )
         # Seen once:  a later read keeps the first time.
         self.clock.advance(50)
