@@ -287,6 +287,8 @@ class AlertService:
         *,
         gate_seat: str,
         owner_provider=None,
+        coverage_provider=None,
+        coverage_reset=None,
         origin_binder=None,
         cancelled=None,
         message_poster=None,
@@ -304,6 +306,15 @@ class AlertService:
         self.bound_this_cycle = set()
         self.origins_this_cycle = {}
         self.owner_provider = owner_provider
+        # The receipt census' own coverage word ("complete"/"partial"), set
+        # by the provider after each enumeration.  Owners absent from a
+        # partial census are never iterated, so per-PR holds cannot speak
+        # for them:  coverage is reported here, at scan level, and it is
+        # never derived from the rows that did arrive.
+        self.coverage_provider = coverage_provider
+        # Opens a fresh scan each cycle (the provider accumulates coverage
+        # conservatively across every census read within one scan).
+        self.coverage_reset = coverage_reset
         self.origin_binder = origin_binder
         self.store = store
         self.gh = gh
@@ -335,6 +346,8 @@ class AlertService:
         self.bound_this_cycle = set()
         self.origins_this_cycle = {}
         self.binding_holds = {}
+        if self.coverage_reset is not None:
+            self.coverage_reset()
         owners = self.owner_provider() if self.owner_provider else load_owner_rows(self.owners_path)
         for row in owners:
             repo, number = row["repo"], int(row["number"])
@@ -436,6 +449,11 @@ class AlertService:
                 counts["events"] += 1
                 self._dispatch(row, event, link, counts)
         self._settle(counts, owners)
+        # Read coverage at the END of the scan, after every census read the
+        # cycle made (enumeration and binder lookups alike), so the cycle's
+        # own counts and the status snapshot describe the same scan.
+        if self.coverage_provider is not None:
+            counts["coverage"] = self.coverage_provider()
         return counts
 
     def _dispatch(self, owner: dict, event: dict, link: str, counts: dict, epoch: int = 0) -> None:
@@ -942,6 +960,9 @@ class AlertService:
         return {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "counts": self.store.counts(),
+            "coverage": (
+                self.coverage_provider() if self.coverage_provider is not None else "unknown"
+            ),
             "binding_holds": dict(self.binding_holds),
             "held": [
                 {

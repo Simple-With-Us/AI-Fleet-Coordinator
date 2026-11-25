@@ -44,14 +44,108 @@ class Wiring(unittest.TestCase):
     def test_protected_receipts_refuse_bad_census_and_wrong_repo(self):
         read = mock.Mock()
         provider = operator_loop.ProtectedReceipts(read, {REPO})
-        read._read.return_value = [dict(claimed_owner(), source="open_pr")]
+        read._read_full.return_value = {
+            "body": [dict(claimed_owner(), source="open_pr")],
+            "coverage": "complete",
+        }
         self.assertEqual(provider.lookup(REPO, 7)["number"], 7)
-        read._read.return_value = [dict(claimed_owner(), source="audit_backfill")]
+        read._read_full.return_value = {
+            "body": [dict(claimed_owner(), source="audit_backfill")],
+            "coverage": "complete",
+        }
         with self.assertRaises(Exception):
             provider.rows()
-        read._read.return_value = [dict(claimed_owner(), source="open_pr", repo="other/repo")]
+        read._read_full.return_value = {
+            "body": [dict(claimed_owner(), source="open_pr", repo="other/repo")],
+            "coverage": "complete",
+        }
         with self.assertRaises(Exception):
             provider.rows()
+
+    def test_partial_coverage_survives_into_cycle_status_without_stopping_alerts(self):
+        # A partial census still dispatches for its confirmed owners, but the
+        # partial word reaches the cycle counts and the status snapshot:
+        # scan status can never read as complete coverage.
+        with tempfile.TemporaryDirectory() as d:
+            read = mock.Mock()
+            read._read_full.return_value = {
+                "body": [dict(claimed_owner(), source="open_pr")],
+                "coverage": "partial",
+            }
+            receipts = operator_loop.ProtectedReceipts(read, {REPO})
+            router = FakeRouter()
+            bind = mock.Mock(return_value=verified_origin())
+            runner = service.AlertService(
+                events.EventStore(str(Path(d) / "events.jsonl")),
+                FakeRead(reviews=[kody_review(51)]),
+                router,
+                "",
+                {"claude": "CLAUDE"},
+                {REPO},
+                gate_seat="CLAUDE",
+                message_poster=lambda owner, event, link: 123,
+                owner_provider=receipts.rows,
+                coverage_provider=lambda: receipts.coverage,
+                coverage_reset=receipts.begin_scan,
+                origin_binder=bind,
+            )
+            counts = runner.cycle()
+            self.assertEqual(counts["submitted"], 1)
+            self.assertEqual(counts["coverage"], "partial")
+            self.assertEqual(runner.status_snapshot()["coverage"], "partial")
+            # The provider's own word stays partial across lookups until an
+            # explicitly complete census arrives.
+            self.assertEqual(receipts.coverage, "partial")
+            read._read_full.return_value = {
+                "body": [dict(claimed_owner(), source="open_pr")],
+                "coverage": "complete",
+            }
+            counts = runner.cycle()
+            self.assertEqual(counts["coverage"], "complete")
+            self.assertEqual(runner.status_snapshot()["coverage"], "complete")
+
+    def test_missing_or_unrecognized_coverage_marker_is_never_complete(self):
+        for marker in (None, "partial", "complet", {"weird": 1}):
+            with self.subTest(marker=marker):
+                read = mock.Mock()
+                answer = {"body": [dict(claimed_owner(), source="open_pr")]}
+                if marker is not None:
+                    answer["coverage"] = marker
+                read._read_full.return_value = answer
+                receipts = operator_loop.ProtectedReceipts(read, {REPO})
+                rows = receipts.rows()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(receipts.coverage, "partial")
+        read = mock.Mock()
+        read._read_full.return_value = {
+            "body": [dict(claimed_owner(), source="open_pr")],
+            "coverage": "complete",
+        }
+        receipts = operator_loop.ProtectedReceipts(read, {REPO})
+        # Conservative from construction, before the first census arrives.
+        self.assertEqual(receipts.coverage, "partial")
+        receipts.rows()
+        self.assertEqual(receipts.coverage, "complete")
+
+    def test_snapshot_reports_unknown_coverage_without_a_provider(self):
+        # The owners_path mode has no census provider:  the status surface
+        # says "unknown", never an implied complete.
+        with tempfile.TemporaryDirectory() as d:
+            router = FakeRouter()
+            runner = service.AlertService(
+                events.EventStore(str(Path(d) / "events.jsonl")),
+                FakeRead(reviews=[kody_review(51)]),
+                router,
+                "",
+                {"claude": "CLAUDE"},
+                {REPO},
+                gate_seat="CLAUDE",
+                message_poster=lambda owner, event, link: 123,
+                owner_provider=lambda: [claimed_owner()],
+                origin_binder=mock.Mock(return_value=verified_origin()),
+            )
+            runner.cycle()
+            self.assertEqual(runner.status_snapshot()["coverage"], "unknown")
 
     def test_operator_start_off_is_inert_and_active_requires_canonical_registry(self):
         self.assertIsNone(
@@ -311,3 +405,88 @@ class Prerequisite(unittest.TestCase):
                 operator_send=mock.Mock(),
                 destination_for_origin=mock.Mock(),
             )
+
+
+class ScanCoverageLifecycle(unittest.TestCase):
+    def _binder(self, receipts, owner):
+        registry = mock.Mock(
+            return_value=dict(
+                found=True,
+                platform="claude",
+                seat="CLAUDE",
+                native_session_id=owner["origin_session_claim"],
+                letter=owner["origin_letter_claim"],
+                generation=owner["origin_generation_claim"],
+                verified_host="server",
+                profile_scope="fixture",
+                state="active",
+            )
+        )
+        binder = operator_loop.RegistryOriginBinder(
+            receipts,
+            registry,
+            {"claude": "CLAUDE"},
+            {"CLAUDE": "claude"},
+        )
+        return registry, binder
+
+    def _runner(self, d, receipts, binder):
+        return service.AlertService(
+            events.EventStore(str(Path(d) / "events.jsonl")),
+            FakeRead(reviews=[kody_review(51)]),
+            FakeRouter(),
+            "",
+            {"claude": "CLAUDE"},
+            {REPO},
+            gate_seat="CLAUDE",
+            message_poster=mock.Mock(return_value=123),
+            owner_provider=receipts.rows,
+            coverage_provider=lambda: receipts.coverage,
+            coverage_reset=receipts.begin_scan,
+            origin_binder=binder.bind,
+        )
+
+    def test_complete_lookup_never_repairs_a_partial_enumeration(self):
+        # Enumeration answers partial; the later binder lookup answers
+        # complete.  Coverage belongs to the scan:  a complete read must not
+        # overwrite a partial one inside the same scan.
+        with tempfile.TemporaryDirectory() as d:
+            owner = dict(claimed_owner(), source="open_pr", corr="fixture-create")
+            read = mock.Mock()
+            read._read_full.side_effect = [
+                {"body": [owner], "coverage": "partial"},
+                {"body": [owner], "coverage": "complete"},
+            ]
+            receipts = operator_loop.ProtectedReceipts(read, {REPO})
+            _, binder = self._binder(receipts, owner)
+            runner = self._runner(d, receipts, binder)
+            counts = runner.cycle()
+            self.assertEqual(counts["coverage"], "partial")
+            self.assertEqual(receipts.coverage, "partial")
+            self.assertEqual(runner.status_snapshot()["coverage"], "partial")
+            # The next cycle opens a fresh scan, which can prove complete.
+            read._read_full.side_effect = None
+            read._read_full.return_value = {"body": [owner], "coverage": "complete"}
+            counts = runner.cycle()
+            self.assertEqual(counts["coverage"], "complete")
+            self.assertEqual(runner.status_snapshot()["coverage"], "complete")
+
+    def test_failed_lookup_marks_a_complete_enumeration_partial(self):
+        # Enumeration answers complete; the later binder lookup reads
+        # malformed protected data.  The failure must mark the scan partial
+        # instead of leaving the earlier complete standing.
+        with tempfile.TemporaryDirectory() as d:
+            owner = dict(claimed_owner(), source="open_pr", corr="fixture-create")
+            read = mock.Mock()
+            read._read_full.side_effect = [
+                {"body": [owner], "coverage": "complete"},
+                {"body": {"not": "a census"}, "coverage": "complete"},
+            ]
+            receipts = operator_loop.ProtectedReceipts(read, {REPO})
+            _, binder = self._binder(receipts, owner)
+            runner = self._runner(d, receipts, binder)
+            counts = runner.cycle()
+            self.assertEqual(counts["held"], 1)
+            self.assertEqual(counts["coverage"], "partial")
+            self.assertEqual(receipts.coverage, "partial")
+            self.assertEqual(runner.status_snapshot()["coverage"], "partial")

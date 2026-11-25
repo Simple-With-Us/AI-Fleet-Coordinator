@@ -49,6 +49,12 @@ class ServiceReadClient:
         self._opener = opener
 
     def _read(self, payload: dict):
+        return self._read_full(payload)["body"]
+
+    def _read_full(self, payload: dict) -> dict:
+        """The whole service_read answer:  body plus lane metadata such as the
+        explicit coverage marker.  Consumers that only need the body use
+        _read;  anyone reporting completeness must read the marker here."""
         token = self._token()
         if not token:
             raise GithubReadError(-1, "service_read:no-credential")
@@ -65,7 +71,7 @@ class ServiceReadClient:
             raise GithubReadError(-2, "service_read:%s" % type(exc).__name__) from exc
         if not isinstance(answer, dict) or "body" not in answer:
             raise GithubReadError(-2, "service_read:malformed-answer")
-        return answer["body"]
+        return answer
 
     def _paged(self, verb: str, repo: str, number: int, watermark: int = 0) -> list:
         """Newest-first pages until the watermark id (exclusive) is reached.

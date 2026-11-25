@@ -22,23 +22,56 @@ class ProtectedReceipts:
     def __init__(self, reader, repos):
         self.reader = reader
         self.repos = tuple(repos)
+        # Conservative until every repo answers with an explicit complete
+        # marker:  a missing or unrecognized marker is never complete, and
+        # partial coverage never stops confirmed-row processing.
+        #
+        # Coverage belongs to a SCAN, not to the latest single read:  a scan
+        # accumulates every census read it makes (enumeration and later
+        # binder lookups alike), a complete read never repairs a partial one
+        # within the same scan, and a failed or malformed read marks the
+        # scan partial instead of leaving a prior complete standing.  Only
+        # begin_scan() opens a fresh scan.
+        self._scan_partial = False
+        self.coverage = "partial"
+
+    def begin_scan(self):
+        """Open a new scan:  no failures proven yet, and the coverage word
+        stays partial until a fully complete census proves it."""
+        self._scan_partial = False
+        self.coverage = "partial"
 
     def rows(self):
         out = []
-        for repo in self.repos:
-            rows = self.reader._read(dict(repo=repo, verb="creation_receipts"))
-            if not isinstance(rows, list) or len(rows) > 1000:
-                raise Held("receipt-census-invalid")
-            for row in rows:
-                if (
-                    not isinstance(row, dict)
-                    or row.get("repo") != repo
-                    or type(row.get("number")) is not int
-                    or row.get("confirmed") is not True
-                    or row.get("source") != "open_pr"
-                ):
-                    raise Held("receipt-invalid")
-                out.append(row)
+        try:
+            partial = False
+            for repo in self.repos:
+                answer = self.reader._read_full(dict(repo=repo, verb="creation_receipts"))
+                if not isinstance(answer, dict):
+                    raise Held("receipt-census-invalid")
+                if answer.get("coverage") != "complete":
+                    partial = True
+                rows = answer.get("body")
+                if not isinstance(rows, list) or len(rows) > 1000:
+                    raise Held("receipt-census-invalid")
+                for row in rows:
+                    if (
+                        not isinstance(row, dict)
+                        or row.get("repo") != repo
+                        or type(row.get("number")) is not int
+                        or row.get("confirmed") is not True
+                        or row.get("source") != "open_pr"
+                    ):
+                        raise Held("receipt-invalid")
+                    out.append(row)
+        except Exception:
+            # A failed read never leaves an earlier complete standing for
+            # the scan it happened in.
+            self._scan_partial = True
+            self.coverage = "partial"
+            raise
+        self._scan_partial = self._scan_partial or partial
+        self.coverage = "partial" if self._scan_partial else "complete"
         return out
 
     def lookup(self, repo, number):
@@ -80,10 +113,10 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
         raise Held("review-service-credential-missing")
 
     class StopAwareRead(github_read.ServiceReadClient):
-        def _read(self, payload):
+        def _read_full(self, payload):
             if stop.is_set():
                 raise Held("operator-stopping")
-            return super()._read(payload)
+            return super()._read_full(payload)
 
     reader = StopAwareRead(
         env.get("RA_RELAY_URL", "http://127.0.0.1:8471"),
@@ -132,6 +165,8 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
             repos,
             gate_seat=gate,
             owner_provider=receipts.rows,
+            coverage_provider=lambda: receipts.coverage,
+            coverage_reset=receipts.begin_scan,
             origin_binder=binder.bind,
             cancelled=stop.is_set,
             message_poster=messenger.post,
