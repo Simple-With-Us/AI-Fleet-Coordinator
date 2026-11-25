@@ -176,8 +176,8 @@ REVIEW_ALERT_NAMES: tuple[tuple[str, str, str, str], ...] = (
     ("RA_STATE_DIR", WAKE_ROUTER_PATH, "RA_STATE_DIR", r"/[ -~]{1,256}"),
     ("RA_SELFTEST_SEAT", WAKE_ROUTER_PATH, "RA_SELFTEST_SEAT", r"[A-Z][A-Z0-9_-]{0,31}"),
     ("RA_INTERVAL_S", WAKE_ROUTER_PATH, "RA_INTERVAL_S", r"[0-9]{1,6}"),
-    ("RA_RELAY_URL", WAKE_ROUTER_PATH, "RA_RELAY_URL", r"[ -~]{1,256}"),
-    ("RA_ROUTER_URL", WAKE_ROUTER_PATH, "RA_ROUTER_URL", r"[ -~]{1,256}"),
+    ("RA_RELAY_URL", WAKE_ROUTER_PATH, "RA_RELAY_URL", r"[!-~]{1,256}"),
+    ("RA_ROUTER_URL", WAKE_ROUTER_PATH, "RA_ROUTER_URL", r"[!-~]{1,256}"),
 )
 
 

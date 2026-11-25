@@ -117,6 +117,33 @@ def credential(env: dict, value_name: str, file_name: str) -> str:
     return _credential_from_file(str(env.get(file_name) or "").strip())
 
 
+def credential_loader(env: dict, value_name: str, file_name: str):
+    """A callable credential source for a client's per-request lambda.
+
+    The environment value is a fixed transport binding, so when present it is returned
+    directly;  otherwise the named file is re-read only when its mtime changes, so file
+    rotation needs no restart and no request pays file I/O when nothing changed."""
+    fixed = str(env.get(value_name) or "").strip()
+    if fixed:
+        return lambda: fixed
+    path = str(env.get(file_name) or "").strip()
+    cache = {"mtime": None, "value": ""}
+
+    def load():
+        if not path:
+            return ""
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            return ""
+        if cache["mtime"] != mtime:
+            cache["value"] = _credential_from_file(path)
+            cache["mtime"] = mtime
+        return cache["value"]
+
+    return load
+
+
 def _credential_from_file(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -638,13 +665,13 @@ def main(argv=None) -> int:
 
     router = wakes.WakeClient(
         str(env.get("RA_ROUTER_URL") or "http://127.0.0.1:8794"),
-        lambda: credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"),
+        credential_loader(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"),
     )
     # Rollout gate:  never send a real wake to a router without hold semantics.
     router.check_required_session_support(selftest_seat, probe_id=str(int(time.time())))
     gh = github_read.ServiceReadClient(
         str(env.get("RA_RELAY_URL") or "http://127.0.0.1:8471"),
-        lambda: credential(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"),
+        credential_loader(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"),
     )
     repos = {r.strip() for r in str(env.get("RA_REPOS") or "").split(",") if r.strip()}
     if not repos:

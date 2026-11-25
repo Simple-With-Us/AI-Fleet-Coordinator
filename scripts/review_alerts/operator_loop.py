@@ -87,7 +87,7 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
 
     reader = StopAwareRead(
         env.get("RA_RELAY_URL", "http://127.0.0.1:8471"),
-        lambda: service.credential(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"),
+        service.credential_loader(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"),
     )
     receipts = ProtectedReceipts(reader, repos)
 
@@ -110,7 +110,7 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
 
     router = StopAwareRouter(
         env.get("RA_ROUTER_URL", "http://127.0.0.1:8794"),
-        lambda: service.credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"),
+        service.credential_loader(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"),
     )
     gate = str(env.get("RA_SELFTEST_SEAT") or "")
     if gate not in platforms:

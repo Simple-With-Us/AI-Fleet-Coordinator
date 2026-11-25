@@ -587,6 +587,30 @@ class CredentialResolution(unittest.TestCase):
                 "from-env-" + "x" * 40,
             )
 
+    def test_the_file_loader_re_reads_only_when_the_mtime_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "relay.key"
+            path.write_text("first-" + "a" * 32)
+            load = service.credential_loader(
+                {"RA_SERVICE_TOKEN_FILE": str(path)}, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"
+            )
+            self.assertEqual(load(), "first-" + "a" * 32)
+            # Unchanged mtime:  the cached value answers without a re-read.
+            self.assertEqual(load(), "first-" + "a" * 32)
+            # Rotation:  a new value lands and the next call picks it up.
+            path.write_text("rotated-" + "b" * 32)
+            self.assertEqual(load(), "rotated-" + "b" * 32)
+            # An environment value is a fixed binding:  it wins over the file forever.
+            pinned = service.credential_loader(
+                {
+                    "RA_SERVICE_TOKEN": "from-env-" + "c" * 24,
+                    "RA_SERVICE_TOKEN_FILE": str(path),
+                },
+                "RA_SERVICE_TOKEN",
+                "RA_SERVICE_TOKEN_FILE",
+            )
+            self.assertEqual(pinned(), "from-env-" + "c" * 24)
+
     def test_the_operator_loop_holds_when_neither_credential_source_has_a_value(self):
         held = []
         svc = ServiceCycleTests._service(
