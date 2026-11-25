@@ -97,8 +97,6 @@ public enum ServicePolicyTable {
             "A long-running bridge in the pm2 ecosystem file, and starting it again is safe."),
         row("clutch-web", .startAtLoginOnly,
             "It exits on purpose when something else holds its port, so Muster starts it once when Muster starts and never fights the port."),
-        row("seat-mcp", .keepRunning,
-            "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
     ]
 
     /// The reason every LaunchAgent that is only on the allowlist is left alone.

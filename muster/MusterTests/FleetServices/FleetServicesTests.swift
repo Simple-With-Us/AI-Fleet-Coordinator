@@ -11,9 +11,9 @@ final class FleetServicesTests: XCTestCase {
 
     func testEveryProcessBotFleetStartsIsInTheRegistry() {
         let ids = FleetServiceRegistry.all.map(\.id)
-        // The pm2 applications the ecosystem file defines.
+        // The supported pm2 applications in this admin view.
         for appName in ["shellular", "code-main-keeper", "vision-worker", "xcode-health",
-                        "agy-acp", "grok-leader", "grok-acp", "clutch-web", "seat-mcp",
+                        "agy-acp", "grok-leader", "grok-acp", "clutch-web",
                         "botfleet-mcp"] {
             XCTAssertTrue(ids.contains(appName), "\(appName) is missing from the registry")
         }
@@ -21,7 +21,8 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertTrue(ids.contains("app.botfleet.server"))
         XCTAssertTrue(ids.contains("app.botfleet.companion"))
         XCTAssertTrue(ids.contains("com.jay.operator"))
-        XCTAssertEqual(ids.count, 13)
+        XCTAssertFalse(ids.contains("seat-mcp"))
+        XCTAssertEqual(ids.count, 12)
     }
 
     /// The Mac's eavesdropper (`com.jay.operator`) is on the Services list as a LaunchAgent,
@@ -244,8 +245,8 @@ final class FleetServicesTests: XCTestCase {
 
     func testAnApplicationPM2NeverHeardOfIsNotOfferedAStart() {
         XCTAssertEqual(FleetServices.availableActions(for: .notInPM2, wanted: false, policy: .alwaysOn), [])
-        let services = FleetServices(serverState: .running, states: ["seat-mcp": .notInPM2, "shellular": .running])
-        let entry = services.entries.first { $0.id == "seat-mcp" }
+        let services = FleetServices(serverState: .running, states: ["vision-worker": .notInPM2, "shellular": .running])
+        let entry = services.entries.first { $0.id == "vision-worker" }
         XCTAssertEqual(entry?.summary, "not in this Mac's pm2")
         XCTAssertEqual(entry?.availableActions, [])
         XCTAssertEqual(entry?.whyNoActions, "pm2 on the Mac has no record of it, so it is not started from here")
@@ -298,9 +299,9 @@ final class FleetServicesTests: XCTestCase {
 
     func testTheFleetServicesMenuHasOneRowPerService() {
         let services = FleetServices(serverState: .running, states: [:])
-        XCTAssertEqual(services.menuItems.count, 13)
+        XCTAssertEqual(services.menuItems.count, 12)
         XCTAssertEqual(services.menuItems.first?.id, "botfleet-mcp")
-        XCTAssertEqual(services.menuTitle, "Services On The Mac (13)")
+        XCTAssertEqual(services.menuTitle, "Services On The Mac (12)")
     }
 
     func testEachMenuRowShowsTheStateAndTheActions() {
@@ -1124,7 +1125,8 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(states["shellular"], .running)
         XCTAssertEqual(states["grok-acp"], .failed)
         // An application pm2 has no record of is not stopped:  it is not in this Mac's pm2.
-        XCTAssertEqual(states["seat-mcp"], .notInPM2)
+        XCTAssertEqual(states["vision-worker"], .notInPM2)
+        XCTAssertNil(states["seat-mcp"])
     }
 
     // MARK: - Helpers

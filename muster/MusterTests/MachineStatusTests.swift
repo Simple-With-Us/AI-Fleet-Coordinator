@@ -90,7 +90,7 @@ final class MachineStatusTests: XCTestCase {
     private static let allowlist = OpsAllowlist(
         macAgents: [OpsAllowlist.Entry(name: OpsNames.fetchAgentLabel, actions: ["start", "stop", "restart"])],
         pm2Apps: ["botfleet-mcp", "shellular", "code-main-keeper", "vision-worker", "xcode-health",
-                  "agy-acp", "grok-leader", "grok-acp", "clutch-web", "seat-mcp"].map {
+                  "agy-acp", "grok-leader", "grok-acp", "clutch-web"].map {
             OpsAllowlist.Entry(name: $0, actions: ["start", "stop", "restart"])
         },
         serverUnits: [
@@ -99,7 +99,7 @@ final class MachineStatusTests: XCTestCase {
         ]
     )
 
-    /// Nine running,  two stopped,  one not installed,  and the Mac's listener retired and
+    /// Eight running,  two stopped,  one not installed,  and the Mac's listener retired and
     /// stopped,  as it has been since the one-listener cutover.
     private static func macServices(changing changes: [String: ManagedServiceState] = [:]) -> FleetServices {
         var states: [String: ManagedServiceState] = [
@@ -107,7 +107,7 @@ final class MachineStatusTests: XCTestCase {
             "com.jay.operator": .stopped,
             "shellular": .running, "code-main-keeper": .running, "vision-worker": .running,
             "xcode-health": .running, "agy-acp": .stopped, "grok-leader": .stopped,
-            "grok-acp": .running, "clutch-web": .running, "seat-mcp": .running,
+            "grok-acp": .running, "clutch-web": .running,
         ]
         states.merge(changes) { _, new in new }
         return FleetServices(serverState: .running, states: states)
@@ -167,9 +167,9 @@ final class MachineStatusTests: XCTestCase {
         let expected = """
         The Mac
         Checked at 2:46 PM
-        Services:  9 running, 2 stopped, 1 not installed, 1 retired
+        Services:  8 running, 2 stopped, 1 not installed, 1 retired
         Seat Setup:  no red or drifted cells
-        Services On The Mac (13)
+        Services On The Mac (12)
             BotFleet MCP Server (On The Mac):  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
@@ -200,9 +200,6 @@ final class MachineStatusTests: XCTestCase {
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
             Clutch Web:  running
-                Restart On The Mac\u{2026}
-                Stop On The Mac\u{2026}
-            Seat MCP:  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
         Check The Mac Again
@@ -569,14 +566,14 @@ final class MachineStatusTests: XCTestCase {
     private static let pm2SilentStates: [String: ManagedServiceState] = [
         "shellular": .unknown, "code-main-keeper": .unknown, "vision-worker": .unknown,
         "xcode-health": .unknown, "agy-acp": .unknown, "grok-leader": .unknown,
-        "grok-acp": .unknown, "clutch-web": .unknown, "seat-mcp": .unknown,
+        "grok-acp": .unknown, "clutch-web": .unknown,
     ]
 
     func testPM2NotAnsweringIsNotAZeroAndThoseRowsLoseTheirRestart() throws {
         let services = Self.macServices(changing: Self.pm2SilentStates)
         XCTAssertFalse(services.pm2Answered)
         let menu = MachineMenu(inputs(services: services, status: try statusReading(), tools: try toolsReading()))
-        assertLines(menu, contain: ["pm2 did not answer, so 9 services are not known."])
+        assertLines(menu, contain: ["pm2 did not answer, so 8 services are not known."])
         XCTAssertEqual(menu.mac.health, .notKnown)
         let shellular = actions(in: menu.mac.items).filter { $0.serviceID == "shellular" }
         XCTAssertTrue(shellular.isEmpty)
@@ -602,11 +599,11 @@ final class MachineStatusTests: XCTestCase {
     }
 
     func testAnApplicationPM2NeverHeardOfIsNotCalledStoppedAndHasNoStart() throws {
-        let services = Self.macServices(changing: ["seat-mcp": .notInPM2])
-        let entry = try XCTUnwrap(services.entries.first { $0.id == "seat-mcp" })
+        let services = Self.macServices(changing: ["clutch-web": .notInPM2])
+        let entry = try XCTUnwrap(services.entries.first { $0.id == "clutch-web" })
         let row = MachineMenuCopy.serviceRow(entry, allowlist: Self.allowlist, pm2Answered: true)
         XCTAssertTrue(row.actions.isEmpty)
-        XCTAssertEqual(row.title, "Seat MCP:  not in this Mac's pm2, pm2 on the Mac has no record of it, so it is not started from here")
+        XCTAssertEqual(row.title, "Clutch Web:  not in this Mac's pm2, pm2 on the Mac has no record of it, so it is not started from here")
     }
 
     func testAServiceTheOwnerStoppedSaysSoInTheMenuRow() throws {
