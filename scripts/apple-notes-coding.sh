@@ -774,7 +774,9 @@ _notes_report_refusal() {
   if [[ -s "$err_file" ]]; then
     cat "$err_file" >&2
   fi
-  grep -q -- '-10000' "$err_file" 2>/dev/null || return 0
+  # The AppleEvent refusal code, in parentheses, so an unrelated error that merely carries
+  # the same digits is not reported as a Notes refusal.
+  grep -q -- '(-10000)' "$err_file" 2>/dev/null || return 0
   echo "notes: NOTES-REFUSED-DELETE  Notes itself refused the note (AppleEvent -10000):  its body cannot be read or written through AppleEvents and the delete fails the same way, so only the Notes app can remove a note in this state." >&2
 }
 
@@ -797,10 +799,14 @@ if [[ "$MODE" == "delete" ]]; then
   # package.  The tracked copy lives beside simple_tools/, so its sibling guard is the right
   # one;  the live copy at ~/apps/ has no package beside it, so it reaches into the managed
   # runtime, where the package and the matching guard both live.
+  #
+  # The guard is executed, so its path is fixed rather than taken from the environment:  a
+  # caller that controlled SIMPLE_TOOLS_RUNTIME could otherwise choose a script to run under
+  # the helper.  The managed runtime sits at one known path, and that is the one used here.
   _delete_guard=""
   for _guard_candidate in \
     "${_SCRIPTS_ROOT}/notes_delete_guard.py" \
-    "${SIMPLE_TOOLS_RUNTIME:-$HOME/apps/lanes/_managed/fleet/simple-tools-runtime}/scripts/notes_delete_guard.py"; do
+    "$HOME/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/notes_delete_guard.py"; do
     if [[ -f "$_guard_candidate" ]]; then
       _delete_guard="$_guard_candidate"
       break

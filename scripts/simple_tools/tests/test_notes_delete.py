@@ -132,6 +132,14 @@ class RefusalReportTests(unittest.TestCase):
         result = self.run_reporter("")
         self.assertNotIn("NOTES-REFUSED-DELETE", result.stderr)
 
+    def test_only_the_appleevent_refusal_code_counts_as_a_refusal(self) -> None:
+        """An unrelated error that merely carries the same digits is not a refusal."""
+        result = self.run_reporter("line 10000 of the log failed\n")
+        self.assertNotIn("NOTES-REFUSED-DELETE", result.stderr)
+        # And the real refusal code, in parentheses, is a refusal.
+        result = self.run_reporter("AppleEvent handler failed. (-10000)\n")
+        self.assertIn("NOTES-REFUSED-DELETE", result.stderr)
+
     def test_both_delete_stages_report_the_refusal(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         # The fetch stage and the delete stage each capture the AppleEvent error and name it.
@@ -151,7 +159,7 @@ class GuardResolutionTests(unittest.TestCase):
     def test_the_sibling_guard_is_tried_first(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         sibling = '"${_SCRIPTS_ROOT}/notes_delete_guard.py"'
-        runtime = "simple-tools-runtime}/scripts/notes_delete_guard.py"
+        runtime = "simple-tools-runtime/scripts/notes_delete_guard.py"
         self.assertIn(sibling, text)
         self.assertIn(runtime, text)
         # The sibling comes first, so the tracked copy always tests its own guard.
@@ -160,10 +168,23 @@ class GuardResolutionTests(unittest.TestCase):
     def test_the_managed_runtime_is_the_fallback(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
-            "${SIMPLE_TOOLS_RUNTIME:-$HOME/apps/lanes/_managed/fleet/simple-tools-runtime}"
-            "/scripts/notes_delete_guard.py",
+            "$HOME/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/notes_delete_guard.py",
             text,
         )
+
+    def test_the_environment_cannot_choose_the_guard_that_runs(self) -> None:
+        """The guard is executed, so its path is fixed and not taken from the environment.
+
+        A caller that controlled SIMPLE_TOOLS_RUNTIME could otherwise point the helper at a
+        script of their choosing and have it run with the helper's privileges.
+        """
+        text = SCRIPT.read_text(encoding="utf-8")
+        guard_block = text[
+            text.index("_delete_guard=\"\"") : text.index("_delete_guard=\"\"") + 700
+        ]
+        self.assertNotIn("SIMPLE_TOOLS_RUNTIME", guard_block)
+        # The sibling comes first, so the tracked copy always tests its own guard.
+        self.assertIn('"${_SCRIPTS_ROOT}/notes_delete_guard.py"', guard_block)
 
     def test_a_missing_guard_is_named_rather_than_left_silent(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
