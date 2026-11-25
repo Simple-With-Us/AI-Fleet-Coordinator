@@ -5273,7 +5273,10 @@ def reconcile_letters(
                 continue
             if _seconds(note.get("updated_at")) != row["seen"]:
                 continue  # the chat ran since the scan:  it is in use,  not stale
-            chat.write(_retire(chat, note, now))
+            # A write that lands is a retire,  and it is counted as one:  the callers read this list,  and a
+            # prefix that came off without being in it would be invisible.
+            if chat.write(_retire(chat, note, now)):
+                retired.append(sid)
         except Exception as exc:  # noqa: BLE001 - one chat's failure never stops the pass
             failures.append({"sid": sid, "error": type(exc).__name__})
             continue

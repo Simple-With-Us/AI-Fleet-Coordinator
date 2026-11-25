@@ -327,9 +327,11 @@ class ReconcileTests(Base):
             json.dump(note, fh, sort_keys=True)
         self.assertEqual(self.title_of("m-0019"), "%s: Fix Login" % label)
 
-        self.reconcile()
+        done = self.reconcile()
         self.assertEqual(self.title_of("m-0019"), "Fix Login")
         self.assertNotIn("title_pending", self.note("m-0019"))
+        # The write that landed is a retire,  and the callers read this list.
+        self.assertIn("m-0019", done["retired"])
 
     def forget_letters(self, sid: str) -> None:
         """Take the record's letters out of the assigner,  so it holds the chat and no letter for it."""
