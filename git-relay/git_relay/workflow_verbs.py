@@ -8187,7 +8187,11 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
                 raise Refused("branch head moved")
             base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
             tree = _sub(base_commit, "tree").get("sha")
-            if base_commit.get("sha") != head or not isinstance(tree, str) or not _SHA.fullmatch(tree):
+            if (
+                base_commit.get("sha") != head
+                or not isinstance(tree, str)
+                or not _SHA.fullmatch(tree)
+            ):
                 raise Refused("base commit unverifiable")
             # Contents receipt pins path AND commit; caller's blob id is only a check.
             content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
@@ -8228,9 +8232,13 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
                 if base_finding and not preserve:
                     finding = base_finding
                     raise ValueError()
-                if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode("utf-8"):
+                if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode(
+                    "utf-8"
+                ):
                     raise ValueError()
-                result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
+                result = apply_reviewed_patch(
+                    repo, path, raw, args.get("edits"), known=[self.bearer]
+                )
                 result_finding = find_secret(result.decode("utf-8"))
                 if result_finding and not preserve:
                     finding = result_finding
@@ -8248,9 +8256,7 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
                 raise Refused("patch supports existing regular files only")
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
-                raise PreReadUnavailable(
-                    "patch pre-read unavailable; no write attempted"
-                ) from None
+                raise PreReadUnavailable("patch pre-read unavailable; no write attempted") from None
             raise
         if mode == "100755":
             return self._patch_executable(
