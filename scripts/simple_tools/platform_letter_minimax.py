@@ -289,6 +289,11 @@ def _extra(raw: object) -> dict[str, Any]:
 GONE_BATCH = 200
 
 
+#: How many chats the gone path asks about for the note probes.  The client offers the longest quiet chats
+#: first,  so the bound keeps the ones most likely to be gone,  and the rest wait for the next report.
+#: One probe is one file read,  and the gone path runs on a chat's start,  where every millisecond is the
+#: hook's own budget.
+ABSENT_PROBE_LIMIT = 64
 #: How long a chat the store does not know must have been quiet before its row is closed.  The client
 #: writes the note of a chat on every event of that chat,  so a note that has not been touched for this long
 #: is a chat the fleet has not addressed for this long,  and a chat the store has not written yet is not a
@@ -318,11 +323,19 @@ def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[s
 
     The ids are the ones the caller asked about,  so no chat is ever named that is not one of this host's
     own chats,  and the assigner closes a row of the reporting host only:  a chat that runs on another host
-    is left open there,  and the note of a chat the assigner did not close is not retired."""
+    is left open there,  and the note of a chat the assigner did not close is not retired.
+
+    The probes are bounded (ABSENT_PROBE_LIMIT),  and the order of the ids is kept:  the client offers the
+    longest quiet chats first,  so the bound keeps the ones most likely to be gone,  and the rest wait for
+    the next report."""
     path = store_file(env)
     if not path or not os.path.isfile(path):
         return set()
-    wanted = sorted({sid for sid in session_ids if isinstance(sid, str) and sid})
+    wanted: list[str] = []
+    for sid in session_ids or ():
+        if isinstance(sid, str) and sid and sid not in wanted:
+            wanted.append(sid)
+    wanted = wanted[:ABSENT_PROBE_LIMIT]
     if not wanted:
         return set()
     known: set[str] = set()
@@ -425,9 +438,14 @@ def _machine_run(row: Mapping[str, Any]) -> bool:
     A BotFleet bot run works in a BotFleet workspace,  and that is the whole test.  The runtime's own
     purposes are not one:  a row whose purpose names a background task or a turn of a task is a chat of
     its own,  and the ones that carry a letter today (AW, CI, CL  and the rest) must keep taking one.
-    A cron row is headless already,  because its own session kind is not a chat kind."""
+    A cron row is headless already,  because its own session kind is not a chat kind.
+
+    The workspace is read as the path it is:  the BotFleet folder is a segment of the path,  and a path of
+    the owner's that merely carries the same letters inside another name (a project folder called
+    "my.botfleet-notes")  is the owner's own and not a bot run."""
     for key in ("workspace_dir", "project_workspace_dir"):
-        if BOTFLEET_WORKSPACE in str(row.get(key) or ""):
+        segments = str(row.get(key) or "").replace("\\", "/").split("/")
+        if BOTFLEET_WORKSPACE in segments:
             return True
     return False
 
@@ -580,7 +598,10 @@ def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]
     The library asks this adapter on a chat's start,  and a report that names a gone chat has the
     assigner close its row and free the letter.  Ids only."""
     ids = frozenset(session_ids or ())
-    return archived_sessions(env, ids) | over_sessions(env, ids) | absent_sessions(env, ids)
+    gone = archived_sessions(env, ids) | over_sessions(env, ids)
+    # The absent probes are bounded and keep the order of the ids,  so the longest quiet chats are the ones
+    # the bound keeps.
+    return gone | absent_sessions(env, session_ids or ())
 
 
 def minimax_rename(request: PL.TitleRequest) -> bool:

@@ -291,9 +291,9 @@ MACHINE_DDL = (
 )
 
 #: A BotFleet bot run works in a workspace of its own.
-BOTFLEET = "/Users/jay/.botfleet/workspaces/abc"
+BOTFLEET = "/tmp/fixture-home/.botfleet/workspaces/abc"
 #: The owner's own chat works in a project folder.
-OWNER = "/Users/jay/Code/AI-Fleet-Coordinator"
+OWNER = "/tmp/fixture-home/Code/Fixture-Coordinator"
 
 
 class MachineRunBase(GoneHarness):
@@ -387,6 +387,13 @@ class MachineRunTests(MachineRunBase):
         self.add("m-0002", kind="task", parent="m-0000", workspace=OWNER, purpose="local-background-task:bg_abc")
         self.assertEqual(self.kind("m-0001"), "subagent")
         self.assertEqual(self.kind("m-0002"), "subagent")
+
+    def test_a_path_that_merely_carries_the_same_letters_is_the_owners_own(self) -> None:
+        # The BotFleet folder is a segment of the path,  and a project folder of the owner's that carries the
+        # same letters inside another name is not a bot run.
+        self.add("m-0001", workspace="/tmp/fixture-home/Code/my.botfleet-notes")
+        self.assertEqual(self.kind("m-0001"), "chat")
+        self.assertEqual(PM.over_sessions(self.env(), frozenset({"m-0001"})), set())
 
     def test_a_store_that_does_not_say_what_a_session_is_leaves_the_chat_a_chat(self) -> None:
         # A store from before the runtime wrote the columns says nothing at all,  and any doubt keeps the chat a
@@ -520,6 +527,17 @@ class AbsentChatTests(MachineRunBase):
         self.add("m-0001", workspace=OWNER)
         self.write_note("m-0001", 7200)
         self.assertEqual(PM.absent_sessions(self.env(), frozenset({"m-0001"})), set())
+
+    def test_the_probes_are_bounded(self) -> None:
+        # The gone path runs on a chat's start,  and one probe is one file read,  so the number of chats it
+        # asks about is bounded.  The client offers the longest quiet chats first,  so the bound keeps the ones
+        # most likely to be gone.
+        ids = ["m-%04d" % n for n in range(PM.ABSENT_PROBE_LIMIT + 20)]
+        for sid in ids:
+            self.write_note(sid, 7200)
+        gone = PM.absent_sessions(self.env(), ids)
+        self.assertEqual(len(gone), PM.ABSENT_PROBE_LIMIT)
+        self.assertEqual(gone, set(ids[: PM.ABSENT_PROBE_LIMIT]))
 
     def test_a_store_that_cannot_be_read_names_nothing(self) -> None:
         self.write_note("m-0001", 7200)
