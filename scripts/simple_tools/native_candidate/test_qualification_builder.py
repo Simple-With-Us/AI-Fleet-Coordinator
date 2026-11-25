@@ -161,7 +161,7 @@ class BuilderTests(unittest.TestCase):
 
         env = {
             "env": {},
-            "registry_context": lambda: {},
+            "registry_context": dict,
             "adapter": SimpleNamespace(_deliver_prompt=prompt),
             "spec": {"epoch": 100, "expires": 200},
             "time": SimpleNamespace(time=lambda: now[0]),
@@ -284,7 +284,7 @@ class BuilderTests(unittest.TestCase):
 
         env = {
             "env": {},
-            "registry_context": lambda: {},
+            "registry_context": dict,
             "adapter": SimpleNamespace(_deliver_prompt=prompt),
             "spec": {"epoch": 100, "expires": None},
             "time": SimpleNamespace(time=lambda: now[0]),
@@ -305,7 +305,6 @@ class BuilderTests(unittest.TestCase):
             "turn",
         )
         self.assertEqual(captured, [True, False])
-
 
     def test_live_registry_context_refresh_missing_and_ownership_refusal(self):
         from collections.abc import Mapping
@@ -332,13 +331,19 @@ class BuilderTests(unittest.TestCase):
             config = Settings()
             calls = []
             captured = {}
-            target = SimpleNamespace(session_id="sess_fixture", host="server", letter="II", generation=2)
+            target = SimpleNamespace(
+                session_id="sess_fixture", host="server", letter="II", generation=2
+            )
             row = {"id": target.session_id, "directory": tmp}
             expected = ["registry-one", "scope-one"]
 
             def recheck(context, selected):
                 calls.append((context.get("address"), context.get("credential")))
-                return None if calls[-1] == tuple(expected) and selected.generation == 2 else Delivery("refused")
+                return (
+                    None
+                    if calls[-1] == tuple(expected) and selected.generation == 2
+                    else Delivery("refused")
+                )
 
             def prompt(context, *a, **kw):
                 captured["context"] = context
@@ -359,17 +364,25 @@ class BuilderTests(unittest.TestCase):
             )
             spec = {"target": vars(target), "workspace": tmp, "epoch": 100, "expires": None}
             raw = {"HOME": tmp}
-            with patch.object(builder, "Driver"), patch.object(builder, "Qualification", side_effect=qualify), patch.object(builder, "fresh", return_value=True):
+            with (
+                patch.object(builder, "Driver"),
+                patch.object(builder, "Qualification", side_effect=qualify),
+                patch.object(builder, "fresh", return_value=True),
+            ):
                 platform, qualifier, driver, custody = builder.build(adapter, raw, config, spec)
                 self.assertTrue(custody(target, tmp))
-                captured["native"](target, SimpleNamespace(wake_id="ra-fresh"), "notification", "turn")
+                captured["native"](
+                    target, SimpleNamespace(wake_id="ra-fresh"), "notification", "turn"
+                )
                 live = captured["context"]
                 self.assertEqual(live["address"], "registry-one")
                 config.registry = {"address": "registry-two", "credential": "scope-two"}
                 expected[:] = ["registry-two", "scope-two"]
                 self.assertEqual(live["address"], "registry-two")
                 self.assertTrue(custody(target, tmp))
-                captured["native"](target, SimpleNamespace(wake_id="ra-next"), "notification", "turn")
+                captured["native"](
+                    target, SimpleNamespace(wake_id="ra-next"), "notification", "turn"
+                )
                 self.assertEqual(captured["context"]["credential"], "scope-two")
                 config.registry = {}
                 self.assertFalse(custody(target, tmp))
