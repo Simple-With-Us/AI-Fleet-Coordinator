@@ -413,6 +413,12 @@ jobs:
       run: |
         cd scripts && python3 -m unittest test_fleet_infisical_store test_infisical_scoped test_install_infisical_scoped -v
         bash -n install-infisical-scoped.sh
+    # The retired fleet-secrets CLI stays retired:  the consumers that used to spawn it read
+    # Infisical through the shared client now, each naming its own scoped token account, and
+    # the workflow names neither the deleted package nor the deleted installer.
+    - name: Retired fleet-secrets CLI guard
+      timeout-minutes: 10
+      run: cd scripts && python3 -m unittest test_retired_fleet_secrets_cli -v
     # The shared direct Infisical command (`scripts/fleet_infisical_cli.py`):  get, names, run,
     # doctor and the allowlisted set, with the durable write ledger, the provider response
     # boundary faked, and no secret in argv, a message or a log.
