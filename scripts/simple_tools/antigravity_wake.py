@@ -214,7 +214,12 @@ def _data_here(root: Path, session_id: str) -> tuple[bool, bool]:
     if mine:
         return True, True
     any_data = False
-    for folder, suffix in (("annotations", ".pbtxt"), ("conversations", ".db"), ("conversations", ".pb"), ("implicit", ".pb")):
+    for folder, suffix in (
+        ("annotations", ".pbtxt"),
+        ("conversations", ".db"),
+        ("conversations", ".pb"),
+        ("implicit", ".pb"),
+    ):
         try:
             if any(name.endswith(suffix) for name in os.listdir(root / folder)):
                 any_data = True
