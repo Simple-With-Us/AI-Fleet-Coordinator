@@ -22,12 +22,12 @@ import os
 import re
 from pathlib import Path
 
-BEFORE = "f84708ceb6def508441af18770da5a91547c724ffda11e5e9d18a16b5455f132"
-AFTER = "3f72088feb8e69b29431fb8811a4a29d3c0e5c51cbed947de34cecf2783323a3"
+BEFORE = "3f72088feb8e69b29431fb8811a4a29d3c0e5c51cbed947de34cecf2783323a3"
+AFTER = "97cac773211630c55e8bf507b47cd6ee6b7c2167505721388c73ad3849437fb0"
 DEFAULT_NAME = "preservation-pairs-2426"
 TRANSACTIONS = "/opt/git-relay/transactions"
 NAME = re.compile(r"preservation-pairs-2426(?:-a[0-9]{2,3})?")
-PROOF_TEMPLATE = "1a6aaa4d8e543cbbfaa36843cc1114d3a21193495621483da00539cdc440b0ec"
+PROOF_TEMPLATE = "569da0fc4cb5b7c73e75e48d97868b7a426f9321c835b0614d7ac324fb178c85"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "536787ce91394b13e11620785d3a781aaac8ab8f38d5e7fa25757d82eba0d262",

@@ -20,8 +20,8 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class RuntimeProof:
-    BASELINE = "f84708ceb6def508441af18770da5a91547c724ffda11e5e9d18a16b5455f132"
-    CANDIDATE = "3f72088feb8e69b29431fb8811a4a29d3c0e5c51cbed947de34cecf2783323a3"
+    BASELINE = "3f72088feb8e69b29431fb8811a4a29d3c0e5c51cbed947de34cecf2783323a3"
+    CANDIDATE = "97cac773211630c55e8bf507b47cd6ee6b7c2167505721388c73ad3849437fb0"
     POLICY = "POLICY_SHA256_PLACEHOLDER"
     URL = "http://127.0.0.1:8471/v1/"
     REPO = "Simple-With-Us/AI-Fleet-Coordinator"
