@@ -1,23 +1,19 @@
 #!/bin/bash
 # simple-tools-runtime-sync.sh  --  keep the simple-tools runtime checkout on AFC origin/main.
 #
-# Public-source updater approved by owner Nov 18, 2026.
-# The `simple-chat` CLI runs from a
-# dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
+# The `simple-chat` CLI runs from a dedicated managed checkout, never from the human
+# integration tree ~/Code/AI-Fleet-Coordinator:
 #
 #   /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime     (detached worktree, locked)
 #
 # LaunchAgent com.jay.simple-tools-runtime-sync runs this every 120 seconds.  Each run:
-#   1. retrieves only the fixed approved public source (60 second caps), and only the change
-#      since the last run:  the stage is seeded with the objects this host already holds, so a
-#      run costs a delta instead of the whole history;  until the operator's approval file
-#      exists the run stays on the prior origin transport instead of holding with no fetch;
+#   1. fetches origin (60 second cap);
 #   2. if origin/main differs from the runtime HEAD AND the worktree has no tracked changes, checks out
 #      origin/main detached;
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
-#   4. records plugin refresh advice without restarting the retired Mac listener, and runs the
-#      unlettered-repair tick and the Mac GitOps drift report that the tracked copy carried.
+# The Mac listener (com.jay.operator) is retired (owner, Tue, Nov 10; AFC-836):  this sync
+# never kickstarts it.  The one listener, on the server, loads new code by its own deploy.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
 # Pause:   touch ~/.simple-tools/runtime-sync.pause   (resume: rm it)
@@ -54,8 +50,9 @@ rgit() {
 }
 
 # Retrieve exactly one approved public repository/ref in an isolated bare repo.
-# Network Git sees no host Git config, credentials, SSH agent, hooks or proxy.
-# Import is local-only; runtime origin URL/config is not rewritten or consulted.
+# Public-source updater, approved by the owner Nov 18, 2026.  Network Git sees no host
+# Git config, credentials, SSH agent, hooks or proxy.  Import is local-only;  the runtime
+# origin URL and config are not rewritten or consulted.
 fetch_public_runtime() (
   local stage sha
   stage="$(mktemp -d "${TMPDIR:-/tmp}/runtime-public.XXXXXX")" || exit 1
@@ -233,9 +230,6 @@ main() {
   if printf '%s\n' "$changed" | grep -Eq "$PLUGIN_RE"; then
     log "PLUGIN-CHANGED  the Claude plugin source moved; refresh with: claude plugin marketplace update afc"
   fi
-
-  # The Mac listener is retired. Updating shared CLI code never loads,
-  # restarts or re-enables it. Hosted listener deployment has its own owner.
 
 }
 
