@@ -3603,7 +3603,7 @@ def _run_hook(
         code = on_start(chat, data, out, home)
         if _text(data.get("source")) != "compact":
             _report_gone_after_start(chat, stdout)
-            _reconcile_after_start(chat)
+            reconcile_after_start(chat)
             repair_after_start(chat)
         return code
     if event == "prompt":
@@ -5097,7 +5097,14 @@ def _reconcile_answer(
     label = str(answer.get("label") or "")
     if LABEL_RE.fullmatch(label) and label not in letters:
         letters.insert(0, label)
-    return {"registered": True, "record_id": record_id, "letters": letters}
+    # The label the assigner answers with is the letter this chat holds NOW:  the newest generation it ever
+    # held.  It is not the letter the chat's note remembers,  which may be behind a relabel.
+    return {
+        "registered": True,
+        "record_id": record_id,
+        "letters": letters,
+        "label": label if LABEL_RE.fullmatch(label) else (letters[0] if letters else ""),
+    }
 
 
 def _letter_holder(
@@ -5214,7 +5221,14 @@ def reconcile_letters(
             if chat.write(_retire(chat, note, now)):
                 retired.append(sid)
             continue
-        state, record_id = _letter_holder(env, spec, label)
+        # The letter to ask about is the one the REGISTRY says this chat holds,  not the one the note
+        # remembers:  a chat the registry relabelled in place holds its new letter,  and the note's old label
+        # is simply behind.  Asking about the note's label would retire an alive chat for a prefix its own
+        # title happens to carry.
+        current = str(held_answer.get("label") or "")
+        if not LABEL_RE.fullmatch(current):
+            continue
+        state, record_id = _letter_holder(env, spec, current)
         if state == "unknown":
             continue  # the assigner did not answer about the letter:  no evidence,  no change
         if state == "live" and record_id == held_answer["record_id"]:
@@ -5468,19 +5482,52 @@ def repair_after_start(
     return started
 
 
-def _reconcile_after_start(chat: Chat) -> None:
-    """The letter reconcile a chat's start makes, after the chat's own answer is out:  this host's lettered chats,
-    and the assigner's answer about each.  Nothing here reaches the chat:  whatever goes wrong is swallowed,  and
-    the pass's own stamp holds its next try back for the window."""
+def reconcile_command(platform: str, where: str) -> list[str]:
+    """The detached run a chat's start sets off:  this checkout's own `platform-letter reconcile` for one platform
+    and location, under the interpreter the hook itself runs on."""
+    script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "platform-letter"
+    )
+    return [sys.executable, "-B", script, "reconcile", "--platform", platform, "--location", where]
+
+
+def reconcile_after_start(
+    chat: Chat, spawn: Callable[[list[str], Mapping[str, str]], bool] | None = None
+) -> bool:
+    """Set off the letter reconcile for the chat's platform and location, after the chat's own answer is out, when
+    the reconcile stamp says one is due (RECONCILE_SWEEP_SECONDS):  one detached `platform-letter reconcile` run,
+    which takes the stamp itself and spends its own time, never the chat's.
+
+    The pass asks the assigner about every lettered chat of this host,  so it must never run inside a chat's start:
+    a hook has a budget,  and a run of API calls across many candidates does not fit in one.  Nothing is started for
+    a platform that writes no title,  for a host that does not say where it is,  or for a caller that brought its own
+    registry transport or its own environment mapping (a test,  an embedding caller):  the child reads this
+    process's own settings,  so it could not reach the registry that caller meant.  Before it spawns,  the start
+    takes a spawn claim beside the stamp (an exclusive create,  held REPAIR_SPAWN_CLAIM_SECONDS),  so several chats
+    starting in the same moment set off one run.  True when a run was started."""
     spec = chat.spec
     if spec.title_writer is None or chat.location not in LOCATIONS or not chat.seat:
-        return
+        return False
+    if chat.transport is not None or chat.env is not os.environ:
+        return False
+    path = reconcile_stamp_path(chat.env, chat.seat, spec.platform, chat.location)
+    stamp = _read_json(path)
+    if "at" in stamp and 0 <= chat.now - _seconds(stamp["at"]) < RECONCILE_SWEEP_SECONDS:
+        return False
+    if not _claim(path + ".spawn", REPAIR_SPAWN_CLAIM_SECONDS):
+        return False  # another chat's start set off this window's run moments ago
     try:
-        reconcile_letters(
-            spec, chat.env, chat.seat, chat.location, now=chat.now, transport=chat.transport
+        started = bool(
+            (spawn or _spawn_detached)(reconcile_command(spec.platform, chat.location), chat.env)
         )
-    except Exception:  # noqa: BLE001 - a reconcile never blocks a chat,  whatever an adapter or the host does
-        pass
+    except Exception:  # noqa: BLE001 - a reconcile never blocks a chat
+        # Nothing was started:  give the claim back,  so the next start is not held off
+        # for the whole claim TTL by a run that never existed.
+        _release(path + ".spawn")
+        return False
+    if not started:
+        _release(path + ".spawn")
+    return started
 
 
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:

@@ -252,6 +252,37 @@ class ReconcileTests(Base):
         with mock.patch.object(PL, "_call_api", return_value={"error": "timeout"}):
             self.assertEqual(PL._letter_holder(self.env(), PM.SPEC, "AA"), ("unknown", ""))
 
+    def test_a_chat_the_registry_relabelled_in_place_is_not_retired(self) -> None:
+        # The registry relabels a chat in place:  the same record, a new letter, and the note still remembers the
+        # old one.  The chat holds its new letter,  so it is not retired for a prefix its own title happens to
+        # carry:  the letter to ask about is the one the registry answers with.
+        self.add("m-0013", title="Fix Login")
+        self.start("m-0013", at=self.old)
+        first = self.note("m-0013")["label"]
+        self.issue_letter("m-0013", "BB")
+        self.assertEqual(self.note("m-0013")["label"], first)  # the note is behind
+        self.assertEqual(self.title_of("m-0013"), "%s: Fix Login" % first)
+
+        done = self.reconcile()
+        self.assertEqual(done["retired"], [])
+        self.assertEqual(self.title_of("m-0013"), "%s: Fix Login" % first)
+        self.assertTrue(PL.lettered(self.note("m-0013")))
+
+    def test_a_chat_start_never_runs_the_pass_itself(self) -> None:
+        # The pass asks the assigner about every lettered chat of this host,  so it must not run inside a chat's
+        # start:  a hook has a budget and a run of API calls does not fit in one.
+        self.add("m-0014", title="Fix Login")
+        self.start("m-0014", at=self.old)
+        stamp = PL.reconcile_stamp_path(self.env(), PM.SEAT, PM.SPEC.platform, "mac")
+        self.assertFalse(os.path.exists(stamp), "the pass must not run inside a chat's start")
+
+    def test_the_detached_run_is_this_checkouts_own_reconcile_verb(self) -> None:
+        argv = PL.reconcile_command(PM.SPEC.platform, "mac")
+        self.assertIn("reconcile", argv)
+        self.assertIn("--platform", argv)
+        self.assertIn("--location", argv)
+        self.assertIn("mac", argv)
+
     def test_an_assigner_that_does_not_answer_changes_nothing(self) -> None:
         self.add("m-0008", title="Fix Login")
         self.start("m-0008", at=self.old)
