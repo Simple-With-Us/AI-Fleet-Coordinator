@@ -850,10 +850,7 @@ class RegistryService:
             "kept_count": len(kept),
         }
 
-
-    def _report_mismatch(
-        self, platform: str, host: str, live: Mapping[str, Any]
-    ) -> str | None:
+    def _report_mismatch(self, platform: str, host: str, live: Mapping[str, Any]) -> str | None:
         """Why this report may not speak for this host, or None when it may.
 
         A report speaks for the host it files under.  A chat that another host holds open is a
@@ -887,9 +884,12 @@ class RegistryService:
                     ).fetchall()
                     foreign.extend(str(row[0]) for row in rows)
                 if foreign:
-                    return "the report names %d chat(s) of another host,  so it may not speak for %r" % (
-                        len(foreign),
-                        host,
+                    return (
+                        "the report names %d chat(s) of another host,  so it may not speak for %r"
+                        % (
+                            len(foreign),
+                            host,
+                        )
                     )
                 if not named:
                     held = conn.execute(
