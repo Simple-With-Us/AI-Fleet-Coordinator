@@ -297,6 +297,8 @@ def _enqueue_locked(directory, key, record):
         if name == key + ".json":
             continue
         if name.startswith("cancelled-"):
+            if ".tmp-" in name:
+                continue  # an orphan removed in the first pass
             # Sentinels are empty markers, but their bytes still count
             # toward the spool so creating them is never free.
             size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
