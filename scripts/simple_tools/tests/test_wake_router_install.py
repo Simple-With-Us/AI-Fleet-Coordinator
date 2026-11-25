@@ -34,6 +34,12 @@ FRONT_TEMPLATE = SERVER / "afc-wake-tls.service"
 FAKE_TOKEN = "st" + "." + "fixture" + "-not-a-real-token-" + "0123456789"
 FAKE_KEY = "fixture" + "-router-" + "key-" + "0123456789abcdef"
 TAILNET = ".".join(("100", "101", "102", "103"))  # a synthetic tailnet address, built in parts
+# A synthetic path, never a real home:  committed fixtures are indexed.
+FOREIGN_LAUNCHER = (
+    "/tmp/fixture-home/.local/share/afc-wake-router/releases/"
+    "echo-native-protocol-2550-b04bcbaa-20261125/scripts/simple_tools/native_candidate/"
+    "native_qualification_launch.py"
+)
 SEAT = "SEATX"
 
 KNOBS_STUB = '''
@@ -245,14 +251,14 @@ class Fixture:
             "--port 8794\n"
         )
 
-    def run_foreign_program(self, program: str, pid: str = "4242") -> None:
-        """A fake running router whose process is not the router's own entry point:  another
-        seat's qualification launcher, say."""
+    def run_program(self, program: str, pid: str = "4242") -> None:
+        """A fake running router whose program is an exact path, the way a unit's ExecStart
+        names it."""
         (self.root / ("mainpid-" + ROUTER_UNIT_NAME)).write_text(pid + "\n")
         cmdline = self.root / "proc" / pid / "cmdline"
         cmdline.parent.mkdir(parents=True, exist_ok=True)
         cmdline.write_bytes(
-            b"/usr/bin/python3\0-I\0" + program.encode() + b"\0/home/jay/.config/review-alerts/x.json\0"
+            b"/usr/bin/python3\0-I\0" + program.encode() + b"\0wake-router\0serve\0"
         )
 
     def is_active_answers(self, code: int, out: str) -> None:
@@ -520,14 +526,11 @@ class InstallerTest(unittest.TestCase):
     def test_start_refuses_to_replace_a_foreign_running_program(self) -> None:
         self.assertEqual(self.fx.install().returncode, 0)
         a = self.fx.current_sha()
-        self.fx.run_foreign_program(
-            "/home/jay/.local/share/afc-wake-router/releases/echo-native-protocol-2550-b04bcbaa"
-            "-20261125/scripts/simple_tools/native_candidate/native_qualification_launch.py"
-        )
+        self.fx.run_program(FOREIGN_LAUNCHER)
         self.fx.advance("b.py")
         result = self.fx.install("--start", tls=False)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("not the router's own program", result.stdout)
+        self.assertIn("not this installer's own release entry point", result.stdout)
         self.assertIn("native_qualification_launch.py", result.stdout)
         self.assertIn("--replace-running-program", result.stdout)
         # Nothing was changed:  the refusal happens before anything is written.
@@ -536,10 +539,7 @@ class InstallerTest(unittest.TestCase):
     def test_start_replaces_a_foreign_running_program_when_asked(self) -> None:
         self.assertEqual(self.fx.install().returncode, 0)
         a = self.fx.current_sha()
-        self.fx.run_foreign_program(
-            "/home/jay/.local/share/afc-wake-router/releases/echo-native-protocol-2550-b04bcbaa"
-            "-20261125/scripts/simple_tools/native_candidate/native_qualification_launch.py"
-        )
+        self.fx.run_program(FOREIGN_LAUNCHER)
         self.fx.advance("b.py")
         result = self.fx.install("--start", "--replace-running-program", tls=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -548,24 +548,45 @@ class InstallerTest(unittest.TestCase):
 
     def test_a_dry_run_lists_a_foreign_running_program(self) -> None:
         self.assertEqual(self.fx.install().returncode, 0)
-        self.fx.run_foreign_program(
-            "/home/jay/.local/share/afc-wake-router/releases/echo-native-protocol-2550-b04bcbaa"
-            "-20261125/scripts/simple_tools/native_candidate/native_qualification_launch.py"
-        )
+        self.fx.run_program(FOREIGN_LAUNCHER)
         result = self.fx.install("--dry-run", "--start", tls=False)
         self.assertEqual(result.returncode, 3, result.stdout)
-        self.assertIn("not the router's own program", result.stdout)
+        self.assertIn("not this installer's own release entry point", result.stdout)
 
     def test_an_install_that_does_not_start_reports_the_foreign_program_and_goes_on(self) -> None:
         self.assertEqual(self.fx.install().returncode, 0)
-        self.fx.run_foreign_program(
-            "/home/jay/.local/share/afc-wake-router/releases/echo-native-protocol-2550-b04bcbaa"
-            "-20261125/scripts/simple_tools/native_candidate/native_qualification_launch.py"
-        )
+        self.fx.run_program(FOREIGN_LAUNCHER)
         self.fx.advance("b.py")
         result = self.fx.install(tls=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("the units are not started, so nothing is replaced now", result.stdout)
+
+    def test_a_router_running_from_another_seat_release_is_not_the_installers_own(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        a = self.fx.current_sha()
+        # Another seat's named release holds a simple-chat of its own;  it is not a release this
+        # installer created, so a restart would replace a program it cannot take custody of.
+        named = (self.fx.base / "releases" / "echo-native-protocol-2550-b04bcbaa-20261125"
+                 / "scripts" / "simple-chat")
+        named.parent.mkdir(parents=True)
+        named.write_text("#!/usr/bin/env python3\n")
+        self.fx.run_program(str(named))
+        self.fx.advance("b.py")
+        result = self.fx.install("--start", tls=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("not this installer's own release entry point", result.stdout)
+        self.assertIn("echo-native-protocol-2550-b04bcbaa-20261125", result.stdout)
+        self.assertEqual(self.fx.current_sha(), a)
+
+    def test_a_router_running_from_the_installers_own_release_is_the_routers_own(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        a = self.fx.current_sha()
+        self.fx.run_router_from(a)  # the router runs from the release this installer created
+        self.fx.advance("b.py")
+        result = self.fx.install("--start", tls=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("the running router uses", result.stdout)
+        self.assertNotIn("not this installer's own release entry point", result.stdout)
 
     def test_uninstall_removes_nothing_unless_is_active_says_stopped(self) -> None:
         self.assertEqual(self.fx.install().returncode, 0)
