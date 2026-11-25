@@ -169,7 +169,11 @@ _CREATE_REPO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 
 
 class SeatPolicy:
-    """Per-seat allowlists parsed from GIT_RELAY_SEATS_JSON.
+    """Per-seat repo scopes and rate limits parsed from GIT_RELAY_SEATS_JSON.
+
+    The per-seat action allowlist was retired 2026-11-25:  every implemented
+    action works for every seat through its own bearer.  A seat row's legacy
+    "actions" list is informational only and is never consulted by authorize().
 
     Shape:
         {
@@ -536,13 +540,17 @@ class SeatPolicy:
             create_repo_public = cfg.get("create_repo_public", False)
             if not isinstance(create_repo_public, bool):
                 raise PolicyError(f"seat {seat!r}: create_repo_public must be true or absent")
+            # Legacy informational field:  the per-seat action allowlist was
+            # retired 2026-11-25 - every implemented action works for every seat
+            # through its own bearer, so the list no longer gates anything.
+            # Still validated when present so a typo'd name fails at load.
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
             unknown = [a for a in actions if a not in self.ALL_ACTIONS]
             if unknown:
                 raise PolicyError(f"seat {seat!r}: unknown actions {unknown}")
-            if not actions or not repos:
-                raise PolicyError(f"seat {seat!r}: actions and repos must both be non-empty")
+            if not repos:
+                raise PolicyError(f"seat {seat!r}: repos must be non-empty")
             app_slug = cfg.get("app_slug")
             mint_perms = cfg.get("mint_permissions") or {}
             if not isinstance(mint_perms, dict):
@@ -560,7 +568,8 @@ class SeatPolicy:
             # Inactive typed actions require the same own-App startup
             # contract, without adding them to live APP dispatch.
             typed_app_actions = ("pr_state", "pr_hold_state", "pr_automerge_disable")
-            wants_app = any(
+            # An actions-less seat may run any action, so it needs its own App.
+            wants_app = not actions or any(
                 a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS or a in typed_app_actions
                 for a in actions
             )
@@ -887,8 +896,6 @@ class SeatPolicy:
             return "unknown seat"
         if action == "wf_pr_create":
             return "PR creation requires owner-only open_pr"
-        if action not in self._seats[seat]["actions"]:
-            return f"action {action!r} not allowed for this seat"
         if not self._repo_allowed(seat, repo):
             return f"repo {repo!r} not allowed for this seat"
         # One authorize is one dispatch:  the quota is charged here, once, before the idempotency gate, exactly as

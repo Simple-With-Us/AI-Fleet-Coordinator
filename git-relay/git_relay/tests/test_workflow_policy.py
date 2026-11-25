@@ -26,7 +26,8 @@ class WorkflowPolicyTests(unittest.TestCase):
             seats(["wf_checks"], app_slug="swu-wise", mint_permissions={"checks": "read"})
         )
         self.assertIsNone(policy.authorize("swu-wise", "wf_checks", "example/r"))
-        self.assertIn("not allowed", policy.authorize("swu-wise", "wf_files_put", "example/r"))
+        # The retired per-seat allowlist no longer gates unlisted actions.
+        self.assertIsNone(policy.authorize("swu-wise", "wf_files_put", "example/r"))
 
     def test_other_bots_app_still_refused_for_workflow_actions(self):
         with self.assertRaises(PolicyError):
@@ -37,6 +38,27 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_unknown_workflow_name_is_refused_at_config_load(self):
         with self.assertRaises(PolicyError):
             SeatPolicy(seats(["wf_nope"], app_slug="swu-wise"))
+
+    def test_an_actions_less_seat_may_run_every_action_through_its_own_bearer(self):
+        policy = SeatPolicy(
+            json.dumps(
+                {
+                    "swu-wise": {
+                        "token": TOKEN,
+                        "repos": ["example/*"],
+                        "app_slug": "swu-wise",
+                        "mint_permissions": {"checks": "read"},
+                    }
+                }
+            ),
+            rate_per_hour=100000,
+            write_rate_per_hour=100000,
+        )
+        for action in sorted(SeatPolicy.ALL_ACTIONS):
+            if action == "wf_pr_create":
+                continue  # owner-only open_pr rule
+            with self.subTest(action=action):
+                self.assertIsNone(policy.authorize("swu-wise", action, "example/r"))
 
     def test_workflow_actions_stay_unwired_in_the_http_server(self):
         for action in SeatPolicy.WORKFLOW_ACTIONS:
