@@ -38,8 +38,14 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
     node = "/home/jay/.zcode/server/releases/3.19.0-linux-x64-60f71efd6a01/runtime/node"
     driver = Driver(state, spec["epoch"], node, str(env.get("HOME") or ""))
 
+    def registry_context():
+        # WakeSettings owns the scoped registry context. Keep its live mapping,
+        # never a dict snapshot: refreshed or revoked settings apply at dispatch.
+        overlay = getattr(config, "registry_env", None)
+        return overlay(env) if callable(overlay) else env
+
     def custody(target, workspace):
-        if adapter._recheck(env, target) is not None:
+        if adapter._recheck(registry_context(), target) is not None:
             return False
         status, row = adapter._session_binding(env, target.session_id)
         substatus, subs = adapter._subagent_ids(env, [target.session_id])
@@ -68,7 +74,7 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
             return driver(*args, **kwargs)
 
         return adapter._deliver_prompt(
-            env,
+            registry_context(),
             {**local_config, "native_delivery_review_only": True},
             target.session_id,
             text,

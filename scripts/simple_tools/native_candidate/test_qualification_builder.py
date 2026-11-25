@@ -161,6 +161,7 @@ class BuilderTests(unittest.TestCase):
 
         env = {
             "env": {},
+            "registry_context": lambda: {},
             "adapter": SimpleNamespace(_deliver_prompt=prompt),
             "spec": {"epoch": 100, "expires": 200},
             "time": SimpleNamespace(time=lambda: now[0]),
@@ -283,6 +284,7 @@ class BuilderTests(unittest.TestCase):
 
         env = {
             "env": {},
+            "registry_context": lambda: {},
             "adapter": SimpleNamespace(_deliver_prompt=prompt),
             "spec": {"epoch": 100, "expires": None},
             "time": SimpleNamespace(time=lambda: now[0]),
@@ -303,3 +305,76 @@ class BuilderTests(unittest.TestCase):
             "turn",
         )
         self.assertEqual(captured, [True, False])
+
+
+    def test_live_registry_context_refresh_missing_and_ownership_refusal(self):
+        from collections.abc import Mapping
+
+        class Settings(dict):
+            registry = {"address": "registry-one", "credential": "scope-one"}
+
+            def registry_env(self, raw):
+                owner = self
+
+                class Live(Mapping):
+                    def __getitem__(self, key):
+                        return owner.registry[key] if key in owner.registry else raw[key]
+
+                    def __iter__(self):
+                        return iter(set(raw) | set(owner.registry))
+
+                    def __len__(self):
+                        return len(set(raw) | set(owner.registry))
+
+                return Live()
+
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as tmp:
+            config = Settings()
+            calls = []
+            captured = {}
+            target = SimpleNamespace(session_id="sess_fixture", host="server", letter="II", generation=2)
+            row = {"id": target.session_id, "directory": tmp}
+            expected = ["registry-one", "scope-one"]
+
+            def recheck(context, selected):
+                calls.append((context.get("address"), context.get("credential")))
+                return None if calls[-1] == tuple(expected) and selected.generation == 2 else Delivery("refused")
+
+            def prompt(context, *a, **kw):
+                captured["context"] = context
+                return Delivery("unknown")
+
+            def qualify(*args):
+                captured["native"] = args[5]
+                return SimpleNamespace()
+
+            adapter = SimpleNamespace(
+                router_platform=lambda *a, **kw: Platform(lambda *a: None, lambda *a: None),
+                state_dir=lambda e: Path(tmp),
+                _recheck=recheck,
+                _session_binding=lambda *a: ("ok", row),
+                _subagent_ids=lambda *a: ("ok", set()),
+                _deliver_prompt=prompt,
+                WR=SimpleNamespace(Delivery=Delivery, Turn=Turn),
+            )
+            spec = {"target": vars(target), "workspace": tmp, "epoch": 100, "expires": None}
+            raw = {"HOME": tmp}
+            with patch.object(builder, "Driver"), patch.object(builder, "Qualification", side_effect=qualify), patch.object(builder, "fresh", return_value=True):
+                platform, qualifier, driver, custody = builder.build(adapter, raw, config, spec)
+                self.assertTrue(custody(target, tmp))
+                captured["native"](target, SimpleNamespace(wake_id="ra-fresh"), "notification", "turn")
+                live = captured["context"]
+                self.assertEqual(live["address"], "registry-one")
+                config.registry = {"address": "registry-two", "credential": "scope-two"}
+                expected[:] = ["registry-two", "scope-two"]
+                self.assertEqual(live["address"], "registry-two")
+                self.assertTrue(custody(target, tmp))
+                captured["native"](target, SimpleNamespace(wake_id="ra-next"), "notification", "turn")
+                self.assertEqual(captured["context"]["credential"], "scope-two")
+                config.registry = {}
+                self.assertFalse(custody(target, tmp))
+                config.registry = {"address": "registry-two", "credential": "scope-two"}
+                self.assertFalse(custody(SimpleNamespace(**{**vars(target), "generation": 3}), tmp))
+                row["directory"] = "/wrong"
+                self.assertFalse(custody(target, tmp))
+                self.assertEqual(raw, {"HOME": tmp})
