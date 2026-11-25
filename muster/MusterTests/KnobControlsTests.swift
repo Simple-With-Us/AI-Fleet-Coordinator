@@ -487,7 +487,7 @@ final class SecretsDoctorPanelTests: XCTestCase {
         let report = try FleetSecrets.parseDoctor(json)
         XCTAssertEqual(report["names_count"], "1")
         XCTAssertEqual(report["fetch_names_ok"], "true")
-        XCTAssertEqual(report["failure_reason"], "Infisical login failed (exit 1)")
+        XCTAssertNil(report["failure_reason"], "arbitrary provider prose is not displayed")
         XCTAssertNil(report["unlisted_check"], "a key the panel does not name is dropped")
         XCTAssertNil(report["unresolved_reference_count"], "this reader reports no unresolved references")
         XCTAssertNil(report["ai_fleet_coordinator_fetch_ok"], "this reader reports no per-project rows")

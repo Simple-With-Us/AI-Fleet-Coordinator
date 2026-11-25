@@ -1298,9 +1298,10 @@ class DeclaredConsumerReaderTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_declared_named_response_over_eight_kib_is_refused_without_output(self):
+        # The bounded core classifies output-budget exhaustion as unavailable.
         self.record_changes = {"secretValue": "fixture-value-" * 1024}
         code, out, err = self.run_reader()
-        self.assertEqual((code, out), (4, ""))
+        self.assertEqual((code, out), (124, ""))
         self.assertNotIn("fixture-value-", err)
         self.assertEqual(len(self.calls), 2)
 
