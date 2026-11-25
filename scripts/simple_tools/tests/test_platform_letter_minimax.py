@@ -528,6 +528,25 @@ class AbsentChatTests(MachineRunBase):
         self.write_note("m-0001", 7200)
         self.assertEqual(PM.absent_sessions(self.env(), frozenset({"m-0001"})), set())
 
+    def test_a_caller_that_hands_over_an_iterator_is_still_answered(self) -> None:
+        # The ids are read once:  a second pass over an iterator would find it empty,  and the gone chats
+        # would be missed.
+        self.write_note("m-0001", 7200)
+        gone = PM.minimax_gone(self.env(), (sid for sid in ["m-0001"]))
+        self.assertEqual(gone, {"m-0001"})
+
+    def test_a_chat_the_store_knows_does_not_starve_the_ones_it_does_not(self) -> None:
+        # The bound is spent on the chats the store does not know:  a first run of chats the store knows
+        # must not leave the budget empty for the rest.
+        known = ["k-%04d" % n for n in range(100)]
+        for sid in known:
+            self.add(sid, workspace=OWNER)
+        unknown = ["m-%04d" % n for n in range(PM.ABSENT_PROBE_LIMIT + 10)]
+        for sid in unknown:
+            self.write_note(sid, 7200)
+        gone = PM.absent_sessions(self.env(), known + unknown)
+        self.assertEqual(gone, set(unknown[: PM.ABSENT_PROBE_LIMIT]))
+
     def test_the_probes_are_bounded(self) -> None:
         # The gone path runs on a chat's start,  and one probe is one file read,  so the number of chats it
         # asks about is bounded.  The client offers the longest quiet chats first,  so the bound keeps the ones

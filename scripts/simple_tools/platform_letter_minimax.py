@@ -211,11 +211,10 @@ def _sid(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 def minimax_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """The kind of session this is:  a chat,  a sub-thread,  a headless run,  or the app's own run.
 
-    The app's own runs are headless (AFC-894),  so they never take a letter:  the fleet's rule is that
-    only interactive chats do,  and a BotFleet bot run and the runtime's own work are not chats
-    anyone addresses.  The store is asked what the session is,  because a launcher that started it
-    does not say so in the environment.  A store that cannot be read says nothing,  and the session
-    is a chat as it always was."""
+    A BotFleet bot run is headless (AFC-894),  so it never takes a letter:  the fleet's rule is that
+    only interactive chats do,  and a bot run is not a chat anyone addresses.  The store is asked what
+    the session is,  because a launcher that started it does not say so in the environment.  A store
+    that cannot be read says nothing,  and the session is a chat as it always was."""
     row = _row(env, _sid(payload, env))
     if row and _machine_run(row):
         return "headless"
@@ -289,6 +288,15 @@ def _extra(raw: object) -> dict[str, Any]:
 GONE_BATCH = 200
 
 
+# --------------------------------------------------------------------------------------------
+# The chats the store does not know (AFC-894)
+# --------------------------------------------------------------------------------------------
+#
+# A chat that was deleted or pruned has no row in the store at all,  and the row the assigner holds for it
+# stays live forever,  so its letter is never freed.  The store is asked about every id,  and the note of
+# the chat says when the fleet last addressed it:  a chat the store does not know and that nobody has
+# addressed for an hour is gone for good.
+
 #: How many chats the gone path asks about for the note probes.  The client offers the longest quiet chats
 #: first,  so the bound keeps the ones most likely to be gone,  and the rest wait for the next report.
 #: One probe is one file read,  and the gone path runs on a chat's start,  where every millisecond is the
@@ -327,23 +335,25 @@ def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[s
 
     The probes are bounded (ABSENT_PROBE_LIMIT),  and the order of the ids is kept:  the client offers the
     longest quiet chats first,  so the bound keeps the ones most likely to be gone,  and the rest wait for
-    the next report."""
+    the next report.  The store is asked about every id first,  so a chat it knows does not spend the
+    budget:  a first run of chats the store knows must not starve the chats it does not."""
     path = store_file(env)
     if not path or not os.path.isfile(path):
         return set()
-    wanted: list[str] = []
+    ordered: list[str] = []
+    seen: set[str] = set()
     for sid in session_ids or ():
-        if isinstance(sid, str) and sid and sid not in wanted:
-            wanted.append(sid)
-    wanted = wanted[:ABSENT_PROBE_LIMIT]
-    if not wanted:
+        if isinstance(sid, str) and sid and sid not in seen:
+            seen.add(sid)
+            ordered.append(sid)
+    if not ordered:
         return set()
     known: set[str] = set()
     try:
         conn = _read_only(path)
         try:
-            for start in range(0, len(wanted), GONE_BATCH):
-                chunk = wanted[start : start + GONE_BATCH]
+            for start in range(0, len(ordered), GONE_BATCH):
+                chunk = ordered[start : start + GONE_BATCH]
                 rows = conn.execute(
                     "SELECT session_id FROM local_runtime_sessions WHERE session_id IN (%s)"
                     % ",".join("?" * len(chunk)),
@@ -354,9 +364,10 @@ def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[s
             conn.close()
     except sqlite3.Error:
         return set()
+    unknown = [sid for sid in ordered if sid not in known][:ABSENT_PROBE_LIMIT]
     now = time.time()
     gone: set[str] = set()
-    for sid in set(wanted) - known:
+    for sid in unknown:
         note = _read_note(env, sid)
         if note is None:
             continue
@@ -429,7 +440,7 @@ LIVE_STATUSES = ("started", "running")
 #: abandoned a month ago is gone.
 DEAD_QUIET_SECONDS = 14 * 86400
 #: The store's own columns that say what a session is.
-MACHINE_COLUMNS = ("workspace_dir", "project_workspace_dir", "purpose")
+MACHINE_COLUMNS = ("workspace_dir", "project_workspace_dir")
 
 
 def _machine_run(row: Mapping[str, Any]) -> bool:
@@ -597,11 +608,14 @@ def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]
 
     The library asks this adapter on a chat's start,  and a report that names a gone chat has the
     assigner close its row and free the letter.  Ids only."""
-    ids = frozenset(session_ids or ())
+    # The ids are read once:  a caller may hand over an iterator,  and a second pass over it would find it
+    # empty.
+    ordered = list(session_ids or ())
+    ids = frozenset(ordered)
     gone = archived_sessions(env, ids) | over_sessions(env, ids)
     # The absent probes are bounded and keep the order of the ids,  so the longest quiet chats are the ones
     # the bound keeps.
-    return gone | absent_sessions(env, session_ids or ())
+    return gone | absent_sessions(env, ordered)
 
 
 def minimax_rename(request: PL.TitleRequest) -> bool:
