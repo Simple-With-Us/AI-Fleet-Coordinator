@@ -22,7 +22,11 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertTrue(ids.contains("app.botfleet.companion"))
         XCTAssertTrue(ids.contains("com.jay.operator"))
         XCTAssertFalse(ids.contains("seat-mcp"))
-        XCTAssertEqual(ids.count, 11)
+        // The Code mirror keeper is a launchd agent since the Nov 25, 2026 cutover,  so
+        // the pm2 app name is gone and the label is the service's id.
+        XCTAssertTrue(ids.contains("com.jay.code-main-keeper"))
+        XCTAssertFalse(ids.contains("code-main-keeper"))
+        XCTAssertEqual(ids.count, 12)
     }
 
     /// The Mac's eavesdropper (`com.jay.operator`) is on the Services list as a LaunchAgent,

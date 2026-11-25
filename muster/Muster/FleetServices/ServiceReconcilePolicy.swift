@@ -81,6 +81,8 @@ public enum ServicePolicyTable {
             "It only serves BotFleet Server, which Muster leaves alone, so Muster leaves it alone too."),
         row("com.jay.operator", .leaveAlone,
             "The Mac's eavesdropper was retired at the Nov 10 one-listener cutover, and the server listener holds every seat, so Muster never starts or stops it."),
+        row("com.jay.code-main-keeper", .keepRunning,
+            "launchd keeps it alive, and starting it again is safe:  it only fast-forwards the clean Code clones."),
         row("shellular", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
         row("vision-worker", .keepRunning,
@@ -111,7 +113,6 @@ public enum ServicePolicyTable {
     /// leaves every one of them alone.
     private static let agents: [(String, String)] = [
         ("com.jay.botfleet-server", handReason),
-        ("com.jay.code-main-keeper", keepAliveReason),
         ("com.jay.fleet-api-health", scheduledReason),
         ("com.jay.fleet-bearer-status", scheduledReason),
         ("com.jay.fleet-gdrive-backup", scheduledReason),

@@ -41,8 +41,9 @@ final class ServiceReconcilePolicyTests: XCTestCase {
 
     func testSupportedKeepRunningServicesAreExplicitAndDoNotIncludeSeatMCP() {
         let keeping = ServicePolicyTable.rows.filter { $0.source == .servicesList && $0.policy == .keepRunning }
-        XCTAssertEqual(keeping.count, 5)
-        for id in ["shellular", "vision-worker", "xcode-health", "agy-acp", "grok-acp"] {
+        XCTAssertEqual(keeping.count, 6)
+        for id in ["shellular", "com.jay.code-main-keeper", "vision-worker", "xcode-health",
+                   "agy-acp", "grok-acp"] {
             XCTAssertEqual(ServicePolicyTable.policy(for: id), .keepRunning, id)
         }
         XCTAssertNil(ServicePolicyTable.row(for: "seat-mcp"))
@@ -73,8 +74,19 @@ final class ServiceReconcilePolicyTests: XCTestCase {
         guard let data = try? Data(contentsOf: file) else { throw XCTSkip("The allowlist file is not in this checkout.") }
         let allowlist = try XCTUnwrap(OpsAllowlist.parse(data))
         let named = Set(allowlist.macAgents.map(\.name))
-        XCTAssertEqual(named, Set(ServicePolicyTable.agentLabels),
-                       "The policy table and scripts/fleet-ops-control.json name different LaunchAgents.")
+        // The allowlist names every LaunchAgent Muster may act on.  The ones on the
+        // Services list are managed by their own row,  and the rest are the ones the
+        // policy table leaves alone.
+        let listed = Set(FleetServiceRegistry.all.compactMap { descriptor -> String? in
+            if case .launchAgent(let label) = descriptor.kind { return label }
+            return nil
+        })
+        for name in named {
+            XCTAssertTrue(ServicePolicyTable.agentLabels.contains(name) || listed.contains(name),
+                          "\(name) is named by the allowlist and by neither the Services list nor the policy table.")
+        }
+        XCTAssertEqual(Set(ServicePolicyTable.agentLabels), named.subtracting(listed),
+                       "The policy table leaves alone a LaunchAgent the allowlist does not name, or names one it does.")
     }
 
     func testAServiceNobodyWroteARowForIsLeftAlone() {
