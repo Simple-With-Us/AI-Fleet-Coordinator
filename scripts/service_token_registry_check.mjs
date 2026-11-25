@@ -8,7 +8,9 @@
 // minted and never registered is found by a check rather than by an accident.
 //
 // It prints only nonsecret metadata: token ids, names, projects and expiries.
-// It never reads a token value and never writes one anywhere.
+// It never reads a token value and never writes one anywhere.  A read that
+// fails is a failure:  the check concludes nothing rather than concluding
+// "no gap" from a directory it could not read.
 //
 //   node scripts/service_token_registry_check.mjs --sidecar-dir ~/.config/infisical \
 //       --sheet-rows rows.jsonl [--inventory peer.json]...
@@ -25,6 +27,9 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SHEET = 'Infisical Service Tokens';
+// The only fields of a sidecar or a peer inventory this script keeps.  A
+// handed-over inventory file is not trusted to hold only these keys.
+const KEEP = ['id', 'name', 'project', 'expiresAt', 'file'];
 
 function parseArgs(argv) {
   const args = { sidecarDir: join(homedir(), '.config', 'infisical'), inventories: [] };
@@ -33,7 +38,9 @@ function parseArgs(argv) {
     const value = argv[i + 1];
     const needsValue = ['--sidecar-dir', '--sheet-rows', '--fleet-ops-root', '--inventory'];
     if (needsValue.includes(flag)) {
-      if (value === undefined) throw new Error(`${flag} needs a value`);
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(`${flag} needs a value`);
+      }
       i += 1;
     }
     switch (flag) {
@@ -54,13 +61,19 @@ function parseArgs(argv) {
 // the Mac's carries `folder` and `scope` beside `scopes`, the server's carries
 // the scope inside `scopes` alone.  The fields this script needs (`id` and
 // `name`) are the same in both.
+//
+// A directory that cannot be read, and a sidecar that cannot be parsed, are
+// read failures:  the check then cannot say which tokens are installed, so it
+// concludes nothing instead of concluding that there is no gap.
 export function readSidecars(directory) {
   const found = [];
+  const unreadable = [];
   let entries;
   try {
     entries = readdirSync(directory);
-  } catch {
-    return found;
+  } catch (error) {
+    const code = error && error.code ? error.code : 'unknown';
+    throw new Error(`the sidecar directory ${directory} could not be read (${code})`);
   }
   for (const entry of entries.sort()) {
     if (!entry.endsWith('.json')) continue;
@@ -68,8 +81,12 @@ export function readSidecars(directory) {
     try {
       if (!statSync(path).isFile()) continue;
       const data = JSON.parse(readFileSync(path, 'utf8'));
-      if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
-      const id = typeof data.id === 'string' ? data.id : typeof data.tokenId === 'string' ? data.tokenId : '';
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        unreadable.push(entry);
+        continue;
+      }
+      const id = typeof data.id === 'string' ? data.id.trim()
+        : typeof data.tokenId === 'string' ? data.tokenId.trim() : '';
       if (!id) continue;
       found.push({
         id,
@@ -79,11 +96,39 @@ export function readSidecars(directory) {
         file: entry,
       });
     } catch {
-      // A sidecar that cannot be parsed is not evidence about a token; it is
-      // counted in the sidecars read and never guessed at.
+      unreadable.push(entry);
     }
   }
-  return found;
+  return { found, unreadable };
+}
+
+// Another host's inventory, kept to the same fields as a local sidecar:  a
+// file handed over from another host is not trusted to hold only these keys.
+export function readPeerInventory(path) {
+  let data;
+  try {
+    data = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    const code = error && error.code ? error.code : 'unparsable';
+    throw new Error(`the peer inventory ${path} could not be read (${code})`);
+  }
+  if (!data || typeof data !== 'object' || !Array.isArray(data.tokens)) {
+    throw new Error(`the peer inventory ${path} has no token list`);
+  }
+  const peers = [];
+  for (const token of data.tokens) {
+    if (!token || typeof token !== 'object') continue;
+    const id = typeof token.id === 'string' ? token.id.trim() : '';
+    if (!id) continue;
+    peers.push({
+      id,
+      name: typeof token.name === 'string' ? token.name : '',
+      project: typeof token.project === 'string' ? token.project : '',
+      expiresAt: token.expiresAt === null || token.expiresAt === undefined ? null : String(token.expiresAt),
+      file: `${path}:${typeof token.file === 'string' ? token.file : ''}`,
+    });
+  }
+  return peers;
 }
 
 // The registry rows: either a JSON-lines file, or the live sheet through the
@@ -95,7 +140,7 @@ export async function readSheetRows(args) {
       const trimmed = line.trim();
       if (!trimmed.startsWith('{')) continue;
       const row = JSON.parse(trimmed);
-      const id = typeof row['Token ID'] === 'string' ? row['Token ID'] : '';
+      const id = typeof row['Token ID'] === 'string' ? row['Token ID'].trim() : '';
       if (!id) continue;
       rows.push({ id, name: String(row.Token ?? ''), status: String(row.Status ?? ''), expiresAt: String(row['Expires (UTC)'] ?? '') });
     }
@@ -126,8 +171,8 @@ export async function readSheetRows(args) {
 }
 
 export function findGaps(installed, rows) {
-  const registered = new Set(rows.map(row => row.id));
-  const missing = installed.filter(token => !registered.has(token.id));
+  const registered = new Set(rows.map(row => (typeof row.id === 'string' ? row.id.trim() : row.id)));
+  const missing = installed.filter(token => !registered.has(typeof token.id === 'string' ? token.id.trim() : token.id));
   return { missing };
 }
 
@@ -155,17 +200,21 @@ async function main() {
     return 0;
   }
 
-  const installed = readSidecars(args.sidecarDir);
+  const { found: installed, unreadable } = readSidecars(args.sidecarDir);
+  if (unreadable.length) {
+    throw new Error(`the sidecar(s) ${unreadable.join(', ')} could not be read`);
+  }
   if (args.printInventory) {
-    process.stdout.write(JSON.stringify({ host: homedir(), tokens: installed }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ host: homedir(), tokens: installed.map(token => {
+      const kept = {};
+      for (const key of KEEP) kept[key] = token[key];
+      return kept;
+    }) }, null, 2) + '\n');
     return 0;
   }
 
   const peers = [];
-  for (const path of args.inventories) {
-    const data = JSON.parse(readFileSync(path, 'utf8'));
-    for (const token of data.tokens ?? []) peers.push({ ...token, file: `${path}:${token.file ?? ''}` });
-  }
+  for (const path of args.inventories) peers.push(...readPeerInventory(path));
 
   const rows = await readSheetRows(args);
   const all = [...installed, ...peers];
