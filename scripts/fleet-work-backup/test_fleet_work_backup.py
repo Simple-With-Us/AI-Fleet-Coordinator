@@ -811,7 +811,11 @@ class RunBase(unittest.TestCase):
         self.cfg.restic_bin = str(stub)
         sys.path.insert(0, str(HERE.parent))
         from fleet_knobs.tests._fake import ScopedReadAPI
-        self.reader_api = ScopedReadAPI({}, project=str(uuid.uuid4()), path="/")
+        # The job reads its own names from the one folder they live in,  so the fake
+        # reader is pinned to that folder and not to the project root.
+        self.reader_api = ScopedReadAPI(
+            {}, project=str(uuid.uuid4()), path=fwb.CREDENTIAL_FOLDER
+        )
         self.reader_api.__enter__()
         self.addCleanup(self.reader_api.__exit__)
         client = fwb._infisical_reader()
