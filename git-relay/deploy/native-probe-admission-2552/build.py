@@ -28,7 +28,16 @@ DEFAULT_NAME = "native-probe-admission-2552"
 TRANSACTIONS = "/opt/git-relay/transactions"
 NAME = re.compile(r"native-probe-admission-2552(?:-a[0-9]{2,3})?")
 PROOF_TEMPLATE = "3a11eb38c8be53cb0d0a3cdd65f480d81a322e7c25fb127db68d94e3b56c1365"
-MODULES = {'__init__.py': 'e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423', 'deploy_transaction.py': 'a6bf527f0cf9946ea352c84372fb49df3682cd163f2c91d46ddf301521d50852', 'deploy_recovery.py': 'e362ba890b0e19fa8fbd07a23096358bfbc8b29b5a9524da09546b4f4c5619d1', 'deploy_supervisor.py': '4d605bcaf528d517037f99edf6d10f496512bfc508f93e580d2045a3905c854d', 'deploy_journal.py': 'bb39bbe7ced794771aa419c357509cf2a30bc719d68cdb5c29557f7cec74a2a0', 'deploy_host.py': '10eac3f0d7ed7da6bca1ba9548c3296e31ed8fe97427c7cb529570336247b8ec', 'deploy_guard.py': '536787ce91394b13e11620785d3a781aaac8ab8f38d5e7fa25757d82eba0d262', 'deploy_runner.py': '36a9033e2678ae57b071c391d2dee954b4ec818419433c00d06eb7250954db72'}
+MODULES = {
+    "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
+    "deploy_transaction.py": "a6bf527f0cf9946ea352c84372fb49df3682cd163f2c91d46ddf301521d50852",
+    "deploy_recovery.py": "e362ba890b0e19fa8fbd07a23096358bfbc8b29b5a9524da09546b4f4c5619d1",
+    "deploy_supervisor.py": "4d605bcaf528d517037f99edf6d10f496512bfc508f93e580d2045a3905c854d",
+    "deploy_journal.py": "bb39bbe7ced794771aa419c357509cf2a30bc719d68cdb5c29557f7cec74a2a0",
+    "deploy_host.py": "10eac3f0d7ed7da6bca1ba9548c3296e31ed8fe97427c7cb529570336247b8ec",
+    "deploy_guard.py": "536787ce91394b13e11620785d3a781aaac8ab8f38d5e7fa25757d82eba0d262",
+    "deploy_runner.py": "36a9033e2678ae57b071c391d2dee954b4ec818419433c00d06eb7250954db72",
+}
 
 
 def digest(raw):
