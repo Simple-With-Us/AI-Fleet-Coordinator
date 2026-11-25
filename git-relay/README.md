@@ -319,7 +319,7 @@ only the owner-approved AFC-797 source/output pair documented in
 [Reviewed Muster Vector Preservation](../docs/security/reviewed-muster-vector-preservation.md)
 plus the two owner-approved AFC-793 fixture test pairs documented in
 [Reviewed Fixture Pairs Preservation](../docs/security/reviewed-fixture-pairs-preservation.md):
-`scripts/fleet_rag/tests/test_recall.py` (`b78c76d6…` to `d9cd1d0a…`) and
+`scripts/fleet_rag/tests/test_recall.py` (renewed Nov 23, 2026: `8a6911c3…` to `de6b3090…`; the Nov 21 tuple is retired) and
 `scripts/fleet_rag/tests/test_ingest.py` (`e970e451…` to `1eaa804f…`).
 REVIEWED_SAME_PATH_SOURCES remains empty; this is independent of the existing
 _REVIEWED_FIXTURES registry.  The refreshed exact
@@ -385,7 +385,10 @@ or returned.
 
 ## Bounds and failure shape
 
-Request bodies are capped at 64 KiB, text fields at 32 KiB, GitHub responses at 1 MiB (8 MiB for a
+Request bodies are capped at 64 KiB, with narrow per-action envelopes above it (256 KiB for the
+binary release-asset upload, 6 MiB for the full-file writes `wf_file_put` and `wf_files_put` and
+the large-text git creates `wf_git_blob_create` and `wf_git_tree_create`, whose text the verbs
+bound at 700 KiB), text fields at 32 KiB, GitHub responses at 1 MiB (8 MiB for a
 paged GET other than a compare, whose raw rows are far larger than the rows the relay returns), and every
 GitHub call has a 30 s timeout.  Workflow-dispatch inputs are a flat object of at most 32 scalar
 values (strings capped at 1024 characters).  Neither the GitHub client nor the Infisical client

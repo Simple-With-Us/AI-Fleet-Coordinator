@@ -387,7 +387,8 @@ Owner, Thu, Oct 15:  agents should "fully interact with the listener (or the lis
    docker exec "$C" python3 -c 'import os,sys,time,urllib.request as u;sys.path.insert(0,"/app/scripts");from simple_tools import listener_api as A;p="/listener/v1/JET/status";t=str(int(time.time()));r=u.Request("http://127.0.0.1:8788"+p,headers={A.TIMESTAMP_HEADER:t,A.SIGNATURE_HEADER:A.sign(os.environ["JET_ROUTINE_KEY"],p,"",t)});print(u.urlopen(r).status)'
    curl -s -o /dev/null -w '%{http_code}\n' https://operator.simplewithus.com/listener/v1/JET/status    # 401:  unsigned
    ```
-   Run the first through the loader, which execs the program you name with what it loaded (`docker exec "$C" python3 /app/scripts/simple_tools/server/infisical_env.py /usr/local/bin/python3 -c '...'`):  `JET_ROUTINE_KEY` comes only from Infisical, so a plain `docker exec` does not see it.  The first prints `200` and nothing else;  the second prints `401`.
+   Run the first through the loader, which execs the program you name with what it loaded (`docker exec "$C" python3 /app/scripts/simple_tools/server/infisical_env.py /usr/local/bin/python3 -c '...'`):  `JET_ROUTINE_KEY` comes only from Infisical, so a plain `docker exec` does not see it.  The first prints `200` and nothing else;  the second prints `401`.
+   The public host routes only the prefixes above (`/listener/v1/`, `/notes/v1/`, and `/linear/v1/` once the webhook is armed):  any other path, `/health` included, answers the proxy's own 503 "no available server", which says nothing about the Operator (AFC-822).  The real health check is the container's own, `docker inspect --format '{{.State.Health.Status}}' <container>` (expect `healthy`), and the reachability check is the 401 the unsigned `/listener/v1/<SEAT>/status` answers through the proxy.
 6. **Point the Worker at it** (`scripts/simple-tools-mcp/DEPLOY.md`, "Listener read API").
 
 ### Linear project webhook

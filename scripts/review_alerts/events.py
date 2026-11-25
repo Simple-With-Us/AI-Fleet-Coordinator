@@ -40,14 +40,9 @@ EVENT_FIELDS = (
     "link",
 )
 
-KINDS = (
-    "review_submitted",
-    "review_completed",
-    "findings_added",
-    "merge_conflict",
-    "changes_requested",
-    "check_failure",
-)
+#: The event kinds.  The first three are review activity;  `ci_failed` and `merge_blocked`
+#: are states of the PR itself, which block it as surely as a finding does.
+KINDS = ("review_submitted", "review_completed", "findings_added", "ci_failed", "merge_blocked")
 TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
 #: outcome is not settled (transport failure or a possibly-lost answer) and is
@@ -190,10 +185,17 @@ class EventStore:
 
     def cursor(self, repo: str, number: int) -> dict:
         """The high-water marks and alerted completion heads derived from the
-        seed and stored events (ids only grow;  heads only accumulate)."""
+        seed and stored events (ids only grow;  heads only accumulate).
+
+        `ci_ids` are the failed check runs a CI event already named, one by
+        one:  a slow run may fail after a fast one and carry the lower id, so
+        a high-water mark would lose it.  `ci_floor` is the seed's own check
+        watermark, the runs that completed before the PR was registered."""
         reviews = 0
         comments = 0
         checks = 0
+        ci_floor = 0
+        ci_ids: set = set()
         completed_heads: set = set()
         with self._lock:
             seed = self._seeds.get((repo, int(number)))
@@ -205,10 +207,7 @@ class EventStore:
                     comments = int(parts[1])
                 if len(parts) >= 3 and parts[2].isdigit():
                     checks = int(parts[2])
-            # The first-sight baselines, before any event-derived maximum:
-            # detection passes that must not assume numeric completion order
-            # filter on these and leave repeats to the event store.
-            review_seed, check_seed = reviews, checks
+                    ci_floor = checks
             for (r, n, kind, event_id), row in self._by_key.items():
                 if r != repo or n != int(number):
                     continue
@@ -220,6 +219,10 @@ class EventStore:
                     tail = str(event_id)[1:]
                     if tail.isdigit():
                         comments = max(comments, int(tail))
+                elif kind == "ci_failed" and str(event_id).startswith("ci"):
+                    ci_ids.update(
+                        int(token) for token in str(event_id)[2:].split("+") if token.isdigit()
+                    )
                 if kind in ("review_submitted", "review_completed"):
                     head = str(row.get("head") or "")
                     if head:
@@ -228,8 +231,8 @@ class EventStore:
             "review_id": reviews,
             "comment_id": comments,
             "check_id": checks,
-            "review_seed": review_seed,
-            "check_seed": check_seed,
+            "ci_ids": sorted(ci_ids),
+            "ci_floor": ci_floor,
             "completed_heads": sorted(completed_heads),
         }
 

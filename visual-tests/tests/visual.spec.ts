@@ -46,7 +46,12 @@ for (const viewport of viewports) {
       // No masks: the whole point of the fixture is deterministic pixels.
       // Full page so both the expanded card and the collapsed <details> pin.
       fullPage: true,
-      maxDiffPixels: 200,
+      // Runner instances drift by ~210 pixels (0.01 ratio) on this unmasked
+      // full-page capture even with the Noto fonts pinned (recurring Nov 20-23
+      // on unrelated PR branches while CI stayed green on the same SHAs), so
+      // the allowance sits above that observed drift while a real markup
+      // regression still dwarfs it.
+      maxDiffPixels: 400,
     });
     expect(serveErrors(page)).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

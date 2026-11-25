@@ -124,7 +124,7 @@ Background-jobs inventory note is `⭐️ Background Jobs Master List` — refre
 
 ## Canon
 
-- `~/apps/FLEET-PROTOCOL.md` § Apple Notes
+- `docs/protocols/apple-notes-title-structure.md`
 - Skills: `closeout`, `owner-copy`
 
 ### Handoff Reports (Immediate & Living)

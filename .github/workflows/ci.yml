@@ -524,7 +524,7 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_autofix_request_gate -v
-    # Owner seat-precedence rule (FLEET-PROTOCOL Identity Rules, 2026-10-09):  no
+    # Owner seat-precedence rule (FLEET-PROTOCOL Seats and Identity, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees

@@ -147,4 +147,58 @@ class Runner(Base):
         # The extracted helper must not reference a wake it was not given (NameError after launch).
         for rc, out in ((0, b""), (3, b""), (0, SIG)):
             self.single(rc, out); self.turn(rc, out)
+
+
+class ConfiguredIndexTransport(Base):
+    """The merged index fact and single/turn evidence use one live configuration."""
+
+    def test_external_index_supports_single_turn_evidence_and_refresh(self):
+        other = self.tmp / "external.sqlite"
+        source = sqlite3.connect(self.index)
+        dest = sqlite3.connect(other)
+        try:
+            source.backup(dest)
+        finally:
+            source.close()
+            dest.close()
+        con = sqlite3.connect(self.index)
+        try:
+            con.execute("DELETE FROM tasks")
+            con.commit()
+        finally:
+            con.close()
+        self.cfg["tasks_index"] = str(other)
+        h = WR.Wake("w-aaaaaaaa", message_id=5)
+        r = WR.Wake("w-bbbbbbbb", message_id=6)
+        for role, expected in (("user", "sent"), ("assistant", "refused")):
+            with self.subTest(role=role):
+                platform = ZC.router_platform(
+                    self.env, self.cfg, runner=self.mk(3, b"", True, role=role)
+                )
+                with patch.object(
+                    ZC.WR.registry_api, "call", side_effect=self._registry([_holding_row(SID)])
+                ):
+                    self.assertEqual(platform.exclude([self.tgt]), set())
+                    single = platform.deliver(self.tgt, h)
+                self.assertEqual(single.outcome, expected)
+                platform = ZC.router_platform(
+                    self.env, self.cfg, runner=self.mk(3, b"", True, role=role)
+                )
+                turn = platform.deliver_turn(self.tgt, h, (r,), TID)
+                self.assertEqual(turn.delivery.outcome, expected)
+                self.assertEqual(turn.confirmed, ())
+                if role == "user":
+                    self.assertEqual(turn.carried, (r.wake_id,))
+                else:
+                    self.assertTrue(turn.unreadable)
+                # Refresh the same mapping to the stale HOME index: both paths refuse
+                # before launch, and exclusion follows the refreshed index too.
+                self.cfg["tasks_index"] = str(self.index)
+                self.assertEqual(platform.exclude([self.tgt]), {SID})
+                self.assertEqual(platform.deliver(self.tgt, h).code, "session-not-found")
+                refused = platform.deliver_turn(self.tgt, h, (r,), TID)
+                self.assertEqual(refused.delivery.code, "session-not-found")
+                self.assertNotEqual(refused.delivery.outcome, "sent")
+                self.cfg["tasks_index"] = str(other)
+
 if __name__ == "__main__": unittest.main()

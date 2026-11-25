@@ -1053,12 +1053,13 @@ class GoneChatsTests(HookBase):
         self.begin(sid, now=self.t0)
         self.begin("s-0002", now=self.t0)
         self.archived_record("local_aaaaaaaa-0001", sid)
+        label = self.label(sid)  # the letter the chat held, read before the report retires it
         out = io.StringIO()
         with self.reports() as sent:
             code = PL.gone_main(["--platform", "claude"], self.env(), out, now=self.due, platform="darwin")
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(out.getvalue().splitlines(), [
-            "would report Claude %s (01234567, mac)" % self.label(sid),
+            "would report Claude %s (01234567, mac)" % label,
             "Claude gone report, mac:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
             "Claude gone report, server:  0 gone  (dry run:  nothing sent;  --apply reports them now)",
         ])
@@ -1066,9 +1067,11 @@ class GoneChatsTests(HookBase):
         out = io.StringIO()
         code = PL.gone_main(["--platform", "claude", "--apply"], self.env(), out, now=self.due, platform="darwin")
         self.assertEqual(code, 0, out.getvalue())
-        self.assertIn("reported Claude %s (01234567, mac)" % self.label(sid), out.getvalue())
+        self.assertIn("reported Claude %s (01234567, mac)" % label, out.getvalue())
         self.assertNotIn("Secret Title", out.getvalue())
         self.assertEqual(self.row_state(sid), "closed")
+        # The report retires the chat locally:  its note holds no letter any more.
+        self.assertEqual(self.label(sid), "")
 
     def test_simple_chat_letter_routes_the_verb_and_its_earlier_name(self) -> None:
         for script, verb in (("simple-chat", "gone"), ("simple-chat", "sweep-archived"), ("platform-letter", "gone")):

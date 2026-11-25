@@ -1661,6 +1661,23 @@ class Daemon:
                     reason="invalid-or-reused-read-key",
                 )
                 review_origin_key = ""
+        from .review_origin_projection import ZC_KEY_ENV
+
+        review_origin_zc_key = Z._strip_quotes(self.env.get(ZC_KEY_ENV) or "")
+        if review_origin_zc_key:
+            self.hide_values([review_origin_zc_key])
+            if (
+                not re.fullmatch(r"[!-~]{32,512}", review_origin_zc_key)
+                or "${" in review_origin_zc_key
+                or review_origin_zc_key in keys.values()
+                or review_origin_zc_key == review_origin_key
+            ):
+                self.log.write(
+                    "review-origin-projection-held",
+                    key_env=ZC_KEY_ENV,
+                    reason="invalid-or-reused-read-key",
+                )
+                review_origin_zc_key = ""
         # The service is built on the server whether or not any principal has a usable key, and
         # whether or not the API is on or bound:  the note-link hook and the sweeper run in
         # process and need no key.  The keys decide only whether the API serves /registry/v1/.
@@ -1673,6 +1690,7 @@ class Daemon:
             window,
             tuple(sorted((name, key) for name, key in keys.items())),
             review_origin_key,
+            review_origin_zc_key,
         )
         if old is not None and old_spec == spec:
             service = old
@@ -1681,6 +1699,7 @@ class Daemon:
                 db_path,
                 keys,
                 review_origin_read_key=review_origin_key,
+                review_origin_zc_read_key=review_origin_zc_key,
                 clock=self.clock.time,
                 log=self.log.write,
                 gone_report_max_share=share,
@@ -6410,6 +6429,23 @@ class Daemon:
                 if isinstance((v.get("times") or {}).get("started"), (int, float))
                 and now - v["times"]["started"] < W.DAY
             ]
+            # The router outcomes of the last day, and every wake still waiting on its router
+            # receipt however old (AFC-835), for the status document:  the same words and the same
+            # window rule `listener_records.wakes_view` gives the listener API's view (a wake is in
+            # the window while its newest row is), computed from the ledger this seat already holds
+            # in memory.
+            # One pass over the seat's merged views:  the windowed outcome counts and the
+            # awaiting count together (Kody, PR 2511), instead of scanning the ledger twice.
+            outcomes = {state: 0 for state in W.OUTCOME_STATES}
+            outcomes["awaiting"] = 0
+            for view in views.values():
+                state = view.get("state")
+                if state in W.OUTCOME_STATES:
+                    ts = view.get("ts")
+                    if isinstance(ts, (int, float)) and now - ts < W.DAY:
+                        outcomes[state] += 1
+                elif state == "done" and view.get("receipt_awaited") is True:
+                    outcomes["awaiting"] += 1
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -6497,6 +6533,9 @@ class Daemon:
                 "wake": runner.cfg.wake,
                 "routine": routine,
                 "wakes_24h": len(day),
+                # The outcomes of those wakes, for the Operator panel (AFC-835).  Additive:  a
+                # reader that predates it ignores it.
+                "wake_outcomes_24h": outcomes,
                 # Additive:  a reader that predates the switch ignores it (AFC-643-style decode).
                 "bracket_recipient_wakes": bool(runner.cfg.bracket_recipient_wakes),
                 # No dollar figures in the status at all (owner 2026-10-13):  the per-run cost of a wake was
