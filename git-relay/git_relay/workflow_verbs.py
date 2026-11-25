@@ -52,6 +52,18 @@ class CeilingDenied(Refused):
     """The seat's App ceiling does not cover the verb's permissions (a 403, not a bad request)."""
 
 
+class GraphQLRefused(RelayGitHubError):
+    """A GraphQL refusal with a fixed, classified reason.
+
+    The provider's own message is never kept on it:  only a fixed code, chosen from
+    the fixed set in this module, rides along so the caller can be told why.
+    """
+
+    def __init__(self, status, message, code=None, fixed_reason=None):
+        super().__init__(status, message, code=code)
+        self.fixed_reason = fixed_reason
+
+
 class WriteOutcomeUnknown(RuntimeError):
     """A write was sent but its result cannot be verified."""
 
@@ -70,6 +82,40 @@ LABEL_NOT_APPLIED = "additive label was not applied"
 AUTO_MERGE_NOT_ARMED = "auto-merge is not armed"
 AUTO_MERGE_REFUSED = "auto-merge enable was refused"
 AUTO_MERGE_OTHER_METHOD = "auto-merge is armed with a different method"
+# GitHub's own reason for refusing the enable, classified into a fixed set so the
+# caller can act on it.  The provider's prose never leaves this module:  only these
+# fixed strings do, and the hosted front maps each of them to its own reason.
+AUTO_MERGE_REFUSED_CHECKS = "auto-merge was refused: required checks are not passing"
+AUTO_MERGE_REFUSED_MERGEABLE = "auto-merge was refused: the pull request is not mergeable"
+AUTO_MERGE_REFUSED_REPO = "auto-merge was refused: the repository does not allow auto-merge"
+AUTO_MERGE_REFUSED_BASE = "auto-merge was refused: the base branch does not allow auto-merge"
+
+# The provider's own wording, matched only to classify it.  A message that matches
+# no known reason keeps the generic refusal.
+_AUTO_MERGE_REFUSAL_REASONS = (
+    ("status checks are not passing", AUTO_MERGE_REFUSED_CHECKS),
+    ("required status checks", AUTO_MERGE_REFUSED_CHECKS),
+    ("is not mergeable", AUTO_MERGE_REFUSED_MERGEABLE),
+    ("base branch", AUTO_MERGE_REFUSED_BASE),
+    ("does not allow auto-merge", AUTO_MERGE_REFUSED_REPO),
+    ("auto-merge is not allowed", AUTO_MERGE_REFUSED_REPO),
+)
+
+
+def _auto_merge_refusal(message):
+    """The fixed reason for GitHub's refusal, classified from its own message.
+
+    The provider's prose never leaves this module:  the message is matched here and
+    only a fixed code is returned.  None means the message matched no known reason,
+    and the generic refusal stands.
+    """
+    if not isinstance(message, str):
+        return None
+    lowered = message.casefold()
+    for needle, reason in _AUTO_MERGE_REFUSAL_REASONS:
+        if needle in lowered:
+            return reason
+    return None
 _NODE_ID = re.compile(r"[A-Za-z0-9_/=+-]{1,200}")
 
 
@@ -4861,7 +4907,7 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
     def _pr_node(self, repo, number):
         return self._pr_read(repo, number)[1]
 
-    def _fixed_graph(self, query, variables, field, write=True):
+    def _fixed_graph(self, query, variables, field, write=True, reason_of=None):
         try:
             data = self.client._call(
                 "POST",
@@ -4877,18 +4923,29 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
         # Retain only a fixed error type, never provider messages, paths or extensions.
         errors = data.get("errors") if isinstance(data, dict) else None
         error_code = None
+        fixed_reason = None
         if isinstance(errors, list) and 1 <= len(errors) <= 20:
             kinds = [error.get("type") if isinstance(error, dict) else None for error in errors]
             allowed = {"FORBIDDEN", "NOT_FOUND", "UNPROCESSABLE", "RATE_LIMITED"}
             if all(isinstance(kind, str) and kind in allowed for kind in kinds):
                 if len(set(kinds)) == 1:
                     error_code = "graphql_" + kinds[0].lower()
+            if reason_of is not None:
+                # The provider's own reason, classified into a fixed string.  The
+                # message itself is never kept, logged or returned.
+                for error in errors:
+                    if isinstance(error, dict):
+                        fixed_reason = reason_of(error.get("message"))
+                        if fixed_reason is not None:
+                            break
         if (
             not isinstance(data, dict)
             or data.get("errors")
             or not isinstance(data.get("data"), dict)
         ):
-            raise RelayGitHubError(502, "GraphQL outcome unverifiable", code=error_code)
+            raise GraphQLRefused(
+                502, "GraphQL outcome unverifiable", code=error_code, fixed_reason=fixed_reason
+            )
         result = data["data"].get(field)
         if not isinstance(result, dict):
             raise RelayGitHubError(502, "GraphQL result unverifiable")
@@ -5014,7 +5071,10 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
         )
         try:
             result = self._fixed_graph(
-                query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
+                query,
+                {"id": node, "method": method},
+                "enablePullRequestAutoMerge",
+                reason_of=_auto_merge_refusal,
             )
             pull = _sub(result, "pullRequest")
             arm = pull.get("autoMergeRequest")
@@ -5039,7 +5099,10 @@ class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
                 # is permanent.  A lost response, or a rate limit, can be sent again.
                 code = exc.code if isinstance(exc.code, str) else ""
                 if code in ("graphql_forbidden", "graphql_not_found", "graphql_unprocessable"):
-                    raise Refused(AUTO_MERGE_REFUSED)
+                    # GitHub's own reason, classified into a fixed string, so the
+                    # caller knows whether to wait for checks, resolve a conflict
+                    # or stop.  The provider's prose is not part of the answer.
+                    raise Refused(getattr(exc, "fixed_reason", None) or AUTO_MERGE_REFUSED)
                 raise Refused(AUTO_MERGE_NOT_ARMED)
             return {"pull": settled}
 

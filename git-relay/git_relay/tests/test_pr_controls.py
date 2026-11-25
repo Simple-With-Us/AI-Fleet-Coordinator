@@ -465,6 +465,67 @@ class PrControls(unittest.TestCase):
                 self.assertEqual(body["error"], AUTO_MERGE_NOT_ARMED)
         self.assertEqual(len(mutations(definite)), 2)
 
+    def test_github_s_own_refusal_reason_is_classified_into_a_fixed_string(self):
+        """GitHub says why it refused the enable;  the caller gets a fixed reason.
+
+        The provider's prose never leaves the relay:  the message is matched here and
+        only one of the fixed reasons is returned.  A message that matches no known
+        reason keeps the generic refusal.
+        """
+        from git_relay.workflow_verbs import (
+            AUTO_MERGE_REFUSED,
+            AUTO_MERGE_REFUSED_BASE,
+            AUTO_MERGE_REFUSED_CHECKS,
+            AUTO_MERGE_REFUSED_MERGEABLE,
+            AUTO_MERGE_REFUSED_REPO,
+        )
+
+        class Refusing(Client):
+            def __init__(self, message):
+                super().__init__()
+                self.message = message
+
+            def _call(self, method, path, payload=None, bearer=None):
+                self.calls.append((method, path, payload, bearer))
+                if method == "GET":
+                    return {"node_id": "PR_abc", "number": 3037, "state": "open"}
+                query = "" if not isinstance(payload, dict) else str(payload.get("query") or "")
+                if query.startswith("mutation"):
+                    return {
+                        "errors": [
+                            {
+                                "type": "UNPROCESSABLE",
+                                "message": self.message,
+                            }
+                        ]
+                    }
+                return {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {"id": "PR_abc", "autoMergeRequest": None}
+                        }
+                    }
+                }
+
+        args = {"repo": REPO, "number": 3037, "method": "SQUASH"}
+        cases = (
+            ("Required status checks are not passing", AUTO_MERGE_REFUSED_CHECKS),
+            ("Pull request is not mergeable", AUTO_MERGE_REFUSED_MERGEABLE),
+            ("Base branch is not allowed to auto-merge", AUTO_MERGE_REFUSED_BASE),
+            ("This repository does not allow auto-merge", AUTO_MERGE_REFUSED_REPO),
+            ("Something else entirely", AUTO_MERGE_REFUSED),
+        )
+        for message, expected in cases:
+            h = WorkflowVerbs(
+                Refusing(message), Policy(), "swu-wise", "private", "swu-wise",
+                "wf_automerge_enable", REPO,
+            )
+            with self.assertRaises(Refused) as caught:
+                h.run("wf_automerge_enable", args)
+            self.assertEqual(str(caught.exception), expected, message)
+            # The provider's own words are never part of the answer.
+            self.assertNotIn(message, str(caught.exception))
+
     def test_a_typed_graphql_refusal_is_not_a_retryable_miss(self):
         from git_relay.workflow_verbs import AUTO_MERGE_NOT_ARMED, AUTO_MERGE_REFUSED
 
