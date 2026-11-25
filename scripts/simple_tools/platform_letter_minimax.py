@@ -41,9 +41,9 @@ import json
 import os
 import re
 import sqlite3
-from datetime import UTC, datetime
 import time
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -580,11 +580,7 @@ def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]
     The library asks this adapter on a chat's start,  and a report that names a gone chat has the
     assigner close its row and free the letter.  Ids only."""
     ids = frozenset(session_ids or ())
-    return (
-        archived_sessions(env, ids)
-        | over_sessions(env, ids)
-        | absent_sessions(env, ids)
-    )
+    return archived_sessions(env, ids) | over_sessions(env, ids) | absent_sessions(env, ids)
 
 
 def minimax_rename(request: PL.TitleRequest) -> bool:
