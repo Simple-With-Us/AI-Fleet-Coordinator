@@ -2935,6 +2935,12 @@ def _operator_wake_row(item):
         "dm": _operator_flag(item.get("dm")),
         "owner": _operator_flag(item.get("owner")),
         "catch_up": _operator_flag(item.get("catch_up")),
+        # The wake's receipt outcome, as the wakes program merged it onto the row
+        # (AFC-835 pass-through):  whether the router says the chat ran it, its
+        # status word and when the receipt was read;  each null when unsaid.
+        "delivered": _operator_flag(item.get("delivered")),
+        "receipt_status": _operator_text(item.get("receipt_status"), OPERATOR_WORD_RE),
+        "receipt_at": _operator_epoch(item.get("receipt_at")),
         "message_ids": [i for i in ids if i is not None][:OPERATOR_MAX_MESSAGE_IDS],
     }
 
@@ -2981,6 +2987,9 @@ def reduce_operator_wakes(document, now):
                                "rows": [{"wake_id": id, "state": word | null, "at": ISO | null,
                                          "reason": code | null, "dm": bool | null,
                                          "owner": bool | null, "catch_up": bool | null,
+                                         "delivered": bool | null,
+                                         "receipt_status": word | null,
+                                         "receipt_at": ISO | null,
                                          "message_ids": [int]}]},
                     "held_back": {"count": int | null, "lost": int | null,
                                   "reasons": {code: int},
@@ -3124,7 +3133,7 @@ def reduce_router_health(document, now):
      "truncated": bool, "dropped": int,
      "seats": [{"seat": name, "installed": bool | null, "healthy": bool | null,
                 "delivery": bool | null, "registry_configured": bool | null,
-                "reason": code | null}]}
+                "mac_route": code | null, "reason": code | null}]}
     """
     if not isinstance(document, dict) or not isinstance(document.get("seats"), dict):
         raise ValueError("not_json")
@@ -3166,6 +3175,9 @@ def reduce_router_health(document, now):
             "healthy": healthy,
             "delivery": delivery,
             "registry_configured": registry_configured,
+            # The Mac route token beside the state (AFC-835 pass-through):  whether a
+            # Mac destination is named for this seat, never the destination itself.
+            "mac_route": _operator_text(entry.get("mac_route"), OPERATOR_PLATFORM_RE),
             "reason": reason,
         }
         seats.append(row)
