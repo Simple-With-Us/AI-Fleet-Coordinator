@@ -108,7 +108,7 @@ export const SEAT_SECRETS = Object.freeze({
   CLAUDE: Object.freeze({ key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL", infisical: Object.freeze({ name: "CLAUDE_ZULIP_KEY", path: "/zulip" }) }),
   // DUET (Claude's hosted-app seat, owner Nov 25 2026) is prepared the way CLAUDE was:  its bot key and
   // the duet-bot user are created by the owner, so DUET is not in HOSTED_SEATS until they exist.
-  DUET: Object.freeze({ key: "ZULIP_KEY_DUET", email: "ZULIP_EMAIL_DUET", infisical: Object.freeze({ name: "ZULIP_DUET_API_KEY", path: "/zulip" }) }),
+  DUET: Object.freeze({ key: "ZULIP_KEY_DUET", email: "ZULIP_EMAIL_DUET", infisical: Object.freeze({ name: "DUET_ZULIP_KEY", path: "/zulip" }) }),
   // CODEX's key already lives in Fleet-OPS /zulip as CODEX_ZULIP_KEY
   // (install_seat_key.py, names verified live 2026-10-23).
   CODEX: Object.freeze({ key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX", infisical: Object.freeze({ name: "CODEX_ZULIP_KEY", path: "/zulip" }) }),
