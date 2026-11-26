@@ -473,8 +473,9 @@ Never `echo` the value, never put it in argv, and never write it to a log or a t
 `outbox-bridge-ro` (`/zulip`), `fleet-work-backup-ro` (`/global-api-keys`), `install-seat-key-ro` (`/global-api-keys`),
 `install-seat-key-zulip-ro` (`/zulip`), `fleetlink-ro` (AI Fleet Coordinator, `/fleetlink`),
 `fleet-rag-fleetops-ro` (`/global-api-keys`), `notes-client-ro` (AI Fleet Coordinator, `/`)
-and `notes-operator-ro` (AI Fleet Coordinator, `/operator`).  A consumer that reads a folder it
-does not name is refused, and the refusal names the account to provision.
+`notes-operator-ro` (AI Fleet Coordinator, `/operator`), `alert-ingress-selftest-ro`
+(AI Fleet Coordinator, `/zulip`) and `sheet-read-ro` (`/google-sheets-sa`).  A consumer that
+reads a folder it does not name is refused, and the refusal names the account to provision.
 
 **Setup for a new consumer** (agents may do this themselves, owner rule of Nov 11, 2026):  mint one scoped service token with the Infisical CLI under the `service-tokens` skill, one project, environment and folder, read-only unless a write is proven necessary, with a recorded finite or explicitly non-expiring lifetime.  Store it only in the consumer's own store (a root-only file or the platform's secret store), bind it to that consumer as `INFISICAL_TOKEN`, verify its exact scope in both directions, and log it on the service-tokens tab of the fleet references workbook.  Do not create a universal-auth machine identity and do not seed a Keychain with one.
 
