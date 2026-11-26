@@ -361,6 +361,7 @@ SEAT_APP_ALIASES = {
     "JET-CHAT": ("Jet (OpenAI dot)",),
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
+    "ZC": ("ZCode (ZC)", "ZCode"),
     "OPENCODE": ("OC",),
     "ECHO": ("Echo",),
     "WISE": ("Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"),
