@@ -42,6 +42,8 @@ CONSUMER_SITES = (
     "github-outbox-bridge.py",
     "simple-tools-mcp/install_seat_key.py",
     "fleet-work-backup/fleet_work_backup.py",
+    "alert-ingress/selftest.py",
+    "sheet-read.mjs",
 )
 
 # A named environment read of one of these shapes is a secret read,  and the

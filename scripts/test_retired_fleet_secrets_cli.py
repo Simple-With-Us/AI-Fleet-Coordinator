@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """The retired fleet-secrets CLI stays retired, and every consumer names its own grant.
 
-The CLI was deleted from the fleet.  The five files that used to spawn it read Infisical
-through the shared client (scripts/fleet_infisical.py) now, each under its own scoped
-read-only service token:  an account named `<consumer>-ro`, held in that consumer's own
-store, and granted exactly the folder that consumer reads.  No ambient token stands in
-for that grant.
+The CLI was deleted from the fleet.  The four consumer files that used to spawn it read
+Infisical through the shared client (scripts/fleet_infisical.py) now, each under its own
+scoped read-only service token:  an account named `<consumer>-ro`, held in that consumer's
+own store, and granted exactly the folder that consumer reads.  A fifth file, the notes
+wire, declares the notes principal keys beside the consumer that reads them.  No ambient
+token stands in for that grant.
 
 This test pins that contract:
 
@@ -46,7 +47,7 @@ READERS = {
     "scripts/simple_tools/notes_client.py": {
         "accounts": ("notes-client-ro", "notes-operator-ro"),
         "names": ("OPERATOR_API_URL",),
-        "folders": ("/operator",),
+        "folders": ("/", "/operator"),
     },
     "scripts/zulip_linkifiers.py": {
         "accounts": (
@@ -55,7 +56,7 @@ READERS = {
             "zulip-linkifiers-root-ro",
         ),
         "names": ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE"),
-        "folders": ("/zulip_operator", "/zulip"),
+        "folders": ("/", "/zulip", "/zulip_operator"),
     },
     "scripts/alert-ingress/selftest.py": {
         "accounts": ("alert-ingress-selftest-ro",),
