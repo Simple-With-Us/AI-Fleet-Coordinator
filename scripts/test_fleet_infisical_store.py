@@ -37,7 +37,11 @@ class FileStoreTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self.tmp.name)
+        # The store reader walks from "/" and refuses a symlinked ancestor,  and macOS
+        # puts a temporary folder under /var,  which is a symlink to /private/var.
+        # The resolved path is the real one,  so the test reads the store the way a
+        # server host does.
+        self.home = Path(self.tmp.name).resolve()
         self.dir = self.home / ".config" / "infisical" / "tokens"
         if self.dir.is_symlink():
             raise ValueError(f"refusing symlink: {self.dir}")
