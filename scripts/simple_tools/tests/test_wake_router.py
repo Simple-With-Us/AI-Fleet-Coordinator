@@ -4778,6 +4778,29 @@ class RemoteBase(ClaudeBase):
 
 
 class Remote(RemoteBase):
+    def test_missing_issue_contract_preserves_the_original_envelope(self) -> None:
+        fields = {k: v for k, v in WR.asdict(self.w).items() if k != "require_issue"}
+        with mock.patch.object(CW, "asdict", return_value=fields):
+            sent = CW._envelope("zcode", self.target, self.w)
+        self.assertEqual(sent["wake"], fields)
+        self.assertEqual(sent["target"], {
+            "session_id": self.target.session_id, "letter": self.target.letter,
+            "host": self.target.host, "generation": self.target.generation,
+        })
+
+    def test_malformed_issue_contract_is_preserved_for_receiver_refusal(self) -> None:
+        for value in (None, False, 0, [], {}, "invalid contract"):
+            with self.subTest(value=value):
+                fields = {**WR.asdict(self.w), "require_issue": value}
+                with mock.patch.object(CW, "asdict", return_value=fields):
+                    sent = CW._envelope("zcode", self.target, self.w)
+                self.assertEqual(sent["wake"], fields)
+                self.assertIs(type(sent["wake"]["require_issue"]), type(value))
+                self.assertEqual(sent["target"], {
+                    "session_id": self.target.session_id, "letter": self.target.letter,
+                    "host": self.target.host, "generation": self.target.generation,
+                })
+
     def test_empty_issue_contract_keeps_the_old_mac_wire_shape(self) -> None:
         # The newer router adds this field; the installed older Mac allowlist
         # does not know it. Exercise serialization only, never a native wake.
