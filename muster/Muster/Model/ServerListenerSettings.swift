@@ -1046,12 +1046,13 @@ enum ServerSeatNames {
         return ServerSettingValue.list(names).json ?? ""
     }
 
-    /// A settings value's seat names, in order, without an invalid entry's placeholder.
+    /// A settings value's seat names, in order.  An invalid entry keeps a visible placeholder, so
+/// the count and the checks cannot read a list with a refused entry as clean.
     static func names(in value: ServerSettingValue?) -> [String] {
         guard case .list(let values)? = value else { return [] }
-        return values.compactMap {
+        return values.map {
             if case .text(let name) = $0 { return name }
-            return nil
+            return "[Invalid Entry]"
         }
     }
 

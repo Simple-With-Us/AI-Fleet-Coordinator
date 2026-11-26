@@ -463,6 +463,7 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertTrue(line.contains("No listener section on this server:  JET-CHAT."))
         XCTAssertTrue(line.contains("Also through the other key:  CODEX."))
         XCTAssertNil(ServerSeatNames.statLine(for: names, context: nil))
+        XCTAssertEqual(ServerSeatNames.names(fromDraft: #"["CODEX",42]"#), ["CODEX", "[Invalid Entry]"])
         let operatorLine = try XCTUnwrap(ServerSeatNames.statLine(
             for: ["OPERATOR"],
             context: ServerSeatListContext(configuredSeats: ["OPERATOR"], otherList: [])))

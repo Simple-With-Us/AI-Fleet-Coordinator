@@ -35,7 +35,8 @@ final class NotesQueueHealthTests: XCTestCase {
     func test_the_queue_reads_its_configured_state_and_the_doctors_rows() throws {
         let doctor = try reading(report(rows: """
         {"check": "notes:queue", "status": "OK", "state": "current", "category": "service", "tool": "notes-queue", "detail": "0 queued, 0 running"},
-        {"check": "notes:runner", "status": "WARN", "state": "stale", "category": "service", "tool": "notes-runner", "detail": "last poll 5m ago"}
+        {"check": "notes:runner", "status": "WARN", "state": "stale", "category": "service", "tool": "notes-runner", "detail": "last poll 5m ago"},
+        {"check": "notes:action-log", "status": "FAIL", "state": "stale", "category": "service", "tool": "notes-action-log", "detail": "3 KB unsent for 2h"}
         """))
         let health = NotesQueueHealth.make(settings: settings, doctor: doctor)
         XCTAssertTrue(health.lines.contains("Queue:  On"))
@@ -43,7 +44,9 @@ final class NotesQueueHealthTests: XCTestCase {
         XCTAssertTrue(health.lines.contains("Seats:  3 through the Worker key, 2 through the Server key, 1 in both."))
         XCTAssertTrue(health.lines.contains("Server queue:  0 queued, 0 running"))
         XCTAssertTrue(health.lines.contains("Mac runner:  last poll 5m ago"))
+        XCTAssertTrue(health.lines.contains("Action log:  3 KB unsent for 2h"))
         XCTAssertTrue(health.warnings.contains { $0.contains("Mac runner reads WARN") })
+        XCTAssertTrue(health.warnings.contains { $0.contains("action log reads FAIL") })
     }
 
     func test_a_queue_without_the_listener_api_warns_before_anything_is_sent() {

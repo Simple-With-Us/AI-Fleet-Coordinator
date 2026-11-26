@@ -21,11 +21,18 @@ struct ServerListenerSettingsSection: View {
             content
         }
         .task {
-            if doctor == nil { doctor = FleetToolsReportReader.readDefault() }
+            if doctor == nil { doctor = await Self.readDoctor() }
         }
-        .onChange(of: store.reading) { _, _ in
-            doctor = FleetToolsReportReader.readDefault()
+        .onChange(of: store.reading) { _, new in
+            guard case .read? = new else { return }
+            Task { doctor = await Self.readDoctor() }
         }
+    }
+
+    /// The doctor's report read off the main thread;  it can carry a few hosts' rows, and a
+    /// settings read must not wait on a file parse.
+    private static func readDoctor() async -> FleetToolsReading {
+        await Task.detached(priority: .utility) { FleetToolsReportReader.readDefault() }.value
     }
 
     @ViewBuilder private var content: some View {

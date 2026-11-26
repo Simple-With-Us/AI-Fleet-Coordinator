@@ -110,6 +110,10 @@ struct NotesQueueHealth: Equatable {
             warnings.append("The Mac runner reads \(runner.status)"
                 + (runner.detail.map { ":  \($0)" } ?? "."))
         }
+        if let actionLog, actionLog.status == "WARN" || actionLog.status == "FAIL" {
+            warnings.append("The action log reads \(actionLog.status)"
+                + (actionLog.detail.map { ":  \($0)" } ?? "."))
+        }
         if workerSeats.contains("OPERATOR") || serverSeats.contains("OPERATOR") {
             warnings.append("OPERATOR is a service, not a seat the queue can act for.")
         }
