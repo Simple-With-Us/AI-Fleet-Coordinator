@@ -93,22 +93,20 @@ These are real gaps, but each needs a server-side status field, a deployed image
 4. **Notes queue principal matrix.**  `/notes/v1/health` returns only principal names, not which seats each may act for, and it is signed.  Muster holds no queue key by design.  A doctor field (principal names plus the queue's backlog, already partly present) would close this without giving Muster a credential.
 5. **Server-side seat-list validation.**  The settings editor accepts any syntactically valid uppercase name; the queue refuses the seat only when a request names it.  Muster now marks names with no listener section, but the server should return a non-blocking warning in `get`/`plan` so every client sees it.
 6. **The live seat lists themselves.**  `worker_seats` includes `JET`, which the committed Worker config marks events-only, so it cannot use the Notes tools; `JET-CHAT` is the active login.  `KIMI` and the 12 `BF-*` bots are valid Worker-capable identities but are not listed.  Whether to add, remove or leave them is an owner/Worker-config decision, not a Muster change.
-7. **No Swift test gate.**  The Muster release workflow builds the app on every Muster PR but never runs the 85 unit-test files; a test compile error would reach `main`.  Adding `xcodebuild test` to that job is a macOS-minutes increase, so it needs the owner's decision.
-8. **Protocol documents that now lag the code.**  `docs/protocols/operator-role.md` (items 9 and the settings table) and `docs/protocols/simple-tools-listener.md` §9 still say Muster cannot write the Eavesdropper's settings, the notes queue is not on Muster, and the compliance grid is a later phase.  Those statements are stale; they should be corrected as a documentation change with the deployment record, not silently in a client PR.
-9. **Two router-card implementations.**  `OperatorPanelPresentation.router` is the older readiness-only card, still public and tested, while the view uses `OperatorRouter.routerCard`.  The older one can drift.  Removing it is a cleanup with test churn.
-10. **Legacy models with no view.**  `OperatorOptions` is referenced only for `seatTag`; `WakeSettings`/`WakeSettingsReader` have no non-test callers.  Their copy still names the retired "Server Eavesdropper Settings" panel.
-11. **Notes queue documentation arithmetic.**  The protocol says the queue holds at most 1,000 waiting requests; the code also caps a single seat at 200. A full answer can therefore be 200 for one seat, not 1,000 globally.  The doc should say both.
+7. **Protocol documents that now lag the code.**  `docs/protocols/operator-role.md` (items 9 and the settings table) and `docs/protocols/simple-tools-listener.md` §9 still say Muster cannot write the Eavesdropper's settings, the notes queue is not on Muster, and the compliance grid is a later phase.  Those statements are stale; they should be corrected as a documentation change with the deployment record, not silently in a client PR.
+8. **Two router-card implementations.**  `OperatorPanelPresentation.router` is the older readiness-only card, still public and tested, while the view uses `OperatorRouter.routerCard`.  The older one can drift.  Removing it is a cleanup with test churn.
+9. **Legacy models with no view.**  `OperatorOptions` is referenced only for `seatTag`; `WakeSettings`/`WakeSettingsReader` have no non-test callers.  Their copy still names the retired "Server Eavesdropper Settings" panel.
+10. **Notes queue documentation arithmetic.**  The protocol says the queue holds at most 1,000 waiting requests; the code also caps a single seat at 200.  A full answer can therefore be 200 for one seat, not 1,000 globally.  The doc should say both.
 
 ## Proposed Follow-Ups
 
 - Operator status: add `linear_comments`, `registry_sweep_schedule`, listener-API health and sheet-drain state to the status document and the helper reduction; then surface each in the Operator panel.
 - Notes queue: add a non-blocking seat-list warning to the settings `get`/`plan` answer; add the queue's principal names to the doctor row.
-- Muster CI: run the unit-test bundle in the existing macOS PR check.
 - Protocol docs: correct the stale "not built" statements and the queue's two caps.
 - Muster cleanup: remove the older router card and the unused legacy models once their tests move.
 
 ## Verification For This Change
 
 - `python3 -m unittest discover -s muster/script -t muster/script`: 111 tests, 4 skipped, OK.
-- The Muster release build check on the pull request compiles the app for macOS; no unit test runs in CI, so the new tests are stated as added, not as CI-proven.
+- The pull request's **Muster macOS build** job compiles the app, runs the whole unit-test bundle (`xcodebuild -scheme Muster -configuration Debug ... test`) and renders every panel light and dark; this change is proven by that job, including the new `NotesQueueHealthTests` and the seat-list and card-state assertions.
 - Live checks were read-only: the listener configuration's seat sections and `[notes_queue]`/`[listener_api]` values, and the status document's key names.  No credential, token or private host was read or written.
