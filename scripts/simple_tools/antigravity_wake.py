@@ -338,12 +338,12 @@ def _excluded_ids(stores: list[Path], sids: list[str]) -> set[str]:
 
 def exclude_non_interactive(
     env: Mapping[str, str], local_host: str
-) -> Callable[[list[WR.Target]], set[str]]:
+) -> Callable[[list[WR.Target], str], set[str]]:
     """Return session ids of local targets that are sub-agents or killed conversations."""
     stores = store_paths(env)
 
-    def exclude(targets: list[WR.Target]) -> set[str]:
-        local_ids = [t.session_id for t in targets if t.host == local_host]
+    def exclude(targets: list[WR.Target], host: str = "") -> set[str]:
+        local_ids = [t.session_id for t in targets if t.host == (host or local_host)]
         if not local_ids:
             return set()
         return _excluded_ids(stores, local_ids)
@@ -729,12 +729,13 @@ def make_deliver(
     config: Mapping[str, Any],
     *,
     runner: Runner = subprocess.run,
-) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
+) -> Callable[[WR.Target, WR.Wake, str], WR.Delivery]:
     """Antigravity's `deliver`:  this host directly, the Mac over ssh, any other host refused."""
     local_host = str(config.get("local_host", "server"))
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
-        if target.host == local_host:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
+        local = host or local_host
+        if target.host == local:
             return deliver_local(
                 env,
                 config,
@@ -767,6 +768,7 @@ def router_platform(
         target_re=SESSION_RE,
         deliver=make_deliver(env, config, runner=runner),
         exclude=exclude_non_interactive(env, str(config.get("local_host", "server"))),
+        resolve_host=lambda: str(config.get("local_host", "server")),
     )
 
 

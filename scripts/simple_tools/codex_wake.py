@@ -446,8 +446,8 @@ def _exclusion(env: Mapping[str, str], settings: object = None):
     refreshed setting moves the exclusion and the delivery together.
     """
 
-    def exclude(targets: list[WR.Target]) -> set[str]:
-        return exclude_non_interactive(env, _local_host(settings))(targets)
+    def exclude(targets: list[WR.Target], host: str = "") -> set[str]:
+        return exclude_non_interactive(env, host or _local_host(settings))(targets)
 
     return exclude
 
@@ -463,7 +463,7 @@ def make_platform(
     """This platform for a host that runs the Codex Desktop app itself (the Mac)."""
     native = transport or CT.CodexChatTransport(home=env.get("HOME") or None)
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         # The settings are read when the delivery happens:  the router keeps them current, and
         # a refresh takes effect without a restart.
         config = _config(settings)
@@ -471,7 +471,7 @@ def make_platform(
             native,
             env,
             metadata_lookup,
-            local_host=str(config.get("local_host") or "server"),
+            local_host=host or str(config.get("local_host") or "server"),
             hostname=hostname,
         )(target, wake)
 
@@ -485,6 +485,7 @@ def make_platform(
         # judged, so this host's own engine rows are the ones excluded and not another
         # host's.
         exclude=_exclusion(env, settings),
+        resolve_host=lambda: _local_host(settings),
     )
 
 
@@ -521,11 +522,11 @@ def router_platform(
             native_by_host[local_host] = built
         return built
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         # The settings are read when the delivery happens:  the router keeps them current, and
         # a refresh takes effect without a restart.
         config = _config(settings)
-        local_host = str(config.get("local_host") or "server")
+        local_host = host or str(config.get("local_host") or "server")
         if target.host == "mac" and local_host != "mac":
             from . import claude_wake as CW
 
@@ -549,6 +550,7 @@ def router_platform(
         target_re=SESSION_RE,
         deliver=deliver,
         exclude=_exclusion(here, settings),
+        resolve_host=lambda: _local_host(settings),
     )
 
 

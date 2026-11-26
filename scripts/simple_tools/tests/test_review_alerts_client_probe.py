@@ -34,7 +34,7 @@ def platform() -> WR.Platform:
         platform="claude",
         mention="@claude",
         target_re=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$"),
-        deliver=lambda target, wake: WR.Delivery(outcome="ok", detail=""),
+        deliver=lambda target, wake, host="": WR.Delivery(outcome="ok", detail=""),
     )
 
 

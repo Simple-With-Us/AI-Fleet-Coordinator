@@ -133,14 +133,14 @@ class TurnBase(Base):
     def target_a(self) -> WR.Target:
         return WR.target_from_row(row(SID_A, "AA", "letters"), "CLAUDE", CW.SESSION_RE)
 
-    def deliver_one(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver_one(self, target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         self.calls.append(("D", wake.wake_id))
         self.sources.append(wake.message_id)
         if self.results:
             return self.results.pop(0)
         return WR.Delivery("completed", "fake", ack="confirmed")
 
-    def deliver_turn(self, target, head, riders, turn_id):
+    def deliver_turn(self, target, head, riders, turn_id, host=""):
         self.calls.append(("T", head.wake_id, tuple(r.wake_id for r in riders)))
         self.sources.extend([head.message_id, *(r.message_id for r in riders)])
         self.turn_args.append((target, head, tuple(riders), turn_id))
@@ -261,7 +261,7 @@ class Defaults(TurnBase):
     def test_a_platform_without_deliver_turn_delivers_one_wake_per_try(self) -> None:
         files: list[dict] = []
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             folder = self.state / "pending"
             files.extend(json.loads(p.read_text(encoding="utf-8")) for p in folder.glob("*.json"))
             return self.deliver_one(target, wake)
@@ -352,7 +352,7 @@ class Defaults(TurnBase):
         self.assertEqual(self.turn_args, [])
 
     def test_an_interrupt_outside_a_turn_is_still_dead(self) -> None:
-        def killed(target, wake):
+        def killed(target, wake, host=""):
             raise Killed()
 
         router = self.plain(deliver=killed)

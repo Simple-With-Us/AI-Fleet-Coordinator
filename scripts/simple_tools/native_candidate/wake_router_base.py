@@ -90,7 +90,11 @@ Quoted text addresses nobody:  a ```` ```quote ```` (or `~~~quote`) block and a 
 A platform whose delivery is just one command needs no `deliver` of its own:  `command_platform`
 builds the whole `Platform` from a short spec.  Otherwise, a `deliver` is one plain function:
 
-    def deliver(target: Target, wake: Wake) -> Delivery
+    def deliver(target: Target, wake: Wake, host: str) -> Delivery
+
+`host` is the host this router runs on, resolved once per wake (One Host, below):  the
+same host goes to the exclusion and to the delivery of that wake, so the two cannot name
+different hosts.
 
 `target` is the picked chat (`session_id`, `letter`, `host`, `title`, `thread_link`, `generation`).
 `wake` is metadata only (`wake_id`, `message_id`, `channel`, `topic`, `zulip_link`, `sender`, `dm`,
@@ -144,6 +148,14 @@ delivery, and so is a live row that does not name a well-formed chat of this sea
 seat, or a malformed one, is no target and no proof of release either.  Receipts name the selected
 generation as `picked_generation`.
 
+One Host (AFC-907).  The router resolves the host once per wake and hands that one host to
+the exclusion and to the delivery of the same wake, so a setting that changes between the
+pick and the delivery cannot leave the two naming different hosts.  A platform says how
+the host is read with `Platform.resolve_host`, which the router calls once per wake;  a
+platform with no resolver names no host, and its exclusion and delivery then use their own
+reading.  The host is kept with the wake, so a wake that waits and is delivered later is
+delivered under the host its exclusion judged it by.
+
 Settings not yet confirmed.  A router whose settings have not come from a successful read in this
 process does not know whether delivery is on, and "off" would close every pending wake as `held`.
 So until the config says `confirmed`, workers leave wakes pending, use up no attempt and look again;
@@ -160,7 +172,7 @@ Turns (AFC-831).  One idle turn of a chat may carry several of its pending wakes
 to seven riders, so a chat that was busy for an hour is not woken twenty times when it goes idle.
 It is an opt-in.  A platform takes part only by declaring `Platform.deliver_turn`,
 
-    def deliver_turn(target: Target, head: Wake, riders: tuple[Wake, ...], turn_id: str) -> Turn
+    def deliver_turn(target: Target, head: Wake, riders: tuple[Wake, ...], turn_id: str, host: str) -> Turn
 
 with the same rules as `deliver` (an exception is `failed`), and only while the setting
 `turn_max_wakes` (WAKE_ROUTER_TURN_MAX_WAKES;  1 is off, and unset counts as not set) is 2 or more;  the core
@@ -607,13 +619,16 @@ class Platform:
     platform: str
     mention: str
     target_re: Pattern[str]
-    deliver: Callable[[Target, Wake], Delivery]
+    deliver: Callable[[Target, Wake, str], Delivery]
     # The session ids among the candidates that must never be picked (a sub-agent, a headless run).
-    exclude: Callable[[list[Target]], set[str]] | None = None
+    exclude: Callable[[list[Target], str], set[str]] | None = None
     stop_words: frozenset[str] = frozenset()
     # The opt-in to turns (module docstring, Turns), last so a positional Platform still builds:
-    # deliver_turn(target, head, riders, turn_id) -> Turn.  None, the default, is today's path.
-    deliver_turn: Callable[[Target, Wake, tuple[Wake, ...], str], Turn] | None = None
+    # deliver_turn(target, head, riders, turn_id, host) -> Turn.  None, the default, is today's path.
+    deliver_turn: Callable[[Target, Wake, tuple[Wake, ...], str, str], Turn] | None = None
+    # The host this router runs on, read when the router asks for it:  once per wake, so the
+    # exclusion and the delivery of one wake name the same host (module docstring, One Host).
+    resolve_host: Callable[[], str] | None = None
 
 
 #: The seam for an optional decider, off by default.  It receives the candidates and the wake's
@@ -1176,7 +1191,7 @@ def command_platform(
     env: Mapping[str, str] | None = None,
     cwd: str | None = None,
     timeout: int = COMMAND_TIMEOUT,
-    exclude: Callable[[list[Target]], set[str]] | None = None,
+    exclude: Callable[[list[Target], str], set[str]] | None = None,
     stop_words: frozenset[str] = frozenset(),
     runner: Callable[..., Any] = subprocess.run,
 ) -> Platform:
@@ -1197,7 +1212,7 @@ def command_platform(
         else {name: os.environ[name] for name in ("HOME", "PATH") if name in os.environ}
     )
 
-    def deliver(target: Target, wake: Wake) -> Delivery:
+    def deliver(target: Target, wake: Wake, host: str = "") -> Delivery:
         note = wake.link_note if link_note_ok(wake.link_note) else ""
         values = {
             "session_id": target.session_id,
@@ -1550,8 +1565,14 @@ class Router:
             return {}
         return {"other_seat_rows": scan[0]}
 
-    def _excluded(self, targets: list[Target]) -> set[str]:
-        return self.platform.exclude(targets) if self.platform.exclude and targets else set()
+    def _host(self) -> str:
+        """The host this router runs on, as the platform names it now:  resolved once per
+        wake, so the exclusion and the delivery of that wake agree on it."""
+        resolve = self.platform.resolve_host
+        return str(resolve() or "") if resolve else ""
+
+    def _excluded(self, targets: list[Target], host: str = "") -> set[str]:
+        return self.platform.exclude(targets, host) if self.platform.exclude and targets else set()
 
     def _words(self, text: str) -> set[str]:
         stop = STOP_WORDS | self.platform.stop_words | {self.platform.platform}
@@ -1561,6 +1582,7 @@ class Router:
         self,
         wake: Wake,
         *,
+        host: str = "",
         consult: bool = True,
         timeout: int = REGISTRY_TIMEOUT,
         rejected_targets: Sequence[Mapping[str, Any]] = (),
@@ -1608,7 +1630,7 @@ class Router:
             if target is not None:
                 letter_live = True
                 # An excluded chat is not a place a wake can go, so the chain carries on without it.
-                if target.session_id not in self._excluded([target]) and not _is_sender(
+                if target.session_id not in self._excluded([target], host) and not _is_sender(
                     target, wake
                 ):
                     how = "reply" if wake.linked_by == "reply" else "letter"
@@ -1654,7 +1676,7 @@ class Router:
                 row_issues[target.session_id] = _issues_of(row)
         # One assignment, so a health read on another thread sees a whole pair.
         self.other_seat_scan = (len(others - live.keys()), self.clock())
-        excluded = self._excluded(list(live.values()))
+        excluded = self._excluded(list(live.values()), host)
         candidates = [
             t
             for sid, t in live.items()
@@ -1848,7 +1870,7 @@ class Router:
         """A test wake's answer:  `test`, `wake_id`, `receipt_id`, `picked`, `picked_letter`,
         `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`,
         `letter_other_seat`.  It delivers nothing and reserves nothing."""
-        pick = self.pick(wake, consult=False, timeout=TEST_REGISTRY_TIMEOUT)
+        pick = self.pick(wake, host=self._host(), consult=False, timeout=TEST_REGISTRY_TIMEOUT)
         answer = self._receipt(
             {"wake": asdict(wake), "receipt_id": secrets.token_hex(8), "attempts": 0},
             pick,
@@ -2109,9 +2131,14 @@ class Router:
             self._retry(entry, counted=False, code=UNCONFIRMED, pick=kept, result=waiting)
             return
         wake = Wake(**entry["wake"])
+        # One host for this wake:  the exclusion and the delivery of it name the same one,
+        # even when the setting changes between the pick and the delivery (One Host).
+        host = str(entry.get("host") or "")
         if entry["pick"] is None:
+            host = self._host()
+            entry["host"] = host
             rejected = entry.get("rejected_targets", [])
-            pick = self.pick(wake, consult=not rejected, rejected_targets=rejected)
+            pick = self.pick(wake, host=host, consult=not rejected, rejected_targets=rejected)
             if pick.retry:
                 if pick.reason == REGISTRY_UNAVAILABLE:
                     # A registry that cannot be read is an outage, not a failed delivery.
@@ -2194,7 +2221,7 @@ class Router:
             told = replace(wake, picked=pick.picked, reason=pick.reason, link_note=pick.link_note)
             self._give_up_slot()
             try:
-                result = self.platform.deliver(pick.target, told)
+                result = self.platform.deliver(pick.target, told, host)
             except Exception as exc:  # noqa: BLE001 - a platform's failure is a failed try
                 result = Delivery("failed", code="deliver-error-%s" % type(exc).__name__)
             self._settle(entry, pick, result)
@@ -2613,6 +2640,8 @@ class Router:
         """The head's commit, then one `deliver_turn`, then every member's outcome.  The commit is
         the last write before the effect:  without it nothing is delivered."""
         called = False
+        # The host this wake was picked under:  the turn is delivered under it too (One Host).
+        host = str(entry.get("host") or "")
         try:
             entry["attempts"] += 1
             entry["in_flight"] = True
@@ -2636,7 +2665,7 @@ class Router:
             called = True
             try:
                 # `_turn_cap` only allows a turn when deliver_turn is callable.
-                turn = self.platform.deliver_turn(pick.target, head, told, turn_id)
+                turn = self.platform.deliver_turn(pick.target, head, told, turn_id, host)
             except Exception as exc:  # noqa: BLE001 - the write may already have been sent
                 # Indeterminate, never failed:  a platform's exception can come after the
                 # remote write, so retrying it as a failed try could run the turn twice.  The

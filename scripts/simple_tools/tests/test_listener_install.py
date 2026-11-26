@@ -792,7 +792,7 @@ class TestWakeTests(ListenerHarness):
             platform="claude",
             mention="Claude",
             target_re=CW.SESSION_RE,
-            deliver=lambda target, wake: delivered.append(wake) or WR.Delivery("completed", "x"),
+            deliver=lambda target, wake, host="": delivered.append(wake) or WR.Delivery("completed", "x"),
         )
         state = self.tmp / "router-state"
         router = WR.Router(

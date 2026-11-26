@@ -89,11 +89,11 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
             native_fresh=fresh(state, head.wake_id, target, spec["epoch"]),
         )
 
-    def fallback(target, head, riders, turn_id):
-        return base.deliver(target, head)
+    def fallback(target, head, riders, turn_id, host=""):
+        return base.deliver(target, head, host)
 
-    def turn_fallback(target, head, riders, turn_id):
-        return base.deliver_turn(target, head, riders, turn_id)
+    def turn_fallback(target, head, riders, turn_id, host=""):
+        return base.deliver_turn(target, head, riders, turn_id, host)
 
     def unknown(code):
         return adapter.WR.Delivery("unknown", "native-qualification", code=code)
@@ -119,15 +119,15 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
         ),
     )
 
-    def deliver(target, head):
+    def deliver(target, head, host=""):
         # Single-wake path has no turn ID. This deterministic notification-only ID
         # is derived from the authoritative wake, never creates a router turn/rider.
         turn = "t-" + digest({"wake_key": head.wake_id})[:16]
         return qualifier(target, head, (), turn)
 
-    def deliver_turn(target, head, riders, turn_id):
+    def deliver_turn(target, head, riders, turn_id, host=""):
         if riders:
-            return base.deliver_turn(target, head, riders, turn_id)
+            return base.deliver_turn(target, head, riders, turn_id, host)
         result = qualifier(target, head, (), turn_id, fallback=turn_fallback)
         if isinstance(result, adapter.WR.Turn):
             return result

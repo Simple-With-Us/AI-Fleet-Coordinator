@@ -354,7 +354,7 @@ def find_holder(env: Mapping[str, str], session_id: str) -> Holder | None:
 
 def exclude_non_interactive(
     env: Mapping[str, str], local_host: str
-) -> Callable[[list[WR.Target]], set[str]]:
+) -> Callable[[list[WR.Target], str], set[str]]:
     """Never pick a chat this host's own live record says is not an interactive session.  A stale
     record says nothing:  the process that wrote it is gone."""
 
@@ -362,8 +362,8 @@ def exclude_non_interactive(
         pid = data.get("pid")
         return type(pid) is int and pid > 0 and _alive(pid, data.get("procStart"))
 
-    def exclude(targets: list[WR.Target]) -> set[str]:
-        ids = {t.session_id for t in targets if t.host == local_host}
+    def exclude(targets: list[WR.Target], host: str = "") -> set[str]:
+        ids = {t.session_id for t in targets if t.host == (host or local_host)}
         return {
             str(data.get("sessionId"))
             for data in session_files(env)[0]
@@ -883,12 +883,13 @@ def make_deliver(
     *,
     runner: Runner = subprocess.run,
     sleep: Callable[[float], None] = time.sleep,
-) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
+) -> Callable[[WR.Target, WR.Wake, str], WR.Delivery]:
     """Claude's `deliver`:  this host's chats directly, the Mac's over ssh, any other host refused."""
     local_host = str(config["local_host"])
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
-        if target.host == local_host:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
+        local = host or local_host
+        if target.host == local:
             return deliver_local(env, config, target.session_id, wake, runner=runner, sleep=sleep)
         if target.host == "mac":
             return deliver_remote(env, config, target, wake, runner=runner)
@@ -911,6 +912,7 @@ def make_platform(
         target_re=SESSION_RE,
         deliver=make_deliver(env, config, runner=runner, sleep=sleep),
         exclude=exclude_non_interactive(env, str(config["local_host"])),
+        resolve_host=lambda: str(config["local_host"]),
     )
 
 

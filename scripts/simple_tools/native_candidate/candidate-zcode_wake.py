@@ -577,7 +577,7 @@ def exclude_non_interactive(
     local_host: str,
     workspace: str = "",
     config: Mapping[str, Any] | None = None,
-) -> Callable[[list[WR.Target]], set[str]]:
+) -> Callable[[list[WR.Target], str], set[str]]:
     """Return session ids of local targets that cannot take a wake.
 
     A session is excluded when it is a sub-agent child, when the index does not know it, when
@@ -588,8 +588,8 @@ def exclude_non_interactive(
     every call like the delivery reads it, so a settings refresh can never leave the
     exclusion reading one index while the delivery reads another."""
 
-    def exclude(targets: list[WR.Target]) -> set[str]:
-        local_ids = [t.session_id for t in targets if t.host == local_host]
+    def exclude(targets: list[WR.Target], host: str = "") -> set[str]:
+        local_ids = [t.session_id for t in targets if t.host == (host or local_host)]
         if not local_ids:
             return set()
         excluded: set[str] = set()
@@ -992,7 +992,7 @@ def make_deliver(
     remote_runner: Runner = subprocess.run,
     native_driver=None,
     native_is_fresh=None,
-) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
+) -> Callable[[WR.Target, WR.Wake, str], WR.Delivery]:
     """ZCode's `deliver`:  this host directly, the Mac over ssh, any other host refused.
 
     The two routes run two different children, so they take two runners:  the local turn is
@@ -1000,8 +1000,9 @@ def make_deliver(
     waited for and read at once."""
     local_host = str(config.get("local_host", "server"))
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
-        if target.host == local_host:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
+        local = host or local_host
+        if target.host == local:
             return deliver_local(
                 env,
                 config,
@@ -1076,14 +1077,15 @@ def make_deliver_turn(
     remote_runner: Runner = subprocess.run,
     native_driver=None,
     native_is_fresh=None,
-) -> Callable[[WR.Target, WR.Wake, tuple[WR.Wake, ...], str], WR.Turn]:
+) -> Callable[[WR.Target, WR.Wake, tuple[WR.Wake, ...], str, str], WR.Turn]:
     """ZCode's `deliver_turn`:  a real turn on this host, head-only on the Mac, else refused."""
     local_host = str(config.get("local_host", "server"))
 
     def deliver_turn(
-        target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str
+        target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str, host: str = ""
     ) -> WR.Turn:
-        if target.host == local_host:
+        local = host or local_host
+        if target.host == local:
             return deliver_turn_local(
                 env,
                 config,
@@ -1158,6 +1160,7 @@ def router_platform(
             native_driver=native_driver,
             native_is_fresh=native_is_fresh,
         ),
+        resolve_host=lambda: str(config.get("local_host", "server")),
     )
 
 
