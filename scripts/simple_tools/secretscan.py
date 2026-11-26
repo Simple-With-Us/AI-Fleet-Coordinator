@@ -384,6 +384,16 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         "scripts/mcp-servers/test_native_origin_capture.py",
         "a9c9dbb7f15cc0bb160a4bbb78c906bfd7ec70f2d84c2ab9b2e92645f22242b6",
     ): frozenset({("assigned secret", 9436, 9471, 9446, 9471)}),
+    (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "scripts/simple_tools/server/install-wake-router.sh",
+        "80c5933a23534b5b9ed0030dafcfcb90b0e21a6fd25f94c72b16734edae6bad6",
+    ): frozenset(
+        {
+            ("assigned secret", 6118, 6154, 6127, 6154),
+            ("assigned secret", 7067, 7093, 7075, 7093),
+        }
+    ),
 }
 
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
