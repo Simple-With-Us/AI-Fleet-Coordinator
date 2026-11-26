@@ -215,7 +215,8 @@ def _write_session_title(env: Mapping[str, str], sid: str, title: str) -> bool:
         mode = stat.S_IMODE(os.stat(path).st_mode)
         # A unique staging file per write:  two sync runs for one session never share a path.
         handle, temporary = tempfile.mkstemp(
-            prefix=os.path.basename(path) + ".platform-letter.", suffix=".tmp",
+            prefix=os.path.basename(path) + ".platform-letter.",
+            suffix=".tmp",
             dir=os.path.dirname(path) or ".",
         )
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
