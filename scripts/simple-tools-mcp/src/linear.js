@@ -133,6 +133,9 @@ export const LINEAR_SECRETS = Object.freeze({
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
   WISE: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
+  // DUET: prepared pair names only (owner added the Linear app pair to AFC /linear, Nov 25 2026).  Not in LINEAR_SEATS
+  // until a `board whoami` read grounds its SEAT_APP_NAMES entry.
+  DUET: Object.freeze({ clientId: "LINEAR_DUET_CLIENT_ID", clientSecret: "LINEAR_DUET_CLIENT_SECRET" }),
   CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
   CODEX: Object.freeze({ clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" }),
   "MA": ownAppPair(OWN_APP_LINEAR_PREFIXES["MA"]),
@@ -192,6 +195,9 @@ export const LINEAR_INFISICAL = Object.freeze({
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
   WISE: Object.freeze({ clientId: "LINEAR_WISE_CLIENT_ID", clientSecret: "LINEAR_WISE_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
+  // DUET: prepared pair names only (owner added the Linear app pair to AFC /linear, Nov 25 2026).  Not in LINEAR_SEATS
+  // until a `board whoami` read grounds its SEAT_APP_NAMES entry.
+  DUET: Object.freeze({ clientId: "LINEAR_DUET_CLIENT_ID", clientSecret: "LINEAR_DUET_CLIENT_SECRET" }),
   CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
   CODEX: Object.freeze({ clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" }),
   "MA": ownAppPair(OWN_APP_LINEAR_PREFIXES["MA"]),
