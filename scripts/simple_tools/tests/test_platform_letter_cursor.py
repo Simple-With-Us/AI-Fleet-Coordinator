@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
@@ -163,6 +164,18 @@ class TitleTests(Base):
         self.write_store("%s: Already set" % label)
         self.hook(payload("beforeSubmitPrompt"))
         self.assertEqual(self.read_store()["title"], "%s: Already set" % label)
+
+    def test_a_failed_write_leaves_no_staging_file(self) -> None:
+        self.write_store("First words")
+        before = set(os.listdir(os.path.dirname(self.store())))
+        request = PL.TitleRequest(
+            platform="cursor", session_id=CID, label="AB", title="AB: Words", words="Words",
+            current="First words", reason="start", data={}, env=self.env(),
+            record_thread_link=lambda link: {}, shown="", held=[],
+        )
+        with mock.patch.object(PC.os, "replace", side_effect=OSError("no replace")):
+            self.assertFalse(PC.cursor_rename(request))
+        self.assertEqual(set(os.listdir(os.path.dirname(self.store()))), before)
 
 
 class InstallTests(Base):

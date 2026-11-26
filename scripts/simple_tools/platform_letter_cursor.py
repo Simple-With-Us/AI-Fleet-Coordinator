@@ -134,6 +134,7 @@ def cursor_rename(request: PL.TitleRequest) -> bool:
     path = session_file(request.env, request.session_id)
     if not path:
         return False
+    temporary = ""
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -152,6 +153,11 @@ def cursor_rename(request: PL.TitleRequest) -> bool:
         os.replace(temporary, path)
         return True
     except (OSError, ValueError):
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
         return False
 
 
