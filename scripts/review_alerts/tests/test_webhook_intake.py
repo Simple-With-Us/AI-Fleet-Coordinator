@@ -105,4 +105,16 @@ class T(unittest.TestCase):
     def test_reason_bounded(self):
         r = w.map_event("x" * 500, "d" * 500, R(), AL)
         self.assertLessEqual(len(r.reason), w.MAX_REASON); self.assertEqual((r.event_name, r.delivery_id), ("", ""))
+    def test_trailing_newline_rejected_everywhere(self):
+        b = b"{}"
+        self.assertFalse(w.verify(b, sig(b) + "\n", S))
+        p = R(number=5, pull_request={"number": 5})
+        self.assertEqual(w.map_event("pull_request", "abc\n", p, AL).reason, "delivery-id-invalid")
+        bad = {"repository": {"full_name": "o/r\n"}, "number": 5, "pull_request": {"number": 5}}
+        self.assertEqual(w.map_event("pull_request", "d", bad, frozenset({"o/r\n"})).reason, "repo-missing-or-malformed")
+        sha = "a" * 40
+        r = w.map_event("pull_request", "d", R(pull_request={"number": 5, "head": {"sha": sha + "\n"}}), AL)
+        self.assertEqual((r.outcome, r.hints[0].head_sha), ("mapped", None))
+        r = w.map_event("merge_group", "d", R(merge_group={"head_sha": sha + "\n"}), AL)
+        self.assertEqual((r.outcome, r.advisory_head_sha), ("held", None))
 if __name__ == "__main__": unittest.main()
