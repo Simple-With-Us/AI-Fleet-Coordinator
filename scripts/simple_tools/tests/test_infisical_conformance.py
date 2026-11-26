@@ -128,6 +128,23 @@ class ConformanceTests(unittest.TestCase):
         # The bridge reads one folder per call,  and the document names the one
         # it reads:  Fleet-OPS prod /zulip.
         accounts[bridge.TOKEN_ACCOUNT] = (FLEET_OPS, "/zulip")
+
+        # The alert-ingress self test holds its own grant for the Coordinator
+        # project,  and the sheet reader holds its own for the Fleet-OPS one.
+        # The document names both,  so the code side reads both.
+        alert = _load("conformance_alert_selftest", "alert-ingress/selftest.py")
+        for (project, folder), account in alert.TOKEN_ACCOUNTS.items():
+            accounts[account] = (COORDINATOR if project == "ai-fleet-coordinator" else FLEET_OPS, folder)
+
+        # The sheet reader is JavaScript,  so its two constants are read from the
+        # source.  A constant that is renamed stops the guard,  which is the point:
+        # the document and the code have to keep naming the same grant.
+        sheet = (SCRIPTS / "sheet-read.mjs").read_text(encoding="utf-8")
+        sheet_account = re.search(r'const TOKEN_ACCOUNT = "([^"]+)"', sheet)
+        sheet_folder = re.search(r'const SECRET_FOLDER = "([^"]+)"', sheet)
+        self.assertIsNotNone(sheet_account, "the sheet reader names no token account")
+        self.assertIsNotNone(sheet_folder, "the sheet reader names no folder")
+        accounts[sheet_account.group(1)] = (FLEET_OPS, sheet_folder.group(1))
         return accounts
 
     def test_the_code_and_the_document_name_the_same_account_and_folder(self):
