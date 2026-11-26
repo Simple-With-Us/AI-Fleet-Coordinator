@@ -756,7 +756,7 @@ def _inspect(
         cwd=rec.path,
     )
     f.dirty = _dirty_count(st.out) if st.ok else None
-    f.ignored_local = D.split_ignored(st.out)[0] if st.ok else []
+    f.ignored_local = D.split_ignored(st.out, rec.path)[0] if st.ok else []
     if st.ok and f.dirty:
         split = _split_published(run, rec.path, default_branch)
         if split is not None:
@@ -1547,7 +1547,7 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: set | None) -> None:
                     not st.ok
                     or split is None
                     or split[0]
-                    or D.split_ignored(st.out)[0]
+                    or D.split_ignored(st.out, ln.rec.path)[0]
                 ):
                     row.action, row.reason = (
                         "keep",
