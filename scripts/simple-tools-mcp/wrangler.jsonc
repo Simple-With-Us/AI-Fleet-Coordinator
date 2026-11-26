@@ -122,6 +122,7 @@
     "ZULIP_EMAIL_JET_CHAT": "openai-dot-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_CODEX": "codex-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_ECHO": "instinct-bat-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_DUET": "duet-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_WISE": "instinct-owl-bot@simplewithus.zulipchat.com",
     "ZULIP_CLAUDE_EMAIL": "claude-bot@simplewithus.zulipchat.com",
     // Channels:  any public channel the seat's bot is subscribed to (owner
