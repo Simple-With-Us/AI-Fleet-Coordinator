@@ -444,6 +444,8 @@ export const SEAT_APP_ALIASES = Object.freeze({
   ECHO: Object.freeze(["Echo"]),
   WISE: Object.freeze(["Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"]),
   MA: Object.freeze(["Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"]),
+  // Jay renames this app in Linear from time to time; the viewer check accepts every spelling he has used.
+  ZC: Object.freeze(["ZCode (ZC)", "ZCode"]),
 });
 export const SEAT_TAG_ALIASES = SEAT_NAME_ALIASES;
 
