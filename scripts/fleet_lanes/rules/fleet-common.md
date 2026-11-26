@@ -1,7 +1,7 @@
 ### Coordination
 
 
-PR titles from multithreaded platforms (November 25, 2026) start with the actual writing session's full identity: `[<SEAT>:   <LETTERS>.<GEN>.<HOST>] Title`, for example `[ZC:   RR.3.S] Title`.  Use exactly three U+200A HAIR SPACE characters after the colon, the Operator-assigned letters and positive generation, and `M` (Mac), `S` (Server) or `C` (Cloud), joined by periods.  This is fleet-wide for multithreaded platforms: `[MC]` or `[ZC]` alone is insufficient.  The PR-title bracket contains only that identity, no folder glyph, repository list or recipient/arrow.  Verified single-threaded, unlettered sessions keep their plain `[SEAT]` PR-title prefix, including `[ECHO]` for Echo; a session that holds an Operator assignment uses its full identity.  Do not invent an assignment, infer one from GitHub metadata, or treat a multithreaded session as single-threaded to bypass this rule.  A multithreaded session lacking a verified assignment must obtain it before opening a PR, not publish a bare-seat title.  Preserve the prepared changes on their branch and retry the existing assigner later; ordinary work and permitted chat posts continue, but PR opening waits for a verified assignment.  This title-only rule overrides older space-form or addressed-title examples; PR descriptions and comments keep their existing compact-header and recipient rules.
+PR titles: fleet-coordination skill requires full assigned identity for multithreaded sessions.
 
 Claim substantial Linear work first; branch `<seat>/<id>-<slug>`; PR `Fixes <ID>` (finished)/`Refs <ID>` (partial).  Zulip topic `<ID> <subject>`, status starts `repo:`.  Effort logs archived.
 
