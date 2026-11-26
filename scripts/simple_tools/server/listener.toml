@@ -207,6 +207,14 @@ instance = "server"
 creds = "env"                     # ZULIP_CURSOR_EMAIL, ZULIP_CURSOR_API_KEY
 wake = "inbox"
 
+# DUET (Claude's hosted-app seat, owner Nov 25 2026):  its @-mentions and DMs are captured under /data/DUET/
+# with wake = "inbox" until it has a wake route (there is no DUET_ROUTINE_URL yet).  The pair is read from
+# Infisical (AI Fleet Coordinator, prod, /zulip) as ZULIP_DUET_EMAIL and ZULIP_DUET_API_KEY.
+[seat.DUET]
+instance = "server"
+creds = "env"                     # ZULIP_DUET_EMAIL, ZULIP_DUET_API_KEY (duet-bot@)
+wake = "inbox"
+
 # GROK expects canonical names; verify them before enabling the deployed seat.
 # The retired GROK-BUILD credential stem is never loaded.
 [seat.GROK]
