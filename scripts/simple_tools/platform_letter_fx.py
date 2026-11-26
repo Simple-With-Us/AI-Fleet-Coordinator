@@ -349,6 +349,7 @@ def _write_ledger(
         "labels": {key: value for key, value in sorted((labels or {}).items()) if key in kept},
     }
     temporary = ""
+    handle = -1
     try:
         # A unique staging file per write:  two sync runs never truncate each other's ledger.
         handle, temporary = tempfile.mkstemp(
@@ -357,11 +358,17 @@ def _write_ledger(
             dir=os.path.dirname(path) or ".",
         )
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            handle = -1  # the file object owns the descriptor now
             json.dump(payload, fh)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(temporary, path)
-    except OSError:
+    except Exception:
+        if handle != -1:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
         if temporary:
             try:
                 os.unlink(temporary)

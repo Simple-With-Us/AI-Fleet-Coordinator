@@ -149,6 +149,14 @@ class FxTests(Base):
                 FX._write_ledger(self.env(), ["a"], {"a": "AB"})
         self.assertEqual([n for n in os.listdir(folder) if n.endswith(".tmp")], [])
 
+    def test_a_non_oserror_ledger_failure_leaves_no_staging_file(self) -> None:
+        folder = os.path.dirname(FX._ledger_path(self.env()))
+        os.makedirs(folder, exist_ok=True)
+        with mock.patch.object(FX.json, "dump", side_effect=TypeError("bad payload")):
+            with self.assertRaises(TypeError):
+                FX._write_ledger(self.env(), ["a"], {"a": "AB"})
+        self.assertEqual([n for n in os.listdir(folder) if n.endswith(".tmp")], [])
+
     def test_a_placeholder_store_title_is_never_registered_as_a_title(self) -> None:
         sid = conv(33)
         self.add_session(sid, title="New Chat")
