@@ -57,6 +57,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from datetime import datetime
@@ -209,10 +210,15 @@ def _write_session_title(env: Mapping[str, str], sid: str, title: str) -> bool:
     if _text(doc.get("title")) == title:
         return True
     doc["title"] = title
+    temporary = ""
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
-        temporary = path + ".platform-letter.tmp"
-        with open(temporary, "w", encoding="utf-8") as fh:
+        # A unique staging file per write:  two sync runs for one session never share a path.
+        handle, temporary = tempfile.mkstemp(
+            prefix=os.path.basename(path) + ".platform-letter.", suffix=".tmp",
+            dir=os.path.dirname(path) or ".",
+        )
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, ensure_ascii=False)
             fh.flush()
             os.fsync(fh.fileno())
@@ -220,6 +226,11 @@ def _write_session_title(env: Mapping[str, str], sid: str, title: str) -> bool:
         os.replace(temporary, path)
         return True
     except OSError:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
         return False
 
 
@@ -385,19 +396,18 @@ def sync_main(
             continue
         held = tuple(label for label in (labels.get(sid, ""),) if label) + _held_labels(env, sid)
         words = PL.bare(session["title"], held)
+        if words == PL.PLACEHOLDER:
+            words = ""  # the placeholder is not a title:  it is what a chat with no words carries
         code, answer = _registry(env, "register", sid, location=args.location, title=words)
         if code != 0 or "error" in answer:
             failed.append(sid)
             continue
         label = _text(answer.get("label"))
         previous = _text(answer.get("previous"))
-        title = (
-            PL.compose(
-                label, PL.bare(_text(answer.get("title")) or words, (label, previous, *held))
-            )
-            if label
-            else ""
-        )
+        reported = _text(answer.get("title")) or words
+        if reported == PL.PLACEHOLDER:
+            reported = ""
+        title = PL.compose(label, PL.bare(reported, (label, previous, *held))) if label else ""
         renamed = _write_session_title(env, sid, title) if title else False
         if title and not renamed:
             rename_failed.append(sid)

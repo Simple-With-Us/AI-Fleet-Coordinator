@@ -141,6 +141,14 @@ class FxTests(Base):
         self.sync()
         self.assertEqual(self.store_title(sid), "Fx work")
 
+    def test_a_placeholder_store_title_is_never_registered_as_a_title(self) -> None:
+        sid = conv(33)
+        self.add_session(sid, title="New Chat")
+        self.sync("--apply")
+        label = self.lookup(sid)["label"]
+        self.assertEqual(self.store_title(sid), "%s: New Chat" % label)
+        self.assertEqual(self.lookup(sid)["title"], "")
+
     def test_a_stale_session_is_closed_by_the_next_sync(self) -> None:
         sid = conv(23)
         self.add_session(sid, title="Old work", updated=time.time() - 1000)
