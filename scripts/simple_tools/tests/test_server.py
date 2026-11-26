@@ -1601,6 +1601,7 @@ class PartitionTests(ServerHarness):
                 + list(CLOUD_SEATS)
                 + [s for s, v in bf.items() if v == "server"]
                 + [s for s in MAC_CLI_SEATS if s not in MAC_CLI_DISABLED]
+                + ["DUET"]  # hosted-app seat, inbox capture only (owner, Nov 25 2026)
             ),
             "the enabled seats are every GB bot, the five cloud seats, every live BF seat and "
             "the Mac CLI seats with a loadable pair",
