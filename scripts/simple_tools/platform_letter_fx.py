@@ -337,7 +337,9 @@ def _write_ledger(
         json.dump(
             {
                 "registered": sorted(kept),
-                "labels": {key: value for key, value in sorted((labels or {}).items()) if key in kept},
+                "labels": {
+                    key: value for key, value in sorted((labels or {}).items()) if key in kept
+                },
             },
             fh,
         )
@@ -389,7 +391,13 @@ def sync_main(
             continue
         label = _text(answer.get("label"))
         previous = _text(answer.get("previous"))
-        title = PL.compose(label, PL.bare(_text(answer.get("title")) or words, (label, previous, *held))) if label else ""
+        title = (
+            PL.compose(
+                label, PL.bare(_text(answer.get("title")) or words, (label, previous, *held))
+            )
+            if label
+            else ""
+        )
         renamed = _write_session_title(env, sid, title) if title else False
         if title and not renamed:
             rename_failed.append(sid)

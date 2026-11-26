@@ -154,9 +154,7 @@ class _Store:
         placeholders = ",".join("?" * len(sids))
         try:
             rows = self._conn.execute(
-                "SELECT id FROM session WHERE "
-                + CHILD_TASK_SQL
-                + " AND id IN (%s)" % placeholders,
+                "SELECT id FROM session WHERE " + CHILD_TASK_SQL + " AND id IN (%s)" % placeholders,
                 sids,
             ).fetchall()
         except sqlite3.Error:

@@ -170,7 +170,7 @@ SPEC = PL.PlatformSpec(
     session_env=("CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"),
     unlettered_feed=(
         "hook-only:  a Cursor hook names no chat to replay, and the local ACP store holds no parent or placeholder"
-        ' ledger this adapter trusts, so a chat with no letter asks again at its next prompt;  the store\'s title is'
+        " ledger this adapter trusts, so a chat with no letter asks again at its next prompt;  the store's title is"
         " read and written for the title itself"
     ),
 )
