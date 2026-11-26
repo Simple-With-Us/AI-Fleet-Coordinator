@@ -20,67 +20,59 @@ import re
 from dataclasses import dataclass
 
 EVENTS = (
-    "pull_request",
-    "pull_request_review",
-    "pull_request_review_comment",
-    "check_run",
-    "check_suite",
-    "merge_group",
-    "issues",
-    "issue_comment",
+    "pull_request", "pull_request_review", "pull_request_review_comment",
+    "check_run", "check_suite", "merge_group", "issues", "issue_comment",
 )
-PR_KINDS = frozenset(
-    {
-        "pr",
-        "pr_review",
-        "pr_review_comment",
-        "pr_comment",
-        "check_run",
-        "check_suite",
-        "merge_group",
-    }
-)
+PR_KINDS = frozenset({"pr", "pr_review", "pr_review_comment", "pr_comment",
+                      "check_run", "check_suite"})
 ISSUE_KINDS = frozenset({"issue", "issue_comment_issue"})
 MAPPED, IGNORED, HELD, INVALID = "mapped", "ignored", "held", "invalid"
 MAX_BODY = 1024 * 1024
 MAX_REASON = 80
+MAX_NUMBER = 10**9           # PR and issue numbers
+MAX_REPO = 140
+MAX_TIME = 40
+MAX_REF = 80
+MAX_ACTION = 40
+MAX_EVENT = 64
+MAX_TARGETS = 50             # PRs one payload may name
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SIG_RE = re.compile(r"^sha256=[0-9a-f]{64}$")
-MERGE_GROUP_REF_RE = re.compile(r"/pr-(\d{1,10})-")
-_KIND = {
-    "pull_request": "pr",
-    "pull_request_review": "pr_review",
-    "pull_request_review_comment": "pr_review_comment",
-    "check_run": "check_run",
-    "check_suite": "check_suite",
-    "merge_group": "merge_group",
-}
-_DISCOVERY = frozenset({"check_run", "check_suite", "merge_group"})
+DELIVERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_KIND = {"pull_request": "pr", "pull_request_review": "pr_review",
+         "pull_request_review_comment": "pr_review_comment", "check_run": "check_run",
+         "check_suite": "check_suite"}
+_DISCOVERY = frozenset({"check_run", "check_suite"})
+
+
+class _Bad(Exception):
+    """Internal: malformed payload shape; the reason is a fixed short code."""
 
 
 @dataclass(frozen=True)
 class Hint:
     repo: str
     number: int
-    subject: str  # "pr" or "issue"
+    subject: str                 # "pr" or "issue"
     hint_kind: str
-    source_event_id: str  # transport delivery id, retry identity only
-    source_time: str = ""  # payload timestamp, "" when absent
+    source_event_id: str         # transport delivery id, retry identity only
+    source_time: str = ""        # payload timestamp, "" when absent
     head_sha: str | None = None  # 40-hex or None, advisory
-    source_ref: str = ""  # observed source object id (review/comment/check), "" if none
-    action: str = ""  # payload action, "" if none
+    source_ref: str = ""         # observed source object id (review/comment/check), "" if none
+    action: str = ""             # payload action, "" if none
 
 
 @dataclass(frozen=True)
 class MappingResult:
-    outcome: str  # mapped | ignored | held | invalid
-    reason: str  # bounded
+    outcome: str                 # mapped | ignored | held | invalid
+    reason: str                  # bounded
     hints: tuple = ()
-    event_name: str = ""
-    delivery_id: str = ""
-    repo: str = ""  # subject metadata, "" when unknown
+    event_name: str = ""         # "" when the supplied name was not a valid short string
+    delivery_id: str = ""        # the exact valid id, "" when missing or invalid (never truncated)
+    repo: str = ""               # subject metadata, "" when unknown
     subject_number: int | None = None
+    advisory_head_sha: str | None = None  # head named by a held event, advisory only
 
 
 def verify(body_bytes: bytes, signature_header: str | None, secret: bytes) -> bool:
@@ -95,34 +87,47 @@ def verify(body_bytes: bytes, signature_header: str | None, secret: bytes) -> bo
     return hmac.compare_digest(want, signature_header[7:])
 
 
-def _s(v) -> str:
-    return v if isinstance(v, str) else ""
+def _obj(v, code="bad-shape"):
+    """A dict, or absent (None).  Any other type is malformed."""
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        return v
+    raise _Bad(code)
+
+
+def _num(v, code="number-invalid") -> int:
+    if type(v) is not int or v < 1 or v > MAX_NUMBER:
+        raise _Bad(code)
+    return v
+
+
+def _str(v, limit, code) -> str:
+    if v is None:
+        return ""
+    if not isinstance(v, str) or len(v) > limit:
+        raise _Bad(code)
+    return v
 
 
 def _time(p: dict) -> str:
-    for key in (
-        "review",
-        "comment",
-        "check_run",
-        "check_suite",
-        "merge_group",
-        "pull_request",
-        "issue",
-    ):
-        o = p.get(key)
-        if isinstance(o, dict):
-            for f in ("submitted_at", "completed_at", "updated_at", "created_at"):
-                if _s(o.get(f)):
-                    return o[f]
+    for key in ("review", "comment", "check_run", "check_suite", "merge_group", "pull_request", "issue"):
+        o = _obj(p.get(key), "bad-shape")
+        if o is None:
+            continue
+        for f in ("submitted_at", "completed_at", "updated_at", "created_at"):
+            t = _str(o.get(f), MAX_TIME, "time-oversized")
+            if t:
+                return t
     return ""
 
 
 def _head(p: dict) -> str | None:
     for key in ("pull_request", "check_run", "check_suite", "merge_group"):
-        o = p.get(key)
-        if not isinstance(o, dict):
+        o = _obj(p.get(key))
+        if o is None:
             continue
-        head = o.get("head") if isinstance(o.get("head"), dict) else {}
+        head = _obj(o.get("head")) or {}
         for cand in (o.get("head_sha"), head.get("sha")):
             if isinstance(cand, str) and SHA_RE.match(cand):
                 return cand
@@ -130,83 +135,97 @@ def _head(p: dict) -> str | None:
 
 
 def _ref(p: dict) -> str:
-    for key in ("review", "comment", "check_run", "check_suite", "merge_group"):
-        o = p.get(key)
-        if isinstance(o, dict):
-            v = o.get("id") if type(o.get("id")) is int else o.get("node_id")
-            if v is not None and _s(str(v)):
-                return str(v)[:80]
+    for key in ("review", "comment", "check_run", "check_suite"):
+        o = _obj(p.get(key))
+        if o is None:
+            continue
+        v = o.get("id") if type(o.get("id")) is int else o.get("node_id")
+        if v is not None:
+            return _str(str(v), MAX_REF, "ref-oversized")
     return ""
 
 
 def _prs(event: str, p: dict) -> list[int]:
+    """PR numbers named, validated whole:  one bad entry fails the payload."""
     if event in ("pull_request", "pull_request_review", "pull_request_review_comment"):
-        n = (p.get("pull_request") or {}).get("number") or p.get("number")
-        return [n] if type(n) is int and n > 0 else []
+        pr = _obj(p.get("pull_request"))
+        n = pr.get("number") if pr is not None else p.get("number")
+        if n is None:
+            return []
+        return [_num(n)]
     if event in ("check_run", "check_suite"):
-        prs = (p.get(event) or {}).get("pull_requests") or []
-        return sorted(
-            {
-                x["number"]
-                for x in prs
-                if type(x) is dict and type(x.get("number")) is int and x["number"] > 0
-            }
-        )
-    if event == "merge_group":
-        m = MERGE_GROUP_REF_RE.search(_s((p.get("merge_group") or {}).get("head_ref")))
-        return [int(m.group(1))] if m else []
+        o = _obj(p.get(event))
+        prs = o.get("pull_requests") if o is not None else None
+        if prs is None:
+            return []
+        if not isinstance(prs, list):
+            raise _Bad("pull-requests-not-list")
+        if len(prs) > MAX_TARGETS:
+            raise _Bad("too-many-targets")
+        out = set()
+        for x in prs:
+            if not isinstance(x, dict):
+                raise _Bad("pull-request-entry-invalid")
+            out.add(_num(x.get("number"), "pull-request-entry-invalid"))
+        return sorted(out)
     return []
 
 
-def _res(outcome, reason, event, did, repo="", n=None, hints=()):
-    return MappingResult(
-        outcome, reason[:MAX_REASON], tuple(hints), _s(event)[:64], _s(did)[:128], repo, n
-    )
+def _res(outcome, reason, event="", did="", repo="", n=None, hints=(), head=None):
+    return MappingResult(outcome, reason[:MAX_REASON], tuple(hints), event, did, repo, n, head)
 
 
-def map_event(
-    event_name: str, delivery_id: str, payload: dict, allowlist=frozenset()
-) -> MappingResult:
-    """Pure and stateless.  Never returns an empty result without saying why:
-    unsupported events are ignored, malformed ones invalid, denied repos
-    ignored (an empty allowlist denies all), and check or merge-group events
-    naming no PR are HELD for canonical target discovery."""
-    ev, did = event_name, delivery_id
-    if not isinstance(ev, str) or not isinstance(payload, dict):
-        return _res(INVALID, "malformed-input", _s(ev), did)
+def map_event(event_name: str, delivery_id: str, payload: dict, allowlist=frozenset()) -> MappingResult:
+    """Pure and stateless.  Never returns an empty result without saying why.
+
+    Invalid: non-string or overlong event name, missing/invalid/overlong
+    delivery id (never truncated), non-object payload, malformed or oversized
+    nested fields, bad numbers.  Ignored: unsupported event, repo not on the
+    allowlist (empty allowlist denies all).  Held: check_run, check_suite and
+    merge_group that name no PR, and every merge_group (a queue ref is never
+    parsed for a PR), with the head as advisory only.  A payload is mapped
+    whole or not at all:  one malformed target fails every target."""
+    ev = event_name if isinstance(event_name, str) and 0 < len(event_name) <= MAX_EVENT else ""
+    did = delivery_id if isinstance(delivery_id, str) and DELIVERY_RE.match(delivery_id) else ""
+    if not ev:
+        return _res(INVALID, "event-name-invalid", "", did)
+    if not did:
+        return _res(INVALID, "delivery-id-invalid", ev, "")
+    if not isinstance(payload, dict):
+        return _res(INVALID, "payload-not-object", ev, did)
     if ev not in EVENTS:
         return _res(IGNORED, "event-not-supported", ev, did)
-    repo = (
-        _s((payload.get("repository") or {}).get("full_name"))
-        if isinstance(payload.get("repository"), dict)
-        else ""
-    )
-    if not REPO_RE.match(repo):
-        return _res(INVALID, "repo-missing-or-malformed", ev, did)
-    if repo not in allowlist:
-        return _res(IGNORED, "repo-not-allowlisted", ev, did, repo)
-    t, head, ref, action = (
-        _time(payload),
-        _head(payload),
-        _ref(payload),
-        _s(payload.get("action"))[:40],
-    )
-    if ev in ("issues", "issue_comment"):
-        issue = payload.get("issue")
-        n = issue.get("number") if isinstance(issue, dict) else None
-        if type(n) is not int or n < 1:
-            return _res(INVALID, "issue-number-missing", ev, did, repo)
-        is_pr = "pull_request" in issue
-        if ev == "issue_comment":
-            kind, subj = ("pr_comment", "pr") if is_pr else ("issue_comment_issue", "issue")
-        else:
-            kind, subj = ("pr_comment", "pr") if is_pr else ("issue", "issue")
-        h = Hint(repo, n, subj, kind, _s(did), t, None, ref, action)
-        return _res(MAPPED, "mapped", ev, did, repo, n, (h,))
-    nums = _prs(ev, payload)
-    if not nums:
-        if ev in _DISCOVERY:
-            return _res(HELD, "names-no-pr-needs-discovery", ev, did, repo)
-        return _res(INVALID, "pr-number-missing", ev, did, repo)
-    hs = tuple(Hint(repo, n, "pr", _KIND[ev], _s(did), t, head, ref, action) for n in nums)
-    return _res(MAPPED, "mapped", ev, did, repo, nums[0], hs)
+    try:
+        r = payload.get("repository")
+        if not isinstance(r, dict):
+            raise _Bad("repo-missing-or-malformed")
+        repo = r.get("full_name")
+        if not isinstance(repo, str) or len(repo) > MAX_REPO or not REPO_RE.match(repo):
+            raise _Bad("repo-missing-or-malformed")
+        if repo not in allowlist:
+            return _res(IGNORED, "repo-not-allowlisted", ev, did, repo)
+        t, head, ref = _time(payload), _head(payload), _ref(payload)
+        action = _str(payload.get("action"), MAX_ACTION, "action-oversized")
+        if ev in ("issues", "issue_comment"):
+            issue = _obj(payload.get("issue"))
+            if issue is None:
+                raise _Bad("issue-missing")
+            n = _num(issue.get("number"), "issue-number-invalid")
+            is_pr = "pull_request" in issue
+            if ev == "issue_comment":
+                kind, subj = ("pr_comment", "pr") if is_pr else ("issue_comment_issue", "issue")
+            else:
+                kind, subj = ("pr_comment", "pr") if is_pr else ("issue", "issue")
+            return _res(MAPPED, "mapped", ev, did, repo, n, (Hint(repo, n, subj, kind, did, t, None, ref, action),))
+        if ev == "merge_group":
+            _obj(payload.get("merge_group"))
+            return _res(HELD, "merge-group-needs-discovery", ev, did, repo, None, (), head)
+        nums = _prs(ev, payload)
+        if not nums:
+            if ev in _DISCOVERY:
+                return _res(HELD, "names-no-pr-needs-discovery", ev, did, repo, None, (), head)
+            raise _Bad("pr-number-missing")
+        hs = tuple(Hint(repo, n, "pr", _KIND[ev], did, t, head, ref, action) for n in nums)
+        return _res(MAPPED, "mapped", ev, did, repo, nums[0], hs)
+    except _Bad as e:
+        return _res(INVALID, str(e), ev, did)
