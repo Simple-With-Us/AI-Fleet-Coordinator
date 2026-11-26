@@ -77,4 +77,16 @@ final class NotesQueueHealthTests: XCTestCase {
         let operatorHealth = NotesQueueHealth.make(settings: edited, doctor: nil)
         XCTAssertTrue(operatorHealth.warnings.contains("OPERATOR is a service, not a seat the queue can act for."))
     }
+
+    /// An entry that is not a name is not a seat:  it is counted separately and never joins an
+    /// overlap or a listener-section check.
+    func test_an_invalid_entry_is_not_a_seat() {
+        var edited = settings
+        edited["notes_queue.worker_seats"] = .list([.text("JET"), .int(4), .text("CLAUDE")])
+        let health = NotesQueueHealth.make(settings: edited, doctor: nil)
+        XCTAssertEqual(health.workerSeats, ["JET", "CLAUDE"])
+        XCTAssertEqual(health.workerInvalid, 1)
+        XCTAssertTrue(health.lines.contains { $0.contains("1 invalid entry") })
+        XCTAssertTrue(health.warnings.contains { $0.contains("1 invalid entry") })
+    }
 }

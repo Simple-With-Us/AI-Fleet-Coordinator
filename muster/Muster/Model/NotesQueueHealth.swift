@@ -19,6 +19,9 @@ struct NotesQueueHealth: Equatable {
     var listenerAPI: Bool?
     var workerSeats: [String] = []
     var serverSeats: [String] = []
+    /// Entries that are not seat names.  They are kept out of every seat check and counted here.
+    var workerInvalid = 0
+    var serverInvalid = 0
     var configuredSeats: Set<String> = []
     var queue: DoctorRow?
     var runner: DoctorRow?
@@ -31,8 +34,12 @@ struct NotesQueueHealth: Equatable {
         var health = NotesQueueHealth()
         health.enabled = settings["notes_queue.enabled"]?.boolValue
         health.listenerAPI = settings["listener_api.enabled"]?.boolValue
-        health.workerSeats = ServerSeatNames.names(in: settings["notes_queue.worker_seats"])
-        health.serverSeats = ServerSeatNames.names(in: settings["notes_queue.server_seats"])
+        let workerNames = ServerSeatNames.names(in: settings["notes_queue.worker_seats"])
+        let serverNames = ServerSeatNames.names(in: settings["notes_queue.server_seats"])
+        health.workerSeats = workerNames.filter { $0 != ServerSeatNames.invalidEntry }
+        health.serverSeats = serverNames.filter { $0 != ServerSeatNames.invalidEntry }
+        health.workerInvalid = workerNames.count - health.workerSeats.count
+        health.serverInvalid = serverNames.count - health.serverSeats.count
         health.configuredSeats = Set(settings.keys.compactMap { key -> String? in
             let parts = key.split(separator: ".").map(String.init)
             guard parts.count >= 3, parts[0] == "seat" else { return nil }
@@ -70,9 +77,11 @@ struct NotesQueueHealth: Equatable {
         lines.append("Queue:  " + word(enabled))
         lines.append("Listener API:  " + word(listenerAPI))
         let shared = Set(workerSeats).intersection(serverSeats).count
+        let invalid = workerInvalid + serverInvalid
         lines.append("Seats:  \(workerSeats.count) through the Worker key, "
             + "\(serverSeats.count) through the Server key"
-            + (shared > 0 ? ", \(shared) in both" : "") + ".")
+            + (shared > 0 ? ", \(shared) in both" : "")
+            + (invalid > 0 ? ", \(invalid) invalid entr\(invalid == 1 ? "y" : "ies")" : "") + ".")
         if let detail = queue?.detail, !detail.isEmpty {
             lines.append("Server queue:  \(detail)")
         }
@@ -116,6 +125,10 @@ struct NotesQueueHealth: Equatable {
         }
         if workerSeats.contains("OPERATOR") || serverSeats.contains("OPERATOR") {
             warnings.append("OPERATOR is a service, not a seat the queue can act for.")
+        }
+        let invalid = workerInvalid + serverInvalid
+        if invalid > 0 {
+            warnings.append("A seat list holds \(invalid) invalid entr\(invalid == 1 ? "y" : "ies");  remove \(invalid == 1 ? "it" : "them").")
         }
         return warnings
     }

@@ -464,6 +464,12 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertTrue(line.contains("Also through the other key:  CODEX."))
         XCTAssertNil(ServerSeatNames.statLine(for: names, context: nil))
         XCTAssertEqual(ServerSeatNames.names(fromDraft: #"["CODEX",42]"#), ["CODEX", "[Invalid Entry]"])
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text("CODEX"), .int(42)])), ["CODEX"])
+        let invalidOnly = try XCTUnwrap(ServerSeatNames.statLine(
+            for: [ServerSeatNames.invalidEntry],
+            context: ServerSeatListContext(configuredSeats: ["CODEX"], otherList: ["CODEX"])))
+        XCTAssertTrue(invalidOnly.contains("1 invalid entry"))
+        XCTAssertFalse(invalidOnly.contains("Also through the other key"))
         let operatorLine = try XCTUnwrap(ServerSeatNames.statLine(
             for: ["OPERATOR"],
             context: ServerSeatListContext(configuredSeats: ["OPERATOR"], otherList: [])))

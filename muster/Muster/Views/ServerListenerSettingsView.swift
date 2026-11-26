@@ -6,6 +6,9 @@ struct ServerListenerSettingsSection: View {
     /// The doctor's report, for the Notes queue's own health.  Read once on appear and again
     /// whenever the settings are read, so a queue that is configured but not running says so.
     @State private var doctor: FleetToolsReading?
+    /// The read in flight.  A newer settings read replaces it, so an older file read never lands
+    /// after a newer one.
+    @State private var doctorTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -21,11 +24,21 @@ struct ServerListenerSettingsSection: View {
             content
         }
         .task {
-            if doctor == nil { doctor = await Self.readDoctor() }
+            if doctor == nil { startDoctorRead() }
         }
         .onChange(of: store.reading) { _, new in
             guard case .read? = new else { return }
-            Task { doctor = await Self.readDoctor() }
+            startDoctorRead()
+        }
+        .onDisappear { doctorTask?.cancel() }
+    }
+
+    private func startDoctorRead() {
+        doctorTask?.cancel()
+        doctorTask = Task {
+            let fresh = await Self.readDoctor()
+            guard !Task.isCancelled else { return }
+            doctor = fresh
         }
     }
 
@@ -264,6 +277,8 @@ struct ServerSeatListEditor: View {
     var context: ServerSeatListContext? = nil
 
     private var names: [String] { ServerSeatNames.names(fromDraft: draft) }
+    private var validNames: [String] { names.filter { $0 != ServerSeatNames.invalidEntry } }
+    private var invalidCount: Int { names.count - validNames.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -274,7 +289,7 @@ struct ServerSeatListEditor: View {
                 .lineLimit(1...8)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Seat Names")
-            Text("\(names.count) seat\(names.count == 1 ? "" : "s").\(ServerStatusCopy.sentenceGap)Up to \(maxItems) uppercase seat names, separated by commas, up to \(maxLength) characters each.")
+            Text("\(validNames.count) seat\(validNames.count == 1 ? "" : "s")\(invalidCount > 0 ? ", \(invalidCount) invalid entr\(invalidCount == 1 ? "y" : "ies")" : "").\(ServerStatusCopy.sentenceGap)Up to \(maxItems) uppercase seat names, separated by commas, up to \(maxLength) characters each.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let line = ServerSeatNames.statLine(for: names, context: context) {

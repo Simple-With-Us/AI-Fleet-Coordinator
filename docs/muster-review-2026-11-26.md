@@ -14,7 +14,7 @@ The live facts that matter below:
 | Fact | Live value |
 | --- | --- |
 | `[notes_queue] enabled` | true |
-| `worker_seats` | 29 names, including every server seat, every hosted seat and every enabled GB bot |
+| `worker_seats` | 29 names, spanning server seats, hosted seats and every enabled GB bot |
 | `server_seats` | CLAUDE, CODEX, ZC |
 | Overlap | CLAUDE, CODEX and ZC are in both lists |
 | `[listener_api]` | On (the queue is served) |

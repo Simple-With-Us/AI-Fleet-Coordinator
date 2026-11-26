@@ -1028,12 +1028,16 @@ static let applyOff = "Applying changes is switched off on the server.\(gap)Ever
 }
 
 enum ServerSeatNames {
+    /// What a non-text entry shows.  It stays visible in the field, and no check may ever treat
+    /// it as a seat.
+    static let invalidEntry = "[Invalid Entry]"
+
     static func text(from draft: String) -> String {
         guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
         let names = values.map { value -> String in
             if case .text(let name) = value { return name }
             // Keep invalid entries visible and invalid until the operator corrects them.
-            return "[Invalid Entry]"
+            return invalidEntry
         }
         return names.joined(separator: ", ")
     }
@@ -1046,14 +1050,19 @@ enum ServerSeatNames {
         return ServerSettingValue.list(names).json ?? ""
     }
 
-    /// A settings value's seat names, in order.  An invalid entry keeps a visible placeholder, so
-/// the count and the checks cannot read a list with a refused entry as clean.
+/// A settings value's seat names, in order.  An invalid entry keeps a visible placeholder, so
+    /// the count and the checks cannot read a list with a refused entry as clean.
     static func names(in value: ServerSettingValue?) -> [String] {
         guard case .list(let values)? = value else { return [] }
         return values.map {
             if case .text(let name) = $0 { return name }
-            return "[Invalid Entry]"
+            return invalidEntry
         }
+    }
+
+    /// The text entries only:  what a seat check, an overlap and a count of real seats may use.
+    static func validNames(in value: ServerSettingValue?) -> [String] {
+        names(in: value).filter { $0 != invalidEntry }
     }
 
     /// The names a draft holds now, so the count and the checks follow the edit.
@@ -1066,19 +1075,24 @@ enum ServerSeatNames {
     /// and never a seat the queue may act for.  Nil when there is nothing to add.
     static func statLine(for names: [String], context: ServerSeatListContext?) -> String? {
         guard let context else { return nil }
+        let valid = names.filter { $0 != invalidEntry }
         var parts: [String] = []
         if !context.configuredSeats.isEmpty {
-            let unconfigured = names.filter { !context.configuredSeats.contains($0) }
+            let unconfigured = valid.filter { !context.configuredSeats.contains($0) }
             if !unconfigured.isEmpty {
                 parts.append("No listener section on this server:  " + unconfigured.joined(separator: ", ") + ".")
             }
         }
-        let shared = names.filter { context.otherList.contains($0) }
+        let shared = valid.filter { context.otherList.contains($0) }
         if !shared.isEmpty {
             parts.append("Also through the other key:  " + shared.joined(separator: ", ") + ".")
         }
-        if names.contains("OPERATOR") {
+        if valid.contains("OPERATOR") {
             parts.append("OPERATOR is a service, not a seat the queue can act for.")
+        }
+        let invalid = names.count - valid.count
+        if invalid > 0 {
+            parts.append("\(invalid) invalid entr\(invalid == 1 ? "y" : "ies") the queue will refuse;  remove \(invalid == 1 ? "it" : "them").")
         }
         return parts.isEmpty ? nil : parts.joined(separator: ServerSettingsCopy.gap)
     }
@@ -1218,7 +1232,7 @@ enum ServerSettingsBuilder {
                     ? "notes_queue.server_seats" : "notes_queue.worker_seats"
                 seatContext = ServerSeatListContext(
                     configuredSeats: knownSeats,
-                    otherList: Set(ServerSeatNames.names(in: allSettings[otherKey])))
+                    otherList: Set(ServerSeatNames.validNames(in: allSettings[otherKey])))
                 title = ServerSettingsCopy.rowTitle(path: key, name: name)
                 information = key == "notes_queue.worker_seats"
                     ? ServerSettingsCopy.notesQueueWorkerSeats
