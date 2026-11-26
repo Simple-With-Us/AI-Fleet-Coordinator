@@ -43,6 +43,12 @@ class SeatTitleTagTests(unittest.TestCase):
         self.assertEqual(applied, title)
         self.assertFalse(changed)
 
+    def test_full_session_prefix_preserves_exact_hair_spaces(self):
+        title = "[ZC:" + "\u200a" * 3 + "RR.3.S] Fix"
+        applied, changed = self.policy.apply_title_tag("swu-zc", title)
+        self.assertEqual(applied.encode(), title.encode())
+        self.assertFalse(changed)
+
     def test_a_title_without_the_tag_gets_it(self):
         applied, changed = self.policy.apply_title_tag("swu-minimax", "Add the keeper")
         self.assertEqual(applied, "[MM] Add the keeper")
