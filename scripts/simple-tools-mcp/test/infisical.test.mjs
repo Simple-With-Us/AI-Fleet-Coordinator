@@ -234,8 +234,8 @@ test("fallback mode reaches zero fallbacks when Infisical holds every declared n
     assert.equal(tokens.seatTokens.size, 17, "every declared seat token served by Infisical");
     assert.deepEqual(await resolveWakeKeys(env, Object.values(WAKE_SECRETS)), ["v-WAKE_HMAC_KEY_JET"]);
   });
-  assert.equal(infisicalStats().fallbacks, 0, "MA's, JET-CHAT's and CODEX's tokens and three seats' wake keys are set nowhere:  off, not fallbacks");
-  assert.equal(infisicalStats().absent, 6);
+  assert.equal(infisicalStats().fallbacks, 0, "MA's, JET-CHAT's, CODEX's and DUET's tokens and three seats' wake keys are set nowhere:  off, not fallbacks");
+  assert.equal(infisicalStats().absent, 7);
   assert.deepEqual(lines, []);
 });
 

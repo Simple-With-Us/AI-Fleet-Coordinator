@@ -236,7 +236,7 @@ class RelayHookTests(unittest.TestCase):
             self.assertIs(rows[-1].get("title_prefixed"), True)
 
     def test_multithreaded_session_bracket_is_preserved(self):
-        # The current convention is the space form:  [SEAT ??.#.?].
+        # Earlier space-form input remains accepted for compatibility.
         with tempfile.TemporaryDirectory() as directory:
             relay, response = self.open_pr(
                 directory, Client(), token=MM_TOKEN, extra={"title": "[MM SS.2.M] fix it"}
@@ -511,11 +511,11 @@ class TitleTagPolicyTests(unittest.TestCase):
         )
         policy = SeatPolicy(raw)
         self.assertEqual(policy.apply_title_tag("swu-mm", "[MM SS] x"), ("[MM SS] x", False))
-        # Space form (current convention) after a multiword tag.
+        # Earlier space form after a multiword tag remains accepted.
         self.assertEqual(
             policy.apply_title_tag("swu-mm", "[MM SS HH.1.M] x"), ("[MM SS HH.1.M] x", False)
         )
-        # Colon form after a multiword tag is legacy-tolerated.
+        # Current colon form is accepted after a multiword tag.
         self.assertEqual(
             policy.apply_title_tag("swu-mm", "[MM SS: HH.1.M] x"), ("[MM SS: HH.1.M] x", False)
         )

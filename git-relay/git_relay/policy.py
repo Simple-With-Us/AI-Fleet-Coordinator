@@ -29,14 +29,13 @@ _GRANT_PATH = re.compile(
 )
 _MAX_DEFAULT_BRANCH_PATHS = 8
 
-# A seat's bracketed title tag:  Jay's 2026-11-20 convention is that every
-# relay-created PR title starts with the creating seat's bracketed heading
-# (Echo's PRs begin [ECHO];  a multithreaded seat's begin with its
-# session-qualified tag in the space form, e.g. [MM SS.2.M]).  A colon after
-# the tag ([MM: SS.2.M]) appears on pre-existing PRs and is still accepted
-# as legacy input;  it is not the current convention.  The tag is 1-32 chars
-# of uppercase letters, digits, space, dash or underscore;  per-seat config
-# may pin one with "title_tag", otherwise it derives from the seat name.
+# PR-title attribution: Echo uses [ECHO]. Multithreaded sessions supply
+# [SEAT:<three U+200A>LETTERS.GEN.HOST], without folder, repo or recipient.
+# The colon form is current (November 25, 2026); older space forms remain
+# accepted for compatibility. This function authenticates only the seat tag,
+# never session ownership. Missing session text is still a caller-side gap.
+# A tag is 1-32 uppercase letters, digits, spaces, dashes or underscores;
+# per-seat title_tag may pin it, otherwise it derives from the seat name.
 _TITLE_TAG = re.compile(r"[A-Z0-9][A-Z0-9 _-]{0,31}")
 # The bracket a title already opens with, if any:  [TAG], [TAG: ...], [TAG ...].
 _LEADING_BRACKET = re.compile(r"^\[([^\[\]]{1,64})\]")
@@ -980,9 +979,8 @@ class SeatPolicy:
 
         A title whose leading bracket opens with the seat's own tag followed
         by a boundary (end of bracket, space or colon) conforms:  "[ECHO] ...",
-        "[MM SS.2.M] ...", "[MM SS] ...".  The colon form ("[MM: SS.2.M]") is
-        accepted as legacy from pre-existing PRs;  the current convention is
-        the space form.  Only the tag's own spelling is canonicalized (case
+        "[MM SS.2.M] ...", "[MM SS] ...".  The current convention is colon plus three U+200A hair spaces,
+        then the assigned LETTERS.GEN.HOST. Older space forms remain accepted.  Only the tag's own spelling is canonicalized (case
         and bracket whitespace:  "[echo] x" -> "[ECHO] x");  session text
         after the tag is caller-supplied, is never rewritten or validated,
         and must never be trusted as authenticated session ownership.
