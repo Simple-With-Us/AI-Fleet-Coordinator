@@ -173,7 +173,7 @@ def _review_ref(value, field: str):
     if not isinstance(value, str) or not (
         _PRRT_RE.fullmatch(value) or _REVIEW_COMMENT_RE.fullmatch(value)
     ):
-        raise ValueError(f"{field} {RESOLVE_REF_HELP[RESOLVE_REF_HELP.index('thread_id is'):]}")
+        raise ValueError(f"{field} {RESOLVE_REF_HELP[RESOLVE_REF_HELP.index('thread_id is') :]}")
     return value
 
 
@@ -278,9 +278,7 @@ def _validate_args(action: str, args: dict) -> dict:
             value = _text(value, field, required=required)
         elif kind == "clean":
             value = _clean_text(value, field, required=required)
-        elif kind == "thread_id":
-            value = _review_ref(value, field)
-        elif kind == "comment_id":
+        elif kind == "thread_id" or kind == "comment_id":
             value = _review_ref(value, field)
         elif kind == "generation_claim":
             if value is None and not required:

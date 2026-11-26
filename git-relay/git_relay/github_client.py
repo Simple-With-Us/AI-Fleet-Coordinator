@@ -1171,13 +1171,17 @@ class GitHubClient:
                 raise RelayGitHubError(0, "graphql thread lookup was malformed")
             for thread in threads.get("nodes") or []:
                 comments = ((thread or {}).get("comments") or {}).get("nodes") or []
-                if any(isinstance(c, dict) and c.get("databaseId") == database_id for c in comments):
+                if any(
+                    isinstance(c, dict) and c.get("databaseId") == database_id for c in comments
+                ):
                     return thread["id"]
             info = threads.get("pageInfo") or {}
             if not info.get("hasNextPage") or not isinstance(info.get("endCursor"), str):
                 break
             cursor = info["endCursor"]
-        raise ValueError(f"no review thread on {repo} pull request {number} holds comment {comment}")
+        raise ValueError(
+            f"no review thread on {repo} pull request {number} holds comment {comment}"
+        )
 
     def resolve_thread(self, thread_id: str, bearer: str) -> dict:
         if not isinstance(thread_id, str) or not thread_id.startswith("PRRT_"):

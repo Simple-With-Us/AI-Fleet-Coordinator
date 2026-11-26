@@ -1189,14 +1189,20 @@ class TestAppClientShapes(unittest.TestCase):
         from git_relay import server
 
         base = {"repo": "o/r"}
-        for good in ({"thread_id": "PRRT_abcdef"}, {"comment_id": "2551234567"},
-                     {"comment_id": 2551234567}, {"thread_id": "PRRC_abcdef"},
-                     {"thread_id": "2551234567"}):
-            self.assertIn(
-                "repo", server._validate_args("resolve_thread", {**base, **good})
-            )
-        for bad in ({}, {"thread_id": "PRRT_abcdef", "comment_id": "5"},
-                    {"thread_id": "IC_kwDOabcdef"}, {"comment_id": "abc"}):
+        for good in (
+            {"thread_id": "PRRT_abcdef"},
+            {"comment_id": "2551234567"},
+            {"comment_id": 2551234567},
+            {"thread_id": "PRRC_abcdef"},
+            {"thread_id": "2551234567"},
+        ):
+            self.assertIn("repo", server._validate_args("resolve_thread", {**base, **good}))
+        for bad in (
+            {},
+            {"thread_id": "PRRT_abcdef", "comment_id": "5"},
+            {"thread_id": "IC_kwDOabcdef"},
+            {"comment_id": "abc"},
+        ):
             with self.assertRaises(ValueError) as ctx:
                 server._validate_args("resolve_thread", {**base, **bad})
             self.assertIn("PRRT_", str(ctx.exception))
@@ -1206,11 +1212,17 @@ class TestAppClientShapes(unittest.TestCase):
         from git_relay import mcp_server
 
         base = {"repo": "Example-Org/widget-repo"}
-        for good in ({"comment_id": "2551234567"}, {"comment_id": "PRRC_kwDOAbc-123_x"},
-                     {"thread_id": "2551234567"}):
+        for good in (
+            {"comment_id": "2551234567"},
+            {"comment_id": "PRRC_kwDOAbc-123_x"},
+            {"thread_id": "2551234567"},
+        ):
             self.assertIsNone(mcp_server._validate_args("resolve_thread", {**base, **good}))
-        for bad in ({}, {"thread_id": "PRRT_kwDOAbc-123_x", "comment_id": "5"},
-                    {"thread_id": "IC_kwDOabcdef"}):
+        for bad in (
+            {},
+            {"thread_id": "PRRT_kwDOAbc-123_x", "comment_id": "5"},
+            {"thread_id": "IC_kwDOabcdef"},
+        ):
             self.assertIsNotNone(mcp_server._validate_args("resolve_thread", {**base, **bad}))
 
 
