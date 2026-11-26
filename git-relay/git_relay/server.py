@@ -150,6 +150,33 @@ def _number(value, field: str) -> int:
     return value
 
 
+RESOLVE_REF_HELP = (
+    "resolve_thread needs exactly one of thread_id or comment_id. thread_id is the PRRT_ "
+    "review-thread id; comment_id is a review comment's numeric id or PRRC_ node id, and "
+    "the thread that holds it is resolved. An issue-comment id, a review id or a commit id "
+    "is not accepted."
+)
+_PRRT_RE = re.compile(r"PRRT_[A-Za-z0-9_-]{6,128}")
+_REVIEW_COMMENT_RE = re.compile(r"PRRC_[A-Za-z0-9_-]{6,128}|[0-9]{1,18}")
+
+
+def _review_ref(value, field: str):
+    """A review-thread (PRRT_) or review-comment (PRRC_ or numeric) id, as text.
+
+    A comment id is accepted under either field name, because seats see comment ids
+    far more often than thread ids; the relay finds the thread that holds it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        value = str(value)
+    if not isinstance(value, str) or not (
+        _PRRT_RE.fullmatch(value) or _REVIEW_COMMENT_RE.fullmatch(value)
+    ):
+        raise ValueError(f"{field} {RESOLVE_REF_HELP[RESOLVE_REF_HELP.index('thread_id is') :]}")
+    return value
+
+
 def _validate_args(action: str, args: dict) -> dict:
     """Full shape validation for one action;  returns the canonical arguments.
 
@@ -227,10 +254,15 @@ def _validate_args(action: str, args: dict) -> dict:
             }
         )
     elif action == "resolve_thread":
-        specs["thread_id"] = ("thread_id", True)
+        specs["thread_id"] = ("thread_id", False)
+        specs["comment_id"] = ("comment_id", False)
     extra = sorted(set(args) - set(specs))
     if extra:
         raise ValueError(f"{action}: unexpected fields ({len(extra)})")
+    if action == "resolve_thread":
+        refs = [name for name in ("thread_id", "comment_id") if args.get(name) is not None]
+        if len(refs) != 1:
+            raise ValueError(RESOLVE_REF_HELP)
     if action == "open_pr":
         # The three creation-time native claims are all-or-none:  a caller
         # that offers one claim offers all three, so a partial set can never
@@ -246,10 +278,8 @@ def _validate_args(action: str, args: dict) -> dict:
             value = _text(value, field, required=required)
         elif kind == "clean":
             value = _clean_text(value, field, required=required)
-        elif kind == "thread_id":
-            value = _text(value, field, required=required)
-            if not re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}", value):
-                raise ValueError("thread_id must be a pull request review thread id")
+        elif kind == "thread_id" or kind == "comment_id":
+            value = _review_ref(value, field)
         elif kind == "generation_claim":
             if value is None and not required:
                 pass
@@ -1395,7 +1425,17 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
                 else {}
             ),
         )
-    return self.client.resolve_thread(_text(args.get("thread_id"), "thread_id"), bearer=token)
+    ref = args.get("thread_id") or args.get("comment_id")
+    if not _PRRT_RE.fullmatch(ref):
+        try:
+            ref = self.client.thread_for_comment(repo, ref, bearer=token)
+        except RelayGitHubError as exc:
+            # The lookup only reads, so a transient failure proves no write was
+            # attempted: release the idempotency key as refused and answer retryable.
+            if exc.status in (0, 408, 429) or exc.status >= 500:
+                raise PreReadUnavailable() from None
+            raise
+    return self.client.resolve_thread(ref, bearer=token)
 
 
 Relay._dispatch_app = _app_dispatch
