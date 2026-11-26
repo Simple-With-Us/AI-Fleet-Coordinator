@@ -450,8 +450,7 @@ class WakeRouterInstallerAdmissionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[3]
         record = json.loads(
             (
-                root
-                / "docs/security/wake-router-installer-match-pinned-review-20261126.json"
+                root / "docs/security/wake-router-installer-match-pinned-review-20261126.json"
             ).read_text()
         )
         doc = record["reviewed_file"]
