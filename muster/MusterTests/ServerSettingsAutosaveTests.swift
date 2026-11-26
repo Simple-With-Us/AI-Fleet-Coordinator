@@ -389,7 +389,7 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertEqual(try ServerSettingsBuilder.value(draft, for: row).get(), .list([.text("CODEX"), .text("GROK-WEB")]))
         XCTAssertEqual(try ServerSettingsBuilder.value(ServerSeatNames.draft(from: ""), for: row).get(), .list([]))
         let unfinished = ServerSeatNames.draft(from: "CODEX,")
-        XCTAssertEqual(ServerSeatNames.text(from: unfinished), "CODEX, ")
+        XCTAssertEqual(ServerSeatNames.text(from: unfinished), "CODEX, [Invalid Entry]")
         XCTAssertThrowsError(try ServerSettingsBuilder.value(unfinished, for: row).get())
         let mixedCase = ServerSeatNames.draft(from: "Codex")
         XCTAssertEqual(ServerSeatNames.text(from: mixedCase), "Codex")
@@ -434,6 +434,61 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
             XCTAssertFalse(old.isEditable)
             XCTAssertEqual(old.readOnlyReason, ServerSettingsCopy.seats)
         }
+    }
+
+    /// The two notes-queue lists are permission lists for two keys, not seat rosters.  Each row
+    /// says which key it is for, and its context names the seats the listener holds and the
+    /// other list, so an overlap or a name with no section is visible before a request is refused.
+    func test_notes_queue_seat_lists_say_what_each_key_is_for() throws {
+        var fixture = settingsBaseline
+        fixture["notes_queue.enabled"] = .bool(true)
+        fixture["listener_api.enabled"] = .bool(true)
+        fixture["notes_queue.worker_seats"] = .list([.text("CODEX"), .text("JET"), .text("JET-CHAT")])
+        fixture["notes_queue.server_seats"] = .list([.text("CODEX")])
+        fixture["seat.JET.enabled"] = .bool(true)
+        let rows = ServerSettingsBuilder.groups(settings: fixture, allowlist: try settingsSchema(), editable: true)
+            .flatMap(\.rows)
+        let worker = try XCTUnwrap(rows.first { $0.id == "notes_queue.worker_seats" })
+        XCTAssertEqual(worker.title, "Seats Through The Worker Key")
+        XCTAssertEqual(worker.information, ServerSettingsCopy.notesQueueWorkerSeats)
+        XCTAssertEqual(worker.seatContext?.configuredSeats ?? [], ["CODEX", "JET"])
+        XCTAssertEqual(worker.seatContext?.otherList ?? [], ["CODEX"])
+        let server = try XCTUnwrap(rows.first { $0.id == "notes_queue.server_seats" })
+        XCTAssertEqual(server.title, "Seats Through The Server Key")
+        XCTAssertEqual(server.information, ServerSettingsCopy.notesQueueServerSeats)
+        XCTAssertEqual(server.seatContext?.otherList ?? [], ["CODEX", "JET", "JET-CHAT"])
+        let value = ServerSettingJSON.parse(worker.editText)
+        let names = ServerSeatNames.validNames(in: value)
+        XCTAssertEqual(names, ["CODEX", "JET", "JET-CHAT"])
+        let line = try XCTUnwrap(ServerSeatNames.statLine(for: value, context: worker.seatContext))
+        XCTAssertTrue(line.contains("No listener section on this server:  JET-CHAT."))
+        XCTAssertTrue(line.contains("Also through the other key:  CODEX."))
+        XCTAssertNil(ServerSeatNames.statLine(for: value, context: nil))
+        XCTAssertEqual(ServerSeatNames.names(fromDraft: #"["CODEX",42]"#), ["CODEX", "[Invalid Entry]"])
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text("CODEX"), .int(42)])), ["CODEX"])
+        XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text("CODEX"), .int(42)])), 1)
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text("JET"), .text(""), .text("CODEX")])), ["JET", "CODEX"])
+        XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text("JET"), .text(""), .text("CODEX")])), 1)
+        XCTAssertEqual(ServerSeatNames.names(in: .list([.text("JET"), .text(""), .text("CODEX")])),
+                       ["JET", "[Invalid Entry]", "CODEX"])
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text(" CODEX ")])), ["CODEX"])
+        XCTAssertEqual(ServerSeatNames.text(from: #"[" CODEX "]"#), "CODEX")
+        XCTAssertNil(ServerSeatNames.statLine(
+            for: .list([.text(" CODEX ")]),
+            context: ServerSeatListContext(configuredSeats: ["CODEX"], otherList: [])))
+        // A text entry that reads like the placeholder is still text, never an invalid entry.
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text(ServerSeatNames.invalidEntry)])),
+                       [ServerSeatNames.invalidEntry])
+        XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text(ServerSeatNames.invalidEntry)])), 0)
+        let invalidOnly = try XCTUnwrap(ServerSeatNames.statLine(
+            for: .list([.int(1)]),
+            context: ServerSeatListContext(configuredSeats: ["CODEX"], otherList: ["CODEX"])))
+        XCTAssertTrue(invalidOnly.contains("1 invalid entry"))
+        XCTAssertFalse(invalidOnly.contains("Also through the other key"))
+        let operatorLine = try XCTUnwrap(ServerSeatNames.statLine(
+            for: .list([.text("OPERATOR")]),
+            context: ServerSeatListContext(configuredSeats: ["OPERATOR"], otherList: [])))
+        XCTAssertTrue(operatorLine.contains("OPERATOR is a service, not a seat the queue can act for."))
     }
 
     func test_typed_controls_cover_all_exposed_config_and_preserve_presence_case() throws {
