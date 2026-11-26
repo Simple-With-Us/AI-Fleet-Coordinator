@@ -774,7 +774,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "ab3b8f5ea08651b4c7f8f42cf480794ceda7b480328b58250a0332a4faace017"
+            "sha256": "0f9885aec13d3c5034bfdccbfee49c579d58811d828897f7593afeee3a930242"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -2013,7 +2013,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.kimi-code/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "e1558ba054f9f0995c10b0a4d16a802a3b435ebcadbe42623baf1b9dd6425980"
+            "sha256": "5cbec9cfad00196aba08d1e426d6e991b4df68bc1aa61e0289834e4b827fd353"
           },
           "id": "kimi-instructions-lane-map",
           "kind": "instructions",
@@ -3005,7 +3005,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "579784f3dba3fdca63b231516d27941a90c5b79339e7d5556116a75ff92eb03c"
+            "sha256": "e7aa00fcd4f77714c6ff946df4eedcb15aebceb9c15cfb703eb3917ddfa33a00"
           },
           "id": "zc-instructions-lane-map",
           "kind": "instructions",
