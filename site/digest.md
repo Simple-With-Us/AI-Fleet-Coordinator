@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-25 16:37 CST · timezone America/Chicago_
+_Generated 2026-11-25 21:43 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,7 +11,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-25
 
-*85 PRs merged · 0 issues opened · 0 issues closed*
+*126 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
@@ -36,6 +36,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** `Z Code` [#2554](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2554): AFC-836: wake key line, gate check, route health, drop legacy delivery _(by jaywedgeworth22)_
 - **AFC** `ChatGPT` [#2555](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2555): Read Muster Controls with folder-scoped Infisical service tokens _(by jaywedgeworth22)_
 - **AFC** `ChatGPT` [#2556](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2556): Bring Socratic Trade and Congress.Trade health into Muster _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2557](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2557): Carry The Delta In The Runtime Sync Retrieval _(by jaywedgeworth22)_
 - **AFC** `Z Code` [#2558](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2558): docs: land the coolify-launch helper row the Master List note already carried _(by jaywedgeworth22)_
 - **AFC** `Claude` [#2559](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2559): Admit a Registered Preservation Pair's Exact Approved Result (AFC-793) _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2560](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2560): Preserve authenticated source identity for prospective native qualification _(by jaywedgeworth22)_
@@ -59,7 +60,22 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** `Claude` [#2578](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2578): Say How Many Living Comments The Relay Created And Updated (AFC-833, Server Remainder) _(by jaywedgeworth22)_
 - **AFC** `Claude` `Antigravity` [#2579](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2579): Refuse An — Wake Whose Conversation Data Is Gone (AFC-840) _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2580](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2580): Preserve reader compatibility and report partial creation coverage _(by jaywedgeworth22)_
+- **AFC** [#2581](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2581): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2582](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2582): Add the Mac launchd keeper for the Code mirror job _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2583](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2583): Write the lane-move log outside the managed tools package _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2584](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2584): Let a seat pin its own title tag, and say who owns the policy file _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2585](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2585): Hold Each Consumer To The Folder Its Own Names Live In _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2586](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2586): Tell The Caller Why GitHub Refused The Auto-Merge Enable _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2587](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2587): A Machine Run Never Takes A Letter, And An Ended One Frees Its Pair (Refs AFC-894) _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2588](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2588): Keep The Retired Fleet-Secrets CLI Retired, And Name Each Consumer's Own Grant _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2589](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2589): Add pure GitHub webhook verify and event mapping helpers for review alerts _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2590](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2590): Name the keeper's supervisor in the worktree paragraph _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2591](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2591): Count The Skill Packs And The Generated Project As Build Output _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2592](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2592): Prepare the DUET seat: relay policy row, Worker seat names, tests _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2593](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2593): Add the DUET seat to the server eavesdropper config _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2594](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2594): Resolve One Host Per Wake In The Shared Router _(by jaywedgeworth22)_
 - **BF** `Antigravity` [#2206](https://github.com/Simple-With-Us/BotFleet/pull/2206): Add Native Engine Driver Factory And Matrix Bot Registration (Refs BF-2689) _(by jaywedgeworth22)_
+- **BF** `Muse Assist` `Claude` [#2207](https://github.com/Simple-With-Us/BotFleet/pull/2207): [ROB] Update Companion Default Models _(by jaywedgeworth22)_
 - **BF** `Claude` [#2209](https://github.com/Simple-With-Us/BotFleet/pull/2209): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
 - **BF** `ChatGPT` [#2211](https://github.com/Simple-With-Us/BotFleet/pull/2211): Remove legacy Seat MCP as a BotFleet option _(by jaywedgeworth22)_
 - **BF** `Z Code` [#2212](https://github.com/Simple-With-Us/BotFleet/pull/2212): Produce The Control-Disposition Receipt From A Measured Verdict (Refs BF-2701) _(by jaywedgeworth22)_
@@ -76,17 +92,33 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **BF** `Z Code` [#2223](https://github.com/Simple-With-Us/BotFleet/pull/2223): Give Both Release Planners Their Store Bootstrap Binding (OPS-1108) _(by jaywedgeworth22)_
 - **BF** `Muse Assist` `Grok` `Claude` [#2224](https://github.com/Simple-With-Us/BotFleet/pull/2224): [ROB] Companion Defaults: Approved Subset ( Sonnet 5.5, — 4.7) _(by jaywedgeworth22)_
 - **BF** `MiniMax` [#2225](https://github.com/Simple-With-Us/BotFleet/pull/2225): Port The BF-2694 Residue: Copy, Contrast And Sentence-Gap Fixes (BF-2703) _(by jaywedgeworth22)_
+- **BF** `MiniMax` [#2226](https://github.com/Simple-With-Us/BotFleet/pull/2226): BF-2647: bind the replay receipt to the packet's inventory _(by jaywedgeworth22)_
+- **BF** `MiniMax` [#2227](https://github.com/Simple-With-Us/BotFleet/pull/2227): Keep The Runtime Bytes A Release Runs Under (Refs BF-2559) _(by jaywedgeworth22)_
+- **BF** `Instinct` [#2228](https://github.com/Simple-With-Us/BotFleet/pull/2228): Add BotFleet logo to top of README _(by jaywedgeworth22)_
 - **C** `MiniMax` [#318](https://github.com/Simple-With-Us/Clutch/pull/318): Give The Phone A Live Activity, A Lock Screen Count And A Control Center Action _(by jaywedgeworth22)_
 - **C** `Muse Code` [#322](https://github.com/Simple-With-Us/Clutch/pull/322): Name The — Seat In AGENTS.md _(by jaywedgeworth22)_
 - **C** `Claude` [#323](https://github.com/Simple-With-Us/Clutch/pull/323): Start Z Code through the zcode-acp-server bridge _(by jaywedgeworth22)_
 - **C** `Muse Code` [#325](https://github.com/Simple-With-Us/Clutch/pull/325): Report A Tokenless Launch URL Instead Of Crashing (C-52) _(by jaywedgeworth22)_
 - **C** `MiniMax` [#326](https://github.com/Simple-With-Us/Clutch/pull/326): C-144 Push Live Activity state from the host over APNs _(by jaywedgeworth22)_
+- **C** `MiniMax` [#327](https://github.com/Simple-With-Us/Clutch/pull/327): C-146 The Thread List Says When It Is A Window _(by jaywedgeworth22)_
+- **C** `ChatGPT` [#329](https://github.com/Simple-With-Us/Clutch/pull/329): Let Clutch Projects Span Hosts And Coding Tools _(by jaywedgeworth22)_
+- **C** `ChatGPT` [#330](https://github.com/Simple-With-Us/Clutch/pull/330): Keep Clutch host and tool controls visible in previews _(by jaywedgeworth22)_
+- **C** `Muse Code` [#331](https://github.com/Simple-With-Us/Clutch/pull/331): Require The Bracketed Session Header In PR Headings _(by jaywedgeworth22)_
+- **C** `Instinct` [#332](https://github.com/Simple-With-Us/Clutch/pull/332): Add Clutch logo to top of README _(by jaywedgeworth22)_
+- **CT** `Gemini` `Muse Assist` [#3201](https://github.com/Simple-With-Us/Congress.Trade/pull/3201): [ROB] [CT, ] Model Updates: Bakeoff Candidates and — Elemental Sweep _(by jaywedgeworth22)_
 - **CT** `Instinct` [#3202](https://github.com/Simple-With-Us/Congress.Trade/pull/3202): iOS: conflict faces, Trades tab header paging, one background, cream cards, top fade _(by jaywedgeworth22)_
+- **CT** `ChatGPT` [#3203](https://github.com/Simple-With-Us/Congress.Trade/pull/3203): Show politician portraits in Committee Sector Conflicts _(by jaywedgeworth22)_
+- **CT** [#3204](https://github.com/Simple-With-Us/Congress.Trade/pull/3204): [ROB] Slow-retry filings whose PDF is not yet published instead of dead-lettering them _(by jaywedgeworth22)_
 - **CL** `Claude` [#349](https://github.com/Simple-With-Us/ContactLogo/pull/349): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
+- **CL** `Instinct` [#350](https://github.com/Simple-With-Us/ContactLogo/pull/350): Add ContactLogo logo to top of README _(by jaywedgeworth22)_
 - **DD** `Claude` [#610](https://github.com/Simple-With-Us/DealDex/pull/610): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
+- **DD** `Instinct` [#611](https://github.com/Simple-With-Us/DealDex/pull/611): Add DealDex logo to top of README _(by jaywedgeworth22)_
 - **FL** `Instinct` [#222](https://github.com/Simple-With-Us/FleetLink/pull/222): Ship every iOS build to the external TestFlight group _(by jaywedgeworth22)_
+- **FL** `Instinct` [#223](https://github.com/Simple-With-Us/FleetLink/pull/223): Add FleetLink logo to top of README _(by jaywedgeworth22)_
 - **HH** `Claude` [#397](https://github.com/Simple-With-Us/HogHunter/pull/397): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
 - **HH** `MiniMax` [#398](https://github.com/Simple-With-Us/HogHunter/pull/398): Overview summary grows with the window (Grow decision) _(by jaywedgeworth22)_
+- **PS** `Instinct` [#304](https://github.com/Simple-With-Us/Personal-Site/pull/304): Add personal site logo to top of README _(by jaywedgeworth22)_
+- **SWU** `Instinct` [#117](https://github.com/Simple-With-Us/Simple-With-Us/pull/117): Add Simple With Us logo to top of README _(by jaywedgeworth22)_
 - **ST** `Claude` [#5468](https://github.com/Simple-With-Us/Socratic-Trade/pull/5468): Put Yahoo ahead of the 403ing Cboe VIX lane and stop it paging (ST-4672) _(by jaywedgeworth22)_
 - **ST** `Z Code` `Antigravity` [#5471](https://github.com/Simple-With-Us/Socratic-Trade/pull/5471): ST-4668 — roadmap takeover: reconciliation against main, batch plan, owner decisions _(by jaywedgeworth22)_
 - **ST** `Z Code` [#5473](https://github.com/Simple-With-Us/Socratic-Trade/pull/5473): ST-4669 iOS fixes bundle: OpenRouter availability, order row identity, shared decoder, logo cache, coach polish, small layout fixes _(by jaywedgeworth22)_
@@ -96,10 +128,19 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **ST** `Z Code` [#5477](https://github.com/Simple-With-Us/Socratic-Trade/pull/5477): ST-4680 OD-3 tighten-only defaults: entry drift 3%, expiry 4h, exposure 15%, sector cap 30%, earnings blackout, stricter backtest gate _(by jaywedgeworth22)_
 - **ST** `Z Code` [#5478](https://github.com/Simple-With-Us/Socratic-Trade/pull/5478): ST-4681 OD-4: FIFO retention for provider dispatch/outbox and ingest-attempt telemetry with replay-watermark safety _(by jaywedgeworth22)_
 - **ST** `Z Code` [#5479](https://github.com/Simple-With-Us/Socratic-Trade/pull/5479): ST-4678 Learning residuals: failover weighting order, real parity receipt, horizon-matched efficacy, RAG lift scorecard, memory-write outbox _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5483](https://github.com/Simple-With-Us/Socratic-Trade/pull/5483): [ST, ZC] ST-4682: OD-6 embedding revision bump with resumable backfill _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5484](https://github.com/Simple-With-Us/Socratic-Trade/pull/5484): ST-4685: mobile phone trade commands through the execution path _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5485](https://github.com/Simple-With-Us/Socratic-Trade/pull/5485): [ST, ZC] ST-4686: OD-11 web console batch _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5486](https://github.com/Simple-With-Us/Socratic-Trade/pull/5486): [ST, ZC] ST-4676: extract RagItem from the decisions route module; gate citation URLs _(by jaywedgeworth22)_
+- **ST** `Instinct` [#5487](https://github.com/Simple-With-Us/Socratic-Trade/pull/5487): Use the yielding async EOD bulk read in the market scan (stall fix) _(by jaywedgeworth22)_
+- **ST** `Instinct` [#5490](https://github.com/Simple-With-Us/Socratic-Trade/pull/5490): Add Socratic Trade logo to top of README _(by jaywedgeworth22)_
 - **UM** `Codex` [#2083](https://github.com/Simple-With-Us/Usage-Monitor/pull/2083): Do Not Merge: Use Synced ASC Credentials _(by jaywedgeworth22)_
 - **UM** `Z Code` [#2091](https://github.com/Simple-With-Us/Usage-Monitor/pull/2091): collectors: resolve the scoped grant before the environment (OPS-1120) _(by jaywedgeworth22)_
+- **UM** `Instinct` [#2092](https://github.com/Simple-With-Us/Usage-Monitor/pull/2092): Add Usage Monitor logo to top of README _(by jaywedgeworth22)_
 - **CC** `ChatGPT` [#554](https://github.com/Simple-With-Us/codecaps/pull/554): Add Alibaba and Xiaomi MiMo Token Plan quota readers _(by jaywedgeworth22)_
 - **CC** `ChatGPT` [#555](https://github.com/Simple-With-Us/codecaps/pull/555): Add Alibaba Coding Plan quota monitoring for Qwen Code _(by jaywedgeworth22)_
+- **CC** `Muse Code` [#556](https://github.com/Simple-With-Us/codecaps/pull/556): Add OpenCode Go, endpoint plugins, and review fixes (Refs OPS-1122) _(by jaywedgeworth22)_
+- **CTS** `Instinct` [#426](https://github.com/Simple-With-Us/congress-trading-shared/pull/426): Add Simple With Us logo to top of README _(by jaywedgeworth22)_
 
 ## 2026-11-24
 
