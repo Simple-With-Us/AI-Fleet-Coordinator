@@ -245,6 +245,27 @@ test("confirmViewer refuses a viewer that is not an app, and one that is another
   }
 });
 
+test("confirmViewer remembers the app id: a renamed app keeps working, a swapped one does not", async () => {
+  const first = clientHarness({ viewer: { id: "app-id-0001", name: "Grok Web", app: true } });
+  await first.client.confirmViewer();
+  assert.equal((await first.gate.linearAppIdGet()).id, "app-id-0001");
+  const withViewer = (viewer) => {
+    const fake = new FakeLinear({ viewer });
+    return new LinearClient({ quota: memoryQuota(), seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate: first.gate, fetch: fake.fetch, now: () => first.clock.now });
+  };
+  // The owner renames the app to something the tables have never heard of: the id still proves it is the seat's app.
+  const renamed = await withViewer({ id: "app-id-0001", name: "A Name Nobody Listed", app: true }).confirmViewer();
+  assert.equal(renamed.name, "A Name Nobody Listed");
+  // Another seat's app (other id, other name) is still refused and does not replace the remembered id.
+  await assert.rejects(() => withViewer({ id: "app-id-0002", name: "Wise (Instinct)", app: true }).confirmViewer(), (error) => error.kind === "swapped");
+  assert.equal((await first.gate.linearAppIdGet()).id, "app-id-0001");
+  // The same id is not enough when it is not an app user.
+  await assert.rejects(() => withViewer({ id: "app-id-0001", name: "Grok Web", app: false }).confirmViewer(), (error) => error.kind === "swapped");
+  // A re-registered app that carries one of the seat's names passes the name check and its id is remembered.
+  await withViewer({ id: "app-id-0003", name: "Grok Web", app: true }).confirmViewer();
+  assert.equal((await first.gate.linearAppIdGet()).id, "app-id-0003");
+});
+
 test("a write is refused before Linear is touched when the viewer is another seat's app", async () => {
   const { tools, fake } = harness({ viewer: { id: "user-9", name: "Jet", app: true } });
   fake.addIssue({ id: "issue-310", identifier: "AFC-310" });
