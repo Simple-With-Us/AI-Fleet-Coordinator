@@ -37,6 +37,7 @@ TIMEOUT_SECONDS = 30
 # It gets a short timeout of its own and a total budget (attempts, waits and all), so the
 # two calls together stay well inside the callers' own timeouts.
 READBACK_TIMEOUT_SECONDS = 3
+THREAD_LOOKUP_BUDGET_SECONDS = 25  # one deadline for a whole comment-to-thread lookup
 REVIEW_THREAD_PAGES = 10  # review-thread pages (100 each) one comment lookup may walk
 READBACK_BUDGET_SECONDS = 8
 READBACK_ATTEMPTS = 3
@@ -1096,6 +1097,26 @@ class GitHubClient:
             result["source_fence_atomic"] = False
         return result
 
+    def _budget_call(self, deadline: float, method: str, path: str, payload, bearer=None):
+        """One call of a comment lookup, inside that lookup's single absolute deadline.
+
+        The whole walk (comment read, every thread page, every long-thread comment page)
+        shares one deadline, so it cannot outlast the caller's wait.  Each call gets the
+        time left, and an exhausted budget is a transport failure (status 0), which the
+        caller treats as retryable, never as a partial answer.
+        """
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise RelayGitHubError(0, "connection failed: comment lookup deadline exceeded")
+        return self._call(
+            method,
+            path,
+            payload,
+            bearer=bearer,
+            timeout=min(TIMEOUT_SECONDS, remaining),
+            deadline=deadline,
+        )
+
     def thread_for_comment(self, repo: str, comment, bearer: str) -> str:
         """Return the PRRT_ review-thread id that holds one review comment.
 
@@ -1108,13 +1129,15 @@ class GitHubClient:
         """
         self._check_repo(repo)
         owner, name = repo.split("/")
+        deadline = self._clock() + THREAD_LOOKUP_BUDGET_SECONDS
         if isinstance(comment, int) and not isinstance(comment, bool) and comment > 0:
             comment = str(comment)
         if not isinstance(comment, str) or not comment:
             raise ValueError("comment must be a numeric id or a PRRC_ node id")
         if comment.isdigit():
             database_id = int(comment)
-            data = self._call(
+            data = self._budget_call(
+                deadline,
                 "GET", f"/repos/{repo}/pulls/comments/{database_id}", None, bearer=bearer
             )
             url = data.get("pull_request_url") if isinstance(data, dict) else None
@@ -1123,7 +1146,8 @@ class GitHubClient:
                 raise ValueError(f"review comment {comment} was not found in {repo}")
             number = int(tail)
         else:
-            data = self._call(
+            data = self._budget_call(
+                deadline,
                 "POST",
                 "/graphql",
                 {
@@ -1151,7 +1175,8 @@ class GitHubClient:
             number = pull["number"]
         cursor = None
         for _page in range(REVIEW_THREAD_PAGES):
-            data = self._call(
+            data = self._budget_call(
+                deadline,
                 "POST",
                 "/graphql",
                 {
@@ -1192,7 +1217,7 @@ class GitHubClient:
                     return thread["id"]
                 total = held.get("totalCount")
                 if isinstance(total, int) and total > 100:
-                    if self._thread_holds_comment(thread["id"], database_id, bearer):
+                    if self._thread_holds_comment(thread["id"], database_id, bearer, deadline):
                         return thread["id"]
             info = threads.get("pageInfo")
             if not isinstance(info, dict) or not isinstance(info.get("hasNextPage"), bool):
@@ -1209,11 +1234,14 @@ class GitHubClient:
             "threads; pass thread_id (the PRRT_ id) instead of a comment id"
         )
 
-    def _thread_holds_comment(self, thread_id: str, database_id: int, bearer: str) -> bool:
+    def _thread_holds_comment(
+        self, thread_id: str, database_id: int, bearer: str, deadline: float
+    ) -> bool:
         """Page one long review thread's comments (after the first 100) for a comment id."""
         cursor = None
         for _page in range(REVIEW_THREAD_PAGES):
-            data = self._call(
+            data = self._budget_call(
+                deadline,
                 "POST",
                 "/graphql",
                 {
