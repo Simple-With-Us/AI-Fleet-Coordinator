@@ -110,7 +110,7 @@ class MatchPinnedReview(unittest.TestCase):
     def test_actual_registry_and_preserved_admissions(self):
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 5)
         self.assertEqual(len(relay._REVIEWED_PUBLIC_INTEGRITIES), 4)
-        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 8)
+        self.assertEqual(len(relay._REVIEWED_GENERIC_MATCHES), 9)
         server_key = (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "git-relay/git_relay/server.py",
@@ -429,6 +429,88 @@ class ServerPyRetargetAdmissionTests(unittest.TestCase):
         ):
             self.assertIsNotNone(relay.scan_file(key[0], key[1], body))
         self.assertEqual(relay.scan(body), "assigned secret")
+
+
+class WakeRouterInstallerAdmissionTests(unittest.TestCase):
+    """The wake router installer: exact bytes, exact two-match census, stale metadata refuses."""
+
+    key = (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "scripts/simple_tools/server/install-wake-router.sh",
+        "80c5933a23534b5b9ed0030dafcfcb90b0e21a6fd25f94c72b16734edae6bad6",
+    )
+    census = frozenset(
+        {
+            ("assigned secret", 6118, 6154, 6127, 6154),
+            ("assigned secret", 7067, 7093, 7075, 7093),
+        }
+    )
+
+    def test_durable_record_binds_registry(self):
+        root = Path(__file__).resolve().parents[3]
+        record = json.loads(
+            (
+                root
+                / "docs/security/wake-router-installer-match-pinned-review-20261126.json"
+            ).read_text()
+        )
+        doc = record["reviewed_file"]
+        self.assertEqual((doc["repository"], doc["path"], doc["sha256"]), self.key)
+        self.assertEqual(doc["bytes"], 48068)
+        self.assertEqual(doc["lines"], 975)
+        census = frozenset(tuple(row) for row in doc["effective_matches"])
+        self.assertEqual(census, self.census)
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], census)
+        self.assertNotIn(self.key, relay._REVIEWED_GENERIC_FIXTURES)
+
+    def test_admitted_bytes_are_admitted(self):
+        # The reviewed bytes are the version on main, so the checkout holds
+        # them and the census is re-runnable against the real file.
+        root = Path(__file__).resolve().parents[3]
+        raw = (root / self.key[1]).read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), self.key[2])
+        self.assertEqual(len(raw), 48068)
+        self.assertIsNone(relay.scan_file(self.key[0], self.key[1], raw.decode("utf-8")))
+        computed = MatchPinnedReview().metadata(relay, raw.decode("utf-8"))
+        self.assertEqual(computed, self.census)
+
+    def test_stale_or_incomplete_census_refuses(self):
+        body = "const secret = '" + "a" * 24 + "';"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        real = MatchPinnedReview().metadata(relay, body)
+        self.assertEqual(len(real), 1)
+        for metadata in (frozenset(), frozenset({("assigned secret", 0, 1, 0, 1)})):
+            with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: metadata}):
+                self.assertIsNotNone(relay.scan_file(self.key[0], self.key[1], body))
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: real}):
+            self.assertIsNone(relay.scan_file(self.key[0], self.key[1], body))
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[self.key], self.census)
+
+    def test_extra_match_in_candidate_bytes_cannot_ride_the_digest(self):
+        body = "const secret = '" + "a" * 24 + "'; const token = '" + "b" * 24 + "';"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(
+            relay,
+            "_REVIEWED_GENERIC_MATCHES",
+            {key: frozenset(list(MatchPinnedReview().metadata(relay, body))[:1])},
+        ):
+            self.assertIsNotNone(relay.scan_file(self.key[0], self.key[1], body))
+        self.assertEqual(relay.scan(body), "assigned secret")
+
+    def test_loaded_credential_stays_absolute_on_the_admission_path(self):
+        body = "prefix " + "KnownCredentialValue123"
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
+            self.assertEqual(
+                relay.scan_file(self.key[0], self.key[1], body, known=("KnownCredentialValue123",)),
+                "a loaded credential",
+            )
+
+    def test_dedicated_pattern_stays_absolute_on_the_admission_path(self):
+        body = "token = ghp_" + "A" * 30
+        key = (self.key[0], self.key[1], hashlib.sha256(body.encode()).hexdigest())
+        with patch.object(relay, "_REVIEWED_GENERIC_MATCHES", {key: self.census}):
+            self.assertEqual(relay.scan_file(self.key[0], self.key[1], body), "GitHub token")
 
 
 class ReviewRecordShapeTests(unittest.TestCase):
