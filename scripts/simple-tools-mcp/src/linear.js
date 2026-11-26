@@ -1428,6 +1428,22 @@ export class LinearClient {
     return { name: viewer.name ?? viewer.displayName ?? "", app: viewer.app === true, id: viewer.id ?? "", workspace: org.urlKey ?? "" };
   }
 
+  async #knownAppId() {
+    try {
+      return (await this.gate.linearAppIdGet?.())?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async #rememberAppId(id) {
+    try {
+      await this.gate.linearAppIdSet?.({ id, set_at: this.now() });
+    } catch {
+      // not stored: the name check still guards the next call
+    }
+  }
+
   /**
    * The swapped-credentials check, before any write:  the viewer must be this
    * seat's own app.  Without it a renamed or swapped Worker secret would have
