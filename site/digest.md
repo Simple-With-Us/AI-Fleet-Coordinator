@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-25 21:43 CST · timezone America/Chicago_
+_Generated 2026-11-26 03:40 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -9,9 +9,44 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **ICS (daily outline):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
 - **ICS (per-commit activity):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
 
+## 2026-11-26
+
+*28 PRs merged · 0 issues opened · 0 issues closed*
+
+### Merged PRs
+
+- **AFC** `Z Code` [#2596](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2596): wide: PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **AFC** `Instinct` `Z Code` [#2597](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2597): ZC Linear app: accept the ZCode and ZCode spellings _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2598](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2598): Linear viewer check: remember the app id so renames never break a seat _(by jaywedgeworth22)_
+- **AFC** `Z Code` [#2599](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2599): Muster: Make The Operator Panel Say What It Means _(by jaywedgeworth22)_
+- **AFC** `Z Code` [#2600](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2600): Put Every Platform's Letter On Its Own Title At Issue _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2602](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2602): Keep empty issue constraints off legacy Mac wake wire _(by jaywedgeworth22)_
+- **BF** `MiniMax` `Claude` [#2229](https://github.com/Simple-With-Us/BotFleet/pull/2229): Give The — Turn An Advisor Model _(by jaywedgeworth22)_
+- **BF** `MiniMax` [#2230](https://github.com/Simple-With-Us/BotFleet/pull/2230): Give the native and iOS release planners their store bootstrap binding (OPS-1108) _(by jaywedgeworth22)_
+- **BF** `Claude` [#2232](https://github.com/Simple-With-Us/BotFleet/pull/2232): Give The Replay Probe A Coverage Mode (Refs BF-2647) _(by jaywedgeworth22)_
+- **C** `Z Code` [#333](https://github.com/Simple-With-Us/Clutch/pull/333): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **C** `MiniMax` [#337](https://github.com/Simple-With-Us/Clutch/pull/337): Key The Phone's Activity And Thread Links By Engine _(by jaywedgeworth22)_
+- **C** `Muse Code` [#339](https://github.com/Simple-With-Us/Clutch/pull/339): Give Every Thread A Context Panel And A Compact Button (C-88) _(by jaywedgeworth22)_
+- **C** `Muse Code` [#340](https://github.com/Simple-With-Us/Clutch/pull/340): Keep The Draft And Attachments Out Of The Compact Turn _(by jaywedgeworth22)_
+- **CT** `Z Code` [#3206](https://github.com/Simple-With-Us/Congress.Trade/pull/3206): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **CL** `Z Code` [#351](https://github.com/Simple-With-Us/ContactLogo/pull/351): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **DD** `Z Code` [#612](https://github.com/Simple-With-Us/DealDex/pull/612): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **FL** `Z Code` [#224](https://github.com/Simple-With-Us/FleetLink/pull/224): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **HH** `Z Code` [#400](https://github.com/Simple-With-Us/HogHunter/pull/400): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **HH** `Z Code` [#401](https://github.com/Simple-With-Us/HogHunter/pull/401): Server maintenance parity: gate, reclaimable bytes and run history in the snapshot _(by jaywedgeworth22)_
+- **HH** `Z Code` [#402](https://github.com/Simple-With-Us/HogHunter/pull/402): iOS storage parity: 40 app rows with running state and All/Running filter _(by jaywedgeworth22)_
+- **PS** `Z Code` [#305](https://github.com/Simple-With-Us/Personal-Site/pull/305): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **SWU** `Z Code` [#118](https://github.com/Simple-With-Us/Simple-With-Us/pull/118): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5481](https://github.com/Simple-With-Us/Socratic-Trade/pull/5481): ST-4670: iOS Proposals safety and triage _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5492](https://github.com/Simple-With-Us/Socratic-Trade/pull/5492): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **UM** `Muse Assist` [#2086](https://github.com/Simple-With-Us/Usage-Monitor/pull/2086): [ROB] Do Not Merge Yet: UM-1676 ios-ship Producer Service-Token Transition _(by jaywedgeworth22)_
+- **UM** `Z Code` [#2093](https://github.com/Simple-With-Us/Usage-Monitor/pull/2093): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **CC** `Z Code` [#558](https://github.com/Simple-With-Us/codecaps/pull/558): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **CTS** `Z Code` [#427](https://github.com/Simple-With-Us/congress-trading-shared/pull/427): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+
 ## 2026-11-25
 
-*126 PRs merged · 0 issues opened · 0 issues closed*
+*135 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
@@ -74,6 +109,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** `Instinct` [#2592](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2592): Prepare the DUET seat: relay policy row, Worker seat names, tests _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2593](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2593): Add the DUET seat to the server eavesdropper config _(by jaywedgeworth22)_
 - **AFC** `MiniMax` [#2594](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2594): Resolve One Host Per Wake In The Shared Router _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2595](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2595): Require full session identity in PR title prefixes _(by jaywedgeworth22)_
 - **BF** `Antigravity` [#2206](https://github.com/Simple-With-Us/BotFleet/pull/2206): Add Native Engine Driver Factory And Matrix Bot Registration (Refs BF-2689) _(by jaywedgeworth22)_
 - **BF** `Muse Assist` `Claude` [#2207](https://github.com/Simple-With-Us/BotFleet/pull/2207): [ROB] Update Companion Default Models _(by jaywedgeworth22)_
 - **BF** `Claude` [#2209](https://github.com/Simple-With-Us/BotFleet/pull/2209): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
@@ -98,6 +134,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **C** `MiniMax` [#318](https://github.com/Simple-With-Us/Clutch/pull/318): Give The Phone A Live Activity, A Lock Screen Count And A Control Center Action _(by jaywedgeworth22)_
 - **C** `Muse Code` [#322](https://github.com/Simple-With-Us/Clutch/pull/322): Name The — Seat In AGENTS.md _(by jaywedgeworth22)_
 - **C** `Claude` [#323](https://github.com/Simple-With-Us/Clutch/pull/323): Start Z Code through the zcode-acp-server bridge _(by jaywedgeworth22)_
+- **C** `Muse Code` [#324](https://github.com/Simple-With-Us/Clutch/pull/324): Rescue The Uncommitted UI Slice From The Integration Tree _(by jaywedgeworth22)_
 - **C** `Muse Code` [#325](https://github.com/Simple-With-Us/Clutch/pull/325): Report A Tokenless Launch URL Instead Of Crashing (C-52) _(by jaywedgeworth22)_
 - **C** `MiniMax` [#326](https://github.com/Simple-With-Us/Clutch/pull/326): C-144 Push Live Activity state from the host over APNs _(by jaywedgeworth22)_
 - **C** `MiniMax` [#327](https://github.com/Simple-With-Us/Clutch/pull/327): C-146 The Thread List Says When It Is A Window _(by jaywedgeworth22)_
@@ -105,10 +142,14 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **C** `ChatGPT` [#330](https://github.com/Simple-With-Us/Clutch/pull/330): Keep Clutch host and tool controls visible in previews _(by jaywedgeworth22)_
 - **C** `Muse Code` [#331](https://github.com/Simple-With-Us/Clutch/pull/331): Require The Bracketed Session Header In PR Headings _(by jaywedgeworth22)_
 - **C** `Instinct` [#332](https://github.com/Simple-With-Us/Clutch/pull/332): Add Clutch logo to top of README _(by jaywedgeworth22)_
+- **C** `Muse Code` [#334](https://github.com/Simple-With-Us/Clutch/pull/334): Require Exactly Two Hextets In The Mapped Loopback Gate _(by jaywedgeworth22)_
+- **C** `Instinct` `Muse Assist` [#335](https://github.com/Simple-With-Us/Clutch/pull/335): prefer steering-capable adapter in auto mode, explain disabled Steer _(by jaywedgeworth22)_
+- **C** `Muse Code` [#336](https://github.com/Simple-With-Us/Clutch/pull/336): Bound The Mapped Loopback Hextets And Word _(by jaywedgeworth22)_
 - **CT** `Gemini` `Muse Assist` [#3201](https://github.com/Simple-With-Us/Congress.Trade/pull/3201): [ROB] [CT, ] Model Updates: Bakeoff Candidates and — Elemental Sweep _(by jaywedgeworth22)_
 - **CT** `Instinct` [#3202](https://github.com/Simple-With-Us/Congress.Trade/pull/3202): iOS: conflict faces, Trades tab header paging, one background, cream cards, top fade _(by jaywedgeworth22)_
 - **CT** `ChatGPT` [#3203](https://github.com/Simple-With-Us/Congress.Trade/pull/3203): Show politician portraits in Committee Sector Conflicts _(by jaywedgeworth22)_
 - **CT** [#3204](https://github.com/Simple-With-Us/Congress.Trade/pull/3204): [ROB] Slow-retry filings whose PDF is not yet published instead of dead-lettering them _(by jaywedgeworth22)_
+- **CT** `Instinct` [#3205](https://github.com/Simple-With-Us/Congress.Trade/pull/3205): Add Congress.Trade logo to top of README _(by jaywedgeworth22)_
 - **CL** `Claude` [#349](https://github.com/Simple-With-Us/ContactLogo/pull/349): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
 - **CL** `Instinct` [#350](https://github.com/Simple-With-Us/ContactLogo/pull/350): Add ContactLogo logo to top of README _(by jaywedgeworth22)_
 - **DD** `Claude` [#610](https://github.com/Simple-With-Us/DealDex/pull/610): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
@@ -117,6 +158,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **FL** `Instinct` [#223](https://github.com/Simple-With-Us/FleetLink/pull/223): Add FleetLink logo to top of README _(by jaywedgeworth22)_
 - **HH** `Claude` [#397](https://github.com/Simple-With-Us/HogHunter/pull/397): Stop cron-tracking the auto-merge sweep and debounce sub-hourly monitors (AFC-626) _(by jaywedgeworth22)_
 - **HH** `MiniMax` [#398](https://github.com/Simple-With-Us/HogHunter/pull/398): Overview summary grows with the window (Grow decision) _(by jaywedgeworth22)_
+- **HH** `Instinct` [#399](https://github.com/Simple-With-Us/HogHunter/pull/399): Add HogHunter logo to top of README _(by jaywedgeworth22)_
 - **PS** `Instinct` [#304](https://github.com/Simple-With-Us/Personal-Site/pull/304): Add personal site logo to top of README _(by jaywedgeworth22)_
 - **SWU** `Instinct` [#117](https://github.com/Simple-With-Us/Simple-With-Us/pull/117): Add Simple With Us logo to top of README _(by jaywedgeworth22)_
 - **ST** `Claude` [#5468](https://github.com/Simple-With-Us/Socratic-Trade/pull/5468): Put Yahoo ahead of the 403ing Cboe VIX lane and stop it paging (ST-4672) _(by jaywedgeworth22)_
@@ -134,12 +176,14 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **ST** `Z Code` [#5486](https://github.com/Simple-With-Us/Socratic-Trade/pull/5486): [ST, ZC] ST-4676: extract RagItem from the decisions route module; gate citation URLs _(by jaywedgeworth22)_
 - **ST** `Instinct` [#5487](https://github.com/Simple-With-Us/Socratic-Trade/pull/5487): Use the yielding async EOD bulk read in the market scan (stall fix) _(by jaywedgeworth22)_
 - **ST** `Instinct` [#5490](https://github.com/Simple-With-Us/Socratic-Trade/pull/5490): Add Socratic Trade logo to top of README _(by jaywedgeworth22)_
+- **ST** `Muse Assist` [#5491](https://github.com/Simple-With-Us/Socratic-Trade/pull/5491): [ROB] Chunk the vector-ingest commit lane (ST#5487 stall follow-up) _(by jaywedgeworth22)_
 - **UM** `Codex` [#2083](https://github.com/Simple-With-Us/Usage-Monitor/pull/2083): Do Not Merge: Use Synced ASC Credentials _(by jaywedgeworth22)_
 - **UM** `Z Code` [#2091](https://github.com/Simple-With-Us/Usage-Monitor/pull/2091): collectors: resolve the scoped grant before the environment (OPS-1120) _(by jaywedgeworth22)_
 - **UM** `Instinct` [#2092](https://github.com/Simple-With-Us/Usage-Monitor/pull/2092): Add Usage Monitor logo to top of README _(by jaywedgeworth22)_
 - **CC** `ChatGPT` [#554](https://github.com/Simple-With-Us/codecaps/pull/554): Add Alibaba and Xiaomi MiMo Token Plan quota readers _(by jaywedgeworth22)_
 - **CC** `ChatGPT` [#555](https://github.com/Simple-With-Us/codecaps/pull/555): Add Alibaba Coding Plan quota monitoring for Qwen Code _(by jaywedgeworth22)_
 - **CC** `Muse Code` [#556](https://github.com/Simple-With-Us/codecaps/pull/556): Add OpenCode Go, endpoint plugins, and review fixes (Refs OPS-1122) _(by jaywedgeworth22)_
+- **CC** `Instinct` [#557](https://github.com/Simple-With-Us/codecaps/pull/557): Add CodeCaps logo to top of README _(by jaywedgeworth22)_
 - **CTS** `Instinct` [#426](https://github.com/Simple-With-Us/congress-trading-shared/pull/426): Add Simple With Us logo to top of README _(by jaywedgeworth22)_
 
 ## 2026-11-24
@@ -1824,56 +1868,3 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **CC** [#361](https://github.com/Simple-With-Us/codecaps/pull/361): Add Release Readiness Follow-Up Missing From PR 357 _(by jaywedgeworth22)_
 - **CC** [#362](https://github.com/Simple-With-Us/codecaps/pull/362): Fail Closed On Release Numbers In The Build Script _(by jaywedgeworth22)_
 - **CC** [#366](https://github.com/Simple-With-Us/codecaps/pull/366): Cache menu sections to stop main-thread hangs _(by jaywedgeworth22)_
-
-## 2026-11-04
-
-*46 PRs merged · 0 issues opened · 0 issues closed*
-
-### Merged PRs
-
-- **AFC** [#1333](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1333): Show Hog Hunter's Mac Status In Muster Operations _(by jaywedgeworth22)_
-- **AFC** [#1334](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1334): Add Lane Placement Detection, Git Shim, And Main Clone Checks _(by jaywedgeworth22)_
-- **AFC** [#1349](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1349): Add the fleet service-token skill and refresh the stale skill packs _(by jaywedgeworth22)_
-- **AFC** [#1350](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1350): Move the Mac housekeeper webhook onto a scoped service token _(by jaywedgeworth22)_
-- **BF** [#1547](https://github.com/Simple-With-Us/BotFleet/pull/1547): Remove The Expression Picker, Keep Color On TV-Face And Add The Recolorable Flag _(by jaywedgeworth22)_
-- **BF** [#1577](https://github.com/Simple-With-Us/BotFleet/pull/1577): Add Placement Worker Routes Behind An Optional Transport _(by jaywedgeworth22)_
-- **BF** [#1578](https://github.com/Simple-With-Us/BotFleet/pull/1578): Placement Transport T1: Worker Client And Fsynced Report Spool _(by jaywedgeworth22)_
-- **BF** [#1579](https://github.com/Simple-With-Us/BotFleet/pull/1579): Add The Retained Linux Closure Policy And Fixture Source _(by jaywedgeworth22)_
-- **BF** [#1580](https://github.com/Simple-With-Us/BotFleet/pull/1580): Add The Server Placement Mode Record And The Applied Acknowledgement _(by jaywedgeworth22)_
-- **BF** [#1581](https://github.com/Simple-With-Us/BotFleet/pull/1581): Update dependency lucide-react to v1.65.0 _(by renovate[bot])_
-- **BF** [#1583](https://github.com/Simple-With-Us/BotFleet/pull/1583): Stage protected-main binding preflight before credential migration _(by jaywedgeworth22)_
-- **BF** [#1584](https://github.com/Simple-With-Us/BotFleet/pull/1584): feat(decommission): produce the Node store's read-only archive and its restore rehearsal _(by jaywedgeworth22)_
-- **BF** [#1585](https://github.com/Simple-With-Us/BotFleet/pull/1585): fix(decommission): make the archived database readable on its own, and add the parity probe _(by jaywedgeworth22)_
-- **BF** [#1586](https://github.com/Simple-With-Us/BotFleet/pull/1586): Update dependency posthog-js to v1.443.0 _(by renovate[bot])_
-- **BF** [#1603](https://github.com/Simple-With-Us/BotFleet/pull/1603): Update non-major dependencies _(by renovate[bot])_
-- **BF** [#1605](https://github.com/Simple-With-Us/BotFleet/pull/1605): Update dependency electron to v45.2.1 _(by renovate[bot])_
-- **C** [#248](https://github.com/Simple-With-Us/Clutch/pull/248): Show the tool calls in a thread as a tree, the way the web canvas shows them _(by jaywedgeworth22)_
-- **C** [#249](https://github.com/Simple-With-Us/Clutch/pull/249): Take the Web Canvas tab out, and ask the sidecar how the host stands _(by jaywedgeworth22)_
-- **CT** [#2941](https://github.com/Simple-With-Us/Congress.Trade/pull/2941): CT-2461: restore iOS ticker logos _(by jaywedgeworth22)_
-- **CL** [#291](https://github.com/Simple-With-Us/ContactLogo/pull/291): Normalize Platform Directories With a Temporary Web Root Bridge _(by jaywedgeworth22)_
-- **CL** [#294](https://github.com/Simple-With-Us/ContactLogo/pull/294): chore(deps): update dependency lucide-react to v1.65.0 _(by renovate[bot])_
-- **CL** [#295](https://github.com/Simple-With-Us/ContactLogo/pull/295): Keep The Deploy Root On The Live Vercel Root During The Bridge Phase _(by jaywedgeworth22)_
-- **CL** [#296](https://github.com/Simple-With-Us/ContactLogo/pull/296): Ignore the bridge build output so the deploy checkout stays clean _(by jaywedgeworth22)_
-- **CL** [#297](https://github.com/Simple-With-Us/ContactLogo/pull/297): Republish main when the production baseline is not verifiable _(by jaywedgeworth22)_
-- **CL** [#298](https://github.com/Simple-With-Us/ContactLogo/pull/298): chore(deps): update non-major dependencies _(by renovate[bot])_
-- **DD** [#556](https://github.com/Simple-With-Us/DealDex/pull/556): Mask the retired fleet name in historical docs _(by jaywedgeworth22)_
-- **DD** [#560](https://github.com/Simple-With-Us/DealDex/pull/560): Organize Native Apps And Shared Brand Sources _(by jaywedgeworth22)_
-- **HH** [#258](https://github.com/Simple-With-Us/HogHunter/pull/258): fix(storage): monitor all mounted physical volumes without fixed names _(by jaywedgeworth22)_
-- **HH** [#259](https://github.com/Simple-With-Us/HogHunter/pull/259): Keep The iPhone Companion On One Public Beta Group _(by jaywedgeworth22)_
-- **HH** [#260](https://github.com/Simple-With-Us/HogHunter/pull/260): Heal a Dead Server SSH Connection Instead of Painting Stale Readings Forever _(by jaywedgeworth22)_
-- **HH** [#261](https://github.com/Simple-With-Us/HogHunter/pull/261): Stop Removable Volume Prompts And Lock The Release Code Identity _(by jaywedgeworth22)_
-- **HH** [#264](https://github.com/Simple-With-Us/HogHunter/pull/264): Write A Read-Only Mac Status File For Muster _(by jaywedgeworth22)_
-- **HH** [#266](https://github.com/Simple-With-Us/HogHunter/pull/266): Show The Server And Flagged Issues On The iPhone _(by jaywedgeworth22)_
-- **HH** [#267](https://github.com/Simple-With-Us/HogHunter/pull/267): Let The iPhone Control The Server Over Tailscale _(by jaywedgeworth22)_
-- **HH** [#268](https://github.com/Simple-With-Us/HogHunter/pull/268): Teach Hog Hunter The Internal Disk Hogs Its Rules Miss _(by jaywedgeworth22)_
-- **HH** [#269](https://github.com/Simple-With-Us/HogHunter/pull/269): Close The Small iPhone Parity Gaps _(by jaywedgeworth22)_
-- **HH** [#270](https://github.com/Simple-With-Us/HogHunter/pull/270): Make the iPhone TestFlight lane public group only _(by jaywedgeworth22)_
-- **ST** [#4985](https://github.com/Simple-With-Us/Socratic-Trade/pull/4985): Remove the retired fleet name from ops surfaces _(by jaywedgeworth22)_
-- **ST** [#4990](https://github.com/Simple-With-Us/Socratic-Trade/pull/4990): chore(deps): update non-major dependencies _(by renovate[bot])_
-- **ST** [#4991](https://github.com/Simple-With-Us/Socratic-Trade/pull/4991): Update dependency lucide-react to v1.65.0 _(by renovate[bot])_
-- **ST** [#4992](https://github.com/Simple-With-Us/Socratic-Trade/pull/4992): Update non-major dependencies _(by renovate[bot])_
-- **ST** [#4993](https://github.com/Simple-With-Us/Socratic-Trade/pull/4993): Update dependency eslint to v10.14.0 _(by renovate[bot])_
-- **UM** [#1892](https://github.com/Simple-With-Us/Usage-Monitor/pull/1892): Update non-major dependencies _(by renovate[bot])_
-- **UM** [#1901](https://github.com/Simple-With-Us/Usage-Monitor/pull/1901): Make The Mapped Worker Deploy Path Work And Refuse Tripped Workers _(by jaywedgeworth22)_
-- **UM** [#1902](https://github.com/Simple-With-Us/Usage-Monitor/pull/1902): Stop The Expenses Sync Rewriting Unchanged Rows, Add Hard Write Guards _(by jaywedgeworth22)_
-- **CC** [#355](https://github.com/Simple-With-Us/codecaps/pull/355): feat(quota): tag ZCode unavailability with failing step and category _(by jaywedgeworth22)_
