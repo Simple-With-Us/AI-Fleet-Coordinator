@@ -199,10 +199,25 @@ class TemplateTests(unittest.TestCase):
         paragraph = next(line for line in canonical.splitlines()
                          if line.startswith("PR titles from multithreaded platforms"))
         body = IR.body_text(IR.PLATFORM_BY_NAME["copilot"].variant)
-        self.assertIn(paragraph, body)
+        self.assertEqual(body.count(paragraph), 1)
+        self.assertNotIn("Read that skill before opening a PR", body)
+        self.assertNotIn("its title-only rule overrides older combined", body)
+        self.assertEqual([p.name for p in IR.PLATFORMS if p.variant == "nodefault"], ["copilot"])
         self.assertNotIn("PR titles: fleet-coordination skill requires", body)
         self.assertIn("[ZC:" + "\u200a" * 3 + "RR.3.S]", body)
         self.assertEqual(IR.compose(IR.compose(None, "nodefault").new_text, "nodefault").action, "none")
+
+    def test_nodefault_replaces_whole_legacy_pointer_line(self) -> None:
+        pointer = "PR titles: fleet-coordination skill requires full assigned identity for multithreaded sessions."
+        tail = " Read that skill before opening a PR; its title-only rule overrides older combined title/body examples here."
+        paragraph = (IR.RULES_DIR / "pr-title-identity.md").read_text().strip("\n")
+        for line in (pointer, pointer + tail):
+            with self.subTest(line=line), mock.patch.object(IR, "_read_template", return_value="before\n" + line + "\nafter"):
+                self.assertEqual(IR.body_text("nodefault"), "before\n" + paragraph + "\nafter")
+        for text in ("missing", pointer + "\n" + pointer, pointer + " unexpected tail"):
+            with self.subTest(text=text), mock.patch.object(IR, "_read_template", return_value=text):
+                with self.assertRaisesRegex(ValueError, "exactly one known"):
+                    IR.body_text("nodefault")
 
     def texts(self) -> dict[str, str]:
         out = {v: (IR.RULES_DIR / f).read_text(encoding="utf-8") for v, f in IR.TEMPLATE_FILES.items()}
@@ -1225,7 +1240,7 @@ class FleetBasicsTests(HomeCase):
         self.assertIn("ask Jay which seat you are", body)
         self.assertIn("never infer one from the folder, the branch, the model, a skill or another tool's rules file", body)
         for tag in ("CLAUDE", "CODEX", "CURSOR", "CLUTCH", "MONET", "RENOIR", "GROK", "AG", "MM", "FX", "MC"):
-            self.assertNotRegex(body.split("## Lane Map:", 1)[0], r"\b" + tag + r"\b", f"{tag} must not appear as anyone's assigned seat")
+            self.assertNotRegex(body.replace((IR.RULES_DIR / "pr-title-identity.md").read_text().strip("\n"), "", 1), r"\b" + tag + r"\b", f"{tag} must not appear as anyone's assigned seat")
         self.assertNotIn("default seat is", body)
 
     def test_every_new_block_passes_the_seat_block_checker(self) -> None:
