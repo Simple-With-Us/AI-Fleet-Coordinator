@@ -589,6 +589,23 @@ export async function linearIdentityClear(store) {
   return { cleared: true };
 }
 
+// The Linear app id (viewer.id) this seat's credentials last proved to be its own app.  The id is stable across
+// renames of the app, so the viewer check can key on it instead of the display name.  Holds no secret.
+const LINEAR_APP_ID = /^[A-Za-z0-9_-]{8,64}$/;
+
+export async function linearAppIdGet(store) {
+  const row = await store.get("linear_app_id");
+  if (!row || typeof row.id !== "string" || !LINEAR_APP_ID.test(row.id)) return null;
+  return { id: row.id, set_at: Number(row.set_at) || 0 };
+}
+
+export async function linearAppIdSet(store, entry) {
+  const row = { id: String(entry?.id ?? ""), set_at: Number(entry?.set_at) || 0 };
+  if (!LINEAR_APP_ID.test(row.id)) throw new Error("invalid linear app id");
+  await store.put("linear_app_id", row);
+  return { ...row };
+}
+
 /** Forget the token, so the next call mints.  Only the owner needs this. */
 export async function linearTokenClear(store) {
   await store.delete("linear_token");
