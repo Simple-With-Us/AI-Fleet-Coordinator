@@ -655,6 +655,40 @@ def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
     return os.path.join(L.state_root(env), safe, "letters", sid + ".json")
 
 
+def lettered_ids(env: Mapping[str, str], who: str, platform: str, where: str) -> set[str] | None:
+    """The session ids of this host's chats that hold a letter, from the host's own notes.
+
+    The live-chat report names the chats the host still holds open, and the sweep can only act on
+    a chat that holds a letter:  a chat with no letter has nothing to recycle.  So the report carries
+    the lettered chats only, and a host with a thousand open chats sends a report of a few dozen
+    (AFC-923:  the full report was refused as too large, and the host could never say what it still
+    held).
+
+    None when the notes cannot be read at all:  a host that cannot say which of its chats hold a
+    letter cannot say which of them it still holds open either,  and a report of nothing would tell
+    the registry that every one of them ended (AFC-878)."""
+    folder = os.path.dirname(note_path(env, who, "stamp"))
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    held: set[str] = set()
+    for name in names:
+        if not name.endswith(".json") or name.startswith("."):
+            continue
+        note = _read_json(os.path.join(folder, name))
+        if not isinstance(note, dict):
+            continue
+        if note.get("platform") != platform or note.get("location") != where:
+            continue
+        if not lettered(note):
+            continue
+        sid = str(note.get("session_id") or name[: -len(".json")]).strip()
+        if sid:
+            held.add(sid)
+    return held
+
+
 def note_holds_letter(env: Mapping[str, str], who: str, sid: str) -> bool:
     """True when the chat's own note on this host says it holds a letter (open, with a label):  the hook's
     record of what the assigner issued it, read with no call.  A chat with no note, one that was refused or
@@ -1250,7 +1284,13 @@ def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def live_report(spec: PlatformSpec, env: Mapping[str, str]) -> dict[str, str] | None:
+def live_report(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    *,
+    seat: str = "",
+    where: str = "",
+) -> dict[str, str] | None:
     """The chats this host still holds open, with the host's own last-activity time for each.
 
     The adapter answers from its own store,  so the report is the host's own answer and not the
@@ -1262,7 +1302,10 @@ def live_report(spec: PlatformSpec, env: Mapping[str, str]) -> dict[str, str] | 
     None means the host could not answer:  it has no adapter,  its store cannot be read,  or its
     store holds more chats than one report may name.  An empty map means the host answered and
     holds nothing.  The two are not the same thing:  a report of nothing is a statement that
-    every chat on this host ended,  and a store that could not be read must never say that."""
+    every chat on this host ended,  and a store that could not be read must never say that.
+
+    With a seat and a location,  the report carries the chats that hold a letter only:  the sweep
+    can only recycle a letter,  and a chat with no letter has none to recycle (AFC-923)."""
     if spec.live_chats is None:
         return None
     try:
@@ -1280,7 +1323,14 @@ def live_report(spec: PlatformSpec, env: Mapping[str, str]) -> dict[str, str] | 
         if not text:
             continue
         live[key] = text
-    return live
+    if not seat or not where:
+        return live
+    held = lettered_ids(env, seat, spec.platform, where)
+    if held is None:
+        # The host cannot say which of its chats hold a letter,  so it cannot say which of them it
+        # still holds open:  it reports nothing,  and the registry keeps its letters.
+        return None
+    return {sid: stamp for sid, stamp in live.items() if sid in held}
 
 
 def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dict[str, Any]:
@@ -1299,7 +1349,8 @@ def _report_live_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dic
             "error": "%s has no live-chat report,  so this host cannot say which chats are open"
             % spec.platform
         }
-    live = live_report(spec, env)
+    seat = spec.seat_for({}, env)
+    live = live_report(spec, env, seat=seat, where=str(args.location or "").strip().lower())
     if live is None:
         # The host could not answer,  so it does not report:  a report of nothing would tell
         # the sweep that every chat on this host ended.

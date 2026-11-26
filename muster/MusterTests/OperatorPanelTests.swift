@@ -325,6 +325,7 @@ final class OperatorCardTests: XCTestCase {
     func test_the_eavesdropper_does_not_go_green_when_it_does_not_say_whether_it_is_paused() throws {
         let card = OperatorPanelPresentation.eavesdropper(try listening(statusDocument(paused: "null")), now: now)
         XCTAssertEqual(card.tone, .neutral)
+        XCTAssertEqual(card.state, "Listening, Pause Not Reported")
         XCTAssertTrue(card.lines.contains("Whether it is paused is not reported."))
     }
 
@@ -423,22 +424,42 @@ final class OperatorCardTests: XCTestCase {
 
     func test_the_registry_counts_live_and_gone_and_its_warnings() throws {
         let sessions = OperatorReading.read(try sessionsDocument())
+        let cleanSweep = #"{"ran_at": "\#(at(120))", "ok": true, "ended": 0, "error": null, "stale_after_minutes": 2160, "refused": 0, "refused_platforms": []}"#
+        let status = try statusReading(statusDocument(sweep: cleanSweep))
         // The fixture's sessions: one with no wake route, one not known to be wakeable.
-        let clean = OperatorPanelPresentation.registry(sessions: sessions, status: nil, now: now)
+        let clean = OperatorPanelPresentation.registry(sessions: sessions, status: status, now: now)
         XCTAssertEqual(clean.state, "3 live")
         XCTAssertEqual(clean.lines, ["5 gone", "1 warning"])
         XCTAssertEqual(clean.tone, .warning)
         let quiet = OperatorReading.read(try sessionsDocument(sessionsAnswer(rows: """
         {"letter": "B", "generation": 1, "seat": "CODEX", "status": "active", "wake": "code-supported"}
         """)))
-        let ok = OperatorPanelPresentation.registry(sessions: quiet, status: nil, now: now)
+        let ok = OperatorPanelPresentation.registry(sessions: quiet, status: status, now: now)
         XCTAssertEqual(ok.lines, ["5 gone", "No warnings"])
         XCTAssertEqual(ok.tone, .good)
-        let noCounts = OperatorPanelPresentation.registry(sessions: .read(try sessionsDocument(sessionsAnswer(counts: "null"))), status: nil, now: now)
+        let noCounts = OperatorPanelPresentation.registry(sessions: .read(try sessionsDocument(sessionsAnswer(counts: "null"))), status: status, now: now)
         XCTAssertEqual(noCounts.state, "Not reported")
         XCTAssertEqual(noCounts.tone, .neutral)
         let failed = OperatorPanelPresentation.registry(sessions: .unavailable("The registry was busy."), status: nil, now: now)
         XCTAssertEqual(failed.state, "Not reporting")
+    }
+
+    /// A registry read that could not cover the sweep, or a list the server cut short, is not a
+    /// clean bill of health:  "No warnings" would claim more than was read.
+    func test_the_registry_says_when_its_warning_count_is_a_floor() throws {
+        let quiet = OperatorReading.read(try sessionsDocument(sessionsAnswer(truncated: true, rows: """
+        {"letter": "B", "generation": 1, "seat": "CODEX", "status": "active", "wake": "code-supported"}
+        """)))
+        let card = OperatorPanelPresentation.registry(sessions: quiet, status: nil, now: now)
+        XCTAssertEqual(card.lines.first, "5 gone")
+        XCTAssertTrue(card.lines.contains("No warnings in what was read"))
+        XCTAssertTrue(card.lines.contains { $0.contains("lists only its first chats") })
+        XCTAssertTrue(card.lines.contains { $0.contains("sweep health was not reported") })
+        XCTAssertEqual(card.tone, .neutral)
+        let one = OperatorReading.read(try sessionsDocument())
+        let withWarnings = OperatorPanelPresentation.registry(sessions: one, status: nil, now: now)
+        XCTAssertTrue(withWarnings.lines.contains("At least 1 warning."))
+        XCTAssertEqual(withWarnings.tone, .warning)
     }
 
     func test_registry_warnings_cover_the_sweep_and_the_chats_that_cannot_be_woken() throws {

@@ -3,6 +3,12 @@ import SwiftUI
 /// Operator settings save as they are edited, through the shared authenticated server editor.
 struct ServerListenerSettingsSection: View {
     @ObservedObject private var store = ServerListenerSettingsStore.shared
+    /// The doctor's report, for the Notes queue's own health.  Read once on appear and again
+    /// whenever the settings are read, so a queue that is configured but not running says so.
+    @State private var doctor: FleetToolsReading?
+    /// The read in flight.  A newer settings read replaces it, so an older file read never lands
+    /// after a newer one.
+    @State private var doctorTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -17,6 +23,29 @@ struct ServerListenerSettingsSection: View {
             }
             content
         }
+        .task {
+            if doctor == nil { startDoctorRead() }
+        }
+        .onChange(of: store.reading) { _, new in
+            guard case .read? = new else { return }
+            startDoctorRead()
+        }
+        .onDisappear { doctorTask?.cancel() }
+    }
+
+    private func startDoctorRead() {
+        doctorTask?.cancel()
+        doctorTask = Task {
+            let fresh = await Self.readDoctor()
+            guard !Task.isCancelled else { return }
+            doctor = fresh
+        }
+    }
+
+    /// The doctor's report read off the main thread;  it can carry a few hosts' rows, and a
+    /// settings read must not wait on a file parse.
+    private static func readDoctor() async -> FleetToolsReading {
+        await Task.detached(priority: .utility) { FleetToolsReportReader.readDefault() }.value
     }
 
     @ViewBuilder private var content: some View {
@@ -31,6 +60,15 @@ struct ServerListenerSettingsSection: View {
                 Label("Refresh failed: \(problem)", systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
+            if store.applyEnabled == false {
+                Label(ServerSettingsCopy.applyOff, systemImage: "lock.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if store.applyEnabled == nil {
+                Label(ServerSettingsCopy.applyUnknown, systemImage: "questionmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if store.allowlist == nil {
                 Text(store.allowlistProblem ?? "The settings types could not be read.")
                     .font(.callout).foregroundStyle(.orange)
@@ -39,6 +77,10 @@ struct ServerListenerSettingsSection: View {
             ForEach(store.groups) { group in
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
+                        if group.id == "notes_queue", case .read(let answer)? = store.reading {
+                            NotesQueueStateView(settings: answer.settings, doctor: doctor)
+                            Divider()
+                        }
                         ForEach(group.rows) { row in
                             ServerSettingRowView(row: row, draft: draftBinding(row), state: store.saveStates[row.id],
                                 removing: store.removalDrafts.contains(row.id), remove: { store.removeOverride(row.id) },
@@ -93,6 +135,12 @@ private struct ServerSettingRowView: View {
                     Text(information).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // A read-only notes-queue list has no editor, so its own checks are said here.
+                if !row.isEditable, let context = row.seatContext,
+                   let line = ServerSeatNames.statLine(for: row.current, context: context) {
+                    Text(line).font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let note = row.defaultNote {
                     Text(note).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -133,7 +181,7 @@ private struct ServerSettingRowView: View {
         case .pairs?:
             ServerPresencePairsEditor(draft: $draft, channelNames: row.channelNames)
         case .seats(let count, let length)?:
-            ServerSeatListEditor(draft: $draft, maxItems: count, maxLength: length)
+            ServerSeatListEditor(draft: $draft, maxItems: count, maxLength: length, context: row.seatContext)
         case nil:
             // Identity pins and unknown fields are status, rather than disabled controls.
             VStack(alignment: .leading, spacing: 2) {
@@ -204,21 +252,56 @@ private struct ServerPresencePairsEditor: View {
     }
 }
 
-/// Seat lists stay typed strings, without exposing JSON or changing routing on display.
+/// The Notes queue's purpose, its dependencies and the doctor's reading, above its settings.
+private struct NotesQueueStateView: View {
+    let settings: [String: ServerSettingValue]
+    let doctor: FleetToolsReading?
+
+    var body: some View {
+        let health = NotesQueueHealth.make(settings: settings, doctor: doctor)
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(health.lines, id: \.self) { line in
+                Text(line).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(health.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// Seat lists stay typed strings, without exposing JSON or changing routing on display.  The
+/// field wraps so the whole list is readable, and the line under it counts the names and says
+/// what the list's own checks found.
 struct ServerSeatListEditor: View {
     @Binding var draft: String
     let maxItems: Int
     let maxLength: Int
+    var context: ServerSeatListContext? = nil
+
+    private var value: ServerSettingValue? { ServerSettingJSON.parse(draft) }
+    private var validNames: [String] { ServerSeatNames.validNames(in: value) }
+    private var invalidCount: Int { ServerSeatNames.invalidCount(in: value) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             TextField("Seat Names", text: Binding(
                 get: { ServerSeatNames.text(from: draft) },
                 set: { draft = ServerSeatNames.draft(from: $0) }
-            )).textFieldStyle(.roundedBorder)
+            ), axis: .vertical)
+                .lineLimit(1...8)
+                .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Seat Names")
-            Text("Up to \(maxItems) uppercase seat names, separated by commas, up to \(maxLength) characters each.")
+            Text("\(validNames.count) seat\(validNames.count == 1 ? "" : "s")\(invalidCount > 0 ? ", \(invalidCount) invalid entr\(invalidCount == 1 ? "y" : "ies")" : "").\(ServerStatusCopy.sentenceGap)Up to \(maxItems) uppercase seat names, separated by commas, up to \(maxLength) characters each.")
                 .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let line = ServerSeatNames.statLine(for: value, context: context) {
+                Text(line).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }.font(.system(size: 11)).frame(minWidth: 240)
     }
 }

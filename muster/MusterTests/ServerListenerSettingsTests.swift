@@ -350,9 +350,12 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertEqual(worker.current, .list([.text("JET"), .text("CLAUDE")]))
         XCTAssertNil(worker.control)
         XCTAssertEqual(worker.readOnlyReason, ServerSettingsCopy.seats)
+        XCTAssertEqual(worker.information, ServerSettingsCopy.notesQueueWorkerSeats)
+        XCTAssertEqual(worker.seatContext?.configuredSeats ?? [], ["CLAUDE", "JET"])
         let server = try row("notes_queue.server_seats")
         XCTAssertEqual(server.current, .list([]))
         XCTAssertEqual(server.readOnlyReason, ServerSettingsCopy.seats)
+        XCTAssertEqual(server.information, ServerSettingsCopy.notesQueueServerSeats)
         XCTAssertEqual(ServerSettingsBuilder.request(edits: ["notes_queue.worker_seats": "ZC"], rows: try rows()),
                        .failure(.readOnly(worker.title)))
     }
