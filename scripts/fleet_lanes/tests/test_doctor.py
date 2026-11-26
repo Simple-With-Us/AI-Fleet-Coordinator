@@ -1307,13 +1307,18 @@ class IgnoredStateTests(GitCase):
         text = "\n".join([
             "!! docs/fleet-skills/by-seat/minimax/simple-tools-guide.zip",
             "!! docs/fleet-skills/by-seat/minimax/session-start.zip",
+            "!! docs/fleet-skills/by-seat/minimax/local-notes.md",
             "!! muster/Muster.xcodeproj/",
             "!! data/corpus.zip",
             "!! data/app.db",
             "",
         ])
         local, regenerable = doctor.split_ignored(text)
-        self.assertEqual(local, ["data/corpus.zip", "data/app.db"])
+        # The archives are build output.  The file under the same tree is not:  the directory alone
+        # does not make everything under it regenerable, or a lane holding real local state would
+        # look prunable.
+        self.assertEqual(local, ["docs/fleet-skills/by-seat/minimax/local-notes.md",
+                                 "data/corpus.zip", "data/app.db"])
         self.assertEqual(regenerable, 3)
 
     def test_count_status_still_leaves_ignored_lines_out_of_the_dirty_counts(self) -> None:

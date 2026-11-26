@@ -515,11 +515,6 @@ def count_status(porcelain: str) -> tuple[int, int]:
 _REGENERABLE_NAMES = frozenset({
     "node_modules", ".DS_Store", ".build", "build", "dist", ".next", "__pycache__", "DerivedData", ".venv",
     "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    # The fleet's own skill pack archives:  docs/fleet-skills/by-seat/<seat>/<skill>.zip.  The skill
-    # installer writes them and rewrites them whenever the pack changes, so they are build output and
-    # not state that exists nowhere but this directory.  A lane the installer has run holds hundreds
-    # of them, and counting them as local state kept a lane whose work was already merged.
-    "fleet-skills",
 })
 _REGENERABLE_GLOBS = (
     "*.tsbuildinfo", "*.pyc", "dist-*",
@@ -527,6 +522,14 @@ _REGENERABLE_GLOBS = (
     # muster/project.yml, so the project directory is build output too.
     "*.xcodeproj",
 )
+# A generated directory and the one artifact inside it that is build output:  (the directory, the
+# artifact suffix).  The pair is needed because the directory alone is not enough:  the fleet's own
+# skill pack archives live under docs/fleet-skills/by-seat/<seat>/<skill>.zip, and the skill installer
+# writes them and rewrites them whenever the pack changes, so they are build output and not state
+# that exists nowhere but this directory.  A lane the installer has run holds hundreds of them, and
+# counting them as local state kept a lane whose work was already merged.  Only the archive counts:
+#  a local-only file under the same tree is real state and must still be named.
+_REGENERABLE_DIR_ARTIFACTS = (("fleet-skills", ".zip"),)
 KEEP_MARKER = ".janitor-keep"  # has its own reason in assess, so it is not "ignored local state" too
 # What a checkout without a marker reports in `keep`.  `problem` says why a present marker is not valid.
 KEEP_ABSENT = {"present": False, "valid": False, "reason": None, "by": None, "set_on": None, "expires": None,
@@ -563,8 +566,11 @@ def split_ignored(porcelain: str) -> tuple[list[str], int]:
         parts = [part for part in path.split("/") if part]
         if not parts or path == KEEP_MARKER:
             continue
-        if any(part in _REGENERABLE_NAMES or any(fnmatch.fnmatchcase(part, pat) for pat in _REGENERABLE_GLOBS)
-               for part in parts):
+        if (any(part in _REGENERABLE_NAMES or any(fnmatch.fnmatchcase(part, pat) for pat in _REGENERABLE_GLOBS)
+                for part in parts)
+                or any(part == directory and path.endswith(suffix)
+                       for part in parts
+                       for directory, suffix in _REGENERABLE_DIR_ARTIFACTS)):
             regenerable += 1
         else:
             local.append(path)
