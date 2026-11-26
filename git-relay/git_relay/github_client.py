@@ -37,6 +37,7 @@ TIMEOUT_SECONDS = 30
 # It gets a short timeout of its own and a total budget (attempts, waits and all), so the
 # two calls together stay well inside the callers' own timeouts.
 READBACK_TIMEOUT_SECONDS = 3
+REVIEW_THREAD_PAGES = 10  # review-thread pages (100 each) one comment lookup may walk
 READBACK_BUDGET_SECONDS = 8
 READBACK_ATTEMPTS = 3
 READBACK_BACKOFF_SECONDS = (0.5, 1.0)
@@ -1095,17 +1096,23 @@ class GitHubClient:
             result["source_fence_atomic"] = False
         return result
 
-    def thread_for_comment(self, repo: str, comment: str, bearer: str) -> str:
+    def thread_for_comment(self, repo: str, comment, bearer: str) -> str:
         """Return the PRRT_ review-thread id that holds one review comment.
 
-        comment is the numeric REST comment id or the PRRC_ GraphQL node id, which
-        are the two ids a seat sees on a review comment.  Read-only: it never
-        mutates.  The thread is found by walking the pull request's review
-        threads page by page, so a thread past the first 100 is still found.
+        comment is the numeric REST comment id (text or a positive int) or the PRRC_
+        GraphQL node id, which are the ids a seat sees on a review comment.  Read-only:
+        it never mutates.  The pull request's review threads are walked page by page
+        (at most REVIEW_THREAD_PAGES pages of 100), and a long thread's comments are
+        paged too, so a comment deep in a thread is still found.  A malformed page
+        fails closed instead of reading as the end of the walk.
         """
         self._check_repo(repo)
         owner, name = repo.split("/")
-        if isinstance(comment, str) and comment.isdigit():
+        if isinstance(comment, int) and not isinstance(comment, bool) and comment > 0:
+            comment = str(comment)
+        if not isinstance(comment, str) or not comment:
+            raise ValueError("comment must be a numeric id or a PRRC_ node id")
+        if comment.isdigit():
             database_id = int(comment)
             data = self._call(
                 "GET", f"/repos/{repo}/pulls/comments/{database_id}", None, bearer=bearer
@@ -1143,7 +1150,7 @@ class GitHubClient:
             database_id = node["databaseId"]
             number = pull["number"]
         cursor = None
-        for _page in range(30):
+        for _page in range(REVIEW_THREAD_PAGES):
             data = self._call(
                 "POST",
                 "/graphql",
@@ -1152,7 +1159,7 @@ class GitHubClient:
                         "query($owner: String!, $name: String!, $number: Int!, $after: String) {"
                         " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
                         " reviewThreads(first: 100, after: $after) { nodes { id"
-                        " comments(first: 100) { nodes { databaseId } } }"
+                        " comments(first: 100) { totalCount nodes { databaseId } } }"
                         " pageInfo { hasNextPage endCursor } } } } }"
                     ),
                     "variables": {"owner": owner, "name": name, "number": number, "after": cursor},
@@ -1169,19 +1176,74 @@ class GitHubClient:
             )
             if not isinstance(threads, dict):
                 raise RelayGitHubError(0, "graphql thread lookup was malformed")
-            for thread in threads.get("nodes") or []:
-                comments = ((thread or {}).get("comments") or {}).get("nodes") or []
+            nodes = threads.get("nodes")
+            if not isinstance(nodes, list):
+                raise RelayGitHubError(0, "graphql thread lookup was malformed")
+            for thread in nodes:
+                if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+                    continue
+                held = thread.get("comments")
+                held = held if isinstance(held, dict) else {}
+                first = held.get("nodes")
                 if any(
-                    isinstance(c, dict) and c.get("databaseId") == database_id for c in comments
+                    isinstance(c, dict) and c.get("databaseId") == database_id
+                    for c in (first if isinstance(first, list) else [])
                 ):
                     return thread["id"]
-            info = threads.get("pageInfo") or {}
-            if not info.get("hasNextPage") or not isinstance(info.get("endCursor"), str):
-                break
-            cursor = info["endCursor"]
+                total = held.get("totalCount")
+                if isinstance(total, int) and total > 100:
+                    if self._thread_holds_comment(thread["id"], database_id, bearer):
+                        return thread["id"]
+            info = threads.get("pageInfo")
+            if not isinstance(info, dict) or not isinstance(info.get("hasNextPage"), bool):
+                raise RelayGitHubError(0, "graphql thread lookup was malformed")
+            if not info["hasNextPage"] or not nodes:
+                raise ValueError(
+                    f"no review thread on {repo} pull request {number} holds comment {comment}"
+                )
+            cursor = info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise RelayGitHubError(0, "graphql thread lookup was malformed")
         raise ValueError(
-            f"no review thread on {repo} pull request {number} holds comment {comment}"
+            f"pull request {number} in {repo} has more than {REVIEW_THREAD_PAGES * 100} review "
+            "threads; pass thread_id (the PRRT_ id) instead of a comment id"
         )
+
+    def _thread_holds_comment(self, thread_id: str, database_id: int, bearer: str) -> bool:
+        """Page one long review thread's comments (after the first 100) for a comment id."""
+        cursor = None
+        for _page in range(REVIEW_THREAD_PAGES):
+            data = self._call(
+                "POST",
+                "/graphql",
+                {
+                    "query": (
+                        "query($id: ID!, $after: String) { node(id: $id) {"
+                        " ... on PullRequestReviewThread { comments(first: 100, after: $after) {"
+                        " nodes { databaseId } pageInfo { hasNextPage endCursor } } } } }"
+                    ),
+                    "variables": {"id": thread_id, "after": cursor},
+                },
+                bearer=bearer,
+            )
+            node = (data.get("data") or {}).get("node") if isinstance(data, dict) else None
+            comments = node.get("comments") if isinstance(node, dict) else None
+            nodes = comments.get("nodes") if isinstance(comments, dict) else None
+            info = comments.get("pageInfo") if isinstance(comments, dict) else None
+            if (
+                not isinstance(nodes, list)
+                or not isinstance(info, dict)
+                or not isinstance(info.get("hasNextPage"), bool)
+            ):
+                raise RelayGitHubError(0, "graphql thread comments lookup was malformed")
+            if any(isinstance(c, dict) and c.get("databaseId") == database_id for c in nodes):
+                return True
+            if not info["hasNextPage"] or not nodes:
+                return False
+            cursor = info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise RelayGitHubError(0, "graphql thread comments lookup was malformed")
+        return False
 
     def resolve_thread(self, thread_id: str, bearer: str) -> dict:
         if not isinstance(thread_id, str) or not thread_id.startswith("PRRT_"):

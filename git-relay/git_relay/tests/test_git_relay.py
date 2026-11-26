@@ -1185,6 +1185,53 @@ class TestAppClientShapes(unittest.TestCase):
             client.thread_for_comment("o/r", "99", bearer="M")
         self.assertIn("holds comment 99", str(ctx.exception))
 
+    def test_mcp_resolve_thread_accepts_an_integer_comment_id(self):
+        from git_relay import mcp_server
+
+        base = {"repo": "Example-Org/widget-repo"}
+        self.assertIsNone(mcp_server._validate_args("resolve_thread", {**base, "comment_id": 2551234567}))
+        self.assertIsNotNone(mcp_server._validate_args("resolve_thread", {**base, "comment_id": 0}))
+        self.assertIsNotNone(mcp_server._validate_args("resolve_thread", {**base, "comment_id": True}))
+
+    def test_thread_for_comment_integer_id_uses_the_rest_lookup(self):
+        client, opener = self._sequence_client(
+            [
+                {"pull_request_url": "https://api.test/repos/o/r/pulls/4"},
+                self._thread_page({"PRRT_abcdef": [77]}),
+            ]
+        )
+        self.assertEqual(client.thread_for_comment("o/r", 77, bearer="M"), "PRRT_abcdef")
+        self.assertTrue(opener.requests[0].full_url.endswith("/repos/o/r/pulls/comments/77"))
+
+    def test_thread_for_comment_malformed_cursor_and_nodes_fail_closed(self):
+        page = self._thread_page({"PRRT_abcdef": [1]}, has_next=True, cursor=None)
+        client, _ = self._sequence_client([{"pull_request_url": "https://api.test/repos/o/r/pulls/4"}, page])
+        with self.assertRaises(RelayGitHubError):
+            client.thread_for_comment("o/r", "9", bearer="M")
+        odd = self._thread_page({"PRRT_abcdef": [1]})
+        odd["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].insert(0, None)
+        odd["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].insert(1, {"comments": {}})
+        client, _ = self._sequence_client([{"pull_request_url": "https://api.test/repos/o/r/pulls/4"}, odd])
+        self.assertEqual(client.thread_for_comment("o/r", "1", bearer="M"), "PRRT_abcdef")
+
+    def test_thread_for_comment_pages_a_long_thread(self):
+        long_page = self._thread_page({"PRRT_longlong": [1]})
+        long_page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["comments"]["totalCount"] = 150
+        deep = {
+            "data": {
+                "node": {
+                    "comments": {
+                        "nodes": [{"databaseId": 140}],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }
+                }
+            }
+        }
+        client, _ = self._sequence_client(
+            [{"pull_request_url": "https://api.test/repos/o/r/pulls/4"}, long_page, deep]
+        )
+        self.assertEqual(client.thread_for_comment("o/r", "140", bearer="M"), "PRRT_longlong")
+
     def test_resolve_thread_args_accept_thread_or_comment_id_and_explain_refusals(self):
         from git_relay import server
 

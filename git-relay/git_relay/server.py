@@ -1427,7 +1427,14 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         )
     ref = args.get("thread_id") or args.get("comment_id")
     if not _PRRT_RE.fullmatch(ref):
-        ref = self.client.thread_for_comment(repo, ref, bearer=token)
+        try:
+            ref = self.client.thread_for_comment(repo, ref, bearer=token)
+        except RelayGitHubError as exc:
+            # The lookup only reads, so a transient failure proves no write was
+            # attempted: release the idempotency key as refused and answer retryable.
+            if exc.status in (0, 408, 429) or exc.status >= 500:
+                raise PreReadUnavailable() from None
+            raise
     return self.client.resolve_thread(ref, bearer=token)
 
 

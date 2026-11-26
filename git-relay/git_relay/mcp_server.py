@@ -205,11 +205,11 @@ TOOLS += [
             "properties": {
                 "repo": {"type": "string"},
                 "thread_id": {
-                    "type": "string",
+                    "type": ["string", "integer"],
                     "description": "PRRT_ review-thread id (a review comment id is also accepted)",
                 },
                 "comment_id": {
-                    "type": "string",
+                    "type": ["string", "integer"],
                     "description": "review comment id, numeric or PRRC_; resolves the thread that holds it",
                 },
             },
@@ -402,11 +402,12 @@ def _validate_args(name: str, args: dict) -> str | None:
         refs = [args[k] for k in ("thread_id", "comment_id") if args.get(k) is not None]
         if len(refs) != 1:
             return "resolve_thread needs exactly one of thread_id (PRRT_) or comment_id (review comment id)"
+        ref = refs[0]
+        if isinstance(ref, int) and not isinstance(ref, bool) and ref > 0:
+            ref = str(ref)
         if not (
-            isinstance(refs[0], str)
-            and re.fullmatch(
-                r"PRRT_[A-Za-z0-9_-]{6,128}|PRRC_[A-Za-z0-9_-]{6,128}|[0-9]{1,18}", refs[0]
-            )
+            isinstance(ref, str)
+            and re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}|PRRC_[A-Za-z0-9_-]{6,128}|[0-9]{1,18}", ref)
         ):
             return (
                 "thread_id must be a PRRT_ review-thread id, or a review comment id "
