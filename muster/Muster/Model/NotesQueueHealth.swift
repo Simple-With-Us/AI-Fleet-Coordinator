@@ -34,12 +34,10 @@ struct NotesQueueHealth: Equatable {
         var health = NotesQueueHealth()
         health.enabled = settings["notes_queue.enabled"]?.boolValue
         health.listenerAPI = settings["listener_api.enabled"]?.boolValue
-        let workerNames = ServerSeatNames.names(in: settings["notes_queue.worker_seats"])
-        let serverNames = ServerSeatNames.names(in: settings["notes_queue.server_seats"])
-        health.workerSeats = workerNames.filter { $0 != ServerSeatNames.invalidEntry }
-        health.serverSeats = serverNames.filter { $0 != ServerSeatNames.invalidEntry }
-        health.workerInvalid = workerNames.count - health.workerSeats.count
-        health.serverInvalid = serverNames.count - health.serverSeats.count
+        health.workerSeats = ServerSeatNames.validNames(in: settings["notes_queue.worker_seats"])
+        health.serverSeats = ServerSeatNames.validNames(in: settings["notes_queue.server_seats"])
+        health.workerInvalid = ServerSeatNames.invalidCount(in: settings["notes_queue.worker_seats"])
+        health.serverInvalid = ServerSeatNames.invalidCount(in: settings["notes_queue.server_seats"])
         health.configuredSeats = Set(settings.keys.compactMap { key -> String? in
             let parts = key.split(separator: ".").map(String.init)
             guard parts.count >= 3, parts[0] == "seat" else { return nil }

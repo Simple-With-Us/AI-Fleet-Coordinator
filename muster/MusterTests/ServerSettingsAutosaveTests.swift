@@ -457,21 +457,27 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertEqual(server.title, "Seats Through The Server Key")
         XCTAssertEqual(server.information, ServerSettingsCopy.notesQueueServerSeats)
         XCTAssertEqual(server.seatContext?.otherList ?? [], ["CODEX", "JET", "JET-CHAT"])
-        let names = ServerSeatNames.names(fromDraft: worker.editText)
+        let value = ServerSettingJSON.parse(worker.editText)
+        let names = ServerSeatNames.validNames(in: value)
         XCTAssertEqual(names, ["CODEX", "JET", "JET-CHAT"])
-        let line = try XCTUnwrap(ServerSeatNames.statLine(for: names, context: worker.seatContext))
+        let line = try XCTUnwrap(ServerSeatNames.statLine(for: value, context: worker.seatContext))
         XCTAssertTrue(line.contains("No listener section on this server:  JET-CHAT."))
         XCTAssertTrue(line.contains("Also through the other key:  CODEX."))
-        XCTAssertNil(ServerSeatNames.statLine(for: names, context: nil))
+        XCTAssertNil(ServerSeatNames.statLine(for: value, context: nil))
         XCTAssertEqual(ServerSeatNames.names(fromDraft: #"["CODEX",42]"#), ["CODEX", "[Invalid Entry]"])
         XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text("CODEX"), .int(42)])), ["CODEX"])
+        XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text("CODEX"), .int(42)])), 1)
+        // A text entry that reads like the placeholder is still text, never an invalid entry.
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text(ServerSeatNames.invalidEntry)])),
+                       [ServerSeatNames.invalidEntry])
+        XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text(ServerSeatNames.invalidEntry)])), 0)
         let invalidOnly = try XCTUnwrap(ServerSeatNames.statLine(
-            for: [ServerSeatNames.invalidEntry],
+            for: .list([.int(1)]),
             context: ServerSeatListContext(configuredSeats: ["CODEX"], otherList: ["CODEX"])))
         XCTAssertTrue(invalidOnly.contains("1 invalid entry"))
         XCTAssertFalse(invalidOnly.contains("Also through the other key"))
         let operatorLine = try XCTUnwrap(ServerSeatNames.statLine(
-            for: ["OPERATOR"],
+            for: .list([.text("OPERATOR")]),
             context: ServerSeatListContext(configuredSeats: ["OPERATOR"], otherList: [])))
         XCTAssertTrue(operatorLine.contains("OPERATOR is a service, not a seat the queue can act for."))
     }

@@ -135,6 +135,12 @@ private struct ServerSettingRowView: View {
                     Text(information).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // A read-only notes-queue list has no editor, so its own checks are said here.
+                if !row.isEditable, let context = row.seatContext,
+                   let line = ServerSeatNames.statLine(for: row.current, context: context) {
+                    Text(line).font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let note = row.defaultNote {
                     Text(note).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -276,9 +282,9 @@ struct ServerSeatListEditor: View {
     let maxLength: Int
     var context: ServerSeatListContext? = nil
 
-    private var names: [String] { ServerSeatNames.names(fromDraft: draft) }
-    private var validNames: [String] { names.filter { $0 != ServerSeatNames.invalidEntry } }
-    private var invalidCount: Int { names.count - validNames.count }
+    private var value: ServerSettingValue? { ServerSettingJSON.parse(draft) }
+    private var validNames: [String] { ServerSeatNames.validNames(in: value) }
+    private var invalidCount: Int { ServerSeatNames.invalidCount(in: value) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -292,7 +298,7 @@ struct ServerSeatListEditor: View {
             Text("\(validNames.count) seat\(validNames.count == 1 ? "" : "s")\(invalidCount > 0 ? ", \(invalidCount) invalid entr\(invalidCount == 1 ? "y" : "ies")" : "").\(ServerStatusCopy.sentenceGap)Up to \(maxItems) uppercase seat names, separated by commas, up to \(maxLength) characters each.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let line = ServerSeatNames.statLine(for: names, context: context) {
+            if let line = ServerSeatNames.statLine(for: value, context: context) {
                 Text(line).font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }

@@ -1061,8 +1061,23 @@ enum ServerSeatNames {
     }
 
     /// The text entries only:  what a seat check, an overlap and a count of real seats may use.
+    /// A text entry that happens to read like the placeholder is still text, so it stays here.
     static func validNames(in value: ServerSettingValue?) -> [String] {
-        names(in: value).filter { $0 != invalidEntry }
+        guard case .list(let values)? = value else { return [] }
+        return values.compactMap {
+            if case .text(let name) = $0 { return name }
+            return nil
+        }
+    }
+
+    /// How many entries are not names.  Only a non-text entry is invalid; the placeholder is
+    /// how it reads, never how it is detected.
+    static func invalidCount(in value: ServerSettingValue?) -> Int {
+        guard case .list(let values)? = value else { return 0 }
+        return values.filter {
+            if case .text = $0 { return false }
+            return true
+        }.count
     }
 
     /// The names a draft holds now, so the count and the checks follow the edit.
@@ -1073,9 +1088,10 @@ enum ServerSeatNames {
     /// What a notes-queue list can say beyond its entries:  a name the server's listener config
     /// holds no section for, a name the other key also lists, and OPERATOR, which is a service
     /// and never a seat the queue may act for.  Nil when there is nothing to add.
-    static func statLine(for names: [String], context: ServerSeatListContext?) -> String? {
+    static func statLine(for value: ServerSettingValue?, context: ServerSeatListContext?) -> String? {
         guard let context else { return nil }
-        let valid = names.filter { $0 != invalidEntry }
+        let valid = validNames(in: value)
+        let invalid = invalidCount(in: value)
         var parts: [String] = []
         if !context.configuredSeats.isEmpty {
             let unconfigured = valid.filter { !context.configuredSeats.contains($0) }
@@ -1090,7 +1106,6 @@ enum ServerSeatNames {
         if valid.contains("OPERATOR") {
             parts.append("OPERATOR is a service, not a seat the queue can act for.")
         }
-        let invalid = names.count - valid.count
         if invalid > 0 {
             parts.append("\(invalid) invalid entr\(invalid == 1 ? "y" : "ies") the queue will refuse;  remove \(invalid == 1 ? "it" : "them").")
         }
@@ -1199,6 +1214,27 @@ enum ServerSettingsBuilder {
     private static func rows(key: String, name: String, spec: ServerSettingSpec, current: ServerSettingValue?,
                              hasRoutine: Bool, isStructure: Bool, editable: Bool,
                              knownSeats: Set<String> = [], allSettings: [String: ServerSettingValue] = [:]) -> [ServerSettingRow] {
+        /// The notes-queue lists say what they may act for in either mode, so the read-only rows
+        /// carry the same checks as the editable ones.
+        let seatContext: ServerSeatListContext?
+        let title: String
+        let information: String?
+        switch key {
+        case "notes_queue.worker_seats", "notes_queue.server_seats":
+            let otherKey = key == "notes_queue.worker_seats"
+                ? "notes_queue.server_seats" : "notes_queue.worker_seats"
+            seatContext = ServerSeatListContext(
+                configuredSeats: knownSeats,
+                otherList: Set(ServerSeatNames.validNames(in: allSettings[otherKey])))
+            title = ServerSettingsCopy.rowTitle(path: key, name: name)
+            information = key == "notes_queue.worker_seats"
+                ? ServerSettingsCopy.notesQueueWorkerSeats
+                : ServerSettingsCopy.notesQueueServerSeats
+        default:
+            seatContext = nil
+            title = ServerSettingsCopy.rowTitle(path: key, name: name)
+            information = nil
+        }
         if editable {
             func editableControl(_ spec: ServerSettingSpec, sub: String? = nil, current: ServerSettingValue? = nil) -> ServerSettingControl? {
                 switch spec {
@@ -1223,25 +1259,6 @@ enum ServerSettingsBuilder {
                                      information: name == "budget" && sub == "usd_per_day" ? ServerSettingsCopy.usdRecordedOnly : nil)
                 }
             }
-            let seatContext: ServerSeatListContext?
-            let title: String
-            let information: String?
-            switch key {
-            case "notes_queue.worker_seats", "notes_queue.server_seats":
-                let otherKey = key == "notes_queue.worker_seats"
-                    ? "notes_queue.server_seats" : "notes_queue.worker_seats"
-                seatContext = ServerSeatListContext(
-                    configuredSeats: knownSeats,
-                    otherList: Set(ServerSeatNames.validNames(in: allSettings[otherKey])))
-                title = ServerSettingsCopy.rowTitle(path: key, name: name)
-                information = key == "notes_queue.worker_seats"
-                    ? ServerSettingsCopy.notesQueueWorkerSeats
-                    : ServerSettingsCopy.notesQueueServerSeats
-            default:
-                seatContext = nil
-                title = ServerSettingsCopy.rowTitle(path: key, name: name)
-                information = nil
-            }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil,
                                      title: title, current: current,
                                      control: editableControl(spec), readOnlyReason: nil,
@@ -1260,9 +1277,9 @@ enum ServerSettingsBuilder {
                 control = nil
             }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil,
-                                     title: ServerSettingsCopy.rowTitle(path: key, name: name),
-                                     current: current, control: control, readOnlyReason: reason,
-                                     defaultValue: isStructure ? seatSendableDefaults[name] : nil)]
+                                     title: title, current: current, control: control, readOnlyReason: reason,
+                                     defaultValue: isStructure ? seatSendableDefaults[name] : nil,
+                                     information: information, seatContext: seatContext)]
         }
         let entries = current?.tableEntries ?? [:]
         return keys.keys.sorted().map { sub in
