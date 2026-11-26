@@ -89,11 +89,11 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
             native_fresh=fresh(state, head.wake_id, target, spec["epoch"]),
         )
 
-    def fallback(target, head, riders, turn_id):
-        return base.deliver(target, head)
+    def fallback(target, head, riders, turn_id, host=""):
+        return base.deliver(target, head, host)
 
-    def turn_fallback(target, head, riders, turn_id):
-        return base.deliver_turn(target, head, riders, turn_id)
+    def turn_fallback(target, head, riders, turn_id, host=""):
+        return base.deliver_turn(target, head, riders, turn_id, host)
 
     def unknown(code):
         return adapter.WR.Delivery("unknown", "native-qualification", code=code)
@@ -119,16 +119,36 @@ def build(adapter, env, config, spec, *, runner=None, remote_runner=None):
         ),
     )
 
-    def deliver(target, head):
+    def single_fallback(host):
+        """The fallback of one wake,  carrying the host the router resolved for it.
+
+        A qualification that cannot own the wake hands the delivery back to the base,  and that
+        delivery runs under the same host the exclusion judged the rows by (One Host).
+        """
+
+        def fallback(target, head, riders, turn_id):
+            return base.deliver(target, head, host)
+
+        return fallback
+
+    def single_turn_fallback(host):
+        """The turn fallback of one wake,  carrying the same host."""
+
+        def fallback(target, head, riders, turn_id):
+            return base.deliver_turn(target, head, riders, turn_id, host)
+
+        return fallback
+
+    def deliver(target, head, host=""):
         # Single-wake path has no turn ID. This deterministic notification-only ID
         # is derived from the authoritative wake, never creates a router turn/rider.
         turn = "t-" + digest({"wake_key": head.wake_id})[:16]
-        return qualifier(target, head, (), turn)
+        return qualifier(target, head, (), turn, fallback=single_fallback(host))
 
-    def deliver_turn(target, head, riders, turn_id):
+    def deliver_turn(target, head, riders, turn_id, host=""):
         if riders:
-            return base.deliver_turn(target, head, riders, turn_id)
-        result = qualifier(target, head, (), turn_id, fallback=turn_fallback)
+            return base.deliver_turn(target, head, riders, turn_id, host)
+        result = qualifier(target, head, (), turn_id, fallback=single_turn_fallback(host))
         if isinstance(result, adapter.WR.Turn):
             return result
         return adapter.WR.Turn(result, unreadable=result.outcome in ("unknown", "refused"))

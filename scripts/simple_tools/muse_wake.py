@@ -856,10 +856,11 @@ def router_platform(
     config = _config(settings)
     local_host = str(config.get("local_host") or "server")
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
-        if target.host == "mac" and local_host != "mac":
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
+        local = host or local_host
+        if target.host == "mac" and local != "mac":
             return CW.deliver_remote(here, config, target, wake, platform=PLATFORM, runner=runner)
-        if target.host != local_host:
+        if target.host != local:
             return WR.Delivery("refused", code="unknown-host")
         request = {
             "platform": PLATFORM,
@@ -884,15 +885,16 @@ def router_platform(
         )
 
     def turn(
-        target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str
+        target: WR.Target, head: WR.Wake, riders: tuple[WR.Wake, ...], turn_id: str, host: str = ""
     ) -> WR.Turn:
         """One idle turn (wake_router, Turns), by the same routes as `deliver`.  Once the local
         delivery may have started, an error in it cannot say what the turn carried."""
-        if target.host == "mac" and local_host != "mac":
+        local = host or local_host
+        if target.host == "mac" and local != "mac":
             return CW.deliver_remote_turn(
                 here, config, target, head, riders, turn_id, platform=PLATFORM, runner=runner
             )
-        if target.host != local_host:
+        if target.host != local:
             return WR.Turn(WR.Delivery("refused", code="unknown-host"))
         request = {
             "platform": PLATFORM,
@@ -914,13 +916,13 @@ def router_platform(
         echo = answer.get("turn") if isinstance(answer, Mapping) else None
         return WR.turn_result(_read_answer(answer), echo, turn_id, riders)
 
-    def exclude(targets: list[WR.Target]) -> set[str]:
+    def exclude(targets: list[WR.Target], host: str = "") -> set[str]:
         # One walk per distinct store root (glob hides its own errors, and delivery
         # re-checks every pick against the store anyway, so a doubt here excludes nothing).
         # A chat may live under its own recorded root, so the root is per target.
         import glob as _glob
 
-        local = str(config.get("local_host") or "")
+        local = host or str(config.get("local_host") or "")
         by_root: dict[str, set[str]] = {}
 
         def subagents(root: str) -> set[str]:
@@ -960,6 +962,7 @@ def router_platform(
         deliver=deliver,
         exclude=exclude,
         deliver_turn=turn,
+        resolve_host=lambda: str(config.get("local_host") or "server"),
     )
 
 

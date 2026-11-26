@@ -217,7 +217,7 @@ class Base(unittest.TestCase):
         """The router's KeySource:  whatever the test holds now, asked on every request."""
         return self.key_answer
 
-    def fake_deliver(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def fake_deliver(self, target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         self.delivered.append((target.session_id, wake.wake_id))
         if self.results:
             return self.results.pop(0)
@@ -877,7 +877,7 @@ class Picking(Base):
         self.registry.letters = {"AA": row(SID_A, "AA", "One")}
         self.registry.rows = [row(SID_A, "AA", "One"), row(SID_B, "BB", "Two")]
         router = self.router()
-        router.platform = replace(router.platform, exclude=lambda targets: {SID_A})
+        router.platform = replace(router.platform, exclude=lambda targets, host="": {SID_A})
         pick = router.pick(self.wake(letter="AA", topic="other"))
         self.assertEqual((pick.target.session_id, pick.picked), (SID_B, "most-recent"))
         self.assertTrue(pick.letter_live)
@@ -939,7 +939,7 @@ class Picking(Base):
             mention="Claude",
             target_re=CW.SESSION_RE,
             deliver=self.fake_deliver,
-            exclude=lambda targets: {SID_A},
+            exclude=lambda targets, host="": {SID_A},
         )
         pick = router.pick(self.wake(topic="other"))
         self.assertEqual((pick.target.session_id, pick.picked), (SID_B, "most-recent"))
@@ -1160,7 +1160,7 @@ class LinearLinks(Base):
     def test_an_excluded_chat_is_not_linked(self) -> None:
         self.registry.rows = [row(SID_A, "AA", "AFC-1"), row(SID_B, "BB", "Two")]
         router = self.router()
-        router.platform = replace(router.platform, exclude=lambda targets: {SID_A})
+        router.platform = replace(router.platform, exclude=lambda targets, host="": {SID_A})
         self.assertEqual(router.pick(self.wake(topic="AFC-1")).picked, "most-recent")
 
     def test_a_letter_beats_an_issue(self) -> None:
@@ -1237,7 +1237,7 @@ class SessionFragments(Base):
 
     def test_an_excluded_chat_is_not_linked(self) -> None:
         router = self.router()
-        router.platform = replace(router.platform, exclude=lambda targets: {SID_A})
+        router.platform = replace(router.platform, exclude=lambda targets, host="": {SID_A})
         pick = router.pick(self.from_excerpt("hey aaaaaaaa"))
         self.assertEqual((pick.target.session_id, pick.picked), (SID_B, "most-recent"))
 
@@ -1702,7 +1702,7 @@ class LinkNotes(Base):
     def told(self, **over) -> tuple[WR.Wake, dict]:
         got: list[WR.Wake] = []
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             got.append(wake)
             return WR.Delivery("completed")
 
@@ -1930,7 +1930,7 @@ class Durability(Base):
     def test_a_kill_during_delivery_is_final_and_never_runs_again(self) -> None:
         marks: list[bool] = []
 
-        def killed(target, wake):
+        def killed(target, wake, host=""):
             self.delivered.append((target.session_id, wake.wake_id))
             marks.append(json.loads(self.pending().read_text(encoding="utf-8"))["in_flight"])
             raise Killed
@@ -1965,7 +1965,7 @@ class Durability(Base):
     def test_a_mark_that_cannot_be_cleared_still_never_runs_again(self) -> None:
         ran: list[int] = []
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             ran.append(1)
             patcher.start()  # the disk fails after the delivery, for the outcome and the receipt
             return WR.Delivery("completed")
@@ -2063,7 +2063,7 @@ class Shutdown(Base):
         release = threading.Event()
         order: list[str] = []
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             order.append(wake.wake_id)
             started.set()
             release.wait(timeout=20)
@@ -2092,7 +2092,7 @@ class Shutdown(Base):
         started = threading.Event()
         release = threading.Event()
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             started.set()
             release.wait(timeout=20)
             return WR.Delivery("completed")
@@ -2804,7 +2804,7 @@ class Retries(Base):
     def test_an_exception_is_a_failed_try(self) -> None:
         calls: list[int] = []
 
-        def explode(target, wake):
+        def explode(target, wake, host=""):
             calls.append(1)
             if len(calls) == 1:
                 raise RuntimeError("no")
@@ -2829,7 +2829,7 @@ class Retries(Base):
         """The answer a registry outage gets is not a failed delivery, so the wake's five
         attempts are untouched and the wake waits for the registry to come back."""
 
-        def outage(target, wake):
+        def outage(target, wake, host=""):
             self.delivered.append((target.session_id, wake.wake_id))
             return WR.Delivery("busy", code=WR.REGISTRY_UNAVAILABLE)
 
@@ -2844,7 +2844,7 @@ class Retries(Base):
     def test_a_wake_waits_out_the_outage_and_is_delivered(self) -> None:
         answers = [WR.Delivery("busy", code=WR.REGISTRY_UNAVAILABLE)] * 3
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             self.delivered.append((target.session_id, wake.wake_id))
             return answers.pop(0) if answers else WR.Delivery("completed")
 
@@ -2896,7 +2896,7 @@ class Retries(Base):
         """A wake that ends while the registry is down says the registry was down:  the
         receipt must not blame malformed data."""
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             self.delivered.append((target.session_id, wake.wake_id))
             self.clock.now += 10000  # the delivery itself outlasts the wake's age
             return WR.Delivery("busy", code=WR.REGISTRY_UNAVAILABLE)
@@ -2957,7 +2957,7 @@ class Retries(Base):
         self.registry.rows = [row(SID_A, "AA", "Only chat")]
         self.registry.letters = {"AA": row(SID_A, "AA", "Only chat")}
         router = self.router(max_attempts=1)
-        router.platform = replace(router.platform, exclude=lambda targets: {SID_A})
+        router.platform = replace(router.platform, exclude=lambda targets, host="": {SID_A})
         router.accept(self.wake(letter="AA"))
         self.drain(router)
         receipt = self.done()
@@ -2999,7 +2999,7 @@ class BusySessions(Base):
         overlap: list[bool] = []
         running: list[str] = []
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             overlap.append(bool(running))
             running.append(wake.wake_id)
             order.append(wake.wake_id)
@@ -3400,7 +3400,7 @@ class Http(Base):
     def test_the_answer_does_not_wait_for_the_delivery(self) -> None:
         release = threading.Event()
 
-        def slow(target, wake):
+        def slow(target, wake, host=""):
             release.wait(timeout=20)
             return WR.Delivery("completed", "fake", ack="confirmed")
 
@@ -3605,7 +3605,7 @@ class ManySeats(Base):
         self.zc_state.mkdir(mode=0o700)
 
     def zc_router(self, **config) -> WR.Router:
-        def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+        def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
             self.zc_delivered.append((target.session_id, wake.wake_id))
             if self.zc_release is not None:
                 self.zc_release.wait(timeout=20)
@@ -3885,7 +3885,7 @@ class WorkerPool(Base):
             SID_B: threading.Event(),
         }
 
-    def deliver(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver(self, target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         self.reached[target.session_id].set()
         if target.session_id == SID_A:
             self.release.wait(timeout=30)
@@ -4875,7 +4875,7 @@ class Remote(RemoteBase):
             SimpleNamespace(returncode=2, stdout=self.OLD_MAC),
         )
         router = self.router(
-            deliver=lambda target, wake: CW.deliver_remote(
+            deliver=lambda target, wake, host="": CW.deliver_remote(
                 self.env, self.cfg, target, wake, runner=runner
             )
         )
@@ -6760,6 +6760,57 @@ class GateWithoutTheTable(Base):
         top = source.split("\ndef ", 1)[0]
         self.assertNotIn("\nfrom . import wake_service", top)
         self.assertIn("if TYPE_CHECKING:", top)
+
+
+class OneHostPerWake(Base):
+    """AFC-907:  the router resolves the host once per wake, and the exclusion and the delivery
+    of that wake name the same one, even when the setting changes between the pick and the
+    delivery."""
+
+    def test_the_exclusion_and_the_delivery_of_one_wake_name_the_same_host(self) -> None:
+        self.registry.rows = [row(SID_A, "AA", "One", assigned_at=NEWER)]
+        excluded: list[str] = []
+        delivered_to: list[str] = []
+        calls: list[int] = []
+
+        def resolve_host() -> str:
+            # The setting moves to another host after the pick:  the wake keeps the host it was
+            # picked under.
+            calls.append(1)
+            return "server" if len(calls) == 1 else "mac"
+
+        def exclude(targets, host=""):
+            excluded.append(host)
+            return set()
+
+        def deliver(target, wake, host=""):
+            delivered_to.append(host)
+            return WR.Delivery("completed", "fake", ack="confirmed")
+
+        platform = WR.Platform(
+            seat="CLAUDE",
+            platform="claude",
+            mention="Claude",
+            target_re=CW.SESSION_RE,
+            deliver=deliver,
+            exclude=exclude,
+            resolve_host=resolve_host,
+        )
+        router = WR.Router(
+            platform,
+            self.router_env(),
+            self.config(),
+            self.state,
+            self.key_source,
+            clock=self.clock,
+        )
+        router.accept(self.wake(topic="other"))
+        self.drain(router)
+        self.assertTrue(excluded)
+        self.assertTrue(delivered_to)
+        self.assertEqual(set(excluded), {"server"})
+        self.assertEqual(set(delivered_to), {"server"})
+        self.assertEqual(self.done()["status"], "delivered")
 
 
 if __name__ == "__main__":

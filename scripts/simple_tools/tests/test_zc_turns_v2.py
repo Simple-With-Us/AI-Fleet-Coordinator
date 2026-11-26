@@ -13,12 +13,12 @@ class Harness:
         self.calls=[]
         cfg=dict(WR.ROUTER_DEFAULTS,delivery_enabled=True,turn_max_wakes=cap)
         self.turns=[];self.singles=[]
-        def dt(t,h,r,tid):
+        def dt(t,h,r,tid,host=""):
             self.turns.append((h.wake_id,[w.wake_id for w in r]))
             if turn: return turn(r)
             ids=tuple(w.wake_id for w in r)
             return WR.Turn(WR.Delivery("sent","resume",ack="unknown"),carried=ids,confirmed=ids)
-        def d(t,w):
+        def d(t,w,host=""):
             self.singles.append(w.wake_id);return WR.Delivery("sent","resume")
         plat=WR.Platform("ZC","zcode","ZCode",ZC.SESSION_RE,d,deliver_turn=dt)
         self.r=WR.Router(plat,{},cfg,self.dir,lambda:("k"*40,""),never_ran=ZC.NEVER_RAN)

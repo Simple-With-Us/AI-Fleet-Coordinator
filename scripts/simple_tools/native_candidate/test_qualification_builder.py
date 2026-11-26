@@ -107,6 +107,69 @@ class BuilderTests(unittest.TestCase):
                 self.assertTrue(c(target, tmp))
                 self.assertFalse(c(target, "/wrong"))
 
+    def test_the_fallbacks_carry_the_wake_host(self):
+        """A qualification that cannot own the wake delivers under the wake's own host.
+
+        The host the router resolved for the wake is the host the exclusion judged the rows by,
+        and the fallback that hands the delivery back to the base has to use that same one.
+        """
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            root = Path(tmp)
+            calls = []
+            base = Platform(
+                lambda *a: calls.append(("base-single", a[-1])) or Delivery("sent"),
+                lambda *a: calls.append(("base-turn", a[-1])) or Turn(Delivery("sent")),
+            )
+
+            def platform(env, config, **kw):
+                return base
+
+            def prompt(*a, **kw):
+                return Delivery("unknown")
+
+            adapter = SimpleNamespace(
+                router_platform=platform,
+                state_dir=lambda e: root,
+                _recheck=lambda *a: None,
+                _session_binding=lambda *a: ("ok", {"id": "sess_fixture", "directory": tmp}),
+                _subagent_ids=lambda *a: ("ok", set()),
+                _deliver_prompt=prompt,
+                WR=SimpleNamespace(Delivery=Delivery, Turn=Turn),
+            )
+
+            def qualify(*args):
+                def run(target, head, riders, turn, **kw):
+                    fallback = kw.get("fallback") or args[6]
+                    return fallback(target, head, riders, turn)
+
+                return run
+
+            config = {"workspace": tmp, "native_delivery_review_only": False}
+            spec = {
+                "target": {
+                    "session_id": "sess_fixture",
+                    "host": "server",
+                    "letter": "II",
+                    "generation": 2,
+                },
+                "workspace": tmp,
+                "epoch": 100,
+                "expires": 200,
+            }
+            driver = SimpleNamespace()
+            with (
+                patch.object(builder, "Driver", return_value=driver),
+                patch.object(builder, "Qualification", side_effect=qualify),
+                patch.object(builder, "fresh", return_value=True),
+            ):
+                p, q, d, c = builder.build(adapter, {"HOME": tmp}, config, spec)
+                target = SimpleNamespace(**spec["target"])
+                head = SimpleNamespace(wake_id="ra-new", message_id=123)
+                p.deliver(target, head, "server")
+                self.assertEqual(calls[-1], ("base-single", "server"))
+                p.deliver_turn(target, head, (), "t-1234567890123456", "server")
+                self.assertEqual(calls[-1], ("base-turn", "server"))
+
     def test_notification_has_only_validated_metadata(self):
         h = SimpleNamespace(
             wake_id="ra-new",

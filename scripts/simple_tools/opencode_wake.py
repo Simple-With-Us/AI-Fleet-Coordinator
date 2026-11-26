@@ -392,15 +392,15 @@ def _within(root: str, folder: str) -> bool:
 
 def exclude_non_interactive(
     env: Mapping[str, str], local_host: str, workspace: str = ""
-) -> Callable[[list[WR.Target]], set[str]]:
+) -> Callable[[list[WR.Target], str], set[str]]:
     """Return session ids of local targets that cannot take a wake.
 
     A session is excluded when the store does not know it, when it is a chat another chat
     started (a sub-agent child), when it is archived, when its recorded directory is gone, and
     when the deployment names a workspace root the recorded directory is not under."""
 
-    def exclude(targets: list[WR.Target]) -> set[str]:
-        local_ids = [t.session_id for t in targets if t.host == local_host]
+    def exclude(targets: list[WR.Target], host: str = "") -> set[str]:
+        local_ids = [t.session_id for t in targets if t.host == (host or local_host)]
         if not local_ids:
             return set()
         status, rows = _session_rows(env, local_ids)
@@ -698,12 +698,13 @@ def make_deliver(
     config: Mapping[str, Any],
     *,
     runner: Runner = _run_child,
-) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
+) -> Callable[[WR.Target, WR.Wake, str], WR.Delivery]:
     """OpenCode's `deliver`:  this host directly, the Mac over ssh, any other host refused."""
     local_host = str(config.get("local_host", "server"))
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
-        if target.host == local_host:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
+        local = host or local_host
+        if target.host == local:
             return deliver_local(
                 env,
                 config,
@@ -740,6 +741,7 @@ def router_platform(
             str(config.get("local_host", "server")),
             str(config.get("workspace") or ""),
         ),
+        resolve_host=lambda: str(config.get("local_host", "server")),
     )
 
 

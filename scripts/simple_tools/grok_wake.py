@@ -117,7 +117,7 @@ def wake_text(wake: WR.Wake) -> str:
 def router_platform(env: Mapping[str, str], settings: Mapping[str, Any]) -> WR.Platform:
     """The server side.  Mac chats go over the one ssh command.  Any other host is refused."""
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         if target.host != "mac":
             return WR.Delivery("refused", code="unknown-host")
         return CW.deliver_remote(env, settings, target, wake, platform=PLATFORM)
@@ -128,6 +128,7 @@ def router_platform(env: Mapping[str, str], settings: Mapping[str, Any]) -> WR.P
         mention=MENTION,
         target_re=SESSION_RE,
         deliver=deliver,
+        resolve_host=lambda: "server",
     )
 
 

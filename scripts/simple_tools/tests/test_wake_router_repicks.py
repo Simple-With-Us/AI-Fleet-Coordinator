@@ -158,7 +158,7 @@ class IneligibleRepicks(_RouterBase):
         order: list[tuple[str, str]] = []
         lock = threading.Lock()
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             with lock:
                 if target.session_id in active:
                     overlaps.append(target.session_id)
