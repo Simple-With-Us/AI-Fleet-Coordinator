@@ -1095,6 +1095,90 @@ class GitHubClient:
             result["source_fence_atomic"] = False
         return result
 
+    def thread_for_comment(self, repo: str, comment: str, bearer: str) -> str:
+        """Return the PRRT_ review-thread id that holds one review comment.
+
+        comment is the numeric REST comment id or the PRRC_ GraphQL node id, which
+        are the two ids a seat sees on a review comment.  Read-only: it never
+        mutates.  The thread is found by walking the pull request's review
+        threads page by page, so a thread past the first 100 is still found.
+        """
+        self._check_repo(repo)
+        owner, name = repo.split("/")
+        if isinstance(comment, str) and comment.isdigit():
+            database_id = int(comment)
+            data = self._call(
+                "GET", f"/repos/{repo}/pulls/comments/{database_id}", None, bearer=bearer
+            )
+            url = data.get("pull_request_url") if isinstance(data, dict) else None
+            tail = url.rsplit("/", 1)[-1] if isinstance(url, str) else ""
+            if not tail.isdigit():
+                raise ValueError(f"review comment {comment} was not found in {repo}")
+            number = int(tail)
+        else:
+            data = self._call(
+                "POST",
+                "/graphql",
+                {
+                    "query": (
+                        "query($id: ID!) { node(id: $id) { ... on PullRequestReviewComment"
+                        " { databaseId pullRequest { number repository { nameWithOwner } } } } }"
+                    ),
+                    "variables": {"id": comment},
+                },
+                bearer=bearer,
+            )
+            node = (data.get("data") or {}).get("node") if isinstance(data, dict) else None
+            pull = node.get("pullRequest") if isinstance(node, dict) else None
+            repo_name = (pull or {}).get("repository", {}).get("nameWithOwner") if pull else None
+            if (
+                not isinstance(node, dict)
+                or not isinstance(node.get("databaseId"), int)
+                or not isinstance(pull, dict)
+                or not isinstance(pull.get("number"), int)
+                or not isinstance(repo_name, str)
+                or repo_name.lower() != repo.lower()
+            ):
+                raise ValueError(f"review comment {comment} was not found in {repo}")
+            database_id = node["databaseId"]
+            number = pull["number"]
+        cursor = None
+        for _page in range(30):
+            data = self._call(
+                "POST",
+                "/graphql",
+                {
+                    "query": (
+                        "query($owner: String!, $name: String!, $number: Int!, $after: String) {"
+                        " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
+                        " reviewThreads(first: 100, after: $after) { nodes { id"
+                        " comments(first: 100) { nodes { databaseId } } }"
+                        " pageInfo { hasNextPage endCursor } } } } }"
+                    ),
+                    "variables": {"owner": owner, "name": name, "number": number, "after": cursor},
+                },
+                bearer=bearer,
+            )
+            body = data.get("data") if isinstance(data, dict) else None
+            threads = (
+                (((body or {}).get("repository") or {}).get("pullRequest") or {}).get(
+                    "reviewThreads"
+                )
+                if isinstance(body, dict)
+                else None
+            )
+            if not isinstance(threads, dict):
+                raise RelayGitHubError(0, "graphql thread lookup was malformed")
+            for thread in threads.get("nodes") or []:
+                comments = ((thread or {}).get("comments") or {}).get("nodes") or []
+                if any(isinstance(c, dict) and c.get("databaseId") == database_id for c in comments):
+                    return thread["id"]
+            info = threads.get("pageInfo") or {}
+            if not info.get("hasNextPage") or not isinstance(info.get("endCursor"), str):
+                break
+            cursor = info["endCursor"]
+        raise ValueError(f"no review thread on {repo} pull request {number} holds comment {comment}")
+
     def resolve_thread(self, thread_id: str, bearer: str) -> dict:
         if not isinstance(thread_id, str) or not thread_id.startswith("PRRT_"):
             raise ValueError("thread_id must be a PRRT_ review-thread id")

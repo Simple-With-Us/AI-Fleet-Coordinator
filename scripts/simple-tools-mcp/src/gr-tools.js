@@ -379,6 +379,7 @@ export function grClientFromResolved({ accessId, accessSecret }, env, { bearer, 
 
 const REPO = { type: "string", description: "owner/name" };
 const NUMBER = { type: "integer", description: "pull request number" };
+const REVIEW_REF = { anyOf: [{ type: "string", maxLength: 140 }, { type: "integer", minimum: 1 }], description: "PRRT_ thread id, or a review comment id (numeric or PRRC_)" };
 const obj = (required, properties) => ({ type: "object", additionalProperties: false, required, properties });
 
 /** The hosted GR tool specs (names gr_<action>).  Descriptions name the
@@ -436,8 +437,11 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_resolve_thread",
     title: "Resolve Review Thread",
-    description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.",
-    inputSchema: obj(["repo", "thread_id"], { repo: REPO, thread_id: { type: "string" } }),
+    description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  Pass exactly one of thread_id (the PRRT_ review-thread id) or comment_id (a review comment's numeric id or PRRC_ node id; the thread that holds the comment is resolved).  A comment id in thread_id is accepted too.  Issue-comment, review and commit ids are refused.",
+    inputSchema: {
+      ...obj(["repo"], { repo: REPO, thread_id: REVIEW_REF, comment_id: REVIEW_REF }),
+      oneOf: [{ required: ["thread_id"] }, { required: ["comment_id"] }],
+    },
   },
   {
     name: "gr_create_repo",

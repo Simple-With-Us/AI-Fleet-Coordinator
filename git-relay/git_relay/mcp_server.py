@@ -204,9 +204,16 @@ TOOLS += [
             "type": "object",
             "properties": {
                 "repo": {"type": "string"},
-                "thread_id": {"type": "string", "description": "PRRT_ review-thread id"},
+                "thread_id": {
+                    "type": "string",
+                    "description": "PRRT_ review-thread id (a review comment id is also accepted)",
+                },
+                "comment_id": {
+                    "type": "string",
+                    "description": "review comment id, numeric or PRRC_; resolves the thread that holds it",
+                },
             },
-            "required": ["repo", "thread_id"],
+            "required": ["repo"],
         },
     },
     {
@@ -391,11 +398,18 @@ def _validate_args(name: str, args: dict) -> str | None:
             return f"argument {key!r} must be a boolean"
         if kind == "object" and not isinstance(value, dict):
             return f"argument {key!r} must be an object"
-    thread_id = args.get("thread_id")
-    if name == "resolve_thread" and not (
-        isinstance(thread_id, str) and re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}", thread_id)
-    ):
-        return "thread_id must be a PRRT_ review-thread id"
+    if name == "resolve_thread":
+        refs = [args[k] for k in ("thread_id", "comment_id") if args.get(k) is not None]
+        if len(refs) != 1:
+            return "resolve_thread needs exactly one of thread_id (PRRT_) or comment_id (review comment id)"
+        if not (
+            isinstance(refs[0], str)
+            and re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}|PRRC_[A-Za-z0-9_-]{6,128}|[0-9]{1,18}", refs[0])
+        ):
+            return (
+                "thread_id must be a PRRT_ review-thread id, or a review comment id "
+                "(numeric or PRRC_); issue-comment, review and commit ids are not accepted"
+            )
     if name == "workflow_dispatch":
         intent, expected = args.get("intent_id"), args.get("expected_head_sha")
         if expected is not None and intent is None:
