@@ -140,8 +140,10 @@ class RegistryTest(unittest.TestCase):
     def test_label_exhaustion(self):
         for i in range(26):
             self.reg.resolve_or_register(ident(native=f"n{i}"))
-        with self.assertRaises(R.LabelExhausted):
-            self.reg.resolve_or_register(ident(native="n26"))
+        # Every pair is live:  the least-used pair (AA) is issued again with generation 2,
+        # not refused (owner, Nov 26 2026).
+        again = self.reg.resolve_or_register(ident(native="n26"))
+        self.assertEqual((again["label"], again["generation"]), ("AA", 2))
 
     def test_a_pair_closed_without_retiring_its_alias_is_reissued(self):
         # A session closed by direct SQL (closed_at set, its alias never retired)
@@ -331,14 +333,18 @@ class RegistryTest(unittest.TestCase):
     def test_exhaustion_is_always_the_pair_space_and_names_the_limit(self):
         with mock.patch.dict(R.LETTER_SPACES, {"single": ("A",), "double": ("AA",)}):
             self.reg.resolve_or_register(ident(platform="claude", native="n-1"))
-            with self.assertRaises(R.LabelExhausted) as one:
-                self.reg.resolve_or_register(ident(platform="claude", native="n-3"))
-            with self.assertRaises(R.LabelExhausted) as two:
-                self.reg.resolve_or_register(
-                    ident(platform="claude", native="n-4", letter_space="single")
-                )
-        self.assertEqual((one.exception.space, two.exception.space), ("double", "double"))
-        self.assertEqual(one.exception.limit, 1)
+            # Only AA is available:  the next chat gets AA generation 2, not refused
+            # (owner, Nov 26 2026:  the allocator reuses the least-used pair).
+            again = self.reg.resolve_or_register(ident(platform="claude", native="n-3"))
+            self.assertEqual((again["label"], again["generation"]), ("AA", 2))
+            # A single-letter space request still gets a pair:  "single" is kept only so
+            # a pre-rule letter stays readable, no new single letter is issued.
+            single = self.reg.resolve_or_register(
+                ident(platform="claude", native="n-4", letter_space="single")
+            )
+            # Single-letter requests get a doubled pair (label is 2 chars), not refused.
+            self.assertEqual(len(single["label"]), 2)
+            self.assertGreaterEqual(single["generation"], 1)
 
     def test_a_pick_that_is_not_known_is_refused(self):
         with self.assertRaises(ValueError) as caught:
@@ -397,20 +403,20 @@ class RegistryTest(unittest.TestCase):
                 issuer=R.ISSUER_OPERATOR,
             )
             self.assertEqual(first["label"], "AA")
-            with self.assertRaises(R.LabelExhausted) as ctx:
-                R.register_session(
-                    self.db,
-                    platform="botfleet",
-                    verified_host="mac",
-                    profile_scope="default",
-                    native_session_id="thread-0002",
-                    seat="BF-BUILDER",
-                    source="test",
-                    letter_space="double",
-                    letter_pick="oldest",
-                    issuer=R.ISSUER_OPERATOR,
-                )
-            self.assertIn("1 letters are active", str(ctx.exception))
+            # Only AA is live:  the next chat gets AA generation 2 (reuse), not refused.
+            second = R.register_session(
+                self.db,
+                platform="botfleet",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="thread-0002",
+                seat="BF-BUILDER",
+                source="test",
+                letter_space="double",
+                letter_pick="oldest",
+                issuer=R.ISSUER_OPERATOR,
+            )
+            self.assertEqual((second["label"], second["generation"]), ("AA", 2))
 
     def test_reopen_gives_a_chat_its_own_pair_back_as_the_same_generation(self):
         pair = self._pair("n-1", "oldest")
@@ -479,12 +485,12 @@ class RegistryTest(unittest.TestCase):
         # Keep advancing (owner, Nov 11 2026):  AA was issued in this generation, so DD comes next, then EE.
         self.assertEqual(self._labels(["n-4", "n-5"]), ["DD", "EE"])
 
-    def test_a_main_chat_never_takes_a_non_doubled_pair_even_when_every_doubled_one_is_live(self):
+    def test_a_main_chat_takes_a_doubled_pair_again_when_every_doubled_one_is_live(self):
         self.assertEqual(self._labels(["n-%d" % i for i in range(26)])[-1], "ZZ")
-        # All 26 live:  LabelExhausted, no spill into AB, AC ... ("ok just refuse actually is fine")
-        with self.assertRaises(R.LabelExhausted) as caught:
-            self._pair("x-1", "primary")
-        self.assertEqual(caught.exception.space, "double")
+        # Every pair is live:  the least-used pair is issued again with a new generation
+        # (owner, Nov 26 2026),  and a main chat still never takes a non-doubled pair.
+        again = self._pair("x-1", "primary")
+        self.assertEqual((again["label"], again["generation"]), ("AA", 2))
 
     def test_neither_a_pick_nor_a_space_gives_a_single_letter(self):
         labels = [
@@ -912,13 +918,67 @@ class RegistryTest(unittest.TestCase):
             # AA.2 was another chat's, so the returning chat is lettered by the rule:  BB.2.
             self.assertEqual(self.reg.reopen(first["record_id"]), ("BB", 2, "AA"))
 
-    def test_ok_just_refuse_when_all_26_doubled_pairs_are_live(self):
+    def test_two_live_parents_may_hold_one_pair(self):
+        # AFC-924:  the Operator issues a live pair again when every pair is live,  and the
+        # generation number tells the two parent threads apart.
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "BB")}):
+            first = self._pair("p-1", "primary")
+            self._pair("p-2", "primary")
+            again = self._pair("p-3", "primary")
+            self.assertEqual((first["label"], first["generation"]), ("AA", 1))
+            self.assertEqual((again["label"], again["generation"]), ("AA", 2))
+            rows = self.reg._conn.execute(
+                "SELECT COUNT(*) FROM alias_assignments WHERE platform = 'claude'"
+                " AND letter = 'AA' AND retired_at IS NULL"
+            ).fetchone()[0]
+            self.assertEqual(rows, 2)
+
+    def test_a_pair_is_still_live_while_one_of_its_two_holders_is_closed(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "BB")}):
+            first = self._pair("p-1", "primary")
+            self._pair("p-2", "primary")
+            self._pair("p-3", "primary")  # AA.2
+            self.reg.close(first["record_id"])
+            # AA is still held by its second holder,  so the next chat takes BB.
+            self.assertEqual(self._pair("p-4", "primary")["label"], "BB")
+
+    def test_the_newest_generation_of_a_pair_is_the_one_resolved(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "BB")}):
+            self._pair("p-1", "primary")
+            self._pair("p-2", "primary")
+            again = self._pair("p-3", "primary")
+            found = R.resolve_label(self.db, "claude", "AA")
+            self.assertEqual(found["record_id"], again["record_id"])
+
+    def test_a_registry_written_before_version_six_is_migrated(self):
+        # The old index is per (platform, letter),  and it is what keeps a second live
+        # generation out.  Opening the registry applies the migration.
+        self.reg._conn.execute("DROP INDEX IF EXISTS idx_alias_active")
+        self.reg._conn.execute(
+            "CREATE UNIQUE INDEX idx_alias_active ON alias_assignments (platform, letter)"
+            " WHERE retired_at IS NULL"
+        )
+        self.reg._conn.execute("DELETE FROM schema_migrations")
+        self.reg._conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (5, '2026-01-01T00:00:00Z')"
+        )
+        self.reg._conn.commit()
+        self.reg.close_db()
+        again = R.SessionRegistry(self.db)
+        try:
+            index = again._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_alias_active'"
+            ).fetchone()[0]
+            self.assertIn("generation", index)
+        finally:
+            again.close_db()
+
+    def test_a_pair_is_issued_again_when_all_26_doubled_pairs_are_live(self):
         self._issue("g1", 26)
-        with self.assertRaises(R.LabelExhausted) as caught:
-            self._seat_pair("one-too-many")
-        self.assertEqual(caught.exception.space, "double")
-        self.assertIn("'muse'", str(caught.exception))
-        self.assertIn("at most 26 live main chats", str(caught.exception))
+        # Every pair is live:  the pair is issued again with a new generation,  and the chat
+        # is lettered rather than refused (owner, Nov 26 2026).
+        again = self._seat_pair("one-too-many")
+        self.assertEqual((again["label"], again["generation"]), ("AA", 2))
         self._close_native("g1-12")  # MM.1 archived:  the next chat takes it
         self.assertEqual(self._labelled(self._issue("after", 1)), [("MM", 2)])
 
@@ -2329,7 +2389,7 @@ class SessionIssuesTest(unittest.TestCase):
         try:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
             self.assertEqual(
-                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 5
+                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 6
             )
         finally:
             conn.close()

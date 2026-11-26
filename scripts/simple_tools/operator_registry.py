@@ -514,10 +514,32 @@ class SessionRegistry:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(DDL)
         with self._conn:
+            self._apply_migrations()
             self._conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, _utcnow()),
             )
+
+    def _apply_migrations(self) -> None:
+        """Bring a registry that was written by an older version up to the current schema.
+
+        Version 6 (AFC-924):  the active-assignment uniqueness is per (platform, letter,
+        generation)  and no longer per (platform, letter),  because the Operator issues a live
+        pair again when every pair is live.  The old index is dropped and the new one made,  and
+        the data it covers satisfies the new one already:  the new index is the weaker rule.
+        """
+        try:
+            row = self._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+        except sqlite3.Error:
+            return
+        applied = int(row[0] or 0) if row else 0
+        if applied >= 6:
+            return
+        self._conn.execute("DROP INDEX IF EXISTS idx_alias_active")
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_active"
+            " ON alias_assignments (platform, letter, generation) WHERE retired_at IS NULL"
+        )
 
     def close_db(self) -> None:
         self._conn.close()
@@ -845,12 +867,14 @@ class SessionRegistry:
         A main chat (no `after`) takes only a doubled pair (AA, BB ... ZZ):  the free one issued the fewest times,
         counting every row the seat's namespace holds for it, including rows written before this rule ("count the
         history"), so a pair issued five times waits behind one issued three times;  among those, the alphabetically earliest pair is chosen.
-        A released pair remains behind any free pair with fewer past issues.  When all 26 are live the letter is
-        refused ("ok just refuse actually is fine") and the chat carries on unlettered.
+        A released pair remains behind any free pair with fewer past issues.  When all 26 are live the
+        least-used pair is issued again with a new generation (owner, Nov 26 2026),  so a chat never
 
         `after` is the pair its parent chat holds, for a subthread:  the first pair after the parent's (pairs_after,
         the owner's Oct 29 naming:  DD's children DE, DF, DG;  XX's XY, XZ, XA, XB;  never the doubled pair) that is not
         live is taken.  When the parent's row is full, the subthread is refused a letter; it never moves to another row.
+        carries on unlettered for want of a pair;  two parent threads may then hold one pair,  and the
+        generation number tells them apart ("UU.4.M" and "UU.6.M").
         A child never takes the doubled pair reserved for main chats."""
         # A closed session holds no letter (every read path joins on closed_at IS NULL), so an alias
         # its close never retired must not count as live here:  retire one orphan first, in this
@@ -908,14 +932,12 @@ class SessionRegistry:
         main = sorted((p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), p))
         if main:
             return issue(main[0])
-        # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
-        exhausted = LabelExhausted(
-            f"all {len(doubled)} letters are active on platform {platform!r}:  a seat holds at most {len(doubled)}"
-            " live main chats (the doubled pairs AA to ZZ), so this one is refused a letter"
-        )
-        exhausted.space = "double"
-        exhausted.limit = len(doubled)
-        raise exhausted
+        # Every pair is live.  The Operator issues the least-used pair again with a new generation
+        # instead of refusing the chat (owner, Nov 26 2026:  two parent threads may hold the same
+        # letter pair,  and the generation number tells them apart in the bracketed header).  A
+        # main chat still never takes a non-doubled pair.
+        reused = sorted(doubled, key=lambda p: (counts.get(p, 0), p))
+        return issue(reused[0])
 
     def _insert_event(
         self,
@@ -2742,7 +2764,8 @@ def resolve_label(
         if generation is None:
             row = registry._conn.execute(
                 "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
-                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL" % columns,
+                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL"
+                " ORDER BY a.generation DESC" % columns,
                 (namespace, want),
             ).fetchone()
         else:
@@ -2898,7 +2921,7 @@ def candidates_for(
             " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
             " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL"
             " AND s.closed_at IS NULL"
-            " ORDER BY s.registered_at DESC, a.record_id ASC",
+            " ORDER BY a.generation DESC, s.registered_at DESC, a.record_id ASC",
             (normalize_platform(platform), want),
         ).fetchall()
     except Exception:

@@ -9,7 +9,7 @@ Standard library only, Python 3.11+.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -48,9 +48,12 @@ CREATE TABLE IF NOT EXISTS alias_assignments (
     retired_at TEXT,
     PRIMARY KEY (platform, letter, generation)
 );
--- Active-assignment uniqueness:  at most one live holder of (platform, letter).
+-- Active-assignment uniqueness:  at most one live holder of (platform, letter, generation).
+-- Version 6 (AFC-924):  a pair may have two live generations at once,  because the Operator
+-- issues a live pair again when every pair is live,  and the generation number tells the two
+-- parent threads apart in the bracketed header.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_active
-    ON alias_assignments (platform, letter) WHERE retired_at IS NULL;
+    ON alias_assignments (platform, letter, generation) WHERE retired_at IS NULL;
 -- The wake path looks a session's live alias up by record, once per catalog row it
 -- shows.  Without this index every one of those lookups scans the whole table.
 CREATE INDEX IF NOT EXISTS idx_alias_record
