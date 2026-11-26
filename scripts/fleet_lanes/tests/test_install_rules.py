@@ -211,13 +211,25 @@ class TemplateTests(unittest.TestCase):
         pointer = "PR titles: fleet-coordination skill requires full assigned identity for multithreaded sessions."
         tail = " Read that skill before opening a PR; its title-only rule overrides older combined title/body examples here."
         paragraph = (IR.RULES_DIR / "pr-title-identity.md").read_text().strip("\n")
-        for line in (pointer, pointer + tail):
+        for line in (pointer, pointer + tail, "  " + pointer + "  ", "\t" + pointer + tail + " "):
             with self.subTest(line=line), mock.patch.object(IR, "_read_template", return_value="before\n" + line + "\nafter"):
                 self.assertEqual(IR.body_text("nodefault"), "before\n" + paragraph + "\nafter")
         for text in ("missing", pointer + "\n" + pointer, pointer + " unexpected tail"):
             with self.subTest(text=text), mock.patch.object(IR, "_read_template", return_value=text):
                 with self.assertRaisesRegex(ValueError, "exactly one known"):
                     IR.body_text("nodefault")
+
+    def test_nodefault_crlf_part_is_normalized_by_text_io(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            rules = Path(directory)
+            shutil.copytree(IR.RULES_DIR, rules, dirs_exist_ok=True)
+            part = rules / "pr-title-identity.md"
+            expected = part.read_text(encoding="utf-8").strip("\n")
+            part.write_bytes(part.read_bytes().replace(b"\n", b"\r\n"))
+            with mock.patch.object(IR, "RULES_DIR", rules):
+                body = IR.body_text("nodefault")
+            self.assertNotIn("\r", body)
+            self.assertEqual(body.count(expected), 1)
 
     def texts(self) -> dict[str, str]:
         out = {v: (IR.RULES_DIR / f).read_text(encoding="utf-8") for v, f in IR.TEMPLATE_FILES.items()}
