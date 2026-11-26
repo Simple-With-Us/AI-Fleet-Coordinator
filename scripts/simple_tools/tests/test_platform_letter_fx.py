@@ -141,6 +141,14 @@ class FxTests(Base):
         self.sync()
         self.assertEqual(self.store_title(sid), "Fx work")
 
+    def test_a_failed_ledger_write_leaves_no_staging_file(self) -> None:
+        folder = os.path.dirname(FX._ledger_path(self.env()))
+        os.makedirs(folder, exist_ok=True)
+        with mock.patch.object(FX.os, "replace", side_effect=OSError("no replace")):
+            with self.assertRaises(OSError):
+                FX._write_ledger(self.env(), ["a"], {"a": "AB"})
+        self.assertEqual([n for n in os.listdir(folder) if n.endswith(".tmp")], [])
+
     def test_a_placeholder_store_title_is_never_registered_as_a_title(self) -> None:
         sid = conv(33)
         self.add_session(sid, title="New Chat")

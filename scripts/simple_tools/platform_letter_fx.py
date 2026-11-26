@@ -344,18 +344,31 @@ def _write_ledger(
     path = _ledger_path(env)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     kept = set(ids)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "registered": sorted(kept),
-                "labels": {
-                    key: value for key, value in sorted((labels or {}).items()) if key in kept
-                },
-            },
-            fh,
+    payload = {
+        "registered": sorted(kept),
+        "labels": {
+            key: value for key, value in sorted((labels or {}).items()) if key in kept
+        },
+    }
+    temporary = ""
+    try:
+        # A unique staging file per write:  two sync runs never truncate each other's ledger.
+        handle, temporary = tempfile.mkstemp(
+            prefix=os.path.basename(path) + ".", suffix=".tmp",
+            dir=os.path.dirname(path) or ".",
         )
-    os.replace(tmp, path)
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    except OSError:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        raise
 
 
 def _owned(answer: Mapping[str, Any]) -> bool:
