@@ -39,6 +39,8 @@ MAX_TARGETS = 50             # PRs one payload may name
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SIG_RE = re.compile(r"^sha256=[0-9a-f]{64}$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+EVENT_RE = re.compile(r"[a-z_]{1,64}")
 DELIVERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _KIND = {"pull_request": "pr", "pull_request_review": "pr_review",
          "pull_request_review_comment": "pr_review_comment", "check_run": "check_run",
@@ -105,7 +107,7 @@ def _num(v, code="number-invalid") -> int:
 def _str(v, limit, code) -> str:
     if v is None:
         return ""
-    if not isinstance(v, str) or len(v) > limit:
+    if not isinstance(v, str) or len(v) > limit or CONTROL_RE.search(v):
         raise _Bad(code)
     return v
 
@@ -116,7 +118,7 @@ def _time(p: dict) -> str:
         if o is None:
             continue
         for f in ("submitted_at", "completed_at", "updated_at", "created_at"):
-            t = _str(o.get(f), MAX_TIME, "time-oversized")
+            t = _str(o.get(f), MAX_TIME, "time-invalid")
             if t:
                 return t
     return ""
@@ -139,9 +141,14 @@ def _ref(p: dict) -> str:
         o = _obj(p.get(key))
         if o is None:
             continue
-        v = o.get("id") if type(o.get("id")) is int else o.get("node_id")
+        iid, nid = o.get("id"), o.get("node_id")
+        if iid is not None and (type(iid) is not int or iid < 0):
+            raise _Bad("ref-invalid")
+        if nid is not None and not isinstance(nid, str):
+            raise _Bad("ref-invalid")
+        v = str(iid) if iid is not None else nid
         if v is not None:
-            return _str(str(v), MAX_REF, "ref-oversized")
+            return _str(v, MAX_REF, "ref-invalid")
     return ""
 
 
@@ -185,7 +192,7 @@ def map_event(event_name: str, delivery_id: str, payload: dict, allowlist=frozen
     merge_group that name no PR, and every merge_group (a queue ref is never
     parsed for a PR), with the head as advisory only.  A payload is mapped
     whole or not at all:  one malformed target fails every target."""
-    ev = event_name if isinstance(event_name, str) and 0 < len(event_name) <= MAX_EVENT else ""
+    ev = event_name if isinstance(event_name, str) and EVENT_RE.fullmatch(event_name) else ""
     did = delivery_id if isinstance(delivery_id, str) and DELIVERY_RE.fullmatch(delivery_id) else ""
     if not ev:
         return _res(INVALID, "event-name-invalid", "", did)
@@ -205,12 +212,15 @@ def map_event(event_name: str, delivery_id: str, payload: dict, allowlist=frozen
         if repo not in allowlist:
             return _res(IGNORED, "repo-not-allowlisted", ev, did, repo)
         t, head, ref = _time(payload), _head(payload), _ref(payload)
-        action = _str(payload.get("action"), MAX_ACTION, "action-oversized")
+        action = _str(payload.get("action"), MAX_ACTION, "action-invalid")
         if ev in ("issues", "issue_comment"):
             issue = _obj(payload.get("issue"))
             if issue is None:
                 raise _Bad("issue-missing")
             n = _num(issue.get("number"), "issue-number-invalid")
+            marker = issue.get("pull_request")
+            if "pull_request" in issue and not isinstance(marker, dict):
+                raise _Bad("issue-pull-request-invalid")
             is_pr = "pull_request" in issue
             if ev == "issue_comment":
                 kind, subj = ("pr_comment", "pr") if is_pr else ("issue_comment_issue", "issue")
@@ -218,7 +228,8 @@ def map_event(event_name: str, delivery_id: str, payload: dict, allowlist=frozen
                 kind, subj = ("pr_comment", "pr") if is_pr else ("issue", "issue")
             return _res(MAPPED, "mapped", ev, did, repo, n, (Hint(repo, n, subj, kind, did, t, None, ref, action),))
         if ev == "merge_group":
-            _obj(payload.get("merge_group"))
+            if _obj(payload.get("merge_group")) is None:
+                raise _Bad("merge-group-missing")
             return _res(HELD, "merge-group-needs-discovery", ev, did, repo, None, (), head)
         nums = _prs(ev, payload)
         if not nums:
