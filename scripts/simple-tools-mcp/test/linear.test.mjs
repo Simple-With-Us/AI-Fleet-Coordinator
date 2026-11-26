@@ -41,6 +41,8 @@ function memoryGate(clock) {
   g.linearTokenGet = () => S.linearTokenGet(store);
   g.linearTokenSet = (entry) => S.linearTokenSet(store, entry);
   g.linearTokenClear = () => S.linearTokenClear(store);
+  g.linearAppIdGet = () => S.linearAppIdGet(store);
+  g.linearAppIdSet = (entry) => S.linearAppIdSet(store, entry);
   return g;
 }
 
