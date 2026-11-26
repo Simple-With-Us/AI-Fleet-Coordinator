@@ -471,6 +471,11 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text("JET"), .text(""), .text("CODEX")])), 1)
         XCTAssertEqual(ServerSeatNames.names(in: .list([.text("JET"), .text(""), .text("CODEX")])),
                        ["JET", "[Invalid Entry]", "CODEX"])
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text(" CODEX ")])), ["CODEX"])
+        XCTAssertEqual(ServerSeatNames.text(from: #"[" CODEX "]"#), "CODEX")
+        XCTAssertNil(ServerSeatNames.statLine(
+            for: .list([.text(" CODEX ")]),
+            context: ServerSeatListContext(configuredSeats: ["CODEX"], otherList: [])))
         // A text entry that reads like the placeholder is still text, never an invalid entry.
         XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text(ServerSeatNames.invalidEntry)])),
                        [ServerSeatNames.invalidEntry])

@@ -1035,8 +1035,10 @@ enum ServerSeatNames {
     static func text(from draft: String) -> String {
         guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
         let names = values.map { value -> String in
-            if case .text(let name) = value,
-               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return name }
+            if case .text(let name) = value {
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
             // Keep invalid entries visible and invalid until the operator corrects them.
             return invalidEntry
         }
@@ -1056,20 +1058,22 @@ enum ServerSeatNames {
     static func names(in value: ServerSettingValue?) -> [String] {
         guard case .list(let values)? = value else { return [] }
         return values.map {
-            if case .text(let name) = $0,
-               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return name }
+            if case .text(let name) = $0 {
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
             return invalidEntry
         }
     }
 
-    /// The non-empty text entries only:  what a seat check, an overlap and a count of real
+    /// The non-empty text entries, trimmed:  what a seat check, an overlap and a count of real
     /// seats may use.  A text entry that reads like the placeholder is still text.
     static func validNames(in value: ServerSettingValue?) -> [String] {
         guard case .list(let values)? = value else { return [] }
         return values.compactMap {
-            guard case .text(let name) = $0,
-                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return name
+            guard case .text(let name) = $0 else { return nil }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
     }
 
