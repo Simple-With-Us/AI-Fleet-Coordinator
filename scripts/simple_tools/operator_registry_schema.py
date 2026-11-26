@@ -114,6 +114,19 @@ CREATE TABLE IF NOT EXISTS session_pr_bindings (
     PRIMARY KEY(record_id, repo, number)
 );
 
+-- Explicitly self-registered GitHub ISSUE associations (existing issues only).  A separate
+-- table from session_pr_bindings:  an issue number is never a PR binding.  No historical
+-- backfill, no creation receipt.  A registry from before it gains the table the next time a
+-- writer opens it;  a reader without it sees no issue association.
+CREATE TABLE IF NOT EXISTS session_issue_bindings (
+    record_id TEXT NOT NULL REFERENCES sessions(record_id),
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    bound_at TEXT NOT NULL,
+    PRIMARY KEY(record_id, repo, number)
+);
+
 -- Version 5 (AFC-878): the host's own view of the chats it still holds open.
 -- One row per (platform, verified_host): the last report the host made, and
 -- `live`, a JSON object of native session id to the host's own last-activity

@@ -105,6 +105,11 @@ class OperatorMessages:
             "changes_requested": "changes were requested",
             "ci_failed": "CI checks failed on the current head",
             "merge_blocked": "the PR is blocked from merging",
+            "pr_comment_added": "a new conversation comment",
+            "pr_comment_edited": "a conversation comment was edited",
+            "issue_opened": "a new issue",
+            "issue_comment_added": "a new issue comment",
+            "issue_comment_edited": "an issue comment was edited",
         }.get(event.get("kind"))
         if summary is None:
             raise MessageDestinationUnresolved()
@@ -118,10 +123,14 @@ class OperatorMessages:
         }
         if isinstance(link, str):
             url = urlsplit(link)
+            # The canonical source path for the event's OWN subject:  an
+            # issue event links /issues/<n>, everything else /pull/<n>.  A
+            # link naming the other subject's path is not attached.
+            leaf = "issues" if event.get("subject") == "issue" else "pull"
             if (
                 url.scheme == "https"
                 and url.netloc == "github.com"
-                and url.path == "/%s/pull/%s" % (repo, number)
+                and url.path == "/%s/%s/%s" % (repo, leaf, number)
                 and not url.query
                 and not url.fragment
             ):

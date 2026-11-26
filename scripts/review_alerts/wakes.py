@@ -29,6 +29,13 @@ WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$")
 LETTER_RE = re.compile(r"^[A-Z]{2}$")
 PR_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]{1,10}")
+#: The require_issue pin shape, byte-identical to the router's own
+#: REQUIRE_ISSUE_RE grammar (8-digit issue numbers, owner/name#number):
+#: a separate pin from require_pr - an issue number is never a PR binding,
+#: and the two fields are mutually exclusive on any wake.
+REQUIRE_ISSUE_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}#[1-9][0-9]{0,7}$"
+)
 MAX_BODY = 64 * 1024
 TIMEOUT = 15
 
@@ -70,6 +77,16 @@ class WakeRetryable(WakeError):
 def wake_id_for(repo: str, number: int, kind: str, event_id: str, epoch: int = 0) -> str:
     digest = hashlib.sha256(
         ("%s#%d:%s:%s:e%d" % (repo, number, kind, event_id, epoch)).encode()
+    ).hexdigest()
+    return "ra-" + digest[:24]
+
+
+def wake_id_for_issue(repo: str, number: int, kind: str, event_id: str, epoch: int = 0) -> str:
+    """The wake id for an ISSUE-subject source event:  the qualified router's
+    semantic hash carries an "issue:" prefix so an issue#N wake id can never
+    collide with a PR#N one.  PR digests (wake_id_for) are byte-unchanged."""
+    digest = hashlib.sha256(
+        ("issue:" + "%s#%d:%s:%s:e%d" % (repo, number, kind, event_id, epoch)).encode()
     ).hexdigest()
     return "ra-" + digest[:24]
 
@@ -160,6 +177,145 @@ class WakeClient:
         if status >= 500:
             raise WakeRetryable("wake submit: HTTP %s" % status)
         raise WakeError("wake refused: HTTP %s %s" % (status, answer.get("error") or ""))
+
+    def submit_issue(
+        self,
+        seat: str,
+        wake_id: str,
+        require_session: str,
+        require_letter: str,
+        require_generation: int,
+        require_issue: str,
+        topic: str,
+        link: str,
+        *,
+        message_id: int = 0,
+        source_event=None,
+    ) -> dict:
+        """One alert wake for an ISSUE, pinned by require_issue instead of
+        require_pr (the two are mutually exclusive and the payload carries
+        no require_pr key at all):  the router checks the pin against the
+        live registry row's bound_issues, never bound_prs.  Every other
+        requirement (session, letter, positive generation, exact wake id)
+        is identical to submit."""
+        if not WAKE_ID_RE.fullmatch(wake_id):
+            raise WakeError("bad wake_id")
+        if not SESSION_ID_RE.fullmatch(require_session or ""):
+            raise WakeError("require_session is not a session id shape")
+        if not LETTER_RE.fullmatch(require_letter or ""):
+            raise WakeError("require_letter is not a session letter (two capitals)")
+        if type(require_generation) is not int or require_generation < 1:
+            raise WakeError("require_generation must be a positive integer")
+        if not REQUIRE_ISSUE_RE.fullmatch(require_issue or ""):
+            raise WakeError("require_issue is not a repo#number shape")
+        if type(message_id) is not int or not 0 <= message_id <= 2**63 - 1:
+            raise WakeError("bad message_id")
+        payload = {
+            "contract": CONTRACT,
+            "message_id": message_id,
+            "seat": seat,
+            "wake_id": wake_id,
+            "require_session": require_session,
+            "require_letter": require_letter,
+            "require_generation": require_generation,
+            "require_issue": require_issue,
+            "excerpt": "review alert: %s" % topic,
+            "channel": "review-alerts",
+            "topic": topic,
+            "zulip_link": link,
+            "sender_full_name": "review-alerts",
+            "dm": False,
+        }
+        if source_event is not None:
+            payload["source_event"] = source_event
+        status, answer = self._call("POST", "/wake/%s" % seat, payload)
+        if status in (200, 202):
+            return answer
+        if status >= 500:
+            raise WakeRetryable("wake submit: HTTP %s" % status)
+        raise WakeError("wake refused: HTTP %s %s" % (status, answer.get("error") or ""))
+
+    def test_submit_issue(
+        self,
+        seat: str,
+        wake_id: str,
+        require_session: str,
+        require_letter: str = "ZZ",
+        require_issue: str = "zz0probe/zz0probe#1",
+        require_generation: int = 1,
+    ) -> dict:
+        """The require_issue `test` probe:  same diagnostics-only semantics
+        as test_submit (no enqueue, no dedupe claim, zero effects).  Unlike
+        the PR probe, the session named here is a REAL registered session
+        (operator-supplied):  a session-first router must find it live
+        before its issue binding is ever checked."""
+        payload = {
+            "contract": CONTRACT,
+            "seat": seat,
+            "wake_id": wake_id,
+            "require_session": require_session,
+            "require_letter": require_letter,
+            "require_generation": require_generation,
+            "require_issue": require_issue,
+            "excerpt": "review-alerts router self-check",
+            "channel": "review-alerts",
+            "sender_full_name": "review-alerts",
+            "dm": False,
+            "test": True,
+        }
+        status, answer = self._call("POST", "/wake/%s" % seat, payload)
+        if status != 200:
+            raise WakeError("test issue wake refused: HTTP %s" % status)
+        return answer
+
+    def check_required_issue_support(
+        self,
+        seat: str,
+        probe_id: str,
+        *,
+        session: str,
+        letter: str,
+        generation: int,
+        require_issue: str,
+    ) -> None:
+        """Fail-closed rollout gate for ISSUE wakes:  prove the live router
+        implements require_issue binding before any real issue wake is
+        sent.  The probe names an EXACT LIVE registered session (operator-
+        supplied:  session, letter and current generation) and an UNBOUND
+        issue under test:true.  A capable session-first router passes the
+        session/letter/generation checks and holds at the issue pin with
+        the TYPED required-issue-unbound reason, an empty pick and
+        delivered False;  an old router ignores the field and answers a
+        legacy pick reason, which fails the gate.  A probe naming a
+        nonexistent session can never work (a session-first router answers
+        required-session-not-live before any issue check), so the target
+        context is mandatory, never defaulted.  Zero drive calls either
+        way."""
+        if not SESSION_ID_RE.fullmatch(session or ""):
+            raise WakeError("issue probe session is not a session id shape")
+        if not LETTER_RE.fullmatch(letter or ""):
+            raise WakeError("issue probe letter is not a session letter (two capitals)")
+        if type(generation) is not int or generation < 1:
+            raise WakeError("issue probe generation must be a positive integer")
+        if not REQUIRE_ISSUE_RE.fullmatch(require_issue or ""):
+            raise WakeError("issue probe target is not a repo#number shape")
+        answer = self.test_submit_issue(
+            seat,
+            wake_id_for("probe", 0, "issuecheck", probe_id),
+            session,
+            letter,
+            require_issue,
+            generation,
+        )
+        if not isinstance(answer, dict) or not (
+            answer.get("test") is True
+            and answer.get("reason") == "required-issue-unbound"
+            and not answer.get("picked")
+            and answer.get("delivered") is False
+        ):
+            raise WakeError(
+                "router lacks require_issue support (answered %r)" % (answer,)
+            )
 
     def test_submit(
         self,

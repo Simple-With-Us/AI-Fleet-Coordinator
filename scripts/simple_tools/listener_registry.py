@@ -121,6 +121,7 @@ WRITE_OPS = (
     "relabel",
     "update",
     "bind-pr",
+    "bind-issue",
     "close",
     "sweep",
     "touch",
@@ -251,6 +252,7 @@ class RegistryService:
         log: Callable[..., None] | None = None,
         gone_report_max_share: float = DEFAULT_GONE_REPORT_MAX_SHARE,
         gone_report_window_minutes: int = DEFAULT_GONE_REPORT_WINDOW_MINUTES,
+        issue_verifier: Callable[[str, int], Mapping[str, Any]] | None = None,
     ) -> None:
         from .review_origin_projection import ReviewOriginProjection
 
@@ -273,6 +275,10 @@ class RegistryService:
         self.gone_report_window_minutes = int(gone_report_window_minutes)
         # The one stale sweeper (Sweeper sets itself here), which the `sweep` op runs.
         self.sweeper: Sweeper | None = None
+        # The canonical issue read (repo, number) -> {"number", "kind"}.  None = binding refused.
+        # Service-owned canonical issue read, built where the service already holds its relay
+        # read client.  Never caller-supplied:  no HTTP callback, no user-selected credential.
+        self.issue_verifier = issue_verifier if callable(issue_verifier) else None
         # Why the platform's seats could not be read the last time a letter was asked for, or "".
         self._seat_table_problem = ""
         self.keys = {
@@ -456,6 +462,13 @@ class RegistryService:
             return _error(403, "forbidden", "a seat may act only on its own sessions")
         return 200, found
 
+    def issue_census(self) -> list[dict[str, Any]]:
+        """In-process protected census of live sessions' current issue bindings.  NOT an
+        operation:  it is absent from OPS and has no HTTP route or principal.  Complete (no
+        limit), read-only, and raises when the registry is unreadable."""
+        self._require_store()
+        return OR.issue_census(self.db_path)
+
     def _op_history(self, principal: str, payload: Mapping[str, Any]) -> Answer:
         self._require_store()
         limit = payload.get("limit", 50)
@@ -485,13 +498,19 @@ class RegistryService:
         registry = OR.SessionRegistry(self.db_path, read_only=True)
         try:
             letters = registry.letters_held(record_id)
+            active = registry._active_alias(registry._conn, record_id) if letters else ("", None)
         finally:
             registry.close_db()
-        return 200, {
+        out = {
             "record_id": record_id,
             "letters": list(letters),
             "label": letters[0] if letters else "",
         }
+        # Additive and read-only:  the generation of the letter this record holds NOW (a closed
+        # record holds none), so a caller can name it without a touch's seen-stamp write.
+        if active[0] and active[1] is not None:
+            out["generation"] = active[1]
+        return 200, out
 
     def _op_pending_outbox(self, principal: str, payload: Mapping[str, Any]) -> Answer:
         refused = self._operator_only(principal)
@@ -566,6 +585,30 @@ class RegistryService:
             number=payload.get("number"),
             generation=payload.get("generation"),
         )
+        return 200, out
+
+    def _op_bind_issue(self, principal: str, payload: Mapping[str, Any]) -> Answer:
+        identity = _identity(payload)
+        row, refusal = self._own_row(principal, identity)
+        if refusal:
+            return refusal
+        if row is None:
+            return _error(404, "session_unknown", "session is not registered")
+        verifier = getattr(self, "issue_verifier", None)
+        if not callable(verifier):
+            # Fail closed:  no canonical issue read is wired, so nothing is associated.
+            return _error(503, "issue_verification_unavailable", "issue verification unavailable")
+        try:
+            out = OR.bind_issue(
+                self.db_path,
+                **identity,
+                repo=payload.get("repo"),
+                number=payload.get("number"),
+                generation=payload.get("generation"),
+                verify_issue=verifier,
+            )
+        except OR.IssueUnverified:
+            return _error(409, "issue_unverified", "not a verified existing issue")
         return 200, out
 
     def _op_update(self, principal: str, payload: Mapping[str, Any]) -> Answer:

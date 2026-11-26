@@ -23,6 +23,8 @@ NAMES = frozenset(
         "RA_INTERVAL_S",
         "RA_RELAY_URL",
         "RA_ROUTER_URL",
+        "RA_WEBHOOK_LISTEN",
+        "RA_WEBHOOK_SECRET_FILE",
     )
 )
 

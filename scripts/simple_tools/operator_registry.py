@@ -1083,6 +1083,10 @@ class SessionRegistry:
                             "DELETE FROM session_pr_bindings WHERE record_id = ?",
                             (record_id,),
                         )
+                        conn.execute(
+                            "DELETE FROM session_issue_bindings WHERE record_id = ?",
+                            (record_id,),
+                        )
                         previous = letter
                         letter, generation = self._allocate(
                             conn,
@@ -1339,6 +1343,7 @@ class SessionRegistry:
             # including rows closed by listener SQL or predating this feature.
             # Explicit binding after reopen rechecks current ownership.
             conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
+            conn.execute("DELETE FROM session_issue_bindings WHERE record_id = ?", (record_id,))
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
                 " WHERE record_id = ?",
@@ -1426,6 +1431,7 @@ class SessionRegistry:
                     (now, record_id),
                 )
             conn.execute("DELETE FROM session_pr_bindings WHERE record_id = ?", (record_id,))
+            conn.execute("DELETE FROM session_issue_bindings WHERE record_id = ?", (record_id,))
             letter, new_generation = self._allocate(
                 conn, row["platform"], record_id, now, after=parent_pair
             )
@@ -2557,6 +2563,7 @@ def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[st
             event = close_by_id.get(row["record_id"])
             item = dict(row)
             item["bound_prs"] = _bound_prs(registry._conn, row["record_id"])
+            item["bound_issues"] = _bound_issues(registry._conn, row["record_id"])
             item["end_reason"] = (event["details"] if event else "") or ""
             item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
             item["title_display"] = display_title(row["letter"], str(row["title"] or ""))
@@ -2651,6 +2658,9 @@ def resolve_label(
             ).fetchone()
         held_issues = _stored_issues(registry._conn, row["record_id"]) if row is not None else []
         held_prs = _bound_prs(registry._conn, row["record_id"]) if row is not None else []
+        held_issues_bound = (
+            _bound_issues(registry._conn, row["record_id"]) if row is not None else []
+        )
     except Exception as exc:
         raise RegistryUnavailable(type(exc).__name__) from exc
     finally:
@@ -2662,6 +2672,7 @@ def resolve_label(
         return None
     found = dict(row)
     found["bound_prs"] = held_prs
+    found["bound_issues"] = held_issues_bound
     label = str(found.get("label") or "")
     found["ref"] = cross_seat_ref(
         str(found.get("seat") or ""),
@@ -3818,6 +3829,213 @@ def bind_pr(
                 "label": letter,
                 "generation": generation,
                 "bound_prs": _bound_prs(conn, rid),
+            }
+    finally:
+        registry.close_db()
+
+
+MAX_BOUND_ISSUES = 32
+
+
+def _bound_issues(conn, record_id: str) -> list[dict[str, Any]]:
+    """The session's explicit GitHub issue associations.  Separate from `bound_prs`."""
+    try:
+        rows = conn.execute(
+            "SELECT repo, number, generation, bound_at FROM session_issue_bindings WHERE record_id = ? ORDER BY bound_at, repo, number",
+            (record_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []  # Old read-only registry: absence never invents association.
+    return [
+        {
+            "repo": r["repo"],
+            "number": r["number"],
+            "generation": r["generation"],
+            "ts": r["bound_at"],
+        }
+        for r in rows
+    ]
+
+
+def issue_census(db_path: str) -> list[dict[str, Any]]:
+    """The COMPLETE current census of live sessions that carry an issue association.
+
+    One row per session that is not closed, holds a live alias (retired_at NULL), and has at
+    least one `session_issue_bindings` row whose generation equals that live alias's
+    generation.  No limit and no recency window (unlike `letter_history`), read-only, no
+    touch.  Sessions and bindings come from ONE statement, so the census is a single
+    snapshot (never assembled across state changes).  Only an absent binding table (an old
+    registry) is an honest empty census;  every other failure (locking, schema, unreadable
+    file) raises `RegistryUnavailable`:  an unreadable census is never an empty or partial
+    one.  In-process only:  this is not an operation and has no route.
+    """
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except sqlite3.Error as exc:
+        raise RegistryUnavailable("the registry census could not be read: %s" % exc) from exc
+    try:
+        try:
+            rows = registry._conn.execute(
+                "SELECT s.record_id AS record_id, s.platform AS platform, s.seat AS seat,"
+                " s.native_session_id AS native_session_id, s.verified_host AS verified_host,"
+                " s.profile_scope AS profile_scope, a.letter AS letter,"
+                " a.generation AS generation, b.repo AS repo, b.number AS number,"
+                " b.generation AS b_generation, b.bound_at AS bound_at"
+                " FROM sessions s"
+                " JOIN alias_assignments a ON a.record_id = s.record_id"
+                " JOIN session_issue_bindings b"
+                " ON b.record_id = s.record_id AND b.generation = a.generation"
+                " WHERE s.closed_at IS NULL AND a.retired_at IS NULL"
+                " ORDER BY s.platform, a.letter, s.record_id, b.bound_at, b.repo, b.number"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if str(exc).startswith("no such table: session_issue_bindings"):
+                return []
+            raise RegistryUnavailable("the registry census could not be read: %s" % exc) from exc
+        except sqlite3.Error as exc:
+            raise RegistryUnavailable("the registry census could not be read: %s" % exc) from exc
+        out: list[dict[str, Any]] = []
+        by_record: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item = by_record.get(row["record_id"])
+            if item is None:
+                item = {
+                    "platform": row["platform"],
+                    "seat": row["seat"],
+                    "session_id": row["native_session_id"],
+                    "letter": row["letter"],
+                    "generation": row["generation"],
+                    "verified_host": row["verified_host"],
+                    "profile_scope": row["profile_scope"],
+                    "bound_issues": [],
+                }
+                by_record[row["record_id"]] = item
+                out.append(item)
+            item["bound_issues"].append(
+                {
+                    "repo": row["repo"],
+                    "number": row["number"],
+                    "generation": row["b_generation"],
+                    "ts": row["bound_at"],
+                }
+            )
+        return out
+    finally:
+        registry.close_db()
+
+
+from .issue_verify import MAX_ISSUE_NUMBER, IssueUnverified  # noqa: E402
+
+
+def bind_issue(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    repo: str,
+    number: int,
+    generation: int,
+    verify_issue: Any = None,
+) -> dict[str, Any]:
+    """Seat-authenticated self-association with an EXISTING GitHub issue.
+
+    Mirrors `bind_pr`: the generation is checked inside the same write transaction,
+    another live row holding the issue is a conflict (never a transfer), and a letter
+    re-issue invalidates an old association without rewriting history.  It creates no
+    issue and writes no creation receipt.
+
+    `verify_issue(repo, number)` is the canonical existence/type read (the relay's
+    `issue` verb).  It runs BEFORE the write transaction (no network inside the
+    registry's write lock) and must return a mapping with the same number and
+    kind == "issue".  A missing verifier, an exception, a pull request or any other
+    answer refuses the binding:  an unverifiable issue is never associated.
+    """
+    if repo not in PR_BIND_REPOS:
+        raise ValueError("repository is not qualified for issue binding")
+    if type(number) is not int or not 1 <= number <= 10**12:
+        raise ValueError("issue number out of range")
+    if type(generation) is not int or not 1 <= generation <= 2147483647:
+        raise ValueError("generation required")
+    if number > MAX_ISSUE_NUMBER:
+        # The relay lane, router pin and consumers cannot represent it:  never bind it.
+        raise ValueError("issue number out of range")
+    if not callable(verify_issue):
+        raise IssueUnverified("issue verification unavailable")
+    try:
+        proof = verify_issue(repo, number)
+    except Exception:
+        raise IssueUnverified("issue could not be verified") from None
+    if (
+        not isinstance(proof, dict)
+        or proof.get("number") != number
+        or type(proof.get("number")) is not int
+        or proof.get("kind") != "issue"
+    ):
+        raise IssueUnverified("not a verified existing issue")
+    registry = SessionRegistry(db_path)
+    try:
+        with registry._write_txn() as conn:
+            row = _session_row_for_update(
+                conn,
+                platform=platform,
+                verified_host=verified_host,
+                profile_scope=profile_scope,
+                native_session_id=native_session_id,
+            )
+            rid = row["record_id"]
+            letter, actual = registry._active_alias(conn, rid)
+            if row["closed_at"] or not letter or actual != generation:
+                raise ValueError("session is not live at required generation")
+            conflicts = conn.execute(
+                "SELECT b.record_id FROM session_issue_bindings b JOIN sessions s ON s.record_id=b.record_id "
+                "JOIN alias_assignments a ON a.record_id=b.record_id AND a.retired_at IS NULL "
+                "WHERE b.repo=? AND b.number=? AND s.closed_at IS NULL AND b.generation=a.generation AND b.record_id<>?",
+                (repo, number, rid),
+            ).fetchall()
+            if conflicts:
+                raise ValueError("issue is bound to another live session; explicit transfer required")
+            existing = conn.execute(
+                "SELECT generation FROM session_issue_bindings WHERE record_id=? AND repo=? AND number=?",
+                (rid, repo, number),
+            ).fetchone()
+            renewed = bool(existing and existing["generation"] != generation)
+            if renewed:
+                at = _utcnow()
+                conn.execute(
+                    "UPDATE session_issue_bindings SET generation=?,bound_at=? WHERE record_id=? AND repo=? AND number=?",
+                    (generation, at, rid, repo, number),
+                )
+                registry._insert_event(
+                    conn, rid, letter, "bind-issue-renew", "registry", "renewed", "registry",
+                    repo + "#" + str(number), at,
+                )
+                registry._enqueue_session_upsert(conn, rid, at)
+            if not existing:
+                count = conn.execute(
+                    "SELECT count(*) FROM session_issue_bindings WHERE record_id=?", (rid,)
+                ).fetchone()[0]
+                if count >= MAX_BOUND_ISSUES:
+                    raise ValueError("session issue binding limit reached")
+                at = _utcnow()
+                conn.execute(
+                    "INSERT INTO session_issue_bindings(record_id,repo,number,generation,bound_at) VALUES(?,?,?,?,?)",
+                    (rid, repo, number, generation, at),
+                )
+                registry._insert_event(
+                    conn, rid, letter, "bind-issue", "registry", "bound", "registry",
+                    repo + "#" + str(number), at,
+                )
+                registry._enqueue_session_upsert(conn, rid, at)
+            return {
+                "outcome": "renewed" if renewed else "unchanged" if existing else "bound",
+                "native_session_id": native_session_id,
+                "label": letter,
+                "generation": generation,
+                "bound_issues": _bound_issues(conn, rid),
             }
     finally:
         registry.close_db()

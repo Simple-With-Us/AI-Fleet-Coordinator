@@ -39,6 +39,16 @@ EVENT_FIELDS = (
     "reason",
     "message_id",
     "link",
+    # The observed canonical revision digest on pr_comment_added rows (and
+    # mirrored on pr_comment_edited rows):  the shared reconciliation state
+    # that makes one observed revision alert exactly once.  None on every
+    # other kind.
+    "revision",
+    # The observed revision's own updated_at instant, persisted independently
+    # of the event's source_time (which is created_at on an add):  an add of
+    # an already-edited comment must not let a stale intermediate snapshot
+    # (created < stale < observed) pass as a newer revision after a restart.
+    "observed_updated",
     # The recovery-attempt marker:  set when the bounded recovery pass
     # persists a selected next attempt, NEVER cleared by any status
     # transition.  Reconciliation reads it to keep that attempt bounded to
@@ -75,6 +85,11 @@ KINDS = (
     "merge_conflict",
     "check_failure",
     "changes_requested",
+    # Event-driven coverage:  a PR conversation comment, keyed by the exact
+    # comment id.  Appended only:  every existing kind, key and replayed row
+    # is byte-identical.
+    "pr_comment_added",
+    "pr_comment_edited",
 )
 TERMINAL = ("delivered", "unknown", "held")
 #: submitted = wake accepted, receipt pending;  submit-pending = the submit's
@@ -194,10 +209,18 @@ class EventStore:
             return [dict(r) for r in self._by_key.values() if r.get("status") == "held"]
 
     def seed(
-        self, repo: str, number: int, review_id: int, comment_id: int, check_id: int = 0
+        self,
+        repo: str,
+        number: int,
+        review_id: int,
+        comment_id: int,
+        check_id: int = 0,
+        issue_comment_id: int = 0,
     ) -> None:
         """First-sight baseline:  existing activity is NOT alerted on;  only
-        what lands after the seed.  Recorded like any other row."""
+        what lands after the seed.  Recorded like any other row.  The fourth
+        component is the conversation-comment high water;  rows written before
+        that component existed carry three and read back as zero."""
         with self._lock:
             if (repo, int(number)) in self._seeds:
                 return
@@ -206,7 +229,8 @@ class EventStore:
                 "repo": repo,
                 "number": number,
                 "kind": "seed",
-                "event_id": "%d:%d:%d" % (review_id, comment_id, check_id),
+                "event_id": "%d:%d:%d:%d"
+                % (review_id, comment_id, check_id, issue_comment_id),
                 "status": "seed",
                 "summary": "baseline; nothing before this is alerted",
             }
@@ -215,6 +239,41 @@ class EventStore:
     def has_seed(self, repo: str, number: int) -> bool:
         with self._lock:
             return (repo, int(number)) in self._seeds
+
+    def seed_row(self, repo: str, number: int) -> dict | None:
+        """The current seed row, or None:  the migration check reads its
+        component count."""
+        with self._lock:
+            row = self._seeds.get((repo, int(number)))
+            return dict(row) if row is not None else None
+
+    def migration_intent(self, repo: str, number: int) -> dict | None:
+        """The persisted legacy-migration intent row for one PR, or None.
+
+        The intent records the FIXED adoption boundary (its event_id is the
+        intended four-part completion seed value) and the exact intended
+        baseline revisions (members), durable BEFORE any baseline write:  a
+        crash after the intent resumes the SAME boundary, so activity
+        landing after the intent was recorded is never silently absorbed
+        into the baseline."""
+        with self._lock:
+            for (r, n, kind, _eid), row in self._by_key.items():
+                if r == repo and n == int(number) and kind == "migration-intent":
+                    return dict(row)
+            return None
+
+    def comment_rows(self, repo: str, number: int) -> list:
+        """The recorded pr_comment_added/pr_comment_edited rows for one PR
+        (baseline rows included):  the observed-revision state the shared
+        reconciliation reads."""
+        with self._lock:
+            return [
+                dict(row)
+                for (r, n, kind, _eid), row in self._by_key.items()
+                if r == repo
+                and n == int(number)
+                and kind in ("pr_comment_added", "pr_comment_edited")
+            ]
 
     def cursor(self, repo: str, number: int) -> dict:
         """The high-water marks and alerted completion heads derived from the
@@ -227,6 +286,7 @@ class EventStore:
         reviews = 0
         comments = 0
         checks = 0
+        issue_comments = 0
         ci_floor = 0
         ci_ids: set = set()
         legacy_conflict_pairs: set = set()
@@ -245,6 +305,13 @@ class EventStore:
                 if len(parts) >= 3 and parts[2].isdigit():
                     checks = int(parts[2])
                     ci_floor = checks
+                if len(parts) >= 4 and parts[3].isdigit():
+                    issue_comments = int(parts[3])
+            # The conversation-comment high-water is the SEED's fourth
+            # component ALONE:  a fixed baseline boundary.  Observed
+            # comment events (poll or hint) never advance it, so a sparse
+            # hint for a high id can never hide an unseen lower id from
+            # the full ascending scan.
             for (r, n, kind, event_id), row in self._by_key.items():
                 if r != repo or n != int(number):
                     continue
@@ -283,6 +350,7 @@ class EventStore:
             "review_id": reviews,
             "comment_id": comments,
             "check_id": checks,
+            "issue_comment_id": issue_comments,
             "ci_ids": sorted(ci_ids),
             "legacy_conflict_pairs": sorted(legacy_conflict_pairs),
             "legacy_conflict_heads": sorted(legacy_conflict_heads),

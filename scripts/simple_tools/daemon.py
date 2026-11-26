@@ -52,6 +52,7 @@ from . import heartbeat as HB
 from . import heldalert as HELDALERT
 from . import heldback as HELD
 from . import inbox_delivery as IDEL
+from . import issue_verify as IV
 from . import listener_api as LAPI
 from . import listener_registry as LREG
 from . import live as L
@@ -1537,6 +1538,20 @@ class Daemon:
         except Exception as exc:
             self.log.write("review-alert-start-error", reason=type(exc).__name__)
 
+    def _issue_verifier(self):
+        """The canonical issue verifier for the registry's bind-issue op, or None (held).
+
+        Service-owned:  the service's own relay read client and dedicated service_read
+        bearer from this process's environment.  A caller's payload never supplies a
+        credential.  No credential, no read grant or any failed read means no association
+        is written (IssueUnverified), never a guess."""
+        try:
+            read = IV.service_issue_reader(self.env, should_stop=self.stop.is_set)
+            return IV.make_issue_verifier(read) if read else None
+        except Exception as exc:
+            self.log.write("issue-verifier-held", reason=type(exc).__name__)
+            return None
+
     def _configure_registry(self) -> LREG.RegistryService | None:
         """The Operator's session registry service, or None off the server instance.  The listener API serves
         it under /registry/v1/ only when at least one principal has a key;  the service itself, the note-link
@@ -1629,6 +1644,9 @@ class Daemon:
             )
         self.registry_service = service
         self._registry_spec = spec
+        # Fresh on every configure, new service or reused:  a reload re-reads the credential
+        # and relay settings, and a failure leaves association held (verifier None).
+        service.issue_verifier = self._issue_verifier()
         service.sweeper = None
         if self.config.registry_sweep_enabled:
             interval = self.config.registry_sweep_interval_minutes

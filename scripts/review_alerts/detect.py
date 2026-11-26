@@ -41,6 +41,8 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+from . import stamps
+from .comment_evidence import comment_revision_digest
 from .events import FINDINGS_MEMBER_LIMIT
 
 
@@ -494,3 +496,155 @@ def derive(
                 }
             )
     return events
+
+
+def comment_revision_state(rows: list, kinds: tuple = ("pr_comment_added", "pr_comment_edited")) -> tuple:
+    """The durable observed-revision state per conversation-comment id, from
+    recorded add/edit rows of the given kinds (baseline rows included):
+    (prior, seen).
+
+    prior:  {comment_id: {"digest", "updated")}} - the LATEST observed
+    revision.  Each row's observed revision instant is its persisted
+    observed_updated, falling back to source_time on rows from before that
+    field existed.  At equal instants the LATER-folded row wins (durable
+    observation order:  two distinct revisions can share one canonical
+    second);  a truly older row never replaces a newer one.  Rows without a
+    digest (legacy add rows from the never-activated intermediate lineage)
+    are not observations.
+
+    seen:  {comment_id: {digest, ...}} - EVERY revision ever observed for
+    the id, independent of which add/edit row carried it or which one is
+    latest.  A revision in this set is known state and is never re-alerted,
+    under any kind or key, after any restart or replay (an A -> B -> A
+    same-second replay alerts A and B once each, never A twice).
+    """
+    out: dict = {}
+    seen: dict = {}
+    for row in rows:
+        event_id = str(row.get("event_id") or "")
+        kind = row.get("kind")
+        cid = None
+        digest = None
+        if kind == kinds[0] and event_id.startswith("i") and event_id[1:].isdigit():
+            cid = int(event_id[1:])
+            revision = row.get("revision")
+            digest = revision if isinstance(revision, str) else None
+        elif kind == kinds[1] and event_id.startswith("i"):
+            head, _, revision = event_id[1:].partition("r")
+            if head.isdigit() and re.fullmatch(r"[0-9a-f]{64}", revision or ""):
+                cid = int(head)
+                digest = revision
+        if cid is not None and digest:
+            seen.setdefault(cid, set()).add(digest)
+        updated = str(row.get("observed_updated") or row.get("source_time") or "")
+        key = stamps.stamp_key(updated)
+        if cid is None or not digest or key is None:
+            continue
+        current = out.get(cid)
+        if current is None or key >= current["_key"]:
+            out[cid] = {"digest": digest, "updated": updated, "_key": key}
+    prior = {cid: {"digest": v["digest"], "updated": v["updated"]} for cid, v in out.items()}
+    return prior, seen
+
+
+def comment_prior(rows: list, kinds: tuple = ("pr_comment_added", "pr_comment_edited")) -> dict:
+    """The latest observed revision per conversation-comment id:
+    comment_revision_state's prior mapping, kept for existing callers."""
+    return comment_revision_state(rows, kinds=kinds)[0]
+
+
+def reconcile_comment(
+    repo: str,
+    number: int,
+    row: dict,
+    watermark: int,
+    prior: dict | None,
+    current_head: str,
+    kinds: tuple = ("pr_comment_added", "pr_comment_edited"),
+    seen: set | None = None,
+) -> dict | None:
+    """The ONE canonical reconciliation for a conversation-comment
+    observation, shared by the poll scan and hint completion so the same
+    canonical state yields the same outcome in either arrival order.
+
+    row:  the validated canonical comment (id, user.login, created_at,
+    updated_at, exact body).  watermark:  the FIXED baseline boundary (the
+    seed's fourth component;  observed ids never advance it, so a sparse
+    hint for a high id never hides an unseen lower id from the scan).
+    prior:  the latest previously observed revision for this id (from
+    comment_prior), or None.
+
+    - Observed id, same digest, or an out-of-order/older revision:  nothing.
+    - A revision in `seen` (EVERY digest ever recorded for this id, from
+      comment_revision_state):  nothing, regardless of kind, key or order -
+      an already-observed revision is never re-alerted as a different event
+      after a replay or restart.
+    - Observed id, genuinely newer revision:  pr_comment_edited
+      "i<id>r<digest>".
+    - Unobserved id at/below the baseline:  baselined known state - an
+      edited current revision alerts the edit, an unedited one nothing.
+    - Unobserved id above the baseline:  pr_comment_added "i<id>" carrying
+      the observed revision, so the SAME revision never alerts again as an
+      edit;  only a genuinely later revision does.
+
+    Instants compare exactly (stamps.stamp_key, integer seconds plus the
+    full 1..9 digit fraction):  precision the canonical contract supports is
+    never collapsed.  Malformed or reversed stamps derive nothing
+    (fail-closed)."""
+    cid = row.get("id")
+    if type(cid) is not int or cid < 1:
+        return None
+    created = str(row.get("created_at") or "")
+    updated = str(row.get("updated_at") or "")
+    c_key = stamps.stamp_key(created)
+    u_key = stamps.stamp_key(updated)
+    if c_key is None or u_key is None or u_key < c_key:
+        return None
+    digest = comment_revision_digest(row)
+    if seen is not None and digest in seen:
+        # This exact revision was already observed for this comment, under
+        # any kind or key:  a replay (same-second A -> B -> A) or a restart
+        # never re-alerts known state.
+        return None
+    actor = str((row.get("user") or {}).get("login") or "")
+    base = {
+        "repo": repo,
+        "number": number,
+        "actor": actor,
+        "head": "",
+        "current_head": current_head,
+        "head_matches": True,
+        "revision": digest,
+        "observed_updated": updated,
+    }
+    if prior is not None:
+        prior_key = stamps.stamp_key(prior.get("updated"))
+        if digest == prior.get("digest") or (prior_key is not None and u_key < prior_key):
+            # The same observed revision, or a truly older one.  An EQUAL
+            # instant with a different digest is a distinct revision the
+            # canonical second-granularity clock cannot order:  it alerts.
+            return None
+        return dict(
+            base,
+            kind=kinds[1],
+            source_time=updated,
+            event_id="i%dr%s" % (cid, digest),
+            summary="conversation comment edited",
+        )
+    if cid <= int(watermark or 0):
+        if u_key == c_key:
+            return None
+        return dict(
+            base,
+            kind=kinds[1],
+            source_time=updated,
+            event_id="i%dr%s" % (cid, digest),
+            summary="conversation comment edited",
+        )
+    return dict(
+        base,
+        kind=kinds[0],
+        source_time=created,
+        event_id="i%d" % cid,
+        summary="conversation comment added",
+    )
