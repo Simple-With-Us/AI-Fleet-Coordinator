@@ -530,6 +530,9 @@ _REGENERABLE_GLOBS = (
 # counting them as local state kept a lane whose work was already merged.  Only the archive counts:
 #  a local-only file under the same tree is real state and must still be named.
 _REGENERABLE_DIR_ARTIFACTS = (("fleet-skills", ".zip"),)
+# How many files a collapsed ignored tree may hold before the walk gives up and the entry stays
+# local state.  A tree that big is not a pack of archives.
+_COLLAPSED_TREE_FILE_CAP = 2000
 KEEP_MARKER = ".janitor-keep"  # has its own reason in assess, so it is not "ignored local state" too
 # What a checkout without a marker reports in `keep`.  `problem` says why a present marker is not valid.
 KEEP_ABSENT = {"present": False, "valid": False, "reason": None, "by": None, "set_on": None, "expires": None,
@@ -553,10 +556,14 @@ def _unquote_porcelain(text: str) -> str:
     return out.decode("utf-8", "replace")
 
 
-def split_ignored(porcelain: str) -> tuple[list[str], int]:
+def split_ignored(
+    porcelain: str, root: str | os.PathLike[str] | None = None
+) -> tuple[list[str], int]:
     """(local-state paths, count of regenerable ones) from the `!!` lines of `git status --ignored`.
     A path is regenerable when any component of it is a known build or cache name or matches a
-    build-artifact glob.  A directory keeps its trailing slash."""
+    build-artifact glob.  A directory keeps its trailing slash.  `root` is the checkout the paths
+    are relative to:  it is what lets a collapsed directory entry be read against the tree it
+    names,  and without it such an entry stays local state,  which is the safe answer."""
     local: list[str] = []
     regenerable = 0
     for line in porcelain.splitlines():
@@ -570,11 +577,55 @@ def split_ignored(porcelain: str) -> tuple[list[str], int]:
                 for part in parts)
                 or any(part == directory and path.endswith(suffix)
                        for part in parts
-                       for directory, suffix in _REGENERABLE_DIR_ARTIFACTS)):
+                       for directory, suffix in _REGENERABLE_DIR_ARTIFACTS)
+                or _collapsed_tree_is_regenerable(root, path)):
             regenerable += 1
         else:
             local.append(path)
     return local, regenerable
+
+
+def _is_regenerable_path(path: str, parts: list[str]) -> bool:
+    """Whether one path is build output on its own.
+
+    A known build or cache name, a build-artifact glob, or the generated artifact of a known
+    generated directory.
+    """
+    if any(part in _REGENERABLE_NAMES
+           or any(fnmatch.fnmatchcase(part, pat) for pat in _REGENERABLE_GLOBS)
+           for part in parts):
+        return True
+    return any(part == directory and path.endswith(suffix)
+               for part in parts
+               for directory, suffix in _REGENERABLE_DIR_ARTIFACTS)
+
+
+def _collapsed_tree_is_regenerable(root, path: str) -> bool:
+    """Whether a wholly-ignored directory holds nothing but build output.
+
+    Git folds a wholly-ignored subtree into one trailing-slash entry,  and the entry it folds is
+    the topmost wholly-ignored directory,  so the archives of a skill pack arrive as the
+    directory that holds them and not as archive paths.  The entry is build output only when every
+    file under it is build output on its own:  a local-only file under the same tree is state and
+    has to stay named.  Without the tree to look at,  the answer is no and the entry stays local
+    state.  The walk is capped,  and a tree too large to read stays local state.
+    """
+    if root is None or not path.endswith("/"):
+        return False
+    tree = Path(root) / path.rstrip("/")
+    seen = 0
+    try:
+        for directory, _dirs, files in os.walk(tree):
+            for name in files:
+                seen += 1
+                if seen > _COLLAPSED_TREE_FILE_CAP:
+                    return False
+                relative = (Path(directory) / name).relative_to(root).as_posix()
+                if not _is_regenerable_path(relative, relative.split("/")):
+                    return False
+    except OSError:
+        return False
+    return seen > 0
 
 
 def parse_lsof(text: str) -> list[tuple[int, str, str]]:
@@ -1541,7 +1592,7 @@ def _probe_git(co: Checkout, ctx: _Ctx, path: str) -> None:
     # timeout there must not take the dirty counts down with it.
     res = _call(ctx, ["git", "status", "--porcelain=v1", "--untracked-files=normal", "--ignored"], path)
     if res.ok:
-        local, co.ignored_regenerable = split_ignored(res.out)
+        local, co.ignored_regenerable = split_ignored(res.out, path)
         co.ignored_local_count, co.ignored_local = len(local), local[:IGNORED_LIST_CAP]
     else:
         errors.append("ignored: " + res.failure_text())

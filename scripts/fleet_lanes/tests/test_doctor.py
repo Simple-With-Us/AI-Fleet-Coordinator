@@ -1321,6 +1321,44 @@ class IgnoredStateTests(GitCase):
                                  "data/corpus.zip", "data/app.db"])
         self.assertEqual(regenerable, 3)
 
+    def test_a_collapsed_skill_pack_tree_is_build_output_only_when_it_holds_only_archives(self) -> None:
+        """Git folds a wholly-ignored subtree into one trailing-slash entry.
+
+        The archives then arrive as the directory that holds them,  and the tree has to be read
+        to tell a pack of archives from a tree that also holds local state.  Without the checkout
+        there is no tree to read,  so the entry stays local state,  which is the safe answer.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            packs = root / "docs" / "fleet-skills" / "by-seat"
+            (packs / "seat").mkdir(parents=True)
+            (packs / "seat" / "simple-tools-guide.zip").write_text("x")
+            text = "!! docs/fleet-skills/by-seat/" + chr(10)
+
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, [])
+            self.assertEqual(regenerable, 1)
+
+            (packs / "seat" / "local-notes.md").write_text("x")
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, ["docs/fleet-skills/by-seat/"])
+            self.assertEqual(regenerable, 0)
+
+            local, regenerable = doctor.split_ignored(text)
+            self.assertEqual(local, ["docs/fleet-skills/by-seat/"])
+            self.assertEqual(regenerable, 0)
+
+            # Git folds the topmost wholly-ignored directory,  so the entry it writes is
+            # docs/ and not the directory that holds the archives.
+            text = "!! docs/" + chr(10)
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, ["docs/"])
+            self.assertEqual(regenerable, 0)
+            (packs / "seat" / "local-notes.md").unlink()
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, [])
+            self.assertEqual(regenerable, 1)
+
     def test_count_status_still_leaves_ignored_lines_out_of_the_dirty_counts(self) -> None:
         self.assertEqual(doctor.count_status("!! a\n M b\n?? c\n!! d/\n"), (1, 1))
 
