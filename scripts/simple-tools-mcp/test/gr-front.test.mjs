@@ -61,7 +61,7 @@ test("GrRelayClient posts the action with Access headers and the caller's bearer
   assert.equal(seen[0].url, "https://git-relay.example.test/v1/open_pr");
   assert.equal(seen[0].init.headers["CF-Access-Client-Id"], "id");
   assert.equal(seen[0].init.headers["CF-Access-Client-Secret"], "secret");
-  assert.equal(seen[0].init.headers["Authorization"], ["Bearer", "sbt_jet-chat_abc"].join(" "));
+  assert.equal(seen[0].init.headers["Authorization"], "Bearer sbt_jet-chat_abc");
   assert.deepEqual(client.secrets(), ["id", "secret", "sbt_jet-chat_abc"]);
 });
 
@@ -357,12 +357,9 @@ test("the gr tools are registered and mint_token is not among them", () => {
   assert.equal(Object.keys(GR_SECRETS).length, 2);
 });
 
-test("gr_resolve_thread requires repo and exactly one of thread_id or comment_id: the relay validates repo on every action (kody 4372745715)", () => {
+test("gr_resolve_thread requires repo and thread_id: the relay validates repo on every action (kody 4372745715)", () => {
   const tool = GR_TOOLS.find((t) => t.name === "gr_resolve_thread");
-  assert.deepEqual([...tool.inputSchema.required].sort(), ["repo"]);
-  assert.deepEqual(tool.inputSchema.oneOf, [{ required: ["thread_id"] }, { required: ["comment_id"] }]);
-  assert.ok(tool.inputSchema.properties.comment_id && tool.inputSchema.properties.thread_id);
-  assert.match(tool.description, /comment_id/);
+  assert.deepEqual([...tool.inputSchema.required].sort(), ["repo", "thread_id"]);
   assert.ok(tool.inputSchema.properties.repo);
   assert.equal(tool.inputSchema.additionalProperties, false);
 });

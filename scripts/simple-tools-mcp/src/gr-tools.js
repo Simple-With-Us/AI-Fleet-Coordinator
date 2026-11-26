@@ -437,11 +437,8 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_resolve_thread",
     title: "Resolve Review Thread",
-    description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  Pass exactly one of thread_id (the PRRT_ review-thread id) or comment_id (a review comment's numeric id or PRRC_ node id; the thread that holds the comment is resolved).  A comment id in thread_id is accepted too.  Issue-comment, review and commit ids are refused.",
-    inputSchema: {
-      ...obj(["repo"], { repo: REPO, thread_id: REVIEW_REF, comment_id: REVIEW_REF }),
-      oneOf: [{ required: ["thread_id"] }, { required: ["comment_id"] }],
-    },
+    description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.  A review comment id (numeric, or the PRRC_ node id) is accepted too:  the relay resolves the thread that holds that comment.  Issue-comment, review and commit ids are refused.",
+    inputSchema: obj(["repo", "thread_id"], { repo: REPO, thread_id: REVIEW_REF }),
   },
   {
     name: "gr_create_repo",
