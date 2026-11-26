@@ -484,12 +484,75 @@ class ReportLiveClientTests(Base):
         self.assertIn("error", out)
         self.assertFalse([r for r in self.fake.requests if "report-live" in r[1]])
 
+    def lettered_note(self, sid: str, **extra) -> None:
+        """A note that says the chat holds a letter, in the host's own note folder."""
+        import json
+        import time
+
+        folder = os.path.join(self.state, "MM", "letters")
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        note = {
+            "session_id": sid,
+            "platform": "minimax",
+            "location": "mac",
+            "label": "UU",
+            "state": "open",
+            "updated_at": time.time(),
+        }
+        note.update(extra)
+        with open(os.path.join(folder, sid + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+
+    def test_a_live_chat_that_holds_no_letter_is_not_reported(self) -> None:
+        # The sweep can only recycle a letter,  and a chat with no letter has none to recycle.
+        from unittest import mock
+
+        good = _iso(datetime.now(UTC))
+        self.lettered_note("m-1")
+
+        def adapter(env):
+            return {"m-1": good, "m-2": good}
+
+        with mock.patch.object(PL, "load_spec", return_value=self.spec(adapter)):
+            out = PL._report_live_api(self.env(), self.args())
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out["count"], 1)
+
+    def test_a_host_that_cannot_read_its_notes_reports_nothing(self) -> None:
+        # The host's notes are not there:  it cannot say which of its chats hold a letter,  so it
+        # cannot say which of them it still holds open,  and it reports nothing at all.
+        from unittest import mock
+
+        good = _iso(datetime.now(UTC))
+        with mock.patch.object(PL, "load_spec", return_value=self.spec(lambda env: {"m-1": good})):
+            out = PL._report_live_api(self.env(), self.args())
+        self.assertIn("error", out)
+        self.assertFalse([r for r in self.fake.requests if "report-live" in r[1]])
+
+    def test_a_host_with_a_thousand_open_chats_sends_a_small_report(self) -> None:
+        # AFC-923:  the report of every open chat was refused as too large,  so the host could
+        # never tell the registry what it still held.  The lettered chats only fit.
+        from unittest import mock
+
+        good = _iso(datetime.now(UTC))
+        self.lettered_note("m-7")
+        chats = {"m-%d" % number: good for number in range(1500)}
+
+        def adapter(env):
+            return chats
+
+        with mock.patch.object(PL, "load_spec", return_value=self.spec(adapter)):
+            out = PL._report_live_api(self.env(), self.args())
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(out["count"], 1)
+
     def test_the_count_is_the_registrys_own(self) -> None:
         # The registry drops an entry whose time it cannot read,  so the count the client
         # answers is the count the registry stored.
         from unittest import mock
 
         good = _iso(datetime.now(UTC))
+        self.lettered_note("m-1")
 
         def adapter(env):
             return {"m-1": good, "m-2": "not a time"}
