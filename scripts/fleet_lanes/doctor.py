@@ -623,7 +623,10 @@ def _collapsed_tree_is_regenerable(root, path: str) -> bool:
                 relative = (Path(directory) / name).relative_to(root).as_posix()
                 if not _is_regenerable_path(relative, relative.split("/")):
                     return False
-    except OSError:
+    except (OSError, ValueError):
+        # A path that climbs out of the checkout,  or one that is absolute,  names a tree that
+        # is not under the root:  relative_to refuses it,  and the walk may yield files that
+        # are not relative to the root at all.  The answer is local state,  never a crash.
         return False
     return seen > 0
 

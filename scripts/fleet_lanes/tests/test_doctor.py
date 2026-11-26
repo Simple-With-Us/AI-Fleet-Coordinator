@@ -1321,6 +1321,22 @@ class IgnoredStateTests(GitCase):
                                  "data/corpus.zip", "data/app.db"])
         self.assertEqual(regenerable, 3)
 
+    def test_a_collapsed_tree_path_outside_the_checkout_stays_local_state(self) -> None:
+        """A path that climbs out of the checkout cannot be read as a tree under it.
+
+        The probe answers local state and does not crash:  the walk yields files whose path is
+        not relative to the checkout,  and relative_to refuses that.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "checkout"
+            root.mkdir()
+            outside = pathlib.Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("local state", encoding="utf-8")
+            local, regenerable = doctor.split_ignored("!! ../outside/\n", root=root)
+        self.assertEqual(local, ["../outside/"])
+        self.assertEqual(regenerable, 0)
+
     def test_a_collapsed_skill_pack_tree_is_build_output_only_when_it_holds_only_archives(self) -> None:
         """Git folds a wholly-ignored subtree into one trailing-slash entry.
 
