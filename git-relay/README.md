@@ -185,7 +185,7 @@ returned to the caller as a retryable refusal.
 
 [deploy/seat-policy.json](deploy/seat-policy.json) is the production policy.  It holds no secret:
 every seat is `auth: shared` and signs in with its own admin-minted bearer.  It lists one entry
-for each of the 42 identities in this file (source and live agree, verified against the relay host's
+for each of the 43 identities in this file (DUET is new in source and goes live when its App is installed and the policy is installed on the host; the other 42 agree with live, verified against the relay host's
 live seats file on 2026-11-15:  the live file's legacy `swu-bf-builder` row was removed 2026-11-12, and
 swu-zc and swu-kimi were admitted 2026-11-15 through the proof-gated first-seat runbook in this document
 and are carried in this image), each acting as the `swu-` App
