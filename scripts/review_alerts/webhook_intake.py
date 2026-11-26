@@ -81,7 +81,7 @@ def verify(body_bytes: bytes, signature_header: str | None, secret: bytes) -> bo
         return False
     if not isinstance(body_bytes, bytes) or len(body_bytes) > MAX_BODY:
         return False
-    if not isinstance(signature_header, str) or not SIG_RE.match(signature_header):
+    if not isinstance(signature_header, str) or not SIG_RE.fullmatch(signature_header):
         return False
     want = hmac.new(secret, body_bytes, hashlib.sha256).hexdigest()
     return hmac.compare_digest(want, signature_header[7:])
@@ -129,7 +129,7 @@ def _head(p: dict) -> str | None:
             continue
         head = _obj(o.get("head")) or {}
         for cand in (o.get("head_sha"), head.get("sha")):
-            if isinstance(cand, str) and SHA_RE.match(cand):
+            if isinstance(cand, str) and SHA_RE.fullmatch(cand):
                 return cand
     return None
 
@@ -186,7 +186,7 @@ def map_event(event_name: str, delivery_id: str, payload: dict, allowlist=frozen
     parsed for a PR), with the head as advisory only.  A payload is mapped
     whole or not at all:  one malformed target fails every target."""
     ev = event_name if isinstance(event_name, str) and 0 < len(event_name) <= MAX_EVENT else ""
-    did = delivery_id if isinstance(delivery_id, str) and DELIVERY_RE.match(delivery_id) else ""
+    did = delivery_id if isinstance(delivery_id, str) and DELIVERY_RE.fullmatch(delivery_id) else ""
     if not ev:
         return _res(INVALID, "event-name-invalid", "", did)
     if not did:
@@ -200,7 +200,7 @@ def map_event(event_name: str, delivery_id: str, payload: dict, allowlist=frozen
         if not isinstance(r, dict):
             raise _Bad("repo-missing-or-malformed")
         repo = r.get("full_name")
-        if not isinstance(repo, str) or len(repo) > MAX_REPO or not REPO_RE.match(repo):
+        if not isinstance(repo, str) or len(repo) > MAX_REPO or not REPO_RE.fullmatch(repo):
             raise _Bad("repo-missing-or-malformed")
         if repo not in allowlist:
             return _res(IGNORED, "repo-not-allowlisted", ev, did, repo)
