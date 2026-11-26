@@ -4780,7 +4780,7 @@ class RemoteBase(ClaudeBase):
 class Remote(RemoteBase):
     def test_missing_issue_contract_preserves_the_original_envelope(self) -> None:
         fields = {k: v for k, v in WR.asdict(self.w).items() if k != "require_issue"}
-        with mock.patch.object(CW, "asdict", return_value=fields):
+        with mock.patch.object(CW, "asdict", return_value=dict(fields)):
             sent = CW._envelope("zcode", self.target, self.w)
         self.assertEqual(sent["wake"], fields)
         self.assertEqual(sent["target"], {
@@ -4789,10 +4789,10 @@ class Remote(RemoteBase):
         })
 
     def test_malformed_issue_contract_is_preserved_for_receiver_refusal(self) -> None:
-        for value in (None, False, 0, [], {}, "invalid contract"):
+        for value in (None, False, 0, [], {}, "invalid contract", " ", "\n"):
             with self.subTest(value=value):
                 fields = {**WR.asdict(self.w), "require_issue": value}
-                with mock.patch.object(CW, "asdict", return_value=fields):
+                with mock.patch.object(CW, "asdict", return_value=dict(fields)):
                     sent = CW._envelope("zcode", self.target, self.w)
                 self.assertEqual(sent["wake"], fields)
                 self.assertIs(type(sent["wake"]["require_issue"]), type(value))
@@ -4806,7 +4806,7 @@ class Remote(RemoteBase):
         # does not know it. Exercise serialization only, never a native wake.
         old_fields = set(WR.asdict(self.w)) - {"require_issue"}
         fields = {**WR.asdict(self.w), "require_issue": ""}
-        with mock.patch.object(CW, "asdict", return_value=fields):
+        with mock.patch.object(CW, "asdict", return_value=dict(fields)):
             sent = CW._envelope("zcode", self.target, self.w)
         self.assertEqual(set(sent["wake"]), old_fields)
         self.assertEqual(sent["target"]["session_id"], self.target.session_id)
@@ -4815,7 +4815,7 @@ class Remote(RemoteBase):
 
     def test_nonempty_issue_contract_is_never_dropped_for_an_old_mac(self) -> None:
         fields = {**WR.asdict(self.w), "require_issue": "OPS-1108"}
-        with mock.patch.object(CW, "asdict", return_value=fields):
+        with mock.patch.object(CW, "asdict", return_value=dict(fields)):
             sent = CW._envelope("zcode", self.target, self.w)
         self.assertEqual(sent["wake"], fields)
         self.assertEqual(sent["wake"]["require_issue"], "OPS-1108")
