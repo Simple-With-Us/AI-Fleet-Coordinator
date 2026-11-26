@@ -98,6 +98,11 @@ indirect enum ServerSettingValue: Equatable {
         return nil
     }
 
+    var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
     private static func quoted(_ text: String) -> String {
         var out = "\""
         for scalar in text.unicodeScalars {
@@ -867,6 +872,17 @@ enum ServerSettingControl: Equatable {
     case seats(maxItems: Int, maxLength: Int)
 }
 
+/// What a notes-queue seat list is checked against on screen.  The server's answer names every
+/// seat its listener config holds, so a name with no `[seat.X]` section can be said plainly
+/// instead of looking like an ordinary entry.  The other list is kept so an overlap can be
+/// explained:  a seat in both lists may use both keys.
+struct ServerSeatListContext: Equatable {
+    /// The seats the server's listener config holds a section for.
+    var configuredSeats: Set<String>
+    /// The names in the other key's list.
+    var otherList: Set<String>
+}
+
 /// One setting on screen.
 struct ServerSettingRow: Identifiable, Equatable {
     /// The full path:  `seat.CLAUDE.budget.wakes_per_day`, `daemon.coalesce_seconds`.
@@ -907,6 +923,8 @@ struct ServerSettingRow: Identifiable, Equatable {
     var effective: ServerSettingValue? { current ?? defaultValue }
     var channelNames: [String] = []
     var information: String? = nil
+    /// For a notes-queue seat list:  the seats the listener config holds and the other key's list.
+    var seatContext: ServerSeatListContext? = nil
 
     /// Whether the value shown is the daemon's default because the file sets none.
     var showsDefault: Bool { current == nil && defaultValue != nil }
@@ -932,6 +950,8 @@ enum ServerSettingsCopy {
         switch table {
         case "linear_projects": return "Keep Linear project codes linked in Zulip and fleet references."
         case "linear_comments": return "Keep one comment per linked issue updated from each public Zulip topic."
+        case "notes_queue":
+            return "Apple Notes requests from other machines wait here for the runner on this Mac.\(gap)Each list says which seats may send a request through one key:  the Worker key serves cloud and Worker sessions, and the Server key serves this server's own command line."
         default: return nil
         }
     }
@@ -957,6 +977,10 @@ enum ServerSettingsCopy {
     static let daemonDefault = "The file sets no value here, so this is the daemon's default."
     static let pairs = "A list of channel and topic pairs.\(gap)Muster shows it and offers no control for it."
     static let seats = "A list of seat names.\(gap)Muster shows it and offers no control for it."
+    /// The two notes-queue lists are permission lists, not seat rosters.  Each says what a key
+    /// may act for, so a name here is authority, not an inventory entry.
+    static let notesQueueWorkerSeats = "The hosted Worker holds this key for cloud and Worker sessions.\(gap)A seat listed here may enqueue, read and log Apple Notes requests through it."
+    static let notesQueueServerSeats = "The server's own Notes reader and command line hold this key.\(gap)A seat listed here may enqueue, read and log Apple Notes requests through it."
     static let notEnforced = "The eavesdropper counts wakes and not dollars, so this cap is never enforced and Muster will not write it."
     static let usdRecordedOnly = "This amount is recorded, but dollar spending is not enforced.\(gap)Wake limits are enforced."
     static let noRoutine = "The seat has no routine table, so it Captures Only.\(gap)Muster does not give a seat a routine."
@@ -967,9 +991,9 @@ enum ServerSettingsCopy {
     /// so only those are written through the server's settings editor.
     static let knobHome = "A knob, and a knob's home is Infisical.\(gap)Muster shows the value the server holds and does not write it into the server's listener file.\(gap)It becomes editable in Controls once it is a registered knob.\(gap)Only a seat's routing (on or off, wake type) and its optional wake switches are listener-file config Muster sends here."
 
-    static let applyOff = "Applying changes is switched off on the server.\(gap)Show Plan still works, and an apply is refused until the owner switches it on."
-    static let applyUnknown = "The server did not say whether applying is switched on."
-    static let applyOn = "Each change goes Show Plan, then Touch ID, then the server plans again and applies only the plan you approved."
+static let applyOff = "Applying changes is switched off on the server.\(gap)Every edit is refused until the owner switches it on in the server's allowlist."
+    static let applyUnknown = "The server did not say whether applying changes is switched on."
+    static let applyOn = "Each edit is saved as it is made:  Muster sends the value, the revision it read and the server's own check, and the server applies that revision or nothing."
 
     static func groupTitle(table: String) -> String {
         switch table {
@@ -991,6 +1015,16 @@ enum ServerSettingsCopy {
                 : word.prefix(1).uppercased() + word.dropFirst()
         }.joined(separator: " ")
     }
+
+    /// The label for a whole path.  A key whose name alone does not say what it is gets a plain
+    /// sentence instead of a title-cased machine name; every other row keeps `rowTitle(_:)`.
+    static func rowTitle(path: String, name: String) -> String {
+        switch path {
+        case "notes_queue.worker_seats": return "Seats Through The Worker Key"
+        case "notes_queue.server_seats": return "Seats Through The Server Key"
+        default: return rowTitle(name)
+        }
+    }
 }
 
 enum ServerSeatNames {
@@ -1010,6 +1044,42 @@ enum ServerSeatNames {
             ServerSettingValue.text($0.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return ServerSettingValue.list(names).json ?? ""
+    }
+
+    /// A settings value's seat names, in order, without an invalid entry's placeholder.
+    static func names(in value: ServerSettingValue?) -> [String] {
+        guard case .list(let values)? = value else { return [] }
+        return values.compactMap {
+            if case .text(let name) = $0 { return name }
+            return nil
+        }
+    }
+
+    /// The names a draft holds now, so the count and the checks follow the edit.
+    static func names(fromDraft draft: String) -> [String] {
+        names(in: ServerSettingJSON.parse(draft))
+    }
+
+    /// What a notes-queue list can say beyond its entries:  a name the server's listener config
+    /// holds no section for, a name the other key also lists, and OPERATOR, which is a service
+    /// and never a seat the queue may act for.  Nil when there is nothing to add.
+    static func statLine(for names: [String], context: ServerSeatListContext?) -> String? {
+        guard let context else { return nil }
+        var parts: [String] = []
+        if !context.configuredSeats.isEmpty {
+            let unconfigured = names.filter { !context.configuredSeats.contains($0) }
+            if !unconfigured.isEmpty {
+                parts.append("No listener section on this server:  " + unconfigured.joined(separator: ", ") + ".")
+            }
+        }
+        let shared = names.filter { context.otherList.contains($0) }
+        if !shared.isEmpty {
+            parts.append("Also through the other key:  " + shared.joined(separator: ", ") + ".")
+        }
+        if names.contains("OPERATOR") {
+            parts.append("OPERATOR is a service, not a seat the queue can act for.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ServerSettingsCopy.gap)
     }
 }
 
@@ -1074,7 +1144,8 @@ enum ServerSettingsBuilder {
             for name in (allowlist.tables[table] ?? [:]).keys.sorted() {
                 guard let spec = allowlist.tables[table]?[name] else { continue }
                 rows += self.rows(key: "\(table).\(name)", name: name, spec: spec, current: settings["\(table).\(name)"],
-                                  hasRoutine: false, isStructure: false, editable: editable)
+                                  hasRoutine: false, isStructure: false, editable: editable,
+                                  knownSeats: seats, allSettings: settings)
             }
             rows += (unknownByGroup[table] ?? []).sorted().map { readOnly($0, current: settings[$0], reason: ServerSettingsCopy.notOnThisCopy) }
             if table == "daemon", !editable {
@@ -1095,7 +1166,7 @@ enum ServerSettingsBuilder {
 
     private static func readOnly(_ key: String, current: ServerSettingValue?, reason: String) -> ServerSettingRow {
         let name = key.split(separator: ".").last.map(String.init) ?? key
-        return ServerSettingRow(id: key, settingKey: key, subKey: nil, title: ServerSettingsCopy.rowTitle(name),
+        return ServerSettingRow(id: key, settingKey: key, subKey: nil, title: ServerSettingsCopy.rowTitle(path: key, name: name),
                                 current: current, control: nil, readOnlyReason: reason)
     }
 
@@ -1111,7 +1182,8 @@ enum ServerSettingsBuilder {
     }
 
     private static func rows(key: String, name: String, spec: ServerSettingSpec, current: ServerSettingValue?,
-                             hasRoutine: Bool, isStructure: Bool, editable: Bool) -> [ServerSettingRow] {
+                             hasRoutine: Bool, isStructure: Bool, editable: Bool,
+                             knownSeats: Set<String> = [], allSettings: [String: ServerSettingValue] = [:]) -> [ServerSettingRow] {
         if editable {
             func editableControl(_ spec: ServerSettingSpec, sub: String? = nil, current: ServerSettingValue? = nil) -> ServerSettingControl? {
                 switch spec {
@@ -1136,10 +1208,30 @@ enum ServerSettingsBuilder {
                                      information: name == "budget" && sub == "usd_per_day" ? ServerSettingsCopy.usdRecordedOnly : nil)
                 }
             }
+            let seatContext: ServerSeatListContext?
+            let title: String
+            let information: String?
+            switch key {
+            case "notes_queue.worker_seats", "notes_queue.server_seats":
+                let otherKey = key == "notes_queue.worker_seats"
+                    ? "notes_queue.server_seats" : "notes_queue.worker_seats"
+                seatContext = ServerSeatListContext(
+                    configuredSeats: knownSeats,
+                    otherList: Set(ServerSeatNames.names(in: allSettings[otherKey])))
+                title = ServerSettingsCopy.rowTitle(path: key, name: name)
+                information = key == "notes_queue.worker_seats"
+                    ? ServerSettingsCopy.notesQueueWorkerSeats
+                    : ServerSettingsCopy.notesQueueServerSeats
+            default:
+                seatContext = nil
+                title = ServerSettingsCopy.rowTitle(path: key, name: name)
+                information = nil
+            }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil,
-                                     title: ServerSettingsCopy.rowTitle(name), current: current,
+                                     title: title, current: current,
                                      control: editableControl(spec), readOnlyReason: nil,
-                                     defaultValue: isStructure ? seatSendableDefaults[name] : nil)]
+                                     defaultValue: isStructure ? seatSendableDefaults[name] : nil,
+                                     information: information, seatContext: seatContext)]
         }
         guard case .table(let keys) = spec else {
             var control = control(spec)
@@ -1152,7 +1244,8 @@ enum ServerSettingsBuilder {
                 reason = ServerSettingsCopy.knobHome
                 control = nil
             }
-            return [ServerSettingRow(id: key, settingKey: key, subKey: nil, title: ServerSettingsCopy.rowTitle(name),
+            return [ServerSettingRow(id: key, settingKey: key, subKey: nil,
+                                     title: ServerSettingsCopy.rowTitle(path: key, name: name),
                                      current: current, control: control, readOnlyReason: reason,
                                      defaultValue: isStructure ? seatSendableDefaults[name] : nil)]
         }

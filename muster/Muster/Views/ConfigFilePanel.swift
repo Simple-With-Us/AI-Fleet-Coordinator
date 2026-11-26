@@ -7,9 +7,11 @@ import SwiftUI
 /// a hash still wants to read the file:  the hash says the copy is the expected one,
 /// and the text says whether the expected one is right.
 ///
-/// The panel never edits,  because a fleet surface is not the app's to change,  and it
+/// The panel never edits a file,  because a fleet surface is not the app's to change,  and it
 /// never reads a credential:  a credential rule shows the key names and the presence,
-/// which is the information the rule is about.
+/// which is the information the rule is about.  A failing rule's Review Fix opens the engine's
+/// plan in its own sheet;  the engine reads the plan again and applies only what the operator
+/// approved,  and nothing here writes.
 ///
 /// **This is an architectural exception,  not a rule.**  The grid proper reads the
 /// engine's envelope and nothing else,  and the app does not parse a seat's config.
@@ -90,6 +92,10 @@ struct ConfigFilePanel: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.secondary.opacity(0.12), in: Capsule())
+            if let rule = cell.rules.first(where: { $0.failing }) {
+                ApplyFixButton(seat: cell.seat, ruleID: rule.ruleId, kind: cell.kind.rawValue)
+                    .controlSize(.small)
+            }
             Spacer()
             // Each rule block says where its evidence is read, so the header says only
             // which run this is.

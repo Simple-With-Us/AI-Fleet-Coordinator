@@ -67,6 +67,18 @@ struct OperatorQueuesSection: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                if !document.unreadable.isEmpty {
+                    Text("The wake record of \(document.unreadable.joined(separator: ", ")) could not be read, so this list is a floor.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if document.truncated == true {
+                    Text("The server lists more seats here than it sends, so this list is a floor.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }

@@ -436,6 +436,39 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         }
     }
 
+    /// The two notes-queue lists are permission lists for two keys, not seat rosters.  Each row
+    /// says which key it is for, and its context names the seats the listener holds and the
+    /// other list, so an overlap or a name with no section is visible before a request is refused.
+    func test_notes_queue_seat_lists_say_what_each_key_is_for() throws {
+        var fixture = settingsBaseline
+        fixture["notes_queue.enabled"] = .bool(true)
+        fixture["listener_api.enabled"] = .bool(true)
+        fixture["notes_queue.worker_seats"] = .list([.text("CODEX"), .text("JET"), .text("JET-CHAT")])
+        fixture["notes_queue.server_seats"] = .list([.text("CODEX")])
+        fixture["seat.JET.enabled"] = .bool(true)
+        let rows = ServerSettingsBuilder.groups(settings: fixture, allowlist: try settingsSchema(), editable: true)
+            .flatMap(\.rows)
+        let worker = try XCTUnwrap(rows.first { $0.id == "notes_queue.worker_seats" })
+        XCTAssertEqual(worker.title, "Seats Through The Worker Key")
+        XCTAssertEqual(worker.information, ServerSettingsCopy.notesQueueWorkerSeats)
+        XCTAssertEqual(worker.seatContext?.configuredSeats ?? [], ["CODEX", "JET"])
+        XCTAssertEqual(worker.seatContext?.otherList ?? [], ["CODEX"])
+        let server = try XCTUnwrap(rows.first { $0.id == "notes_queue.server_seats" })
+        XCTAssertEqual(server.title, "Seats Through The Server Key")
+        XCTAssertEqual(server.information, ServerSettingsCopy.notesQueueServerSeats)
+        XCTAssertEqual(server.seatContext?.otherList ?? [], ["CODEX", "JET", "JET-CHAT"])
+        let names = ServerSeatNames.names(fromDraft: worker.editText)
+        XCTAssertEqual(names, ["CODEX", "JET", "JET-CHAT"])
+        let line = try XCTUnwrap(ServerSeatNames.statLine(for: names, context: worker.seatContext))
+        XCTAssertTrue(line.contains("No listener section on this server:  JET-CHAT."))
+        XCTAssertTrue(line.contains("Also through the other key:  CODEX."))
+        XCTAssertNil(ServerSeatNames.statLine(for: names, context: nil))
+        let operatorLine = try XCTUnwrap(ServerSeatNames.statLine(
+            for: ["OPERATOR"],
+            context: ServerSeatListContext(configuredSeats: ["OPERATOR"], otherList: [])))
+        XCTAssertTrue(operatorLine.contains("OPERATOR is a service, not a seat the queue can act for."))
+    }
+
     func test_typed_controls_cover_all_exposed_config_and_preserve_presence_case() throws {
         let schema = try settingsSchema()
         let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true,
