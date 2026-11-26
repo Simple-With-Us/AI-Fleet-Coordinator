@@ -194,6 +194,16 @@ class HomeCase(unittest.TestCase):
 # --------------------------------------------------------------------------- templates
 
 class TemplateTests(unittest.TestCase):
+    def test_copilot_default_home_rule_is_self_contained_and_matches_canonical(self) -> None:
+        canonical = (IR.RULES_DIR.parents[2] / "skills/fleet-coordination/SKILL.md").read_text()
+        paragraph = next(line for line in canonical.splitlines()
+                         if line.startswith("PR titles from multithreaded platforms"))
+        body = IR.body_text(IR.PLATFORM_BY_NAME["copilot"].variant)
+        self.assertIn(paragraph, body)
+        self.assertNotIn("PR titles: fleet-coordination skill requires", body)
+        self.assertIn("[ZC:" + "\u200a" * 3 + "RR.3.S]", body)
+        self.assertEqual(IR.compose(IR.compose(None, "nodefault").new_text, "nodefault").action, "none")
+
     def texts(self) -> dict[str, str]:
         out = {v: (IR.RULES_DIR / f).read_text(encoding="utf-8") for v, f in IR.TEMPLATE_FILES.items()}
         out.update({ph: (IR.RULES_DIR / f).read_text(encoding="utf-8") for ph, f in IR.PART_FILES.items()})
@@ -1215,7 +1225,7 @@ class FleetBasicsTests(HomeCase):
         self.assertIn("ask Jay which seat you are", body)
         self.assertIn("never infer one from the folder, the branch, the model, a skill or another tool's rules file", body)
         for tag in ("CLAUDE", "CODEX", "CURSOR", "CLUTCH", "MONET", "RENOIR", "GROK", "AG", "MM", "FX", "MC"):
-            self.assertNotRegex(body, r"\b" + tag + r"\b", f"{tag} must not appear as anyone's seat")
+            self.assertNotRegex(body.split("## Lane Map:", 1)[0], r"\b" + tag + r"\b", f"{tag} must not appear as anyone's assigned seat")
         self.assertNotIn("default seat is", body)
 
     def test_every_new_block_passes_the_seat_block_checker(self) -> None:

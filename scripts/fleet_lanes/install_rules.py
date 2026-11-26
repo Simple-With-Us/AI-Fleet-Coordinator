@@ -267,6 +267,12 @@ def body_text(variant: str) -> str:
         if placeholder in rest:
             part = (RULES_DIR / filename).read_text(encoding="utf-8").replace("\r\n", "\n")
             rest = rest.replace(placeholder, part.strip("\n"))
+    if variant == "nodefault":
+        # Copilot CLI has no installed fleet-coordination skill. Keep its
+        # supported personal instruction file self-contained on every refresh.
+        pointer = "PR titles: fleet-coordination skill requires full assigned identity for multithreaded sessions."
+        title_rule = (RULES_DIR / "pr-title-identity.md").read_text(encoding="utf-8").strip("\n")
+        rest = rest.replace(pointer, title_rule)
     return rest.strip("\n")
 
 
