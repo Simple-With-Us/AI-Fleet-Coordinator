@@ -1,5 +1,9 @@
 # Status
 
+## 2026-11-25 ZC — Fleet-Wide PR Title Header Rule ([OPS-1122](https://linear.app/simple-with-us/issue/OPS-1122))
+
+Codifies the owner ruling (November 26, 2026) that every PR title begins with the compact lettered fleet header for the session that opened the PR (`[<SEAT>:` + three U+200A + `<PAIR>.<GEN>.<HOST>]`, or `[<SEAT>]` unlettered), then one ASCII space, then the human title.  The canonical handbook (`FLEET-PROTOCOL.md`), this repository's `AGENTS.md`, and `TEMPLATE-AGENTS.md` state the rule; mirrors land in the repo-level `AGENTS.md` of the fleet repos under the code root.  Rollout: `docs/rollouts/2026-11-25-ops-1122-pr-title-headers.md`.
+
 ## 2026-11-21 CODEX — Operator Sheets Drain Uses A Stable Flock Lease (AFC-859)
 
 The drain and manual CLI now hold a kernel `flock` on one persistent owner-only lock inode, preserving the live-PID fence for old runners and refusing unsafe lock metadata.  The drain and thread-export CLI suites pass 82/82, including cross-process exclusion, ambiguous empty inodes, crash release, inode stability, malformed-content preservation and helper failure bounds.  Rollout remains pending: old PID-only runners must be quiescent, and both Sheets source units must be installed together through the approved code-only path.  This change does not modify the live runtime or arming.
