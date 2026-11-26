@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-26 03:40 CST · timezone America/Chicago_
+_Generated 2026-11-26 16:26 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,7 +11,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-26
 
-*28 PRs merged · 0 issues opened · 0 issues closed*
+*37 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
@@ -20,14 +20,22 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** `Instinct` [#2598](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2598): Linear viewer check: remember the app id so renames never break a seat _(by jaywedgeworth22)_
 - **AFC** `Z Code` [#2599](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2599): Muster: Make The Operator Panel Say What It Means _(by jaywedgeworth22)_
 - **AFC** `Z Code` [#2600](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2600): Put Every Platform's Letter On Its Own Title At Issue _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2601](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2601): Admit The Wake Router Installer Through A Match-Pinned Review _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2602](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2602): Keep empty issue constraints off legacy Mac wake wire _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2603](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2603): The live-chat report carries the lettered chats only _(by jaywedgeworth22)_
+- **AFC** [#2604](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2604): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2605](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2605): Resolve review threads by thread id or comment id, with an error that says what is expected _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2606](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2606): Inline canonical title identity in Copilot personal rules _(by jaywedgeworth22)_
 - **BF** `MiniMax` `Claude` [#2229](https://github.com/Simple-With-Us/BotFleet/pull/2229): Give The — Turn An Advisor Model _(by jaywedgeworth22)_
 - **BF** `MiniMax` [#2230](https://github.com/Simple-With-Us/BotFleet/pull/2230): Give the native and iOS release planners their store bootstrap binding (OPS-1108) _(by jaywedgeworth22)_
 - **BF** `Claude` [#2232](https://github.com/Simple-With-Us/BotFleet/pull/2232): Give The Replay Probe A Coverage Mode (Refs BF-2647) _(by jaywedgeworth22)_
+- **BF** `Claude` [#2233](https://github.com/Simple-With-Us/BotFleet/pull/2233): Run A Desktop Chat Message As A Native Engine Turn (Refs BF-2705) _(by jaywedgeworth22)_
+- **C** `MiniMax` [#328](https://github.com/Simple-With-Us/Clutch/pull/328): C-144 Push Live Activity state from the host over APNs _(by jaywedgeworth22)_
 - **C** `Z Code` [#333](https://github.com/Simple-With-Us/Clutch/pull/333): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
 - **C** `MiniMax` [#337](https://github.com/Simple-With-Us/Clutch/pull/337): Key The Phone's Activity And Thread Links By Engine _(by jaywedgeworth22)_
 - **C** `Muse Code` [#339](https://github.com/Simple-With-Us/Clutch/pull/339): Give Every Thread A Context Panel And A Compact Button (C-88) _(by jaywedgeworth22)_
 - **C** `Muse Code` [#340](https://github.com/Simple-With-Us/Clutch/pull/340): Keep The Draft And Attachments Out Of The Compact Turn _(by jaywedgeworth22)_
+- **C** `ChatGPT` `Muse Code` [#341](https://github.com/Simple-With-Us/Clutch/pull/341): C-151: Show Actual Times In — Previews _(by jaywedgeworth22)_
 - **CT** `Z Code` [#3206](https://github.com/Simple-With-Us/Congress.Trade/pull/3206): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
 - **CL** `Z Code` [#351](https://github.com/Simple-With-Us/ContactLogo/pull/351): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
 - **DD** `Z Code` [#612](https://github.com/Simple-With-Us/DealDex/pull/612): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
@@ -39,6 +47,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **SWU** `Z Code` [#118](https://github.com/Simple-With-Us/Simple-With-Us/pull/118): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
 - **ST** `Z Code` [#5481](https://github.com/Simple-With-Us/Socratic-Trade/pull/5481): ST-4670: iOS Proposals safety and triage _(by jaywedgeworth22)_
 - **ST** `Z Code` [#5492](https://github.com/Simple-With-Us/Socratic-Trade/pull/5492): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5494](https://github.com/Simple-With-Us/Socratic-Trade/pull/5494): ST-4689: OD web batch 2 — dashboard fields slice, consent payload, single-tree rows, decision link _(by jaywedgeworth22)_
 - **UM** `Muse Assist` [#2086](https://github.com/Simple-With-Us/Usage-Monitor/pull/2086): [ROB] Do Not Merge Yet: UM-1676 ios-ship Producer Service-Token Transition _(by jaywedgeworth22)_
 - **UM** `Z Code` [#2093](https://github.com/Simple-With-Us/Usage-Monitor/pull/2093): PR titles begin with the compact lettered header _(by jaywedgeworth22)_
 - **CC** `Z Code` [#558](https://github.com/Simple-With-Us/codecaps/pull/558): PR titles begin with the compact lettered header _(by jaywedgeworth22)_

@@ -11,11 +11,11 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-26@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261126
 DTEND;VALUE=DATE:20261127
-SUMMARY:Fleet: 28 merged · 0 opened · 0 closed
-DESCRIPTION:28 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 37 merged · 0 opened · 0 closed
+DESCRIPTION:37 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#2596] (zcode) wide: PR titles begin with the 
  compact lettered header\n- [AI-Fleet-Coordinator#2597] (instinct\, zcode) 
  ZC Linear app: accept the ZCode and ZCode spellings\n- [AI-Fleet-Coordinat
@@ -23,33 +23,45 @@ DESCRIPTION:28 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  ver break a seat\n- [AI-Fleet-Coordinator#2599] (zcode) Muster: Make The O
  perator Panel Say What It Means\n- [AI-Fleet-Coordinator#2600] (zcode) Put
   Every Platform's Letter On Its Own Title At Issue\n- [AI-Fleet-Coordinato
- r#2602] (instinct) Keep empty issue constraints off legacy Mac wake wire\n
- - [BotFleet#2229] (minimax\, claude) Give The — Turn An Advisor Model\n-
-  [BotFleet#2230] (minimax) Give the native and iOS release planners their 
- store bootstrap binding (OPS-1108)\n- [BotFleet#2232] (claude) Give The Re
- play Probe A Coverage Mode (Refs BF-2647)\n- [Clutch#333] (zcode) PR title
- s begin with the compact lettered header\n- [Clutch#337] (minimax) Key The
-  Phone's Activity And Thread Links By Engine\n- [Clutch#339] (muse) Give E
- very Thread A Context Panel And A Compact Button (C-88)\n- [Clutch#340] (m
- use) Keep The Draft And Attachments Out Of The Compact Turn\n- [Congress.T
- rade#3206] (zcode) PR titles begin with the compact lettered header\n- [Co
- ntactLogo#351] (zcode) PR titles begin with the compact lettered header\n-
-  [DealDex#612] (zcode) PR titles begin with the compact lettered header\n-
-  [FleetLink#224] (zcode) PR titles begin with the compact lettered header\
- n- [HogHunter#400] (zcode) PR titles begin with the compact lettered heade
- r\n- [HogHunter#401] (zcode) Server maintenance parity: gate\, reclaimable
-  bytes and run history in the snapshot\n- [HogHunter#402] (zcode) iOS stor
- age parity: 40 app rows with running state and All/Running filter\n- [Pers
- onal-Site#305] (zcode) PR titles begin with the compact lettered header\n-
-  [Simple-With-Us#118] (zcode) PR titles begin with the compact lettered he
- ader\n- [Socratic-Trade#5481] (zcode) ST-4670: iOS Proposals safety and tr
- iage\n- [Socratic-Trade#5492] (zcode) PR titles begin with the compact let
- tered header\n- [Usage-Monitor#2086] (muse-assist) [ROB] Do Not Merge Yet:
-  UM-1676 ios-ship Producer Service-Token Transition\n- [Usage-Monitor#2093
- ] (zcode) PR titles begin with the compact lettered header\n- [codecaps#55
- 8] (zcode) PR titles begin with the compact lettered header\n- [congress-t
- rading-shared#427] (zcode) PR titles begin with the compact lettered heade
- r
+ r#2601] (minimax) Admit The Wake Router Installer Through A Match-Pinned R
+ eview\n- [AI-Fleet-Coordinator#2602] (instinct) Keep empty issue constrain
+ ts off legacy Mac wake wire\n- [AI-Fleet-Coordinator#2603] (minimax) The l
+ ive-chat report carries the lettered chats only\n- [AI-Fleet-Coordinator#2
+ 604] chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest\n
+ - [AI-Fleet-Coordinator#2605] (instinct) Resolve review threads by thread 
+ id or comment id\, with an error that says what is expected\n- [AI-Fleet-C
+ oordinator#2606] (instinct) Inline canonical title identity in Copilot per
+ sonal rules\n- [BotFleet#2229] (minimax\, claude) Give The — Turn An Adv
+ isor Model\n- [BotFleet#2230] (minimax) Give the native and iOS release pl
+ anners their store bootstrap binding (OPS-1108)\n- [BotFleet#2232] (claude
+ ) Give The Replay Probe A Coverage Mode (Refs BF-2647)\n- [BotFleet#2233] 
+ (claude) Run A Desktop Chat Message As A Native Engine Turn (Refs BF-2705)
+ \n- [Clutch#328] (minimax) C-144 Push Live Activity state from the host ov
+ er APNs\n- [Clutch#333] (zcode) PR titles begin with the compact lettered 
+ header\n- [Clutch#337] (minimax) Key The Phone's Activity And Thread Links
+  By Engine\n- [Clutch#339] (muse) Give Every Thread A Context Panel And A 
+ Compact Button (C-88)\n- [Clutch#340] (muse) Keep The Draft And Attachment
+ s Out Of The Compact Turn\n- [Clutch#341] (chatgpt\, muse) C-151: Show Act
+ ual Times In — Previews\n- [Congress.Trade#3206] (zcode) PR titles begin
+  with the compact lettered header\n- [ContactLogo#351] (zcode) PR titles b
+ egin with the compact lettered header\n- [DealDex#612] (zcode) PR titles b
+ egin with the compact lettered header\n- [FleetLink#224] (zcode) PR titles
+  begin with the compact lettered header\n- [HogHunter#400] (zcode) PR titl
+ es begin with the compact lettered header\n- [HogHunter#401] (zcode) Serve
+ r maintenance parity: gate\, reclaimable bytes and run history in the snap
+ shot\n- [HogHunter#402] (zcode) iOS storage parity: 40 app rows with runni
+ ng state and All/Running filter\n- [Personal-Site#305] (zcode) PR titles b
+ egin with the compact lettered header\n- [Simple-With-Us#118] (zcode) PR t
+ itles begin with the compact lettered header\n- [Socratic-Trade#5481] (zco
+ de) ST-4670: iOS Proposals safety and triage\n- [Socratic-Trade#5492] (zco
+ de) PR titles begin with the compact lettered header\n- [Socratic-Trade#54
+ 94] (zcode) ST-4689: OD web batch 2 — dashboard fields slice\, consent p
+ ayload\, single-tree rows\, decision link\n- [Usage-Monitor#2086] (muse-as
+ sist) [ROB] Do Not Merge Yet: UM-1676 ios-ship Producer Service-Token Tran
+ sition\n- [Usage-Monitor#2093] (zcode) PR titles begin with the compact le
+ ttered header\n- [codecaps#558] (zcode) PR titles begin with the compact l
+ ettered header\n- [congress-trading-shared#427] (zcode) PR titles begin wi
+ th the compact lettered header
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-26
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -57,7 +69,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-25@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261125
 DTEND;VALUE=DATE:20261126
 SUMMARY:Fleet: 135 merged · 0 opened · 0 closed
@@ -125,7 +137,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-24@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261124
 DTEND;VALUE=DATE:20261125
 SUMMARY:Fleet: 82 merged · 0 opened · 0 closed
@@ -191,7 +203,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-23@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261123
 DTEND;VALUE=DATE:20261124
 SUMMARY:Fleet: 89 merged · 0 opened · 0 closed
@@ -265,7 +277,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-22@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261122
 DTEND;VALUE=DATE:20261123
 SUMMARY:Fleet: 72 merged · 0 opened · 0 closed
@@ -334,7 +346,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-21@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261121
 DTEND;VALUE=DATE:20261122
 SUMMARY:Fleet: 114 merged · 0 opened · 0 closed
@@ -397,7 +409,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-20@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261121
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -461,7 +473,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
 SUMMARY:Fleet: 58 merged · 0 opened · 0 closed
@@ -527,7 +539,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -598,7 +610,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -640,7 +652,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -697,7 +709,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -758,7 +770,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -819,7 +831,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -877,7 +889,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -941,7 +953,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -1009,7 +1021,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -1073,7 +1085,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 75 merged · 0 opened · 0 closed
@@ -1122,7 +1134,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -1177,7 +1189,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 55 merged · 0 opened · 0 closed
@@ -1230,7 +1242,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 48 merged · 0 opened · 0 closed
@@ -1285,7 +1297,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261126T094024Z
+DTSTAMP:20261126T222659Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
