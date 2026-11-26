@@ -267,6 +267,17 @@ def body_text(variant: str) -> str:
         if placeholder in rest:
             part = (RULES_DIR / filename).read_text(encoding="utf-8").replace("\r\n", "\n")
             rest = rest.replace(placeholder, part.strip("\n"))
+    if variant == "nodefault":
+        # Copilot CLI has no installed fleet-coordination skill. Keep its
+        # supported personal instruction file self-contained on every refresh.
+        pointer = "PR titles: fleet-coordination skill requires full assigned identity for multithreaded sessions."
+        title_rule = (RULES_DIR / "pr-title-identity.md").read_text(encoding="utf-8").strip("\n")
+        legacy_tail = " Read that skill before opening a PR; its title-only rule overrides older combined title/body examples here."
+        lines = rest.splitlines()
+        pointers = [line for line in lines if line.strip().startswith(pointer)]
+        if len(pointers) != 1 or pointers[0].strip() not in (pointer, pointer + legacy_tail):
+            raise ValueError("nodefault requires exactly one known PR-title pointer line")
+        rest = "\n".join(title_rule if line == pointers[0] else line for line in lines)
     return rest.strip("\n")
 
 
