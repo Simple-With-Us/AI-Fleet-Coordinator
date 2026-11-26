@@ -515,8 +515,18 @@ def count_status(porcelain: str) -> tuple[int, int]:
 _REGENERABLE_NAMES = frozenset({
     "node_modules", ".DS_Store", ".build", "build", "dist", ".next", "__pycache__", "DerivedData", ".venv",
     "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    # The fleet's own skill pack archives:  docs/fleet-skills/by-seat/<seat>/<skill>.zip.  The skill
+    # installer writes them and rewrites them whenever the pack changes, so they are build output and
+    # not state that exists nowhere but this directory.  A lane the installer has run holds hundreds
+    # of them, and counting them as local state kept a lane whose work was already merged.
+    "fleet-skills",
 })
-_REGENERABLE_GLOBS = ("*.tsbuildinfo", "*.pyc", "dist-*")
+_REGENERABLE_GLOBS = (
+    "*.tsbuildinfo", "*.pyc", "dist-*",
+    # A generated Xcode project:  XcodeGen writes muster/Muster.xcodeproj from the tracked
+    # muster/project.yml, so the project directory is build output too.
+    "*.xcodeproj",
+)
 KEEP_MARKER = ".janitor-keep"  # has its own reason in assess, so it is not "ignored local state" too
 # What a checkout without a marker reports in `keep`.  `problem` says why a present marker is not valid.
 KEEP_ABSENT = {"present": False, "valid": False, "reason": None, "by": None, "set_on": None, "expires": None,

@@ -1296,6 +1296,26 @@ class IgnoredStateTests(GitCase):
         self.assertEqual(local, ["my notes.env", "café.db", 'say "hi".db'])
         self.assertEqual(regenerable, 1)
 
+    def test_split_ignored_counts_the_skill_packs_and_a_generated_project_as_build_output(self) -> None:
+        """The two generated things a lane holds are build output, not local state.
+
+        The skill installer writes docs/fleet-skills/by-seat/<seat>/<skill>.zip and rewrites it
+        whenever the pack changes, and XcodeGen writes muster/Muster.xcodeproj from the tracked
+        muster/project.yml.  Both are ignored, both are put back by a tool, and both used to keep a
+        lane whose work was merged.  An ignored zip that is real local state is still local state.
+        """
+        text = "\n".join([
+            "!! docs/fleet-skills/by-seat/minimax/simple-tools-guide.zip",
+            "!! docs/fleet-skills/by-seat/minimax/session-start.zip",
+            "!! muster/Muster.xcodeproj/",
+            "!! data/corpus.zip",
+            "!! data/app.db",
+            "",
+        ])
+        local, regenerable = doctor.split_ignored(text)
+        self.assertEqual(local, ["data/corpus.zip", "data/app.db"])
+        self.assertEqual(regenerable, 3)
+
     def test_count_status_still_leaves_ignored_lines_out_of_the_dirty_counts(self) -> None:
         self.assertEqual(doctor.count_status("!! a\n M b\n?? c\n!! d/\n"), (1, 1))
 
