@@ -111,6 +111,60 @@ class FxTests(Base):
         self.assertEqual(self.lookup(sid)["label"], record["label"])
         self.assertEqual(again["registered"][0]["outcome"], "resumed")
 
+    def store_title(self, sid: str) -> str:
+        with open(os.path.join(self.sessions, sid, "session.json")) as fh:
+            return json.load(fh)["title"]
+
+    def test_sync_puts_the_letter_on_the_store_title(self) -> None:
+        sid = conv(30)
+        self.add_session(sid, title="Fx work")
+        answer = self.sync("--apply")
+        label = self.lookup(sid)["label"]
+        self.assertEqual(self.store_title(sid), "%s: Fx work" % label)
+        self.assertTrue(answer["registered"][0]["renamed"])
+        # The registry holds the words under the letter, never the letter itself.
+        self.assertEqual(self.lookup(sid)["title"], "Fx work")
+
+    def test_a_second_sync_does_not_prefix_the_title_twice(self) -> None:
+        sid = conv(31)
+        self.add_session(sid, title="Fx work")
+        self.sync("--apply")
+        label = self.lookup(sid)["label"]
+        again = self.sync("--apply")
+        self.assertEqual(self.store_title(sid), "%s: Fx work" % label)
+        self.assertEqual(self.lookup(sid)["title"], "Fx work")
+        self.assertEqual(again["registered"][0]["outcome"], "resumed")
+
+    def test_a_dry_run_writes_no_title(self) -> None:
+        sid = conv(32)
+        self.add_session(sid, title="Fx work")
+        self.sync()
+        self.assertEqual(self.store_title(sid), "Fx work")
+
+    def test_a_failed_ledger_write_leaves_no_staging_file(self) -> None:
+        folder = os.path.dirname(FX._ledger_path(self.env()))
+        os.makedirs(folder, exist_ok=True)
+        with mock.patch.object(FX.os, "replace", side_effect=OSError("no replace")):
+            with self.assertRaises(OSError):
+                FX._write_ledger(self.env(), ["a"], {"a": "AB"})
+        self.assertEqual([n for n in os.listdir(folder) if n.endswith(".tmp")], [])
+
+    def test_a_non_oserror_ledger_failure_leaves_no_staging_file(self) -> None:
+        folder = os.path.dirname(FX._ledger_path(self.env()))
+        os.makedirs(folder, exist_ok=True)
+        with mock.patch.object(FX.json, "dump", side_effect=TypeError("bad payload")):
+            with self.assertRaises(TypeError):
+                FX._write_ledger(self.env(), ["a"], {"a": "AB"})
+        self.assertEqual([n for n in os.listdir(folder) if n.endswith(".tmp")], [])
+
+    def test_a_placeholder_store_title_is_never_registered_as_a_title(self) -> None:
+        sid = conv(33)
+        self.add_session(sid, title="New Chat")
+        self.sync("--apply")
+        label = self.lookup(sid)["label"]
+        self.assertEqual(self.store_title(sid), "%s: New Chat" % label)
+        self.assertEqual(self.lookup(sid)["title"], "")
+
     def test_a_stale_session_is_closed_by_the_next_sync(self) -> None:
         sid = conv(23)
         self.add_session(sid, title="Old work", updated=time.time() - 1000)

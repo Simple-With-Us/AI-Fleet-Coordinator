@@ -35,6 +35,12 @@ seat's own shell setup, or on a timer — and costs one registry call per live s
 the host's: nothing in this adapter installs a timer, and a sync that never runs letters nothing, which the
 report says plainly.
 
+The title.  The moment the registry answers with a letter, the sync writes `XX: words` into that session's own
+`session.json` title — the title fx lists and resumes by — atomically, with every other field and the file's
+mode kept.  The letter it wrote is kept in the sync's ledger, so a later run strips it before registering the
+words again and never stacks a second prefix.  A record that cannot be read is reported under `rename_failed`
+and the next sync tries again; the registry row itself is still the letter's home.
+
 Who takes a letter.  Every session in the store inside the idle window.  fx names no parent for a forked
 session in the fields the catalog reads, so every session is registered as a main chat; a `fx ask` one-shot
 writes a session too and cannot be told from an interactive one in the store, so it takes a letter while it
@@ -49,7 +55,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from datetime import datetime
@@ -166,6 +174,72 @@ def fx_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     return "chat" if sid and _has_session(env, sid) else "headless"
 
 
+def session_path(env: Mapping[str, str], sid: object) -> str:
+    """This session's own `session.json`, or "" when the id cannot name a folder."""
+    sid = _text(sid)
+    if not sid or os.path.basename(sid) != sid:
+        return ""
+    try:
+        SI.check(sid, "the session id")
+    except ValueError:
+        return ""
+    return os.path.join(sessions_dir(env), sid, "session.json")
+
+
+def _held_labels(env: Mapping[str, str], sid: str) -> tuple[str, ...]:
+    """The letters this session's own note holds or held, so a store title that already carries one is never
+    registered or prefixed with a second."""
+    note = _read_json(PL.note_path(env, SEAT, sid)) or {}
+    labels = note.get("labels")
+    if not isinstance(labels, list):
+        return ()
+    return tuple(label for label in labels if isinstance(label, str) and label)
+
+
+def _write_session_title(env: Mapping[str, str], sid: str, title: str) -> bool:
+    """Put `title` on the store's own record, the title fx lists its sessions by.
+
+    The write is atomic and keeps every other field and the file's mode.  A record that cannot be read as an
+    object is no write, so the next sync asks again rather than inventing a record."""
+    path = session_path(env, sid)
+    if not path or not title:
+        return False
+    doc = _read_json(path)
+    if doc is None:
+        return False
+    if _text(doc.get("title")) == title:
+        return True
+    doc["title"] = title
+    temporary = ""
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        # A unique staging file per write:  two sync runs for one session never share a path.
+        handle, temporary = tempfile.mkstemp(
+            prefix=os.path.basename(path) + ".platform-letter.",
+            suffix=".tmp",
+            dir=os.path.dirname(path) or ".",
+        )
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+        return True
+    except OSError:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        return False
+
+
+def fx_rename(request: PL.TitleRequest) -> bool:
+    """The spec's title writer: put `XX: Words` on the session's own store record."""
+    return _write_session_title(request.env, request.session_id, request.title)
+
+
 SPEC = PL.PlatformSpec(
     platform=PLATFORM,
     seat=SEAT,
@@ -175,10 +249,12 @@ SPEC = PL.PlatformSpec(
     kind=fx_kind,
     current_title=PL.from_payload("title"),
     stored_title=PL.from_payload("title"),
+    title_writer=fx_rename,
     locations=("mac",),
     unlettered_feed=(
-        "no hooks:  fx has no hook to replay;  its sync run registers the store's live sessions itself, so that run"
-        " is the way back for a chat with no letter"
+        "no hooks:  fx has no hook to replay;  its sync run registers the store's live sessions itself, and puts"
+        " the letter on each store title as the registry answers, so that run is the way back for a chat with no"
+        " letter"
     ),
 )
 
@@ -236,19 +312,69 @@ def _ledger_path(env: Mapping[str, str]) -> str:
     return os.path.join(PL.L.state_root(env), LEDGER_NAME)
 
 
-def _read_ledger(env: Mapping[str, str]) -> list[str]:
+def _ledger_doc(env: Mapping[str, str]) -> dict[str, Any]:
+    """The ledger's two parts:  the ids this sync registered, and the letter each store title was written
+    with, so a later sync never registers or prefixes the same letter twice."""
     doc = _read_json(_ledger_path(env)) or {}
     ids = doc.get("registered")
-    return [i for i in ids if isinstance(i, str) and i] if isinstance(ids, list) else []
+    labels = doc.get("labels")
+    return {
+        "registered": [i for i in ids if isinstance(i, str) and i] if isinstance(ids, list) else [],
+        "labels": {
+            key: value
+            for key, value in labels.items()
+            if isinstance(key, str) and key and isinstance(value, str) and value
+        }
+        if isinstance(labels, dict)
+        else {},
+    }
 
 
-def _write_ledger(env: Mapping[str, str], ids: list[str]) -> None:
+def _read_ledger(env: Mapping[str, str]) -> list[str]:
+    return _ledger_doc(env)["registered"]
+
+
+def _read_labels(env: Mapping[str, str]) -> dict[str, str]:
+    return _ledger_doc(env)["labels"]
+
+
+def _write_ledger(
+    env: Mapping[str, str], ids: list[str], labels: Mapping[str, str] | None = None
+) -> None:
     path = _ledger_path(env)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump({"registered": sorted(set(ids))}, fh)
-    os.replace(tmp, path)
+    kept = set(ids)
+    payload = {
+        "registered": sorted(kept),
+        "labels": {key: value for key, value in sorted((labels or {}).items()) if key in kept},
+    }
+    temporary = ""
+    handle = -1
+    try:
+        # A unique staging file per write:  two sync runs never truncate each other's ledger.
+        handle, temporary = tempfile.mkstemp(
+            prefix=os.path.basename(path) + ".",
+            suffix=".tmp",
+            dir=os.path.dirname(path) or ".",
+        )
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            handle = -1  # the file object owns the descriptor now
+            json.dump(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        if handle != -1:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        raise
 
 
 def _owned(answer: Mapping[str, Any]) -> bool:
@@ -264,8 +390,9 @@ def sync_main(
     """Register the store's live sessions (and, with --apply, close the ones that are gone).
 
     One JSON answer: the sessions found, the ones inside the idle window with the letter each holds (or
-    would hold, without --apply), and the registrations closed.  An answer that carries an `error` for a
-    session is counted under `failed`, never hidden."""
+    would hold, without --apply), the registrations closed, and any store title a letter could not be put on
+    (`rename_failed`).  An answer that carries an `error` for a session is counted under `failed`, never
+    hidden."""
     import argparse
 
     parser = argparse.ArgumentParser(prog="platform-letter-fx sync")
@@ -279,23 +406,40 @@ def sync_main(
     live = [s for s in timed if moment - s["updated"] <= LIVE_SECONDS]
     registered: list[dict[str, Any]] = []
     failed: list[str] = []
+    rename_failed: list[str] = []
     closed: list[str] = []
+    labels = _read_labels(env)
     for session in live:
         sid = session["session_id"]
         if not args.apply:
             registered.append({"session_id": sid, "would_register": True})
             continue
-        code, answer = _registry(
-            env, "register", sid, location=args.location, title=session["title"]
-        )
+        held = tuple(label for label in (labels.get(sid, ""),) if label) + _held_labels(env, sid)
+        words = PL.bare(session["title"], held)
+        if words == PL.PLACEHOLDER:
+            words = ""  # the placeholder is not a title:  it is what a chat with no words carries
+        code, answer = _registry(env, "register", sid, location=args.location, title=words)
         if code != 0 or "error" in answer:
             failed.append(sid)
             continue
+        label = _text(answer.get("label"))
+        previous = _text(answer.get("previous"))
+        reported = _text(answer.get("title")) or words
+        if reported == PL.PLACEHOLDER:
+            reported = ""
+        title = PL.compose(label, PL.bare(reported, (label, previous, *held))) if label else ""
+        renamed = _write_session_title(env, sid, title) if title else False
+        if title and not renamed:
+            rename_failed.append(sid)
+        if label:
+            labels[sid] = label
         registered.append(
             {
                 "session_id": sid,
-                "label": answer.get("label", ""),
+                "label": label,
                 "outcome": answer.get("outcome", ""),
+                "title": title,
+                "renamed": renamed,
             }
         )
     if args.apply:
@@ -313,6 +457,7 @@ def sync_main(
         for sid in dict.fromkeys(candidates):
             code, answer = _registry(env, "show", sid, location=args.location)
             if answer.get("error") == PL.NO_REGISTRATION:
+                labels.pop(sid, None)
                 continue
             if code != 0 or "error" in answer:
                 failed.append(sid)
@@ -323,12 +468,13 @@ def sync_main(
             close_code, close_answer = _registry(env, "close", sid, location=args.location)
             if close_code == 0 and close_answer.get("closed"):
                 closed.append(sid)
+                labels.pop(sid, None)
             elif close_code == 0 and close_answer.get("retired"):
                 continue  # already closed:  nothing left to do
             else:
                 failed.append(sid)
                 kept.append(sid)
-        _write_ledger(env, [r["session_id"] for r in registered] + kept)
+        _write_ledger(env, [r["session_id"] for r in registered] + kept, labels)
     answer_doc: dict[str, Any] = {
         "platform": PLATFORM,
         "found": len(sessions),
@@ -336,6 +482,7 @@ def sync_main(
         "registered": registered,
         "closed": closed,
         "failed": failed,
+        "rename_failed": rename_failed,
         "applied": bool(args.apply),
     }
     stdout.write(json.dumps(answer_doc, sort_keys=True) + "\n")

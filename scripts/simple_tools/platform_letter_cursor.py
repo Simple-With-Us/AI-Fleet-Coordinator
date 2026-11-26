@@ -8,10 +8,15 @@ What Cursor gives a hook (read from the cursor-agent 2026.10.22 build, Nov 7, 20
 - `sessionStart` sends `conversation_id`, `model`, `is_background_agent` and `composer_mode`;  `beforeSubmitPrompt`
   sends `conversation_id`, `generation_id` and `prompt`;  `sessionEnd` sends `conversation_id` and `reason`.  Each also
   carries `hook_event_name`.  Both of the first two take `additional_context` in the answer, which reaches the model.
-- No hook payload carries a title and no answer sets one, so TITLES ARE NOT SET here:  the chat is told its letter.
+- No hook payload carries a title and no answer sets one.  Cursor's local chats do keep their title in a store this
+  host can read and write, `~/.cursor/acp-sessions/<conversation_id>/meta.json` (the store the chat catalog shows as
+  `cursor-local`), so the title is put there the moment the Operator answers with a letter:  `current_title` reads
+  its `title`, and `title_writer` writes `XX: words` into the same file, atomically and with every other field kept.
+  A chat whose directory does not exist yet is left pending and titled at its next prompt.
 - A Cloud agent (`is_background_agent` true) runs its hooks on Cursor's own workers, which drop `additional_context`
-  from sessionStart and cannot reach the Operator's registry.  Cloud agents take their letters from
-  `cursor_cloud_letters` instead, which reads them from the Cursor API, so the hook leaves them alone.
+  from sessionStart and cannot reach the Operator's registry.  Cloud agents take their letters from
+  `cursor_cloud_letters` instead, which reads them from the Cursor API and steers the agent to rename itself;  the hook
+  leaves them alone.
 
 Cursor's chats live in the `cursor` letter namespace, which the registry folds `cursor-local` and `cursor-cloud` into.
 Nothing is closed on an end.  The CLI sends `sessionEnd` when its process exits, and a chat resumed later with
@@ -26,6 +31,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import sys
 from collections.abc import Mapping
 from typing import Any, TextIO
@@ -42,6 +48,8 @@ DISPLAY = "Cursor"
 HOOKS_FILE = os.path.join(".cursor", "hooks.json")
 HOOK_TIMEOUTS = {"sessionStart": 20, "beforeSubmitPrompt": 15}
 CONTEXT_EVENTS = ("sessionStart", "beforeSubmitPrompt")
+#: Cursor's local chat store, one folder per conversation with its `meta.json` (title, cwd, timestamps).
+ACP_SESSIONS = os.path.join(".cursor", "acp-sessions")
 
 
 def _text(value: object) -> str:
@@ -80,9 +88,77 @@ def cursor_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     return "chat"
 
 
-def no_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
-    """Cursor puts no title in a hook payload."""
-    return ""
+def session_file(env: Mapping[str, str], cid: object) -> str:
+    """This conversation's `meta.json` in Cursor's local store, or "" when the id cannot name a folder."""
+    cid = _text(cid)
+    if not cid or os.path.basename(cid) != cid:
+        return ""
+    try:
+        SI.check(cid, "the conversation id")
+    except ValueError:
+        return ""
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    return os.path.join(home, ACP_SESSIONS, cid, "meta.json")
+
+
+def _meta(env: Mapping[str, str], cid: object) -> dict[str, Any] | None:
+    """The store's record for one conversation, or None when it cannot be read as an object."""
+    path = session_file(env, cid)
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def cursor_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
+    """The title Cursor's own local store shows for this conversation, or "" when it has no record yet.
+
+    A Cloud agent has no local record (and its title is the cloud sweep's business), and the payload itself never
+    carries a title, so this store is the only place a local chat's title is read."""
+    if env is None:
+        return ""
+    doc = _meta(env, PL.from_payload("conversation_id")(payload, env))
+    return _text(doc.get("title")) if doc else ""
+
+
+def cursor_rename(request: PL.TitleRequest) -> bool:
+    """Put `XX: Words` in the local store's `meta.json`, which is the title Cursor lists and resumes by.
+
+    The write is atomic and keeps every other field and the file's mode.  A record that is absent (the app has not
+    made it yet), unreadable or not an object is no write:  the library keeps the title pending and asks again at
+    the next prompt, so a hook never fails a chat and never invents a record."""
+    path = session_file(request.env, request.session_id)
+    if not path:
+        return False
+    temporary = ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict):
+            return False
+        if _text(doc.get("title")) == request.title:
+            return True
+        doc["title"] = request.title
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        temporary = path + ".%d.platform-letter.tmp" % os.getpid()
+        with open(temporary, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+        return True
+    except (OSError, ValueError):
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        return False
 
 
 SPEC = PL.PlatformSpec(
@@ -92,14 +168,16 @@ SPEC = PL.PlatformSpec(
     display=DISPLAY,
     session_id=PL.from_payload("conversation_id"),
     kind=cursor_kind,
-    current_title=no_title,
+    current_title=cursor_title,
+    title_writer=cursor_rename,
     events={"sessionStart": "start", "beforeSubmitPrompt": "prompt"},
     close_reasons=(),
     output="json",
     session_env=("CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"),
     unlettered_feed=(
-        'hook-only:  no hook sets a Cursor title, so no chat ever shows the "??: " mark to look for, and the adapter'
-        " reads no Cursor store;  a chat with no letter asks again at its next prompt"
+        "hook-only:  a Cursor hook names no chat to replay, and the local ACP store holds no parent or placeholder"
+        " ledger this adapter trusts, so a chat with no letter asks again at its next prompt;  the store's title is"
+        " read and written for the title itself"
     ),
 )
 
