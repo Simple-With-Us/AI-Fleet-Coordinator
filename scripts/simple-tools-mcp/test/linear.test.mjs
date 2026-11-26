@@ -41,6 +41,8 @@ function memoryGate(clock) {
   g.linearTokenGet = () => S.linearTokenGet(store);
   g.linearTokenSet = (entry) => S.linearTokenSet(store, entry);
   g.linearTokenClear = () => S.linearTokenClear(store);
+  g.linearAppIdGet = () => S.linearAppIdGet(store);
+  g.linearAppIdSet = (entry) => S.linearAppIdSet(store, entry);
   return g;
 }
 
@@ -241,6 +243,34 @@ test("confirmViewer refuses a viewer that is not an app, and one that is another
     const good = clientHarness({ viewer: { id: "user-3", name, app: true } });
     assert.equal((await good.client.confirmViewer()).name, name);
   }
+});
+
+test("confirmViewer remembers the app id: a renamed app keeps working, a swapped one does not", async () => {
+  const app1 = { id: "app-id-0001", name: "Grok Web", app: true };
+  // First use passes by name and the id is remembered.
+  const first = clientHarness({ viewer: app1 });
+  await first.client.confirmViewer();
+  assert.equal((await first.gate.linearAppIdGet()).id, "app-id-0001");
+  // The owner renames the app to something the tables have never heard of: the id still proves it is the seat's app.
+  first.fake.viewer = { ...first.fake.viewer, name: "A Name Nobody Listed" };
+  assert.equal((await first.client.confirmViewer()).name, "A Name Nobody Listed");
+
+  const seeded = async (viewer) => {
+    const h = clientHarness({ viewer });
+    await h.gate.linearAppIdSet({ id: "app-id-0001", set_at: 1 });
+    return h;
+  };
+  // Another seat's app (other id, other name) is still refused and does not replace the remembered id.
+  const other = await seeded({ id: "app-id-0002", name: "Wise (Instinct)", app: true });
+  await assert.rejects(() => other.client.confirmViewer(), (error) => error.kind === "swapped");
+  assert.equal((await other.gate.linearAppIdGet()).id, "app-id-0001");
+  // The same id is not enough when it is not an app user.
+  const human = await seeded({ id: "app-id-0001", name: "Grok Web", app: false });
+  await assert.rejects(() => human.client.confirmViewer(), (error) => error.kind === "swapped");
+  // A re-registered app that carries one of the seat's names passes the name check and its id is remembered.
+  const again = await seeded({ id: "app-id-0003", name: "Grok Web", app: true });
+  await again.client.confirmViewer();
+  assert.equal((await again.gate.linearAppIdGet()).id, "app-id-0003");
 });
 
 test("a write is refused before Linear is touched when the viewer is another seat's app", async () => {

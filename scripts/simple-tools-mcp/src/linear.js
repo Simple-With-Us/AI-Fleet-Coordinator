@@ -444,6 +444,8 @@ export const SEAT_APP_ALIASES = Object.freeze({
   ECHO: Object.freeze(["Echo"]),
   WISE: Object.freeze(["Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"]),
   MA: Object.freeze(["Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"]),
+  // Jay renames this app in Linear from time to time; the viewer check accepts every spelling he has used.
+  ZC: Object.freeze(["ZCode (ZC)", "ZCode"]),
 });
 export const SEAT_TAG_ALIASES = SEAT_NAME_ALIASES;
 
@@ -1428,6 +1430,22 @@ export class LinearClient {
     return { name: viewer.name ?? viewer.displayName ?? "", app: viewer.app === true, id: viewer.id ?? "", workspace: org.urlKey ?? "" };
   }
 
+  async #knownAppId() {
+    try {
+      return (await this.gate.linearAppIdGet?.())?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async #rememberAppId(id) {
+    try {
+      await this.gate.linearAppIdSet?.({ id, set_at: this.now() });
+    } catch {
+      // not stored: the name check still guards the next call
+    }
+  }
+
   /**
    * The swapped-credentials check, before any write:  the viewer must be this
    * seat's own app.  Without it a renamed or swapped Worker secret would have
@@ -1435,7 +1453,16 @@ export class LinearClient {
    */
   async confirmViewer(failed = null) {
     const viewer = await this.viewer(failed);
-    if (!viewer.app || !appNameOk(viewer.name, this.seat)) {
+    // The app id is stable across renames.  A viewer whose id is the one this seat already proved is its own
+    // app whatever the display name now says; any other id must still pass the name check, and is then remembered.
+    const viewerId = typeof viewer.id === "string" ? viewer.id : "";
+    const known = viewer.app && viewerId ? await this.#knownAppId() : null;
+    if (viewer.app && known && known === viewerId) return viewer;
+    if (viewer.app && appNameOk(viewer.name, this.seat)) {
+      if (viewerId && viewerId !== known) await this.#rememberAppId(viewerId);
+      return viewer;
+    }
+    {
       throw new LinearError("swapped", { message: `the credentials installed for ${this.seat} belong to "${viewer.name || "an unnamed user"}", not to ${this.seatLabel()}.  Refusing to write.  Jay checks which Worker secret pair is set (DEPLOY.md).` });
     }
     return viewer;

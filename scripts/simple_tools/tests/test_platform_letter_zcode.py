@@ -249,6 +249,21 @@ class ChildEnrollment(Base):
         rows = dict((r[0], (r[1], r[2])) for r in self.rows())
         self.assertEqual(rows[child], ("%s: Find the wake path" % kid["label"], "custom"))
 
+    def test_a_selection_side_chat_is_enrolled_and_titled_like_a_child(self) -> None:
+        parent, side = sess(78), sess(79)
+        self.add_session(parent, title="Primary work")
+        self.add_session(side, parent=parent, task="selection_side_chat", title="Selection side chat")
+        self.run_hook({"session_id": parent, "hook_event_name": "SessionStart", "source": "startup"})
+        code, _ = self.run_hook({"session_id": parent, "hook_event_name": "Stop"})
+        self.assertEqual(code, 0)
+        registry = OR.SessionRegistry(self.db)
+        mom = registry.lookup("zcode", "mac", "default", parent)
+        kid = registry.lookup("zcode", "mac", "default", side)
+        self.assertTrue(kid)
+        self.assertEqual(kid["label"][0], mom["label"][0])  # the side chat sits in the parent's row
+        rows = dict((r[0], (r[1], r[2])) for r in self.rows())
+        self.assertEqual(rows[side], ("%s: Selection side chat" % kid["label"], "custom"))
+
     def test_a_letterless_parent_enrolls_nothing(self) -> None:
         parent, child = sess(72), sess(73)
         self.add_session(parent, title="Parent work")

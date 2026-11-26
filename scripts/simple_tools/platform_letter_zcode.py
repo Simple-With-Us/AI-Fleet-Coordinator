@@ -19,8 +19,11 @@ How it fits together.
 - ZCode runs no hook inside a sub-agent session, so no child of its own ever registers itself:  a lettered
   parent's own turn end enrolls the children the store names for it (`platform_letter.enroll_children`, on the
   Stop pass), and the repair pass lists a lettered parent's children too (`zcode_unlettered_sessions`).  A
-  child whose parent holds no letter waits for its parent's own letter, and a refusal (the parent's row is
-  full) is the child's failed note, retried no sooner than the library's own retry window.
+  selection side chat is a child by the same rule:  its row says `selection_side_chat` and names the chat it
+  was started from, so the parent's turn end enrolls it and puts the letter on its own title ("TU: Selection
+  side chat"), and no side chat waits for a hook the app never runs in it.  A child whose parent holds no
+  letter waits for its parent's own letter, and a refusal (the parent's row is full) is the child's failed
+  note, retried no sooner than the library's own retry window.
 - The title is written straight into the store (`zcode_rename`), and never over a name a person gave:  a title is
   the hook's own when it is what the hook last put on the chat (`TitleRequest.shown`), carries the "??" mark, or
   starts with a letter the chat holds or held.
@@ -69,7 +72,16 @@ EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Stop": "turn"}
 HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "Stop": 15}
 CLOSE_REASONS: tuple[str, ...] = ()
 
-_TASK_KINDS = {"interactive": "chat", "subagent_child": "subagent"}
+_TASK_KINDS = {
+    "interactive": "chat",
+    "subagent_child": "subagent",
+    "selection_side_chat": "subagent",
+}
+
+#: The store kinds that are a sub-thread of the chat their `parent_id` names.  A selection side chat is one:
+#: the app's side chat is started from a chat and inherits it, so it takes the pair after its parent's, like
+#: any sub-agent child, and the parent's turn end (the only hook a side chat ever gets) titles it.
+CHILD_TASK_SQL = "task_type IN ('subagent_child', 'selection_side_chat')"
 
 
 def store_file(env: Mapping[str, str]) -> str:
@@ -136,14 +148,13 @@ class _Store:
         return dict(zip(keys, fetched))
 
     def subagent_ids(self, sids: list[str]) -> set[str]:
-        """The ids among `sids` the store calls sub-agent children, in one query."""
+        """The ids among `sids` the store calls sub-thread children, in one query."""
         if not sids or not self._connect():
             return set()
         placeholders = ",".join("?" * len(sids))
         try:
             rows = self._conn.execute(
-                "SELECT id FROM session WHERE task_type = 'subagent_child'"
-                " AND id IN (%s)" % placeholders,
+                "SELECT id FROM session WHERE " + CHILD_TASK_SQL + " AND id IN (%s)" % placeholders,
                 sids,
             ).fetchall()
         except sqlite3.Error:
@@ -315,7 +326,7 @@ def _unlettered_children(
     a store without the columns this reads answers none."""
     if "parent_id" not in cols or "task_type" not in cols:
         return []
-    where = ["task_type = 'subagent_child'"]
+    where = [CHILD_TASK_SQL]
     if "time_archived" in cols:
         where.append("time_archived IS NULL")
     if "time_deleted" in cols:
@@ -388,11 +399,12 @@ def zcode_child_sessions(env: Mapping[str, str], parent: str) -> list[str] | Non
         time_col = next((name for name in ("time_created", "time_updated") if name in cols), "")
         if not time_col:
             return None
-        rows = conn.execute(
-            "SELECT id, %s FROM session WHERE task_type = 'subagent_child' AND parent_id = ?"
-            " ORDER BY %s DESC" % (time_col, time_col),
-            (parent,),
+        query = (
+            "SELECT id, %s FROM session WHERE " % time_col
+            + CHILD_TASK_SQL
+            + " AND parent_id = ? ORDER BY %s DESC" % time_col
         )
+        rows = conn.execute(query, (parent,))
         now = time.time()
         found: list[str] = []
         examined = 0

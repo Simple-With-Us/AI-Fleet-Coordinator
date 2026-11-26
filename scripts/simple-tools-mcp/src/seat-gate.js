@@ -266,6 +266,14 @@ export class SeatGate extends DurableObject {
     return state.linearIdentityClear(this.store);
   }
 
+  linearAppIdGet() {
+    return state.linearAppIdGet(this.store);
+  }
+
+  linearAppIdSet(entry) {
+    return state.linearAppIdSet(this.store, entry);
+  }
+
   linearTokenClear() {
     return state.linearTokenClear(this.store);
   }
