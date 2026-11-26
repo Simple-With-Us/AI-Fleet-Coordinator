@@ -1035,7 +1035,8 @@ enum ServerSeatNames {
     static func text(from draft: String) -> String {
         guard case .list(let values)? = ServerSettingJSON.parse(draft) else { return "" }
         let names = values.map { value -> String in
-            if case .text(let name) = value { return name }
+            if case .text(let name) = value,
+               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return name }
             // Keep invalid entries visible and invalid until the operator corrects them.
             return invalidEntry
         }
@@ -1055,28 +1056,30 @@ enum ServerSeatNames {
     static func names(in value: ServerSettingValue?) -> [String] {
         guard case .list(let values)? = value else { return [] }
         return values.map {
-            if case .text(let name) = $0 { return name }
+            if case .text(let name) = $0,
+               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return name }
             return invalidEntry
         }
     }
 
-    /// The text entries only:  what a seat check, an overlap and a count of real seats may use.
-    /// A text entry that happens to read like the placeholder is still text, so it stays here.
+    /// The non-empty text entries only:  what a seat check, an overlap and a count of real
+    /// seats may use.  A text entry that reads like the placeholder is still text.
     static func validNames(in value: ServerSettingValue?) -> [String] {
         guard case .list(let values)? = value else { return [] }
         return values.compactMap {
-            if case .text(let name) = $0 { return name }
-            return nil
+            guard case .text(let name) = $0,
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return name
         }
     }
 
-    /// How many entries are not names.  Only a non-text entry is invalid; the placeholder is
-    /// how it reads, never how it is detected.
+    /// How many entries are not names:  a non-text entry and a text entry that is empty after
+    /// trimming are both invalid, and the placeholder is only how they read.
     static func invalidCount(in value: ServerSettingValue?) -> Int {
         guard case .list(let values)? = value else { return 0 }
         return values.filter {
-            if case .text = $0 { return false }
-            return true
+            guard case .text(let name) = $0 else { return true }
+            return name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }.count
     }
 

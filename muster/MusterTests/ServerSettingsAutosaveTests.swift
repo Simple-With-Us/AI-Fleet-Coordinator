@@ -389,7 +389,7 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertEqual(try ServerSettingsBuilder.value(draft, for: row).get(), .list([.text("CODEX"), .text("GROK-WEB")]))
         XCTAssertEqual(try ServerSettingsBuilder.value(ServerSeatNames.draft(from: ""), for: row).get(), .list([]))
         let unfinished = ServerSeatNames.draft(from: "CODEX,")
-        XCTAssertEqual(ServerSeatNames.text(from: unfinished), "CODEX, ")
+        XCTAssertEqual(ServerSeatNames.text(from: unfinished), "CODEX, [Invalid Entry]")
         XCTAssertThrowsError(try ServerSettingsBuilder.value(unfinished, for: row).get())
         let mixedCase = ServerSeatNames.draft(from: "Codex")
         XCTAssertEqual(ServerSeatNames.text(from: mixedCase), "Codex")
@@ -467,6 +467,10 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertEqual(ServerSeatNames.names(fromDraft: #"["CODEX",42]"#), ["CODEX", "[Invalid Entry]"])
         XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text("CODEX"), .int(42)])), ["CODEX"])
         XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text("CODEX"), .int(42)])), 1)
+        XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text("JET"), .text(""), .text("CODEX")])), ["JET", "CODEX"])
+        XCTAssertEqual(ServerSeatNames.invalidCount(in: .list([.text("JET"), .text(""), .text("CODEX")])), 1)
+        XCTAssertEqual(ServerSeatNames.names(in: .list([.text("JET"), .text(""), .text("CODEX")])),
+                       ["JET", "[Invalid Entry]", "CODEX"])
         // A text entry that reads like the placeholder is still text, never an invalid entry.
         XCTAssertEqual(ServerSeatNames.validNames(in: .list([.text(ServerSeatNames.invalidEntry)])),
                        [ServerSeatNames.invalidEntry])
