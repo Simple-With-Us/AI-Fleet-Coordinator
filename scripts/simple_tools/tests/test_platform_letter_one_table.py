@@ -975,6 +975,10 @@ class UnletteredSessionsTests(MiniMaxRow):
         self.assertEqual(found, ["m-3999"])
         self.assertTrue(seen, "the scan asked the store for nothing")
         for sql in seen:
+            if sql.strip().upper().startswith("PRAGMA"):
+                # The scan asks the store what its columns are,  so it can tell a bot run from a chat:  that
+                # reads the schema and no rows at all,  so it is bounded by itself and not by a LIMIT.
+                continue
             self.assertIn("LIMIT", sql, sql)
 
     def test_a_malformed_session_id_is_rejected_and_said(self) -> None:
