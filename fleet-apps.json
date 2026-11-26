@@ -485,6 +485,7 @@
       "AMP": "amp",
       "JET": "chatgpt",
       "JET-CHAT": "chatgpt",
+      "DUET": "claude-web",
       "OPERATOR": "operator"
     },
     "patterns": [
