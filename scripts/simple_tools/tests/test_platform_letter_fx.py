@@ -111,6 +111,36 @@ class FxTests(Base):
         self.assertEqual(self.lookup(sid)["label"], record["label"])
         self.assertEqual(again["registered"][0]["outcome"], "resumed")
 
+    def store_title(self, sid: str) -> str:
+        with open(os.path.join(self.sessions, sid, "session.json")) as fh:
+            return json.load(fh)["title"]
+
+    def test_sync_puts_the_letter_on_the_store_title(self) -> None:
+        sid = conv(30)
+        self.add_session(sid, title="Fx work")
+        answer = self.sync("--apply")
+        label = self.lookup(sid)["label"]
+        self.assertEqual(self.store_title(sid), "%s: Fx work" % label)
+        self.assertTrue(answer["registered"][0]["renamed"])
+        # The registry holds the words under the letter, never the letter itself.
+        self.assertEqual(self.lookup(sid)["title"], "Fx work")
+
+    def test_a_second_sync_does_not_prefix_the_title_twice(self) -> None:
+        sid = conv(31)
+        self.add_session(sid, title="Fx work")
+        self.sync("--apply")
+        label = self.lookup(sid)["label"]
+        again = self.sync("--apply")
+        self.assertEqual(self.store_title(sid), "%s: Fx work" % label)
+        self.assertEqual(self.lookup(sid)["title"], "Fx work")
+        self.assertEqual(again["registered"][0]["outcome"], "resumed")
+
+    def test_a_dry_run_writes_no_title(self) -> None:
+        sid = conv(32)
+        self.add_session(sid, title="Fx work")
+        self.sync()
+        self.assertEqual(self.store_title(sid), "Fx work")
+
     def test_a_stale_session_is_closed_by_the_next_sync(self) -> None:
         sid = conv(23)
         self.add_session(sid, title="Old work", updated=time.time() - 1000)

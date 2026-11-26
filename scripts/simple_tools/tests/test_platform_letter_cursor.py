@@ -115,6 +115,56 @@ class HookTests(Base):
         self.assertEqual(json.loads(out.getvalue()), {})
 
 
+class TitleTests(Base):
+    """Cursor keeps a local chat's title in `~/.cursor/acp-sessions/<id>/meta.json`; the adapter reads it and
+    puts the letter on it as soon as the registry answers, so the chat is not left titled without its pair."""
+
+    def store(self, cid: str = CID) -> str:
+        return os.path.join(self.home, ".cursor", "acp-sessions", cid, "meta.json")
+
+    def write_store(self, title: str, cid: str = CID, cwd: str = "/x/lanes/r") -> None:
+        path = self.store(cid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump({"title": title, "cwd": cwd}, fh)
+
+    def read_store(self, cid: str = CID) -> dict:
+        with open(self.store(cid)) as fh:
+            return json.load(fh)
+
+    def test_a_start_puts_its_letter_on_the_local_store_title(self) -> None:
+        self.write_store("Fix the failing login test")
+        self.hook(payload("sessionStart"))
+        label = self.lookup()["label"]
+        doc = self.read_store()
+        self.assertEqual(doc["title"], "%s: Fix the failing login test" % label)
+        self.assertEqual(doc["cwd"], "/x/lanes/r")  # every other field is kept
+
+    def test_a_chat_whose_store_appears_after_start_is_titled_at_its_prompt(self) -> None:
+        self.hook(payload("sessionStart"))  # no record yet:  the write is pending
+        label = self.lookup()["label"]
+        self.assertFalse(os.path.exists(self.store()))
+        self.write_store("New work")
+        self.hook(payload("beforeSubmitPrompt"))
+        self.assertEqual(self.read_store()["title"], "%s: New work" % label)
+
+    def test_a_title_the_app_replaced_gets_its_letter_back(self) -> None:
+        self.write_store("First words")
+        self.hook(payload("sessionStart"))
+        label = self.lookup()["label"]
+        self.write_store("App generated title")
+        self.hook(payload("beforeSubmitPrompt"))
+        self.assertEqual(self.read_store()["title"], "%s: App generated title" % label)
+
+    def test_a_store_title_that_already_carries_the_letter_is_kept(self) -> None:
+        self.write_store("Placeholder")
+        self.hook(payload("sessionStart"))
+        label = self.lookup()["label"]
+        self.write_store("%s: Already set" % label)
+        self.hook(payload("beforeSubmitPrompt"))
+        self.assertEqual(self.read_store()["title"], "%s: Already set" % label)
+
+
 class InstallTests(Base):
     def test_it_installs_next_to_the_lane_guard_and_removes_cleanly(self) -> None:
         path = os.path.join(self.home, PC.HOOKS_FILE)
