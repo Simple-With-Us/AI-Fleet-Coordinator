@@ -407,7 +407,9 @@ def _validate_args(name: str, args: dict) -> str | None:
             ref = str(ref)
         if not (
             isinstance(ref, str)
-            and re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}|PRRC_[A-Za-z0-9_-]{6,128}|[0-9]{1,18}", ref)
+            and re.fullmatch(
+                r"PRRT_[A-Za-z0-9_-]{6,128}|PRRC_[A-Za-z0-9_-]{6,128}|[0-9]{1,18}", ref
+            )
         ):
             return (
                 "thread_id must be a PRRT_ review-thread id, or a review comment id "
