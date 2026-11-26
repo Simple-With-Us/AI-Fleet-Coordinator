@@ -86,7 +86,7 @@ class T(unittest.TestCase):
         big = {"repository": {"full_name": "o/" + "r" * 200}, "number": 1}
         self.assertEqual(w.map_event("pull_request", "d", big, frozenset({big["repository"]["full_name"]})).outcome, "invalid")
         r = w.map_event("pull_request", "d", R(pull_request={"number": 5, "updated_at": "t" * 41}), AL)
-        self.assertEqual((r.outcome, r.reason), ("invalid", "time-oversized"))
+        self.assertEqual((r.outcome, r.reason), ("invalid", "time-invalid"))
         r = w.map_event("pull_request", "d", R(action="a" * 41, pull_request={"number": 5}), AL)
         self.assertEqual(r.outcome, "invalid")
         many = [{"number": i} for i in range(1, w.MAX_TARGETS + 2)]
@@ -117,4 +117,27 @@ class T(unittest.TestCase):
         self.assertEqual((r.outcome, r.hints[0].head_sha), ("mapped", None))
         r = w.map_event("merge_group", "d", R(merge_group={"head_sha": sha + "\n"}), AL)
         self.assertEqual((r.outcome, r.advisory_head_sha), ("held", None))
+    def test_review_round_findings(self):
+        self.assertEqual(w.map_event("merge_group", "d", R(), AL).reason, "merge-group-missing")
+        self.assertEqual(w.map_event("merge_group", "d", R(merge_group=None), AL).outcome, "invalid")
+        for bad in ({"evil": 1}, [1], 5):
+            r = w.map_event("pull_request_review", "d", R(pull_request={"number": 5}, review={"node_id": bad}), AL)
+            self.assertEqual((r.outcome, r.hints), ("invalid", ()), bad)
+        r = w.map_event("pull_request_review", "d", R(pull_request={"number": 5}, review={"id": "9"}), AL)
+        self.assertEqual(r.outcome, "invalid")
+        r = w.map_event("pull_request_review", "d", R(pull_request={"number": 5}, review={"node_id": "PRR_x"}), AL)
+        self.assertEqual(r.hints[0].source_ref, "PRR_x")
+        for marker in (5, "x", [], None):
+            r = w.map_event("issue_comment", "d", R(issue={"number": 3, "pull_request": marker}), AL)
+            self.assertEqual((r.outcome, r.reason), ("invalid", "issue-pull-request-invalid"), marker)
+        for ev in ("pull_request\n", "Pull_Request", "pull request", "pull_request\x00", "é"):
+            r = w.map_event(ev, "d", R(), AL)
+            self.assertEqual((r.outcome, r.event_name), ("invalid", ""), ev)
+        for k, v in (("action", "a\nb"), ("action", "a\x00"), ("action", "a\x7f")):
+            r = w.map_event("pull_request", "d", R(**{k: v, "pull_request": {"number": 5}}), AL)
+            self.assertEqual((r.outcome, r.reason), ("invalid", "action-invalid"), v)
+        r = w.map_event("pull_request", "d", R(pull_request={"number": 5, "updated_at": "2026\n"}), AL)
+        self.assertEqual((r.outcome, r.reason), ("invalid", "time-invalid"))
+        r = w.map_event("pull_request_review", "d", R(pull_request={"number": 5}, review={"node_id": "a\nb"}), AL)
+        self.assertEqual((r.outcome, r.reason), ("invalid", "ref-invalid"))
 if __name__ == "__main__": unittest.main()
