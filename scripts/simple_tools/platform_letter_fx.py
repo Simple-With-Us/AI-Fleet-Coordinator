@@ -346,15 +346,14 @@ def _write_ledger(
     kept = set(ids)
     payload = {
         "registered": sorted(kept),
-        "labels": {
-            key: value for key, value in sorted((labels or {}).items()) if key in kept
-        },
+        "labels": {key: value for key, value in sorted((labels or {}).items()) if key in kept},
     }
     temporary = ""
     try:
         # A unique staging file per write:  two sync runs never truncate each other's ledger.
         handle, temporary = tempfile.mkstemp(
-            prefix=os.path.basename(path) + ".", suffix=".tmp",
+            prefix=os.path.basename(path) + ".",
+            suffix=".tmp",
             dir=os.path.dirname(path) or ".",
         )
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
