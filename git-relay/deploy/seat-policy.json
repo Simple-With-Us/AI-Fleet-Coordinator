@@ -836,6 +836,12 @@
       "oauth_assert": true
     },
     {
+      "identity": "DUET",
+      "app_slug": "swu-duet",
+      "profile": "fleet",
+      "oauth_assert": true
+    },
+    {
       "identity": "ECHO",
       "app_slug": "swu-echo",
       "profile": "echo",
