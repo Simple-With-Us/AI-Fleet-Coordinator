@@ -4778,6 +4778,25 @@ class RemoteBase(ClaudeBase):
 
 
 class Remote(RemoteBase):
+    def test_empty_issue_contract_keeps_the_old_mac_wire_shape(self) -> None:
+        # The newer router adds this field; the installed older Mac allowlist
+        # does not know it. Exercise serialization only, never a native wake.
+        old_fields = set(WR.asdict(self.w)) - {"require_issue"}
+        fields = {**WR.asdict(self.w), "require_issue": ""}
+        with mock.patch.object(CW, "asdict", return_value=fields):
+            sent = CW._envelope("zcode", self.target, self.w)
+        self.assertEqual(set(sent["wake"]), old_fields)
+        self.assertEqual(sent["target"]["session_id"], self.target.session_id)
+        self.assertEqual(sent["target"]["generation"], self.target.generation)
+        self.assertEqual(sent["wake"], {k: v for k, v in fields.items() if k != "require_issue"})
+
+    def test_nonempty_issue_contract_is_never_dropped_for_an_old_mac(self) -> None:
+        fields = {**WR.asdict(self.w), "require_issue": "OPS-1108"}
+        with mock.patch.object(CW, "asdict", return_value=fields):
+            sent = CW._envelope("zcode", self.target, self.w)
+        self.assertEqual(sent["wake"], fields)
+        self.assertEqual(sent["wake"]["require_issue"], "OPS-1108")
+
     def test_the_command_is_fixed_and_the_wake_rides_stdin(self) -> None:
         result = self.deliver_remote()
         self.assertEqual(self.runs[0][0][-2:], ["mac-host", "true"])  # the preflight goes first

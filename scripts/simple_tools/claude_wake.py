@@ -633,6 +633,11 @@ def deliver_local(
 
 def _envelope(platform: str, target: WR.Target, wake: WR.Wake) -> dict[str, Any]:
     """The request for one wake (module docstring, The wire), in its key order on the wire."""
+    wire_wake = asdict(wake)
+    # Older Mac receivers reject unknown fields. An empty issue constraint adds
+    # no contract, so leave it out. Never hide a nonempty constraint from one.
+    if wire_wake.get("require_issue") == "":
+        wire_wake.pop("require_issue", None)
     return {
         "platform": platform,
         "target": {
@@ -641,7 +646,7 @@ def _envelope(platform: str, target: WR.Target, wake: WR.Wake) -> dict[str, Any]
             "host": target.host,
             "generation": target.generation,
         },
-        "wake": asdict(wake),
+        "wake": wire_wake,
     }
 
 
