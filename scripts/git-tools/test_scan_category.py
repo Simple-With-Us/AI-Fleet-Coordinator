@@ -52,46 +52,41 @@ class CategoryTests(unittest.TestCase):
             "o/r", "test.py", "synthetic text", ["synthetic-bearer"]
         )
 
-    def test_sealed_secret_value_is_exempt_only_when_it_is_binary_ciphertext(self):
+    def test_only_a_value_this_process_sealed_is_exempt(self):
         sealed = base64.b64encode(bytes(range(128, 256))).decode()
-        flagged = {sealed, "plain-name"}
+        crafted = base64.b64encode(bytes(range(129, 257 - 1))).decode()
+        flagged = {sealed, crafted, "plain-name"}
         scanner = mock.Mock()
-        scanner.scan.side_effect = lambda text, known=None: (
-            "assigned secret" if text in flagged else None
-        )
+        scanner.scan.side_effect = lambda text, known=None: "assigned secret" if text in flagged else None
         args = {"repo": "o/r", "name": "N", "encrypted_value": sealed, "key_id": "1"}
         with mock.patch.object(git, "_scanner", return_value=scanner):
-            self.assertIsNone(git._scan_arguments(args, "", "gr_wf_secret_put_org_actions"))
-            self.assertIsNone(git._scan_arguments(args, "", "gr_wf_secret_put_repo_actions"))
-            # any other tool is still scanned
-            self.assertIn("encrypted_value", git._scan_arguments(args, "", "gr_comment_pr"))
-            self.assertIn("encrypted_value", git._scan_arguments(args, "", None))
-            # any other field of the same call is still scanned
-            result = git._scan_arguments(
-                {**args, "name": "plain-name"}, "", "gr_wf_secret_put_org_actions"
-            )
-            self.assertIn("secret_scan:name", result)
+            # not produced by _seal: refused, even though it is binary base64 of any length
+            self.assertIn("encrypted_value", git._scan_arguments(args, "", "gr_wf_secret_put_org_actions"))
+            git._SEALED_VALUES.add(sealed)
+            try:
+                self.assertIsNone(git._scan_arguments(args, "", "gr_wf_secret_put_org_actions"))
+                self.assertIsNone(git._scan_arguments(args, "", "gr_wf_secret_put_repo_actions"))
+                # a different value in the field is still scanned
+                other = {**args, "encrypted_value": crafted}
+                self.assertIn("encrypted_value", git._scan_arguments(other, "", "gr_wf_secret_put_org_actions"))
+                # any other tool is still scanned
+                self.assertIn("encrypted_value", git._scan_arguments(args, "", "gr_comment_pr"))
+                self.assertIn("encrypted_value", git._scan_arguments(args, "", None))
+                # any other field of the same call is still scanned
+                result = git._scan_arguments({**args, "name": "plain-name"}, "", "gr_wf_secret_put_org_actions")
+                self.assertIn("secret_scan:name", result)
+            finally:
+                git._SEALED_VALUES.discard(sealed)
 
-    def test_sealed_secret_exemption_rejects_text_short_and_malformed_values(self):
-        bad = [
-            base64.b64encode(
-                b"a readable plaintext value that is long enough to pass the length floor"
-            ).decode(),
-            base64.b64encode(
-                bytes(range(128, 170))
-            ).decode(),  # binary but no longer than the overhead
-            "not base64 !!",
-        ]
-        scanner = mock.Mock()
-        scanner.scan.side_effect = lambda text, known=None: (
-            "assigned secret" if text in bad else None
-        )
-        with mock.patch.object(git, "_scanner", return_value=scanner):
-            for value in bad:
-                result = git._scan_arguments(
-                    {"encrypted_value": value}, "", "gr_wf_secret_put_org_actions"
-                )
-                self.assertIn("secret_scan:encrypted_value", result)
+    def test_seal_registers_its_output(self):
+        lib = mock.Mock()
+        lib.crypto_box_seal.return_value = 0
+        with mock.patch.object(git, "_load_sodium", return_value=lib):
+            import base64 as b64
+
+            out = git._seal(b64.b64encode(bytes(32)).decode(), b"value")
+        self.assertIn(out, git._SEALED_VALUES)
+        git._SEALED_VALUES.discard(out)
 
     def test_decisions_match_pristine_for_synthetic_cases(self):
         # Same scanner and traversal, no network and no refused production inputs.
