@@ -3765,6 +3765,7 @@ def cmd_run_log(tools, a, bearer, server_seat, deadline):
         if not isinstance(jobs, list):
             raise ReadinessUnknown("run jobs missing")
         shown = 0
+        incomplete = False
         for job in jobs:
             bad = job.get("conclusion") not in _OK_CONCLUSIONS and job.get("status") == "completed"
             if a.failed and not bad:
@@ -3775,7 +3776,7 @@ def cmd_run_log(tools, a, bearer, server_seat, deadline):
             if steps:
                 print(_visible("  failed steps: " + ", ".join(str(s) for s in steps)))
             if bad and isinstance(job.get("id"), int):
-                text, offset, truncated = "", 0, False
+                text, offset, truncated, malformed = "", 0, False, False
                 for _ in range(RUN_LOG_MAX_PAGES):
                     args = {"repo": a.repo, "job_id": job["id"]}
                     if offset:
@@ -3786,10 +3787,14 @@ def cmd_run_log(tools, a, bearer, server_seat, deadline):
                     if log.get("complete") is not False:
                         break
                     if type(nxt) is not int or nxt <= offset:
-                        raise ReadinessUnknown("job log cursor malformed or not advancing")
+                        malformed = True
+                        break
                     offset = nxt
                 else:
                     truncated = True
+                if malformed:
+                    incomplete = True
+                    print("  (job log cursor was malformed or did not advance; the end is not shown)")
                 if truncated:
                     print("  (log is longer than %d reads; the end is not shown)" % RUN_LOG_MAX_PAGES)
                 for line in failure_excerpt(clean_log_lines(text), max_lines=a.lines):
@@ -3797,7 +3802,7 @@ def cmd_run_log(tools, a, bearer, server_seat, deadline):
             shown += 1
         if shown == 0:
             print("no failed jobs" if a.failed else "no jobs")
-        return 0
+        return WATCH_EXIT_UNKNOWN if incomplete else 0
     except ReadinessUnknown as exc:
         print("unknown: " + str(exc), file=sys.stderr)
         return WATCH_EXIT_UNKNOWN

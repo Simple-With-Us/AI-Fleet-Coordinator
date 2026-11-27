@@ -216,6 +216,32 @@ class RunLog(unittest.TestCase):
             with self.assertRaises(git.argparse.ArgumentTypeError):
                 git._positive_int(bad)
 
+    def test_malformed_log_cursor_marks_one_job_incomplete_and_keeps_the_rest(self):
+        jobs = {"jobs": [
+            {"id": 1, "name": "a", "status": "completed", "conclusion": "failure", "steps": []},
+            {"id": 2, "name": "b", "status": "completed", "conclusion": "failure", "steps": []},
+        ]}
+
+        def read(tool, args):
+            if tool == "gr_wf_run_jobs":
+                return jobs
+            if args["job_id"] == 1:
+                return {"content": "error: first\n", "complete": False, "next_offset": "bad"}
+            return {"content": "error: second\n", "complete": True}
+
+        import contextlib
+        out = io.StringIO()
+        orig = git._readiness_reader
+        git._readiness_reader = lambda *a, **k: read
+        try:
+            with contextlib.redirect_stdout(out):
+                code = git.cmd_run_log(None, type("A", (), {"repo": "O/R", "run_id": 5, "failed": True, "lines": 40})(), "", "", 0)
+        finally:
+            git._readiness_reader = orig
+        self.assertEqual(code, git.WATCH_EXIT_UNKNOWN)
+        self.assertIn("error: second", out.getvalue())
+        self.assertIn("malformed", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
