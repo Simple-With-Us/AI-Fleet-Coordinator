@@ -3,21 +3,22 @@
 # files that pm2-managed services should own, then reset+restart the pm2 entry.
 #
 # Why: pm2 entries that share a port with a manually-started orphan process
-# enter an errored-restart loop (agy-acp / grok-acp / seat-mcp / vision-worker
-# have all hit 100-4600+ restarts).  The canonical owner is pm2 per
+# enter an errored-restart loop (agy-acp / vision-worker have hit 100-4600+
+# restarts).  The canonical owner is pm2 per
 # /Users/jay/Code/AI-Fleet-Coordinator/scripts/pm2-ecosystem.config.cjs.
+# (seat-mcp and standalone grok-acp were retired in AFC-926.)
 #
 # Usage:
-#   bash scripts/pm2-orphan-cleanup.sh             # clean up all errored entries
-#   bash scripts/pm2-orphan-cleanup.sh agy-acp seat-mcp    # only these
-#   bash scripts/pm2-orphan-cleanup.sh --dry-run   # print what would happen
+#   bash scripts/pm2-orphan-cleanup.sh               # clean up all errored entries
+#   bash scripts/pm2-orphan-cleanup.sh agy-acp       # only these
+#   bash scripts/pm2-orphan-cleanup.sh --dry-run     # print what would happen
 #
 # Safety: only kills orphan processes when the orphan is functionally
 # equivalent to what pm2 would start (same port + same canonical script path).
-# Logs every action with timestamp.  Never touches mac-collab
-# / clutch-web / shellular (those are healthy and we don't want to touch).
+# Logs every action with timestamp.  Never touches clutch-web / shellular
+# (those are healthy and we don't want to touch).
 #
-# Last touched: 2026-09-20 (MM, top-to-bottom fleet audit)
+# Last touched: 2026-11-27 (AFC-926 retirement of seat-mcp and grok-acp)
 
 set -euo pipefail
 
@@ -70,17 +71,12 @@ declare -A KILLED
 declare -A PORT
 # agy-acp stdio-to-ws proxy binds 127.0.0.1:8765 (loopback-only enforced via bind-loopback.cjs)
 PORT[agy-acp]="8765"
-# Grok ACP itself binds 12419 (grok-1.0 binary). Its start.sh wrapper holds no extra port.
-PORT[grok-acp]="12419"
-PORT[seat-mcp]="8793"
 
 declare -A LOCKFILE
 LOCKFILE[vision-worker]="/Users/jay/vision-worker/attempt-state.json.lock"
 
 declare -A SCRIPT_PATTERN
 SCRIPT_PATTERN[agy-acp]="agy-acp-runtime/start.sh"
-SCRIPT_PATTERN[grok-acp]="grok-acp-runtime/start.sh"
-SCRIPT_PATTERN[seat-mcp]="seat_mcp"
 SCRIPT_PATTERN[vision-worker]="vision-worker/worker.py"
 
 for entry in "${ENTRIES[@]}"; do
@@ -109,7 +105,7 @@ for entry in "${ENTRIES[@]}"; do
   if [[ -n "$lockfile" ]]; then
     while IFS= read -r pid; do
       [[ -n "$pid" ]] && orphan_pids+=("$pid")
-    done < <(lsof -t "$lockfile" 2>/dev/null | sort -u || true)
+    done < <(lsof -t "$lockfile" 2>/dev/null || true)
   fi
 
   # Dedupe + skip already-killed across entries

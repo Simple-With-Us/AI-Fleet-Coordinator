@@ -15,8 +15,11 @@
  * server and its replicas;  the sync and writeback jobs retired at the Linear
  * cutover, the server and litestream on 2026-10-19, AFC-363;  Linear is the
  * tracker and the directory is parked in ~/apps/_retired/), scout,
- * residential-proxy, senate-relay, senate-tunnel.  Senate/residential stay
- * off this Mac; Coolify/Texas paths own them.
+ * residential-proxy, senate-relay, senate-tunnel, seat-mcp (retired 2026-11-27,
+ * AFC-926; replaced by simple-tools-mcp and recall-api), and standalone
+ * grok-acp (:12419, retired 2026-11-27, AFC-926; Grok drive uses grok-leader
+ * + grok-drive.py).  Senate/residential stay off this Mac; Coolify/Texas
+ * paths own them.
  *
  * Coordination runs through the `simple-chat` CLI and its always-on listener;
  * no Slack relay runs here (cursor-slack-sync is removed, do not resurrect it).
@@ -96,14 +99,6 @@ module.exports = {
       error_file: `${logs}/grok-leader-error.log`,
     }),
     app({
-      name: "grok-acp",
-      script: `${home}/apps/grok-acp-runtime/start.sh`,
-      interpreter: "bash",
-      cwd: `${home}/apps/grok-acp-runtime`,
-      out_file: `${logs}/grok-acp-out.log`,
-      error_file: `${logs}/grok-acp-error.log`,
-    }),
-    app({
       // Clutch web UI on :3180.  Renamed from harness-web (Harness -> Clutch).
       // Canonical scripts live in Simple-With-Us/Clutch; this Mac runs them
       // from ~/apps/clutch-runtime, a real clone updated by update-mac-app.sh.
@@ -123,14 +118,6 @@ module.exports = {
       },
       out_file: `${logs}/clutch-web-out.log`,
       error_file: `${logs}/clutch-web-error.log`,
-    }),
-    app({
-      name: "seat-mcp",
-      script: `${home}/apps/seat-mcp/start.sh`,
-      interpreter: "bash",
-      cwd: `${home}/apps/seat-mcp`,
-      out_file: `${logs}/seat-mcp-out.log`,
-      error_file: `${logs}/seat-mcp-error.log`,
     }),
     app({
       name: "botfleet-mcp",

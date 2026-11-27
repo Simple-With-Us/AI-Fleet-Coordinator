@@ -149,13 +149,7 @@ name = "agy-acp"
 name = "grok-leader"
 
 [[pm2.app]]
-name = "grok-acp"
-
-[[pm2.app]]
 name = "clutch-web"
-
-[[pm2.app]]
-name = "seat-mcp"
 
 [[pm2.app]]
 name = "botfleet-mcp"

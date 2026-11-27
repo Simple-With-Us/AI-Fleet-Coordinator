@@ -3,6 +3,7 @@
   "mac": {
     "agents": [
       {"label": "com.jay.botfleet-server", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.claude-remote-control", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.code-main-keeper", "actions": ["start", "stop", "restart"], "role": "updater", "stopConsequence": "Stopping this stops the Mac keeping ~/Code caught up with origin/main, so the Code clones fall behind until it starts again."},
       {"label": "com.jay.fleet-api-health", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the ST and CT health report, so Muster's API health rows go out of date and then read as not known."},
       {"label": "com.jay.fleet-gdrive-backup", "actions": ["start", "stop", "restart"]},
@@ -15,16 +16,22 @@
       {"label": "com.jay.github-outbox-bridge", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.grok-idle-unload", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.ios-testflight-freshness", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.lark-mm-bridge", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-cleanup", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-facts-publish", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-process-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-resource-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-seat-watch", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.merge-shepherd", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.needs-owner-notify", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"], "stopConsequence": "Stopping this stops the Mac answering Apple Notes requests from the server and cloud seats, and they wait in the Operator's queue for up to 24 hours."},
       {"label": "com.jay.operator-wake-alerter", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.provider-knob-sync", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.sim-idle-reaper", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.simple-tools-runtime-sync", "actions": ["start", "stop", "restart"], "role": "updater", "stopConsequence": "Stopping this stops the Mac's fleet tools updating from main, and the Operator listener is no longer restarted when its code changes."},
+      {"label": "com.jays.antigravity-usage-collector", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jays.mac-server-watchdog", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jays.subscription-quota-collector", "actions": ["start", "stop", "restart"]},
       {"label": "com.jays.weekly-fleet-mode-digest", "actions": ["start", "stop", "restart"]}
     ],
     "pm2Apps": [
@@ -34,7 +41,6 @@
       {"name": "xcode-health", "actions": ["start", "stop", "restart"]},
       {"name": "agy-acp", "actions": ["start", "stop", "restart"]},
       {"name": "grok-leader", "actions": ["start", "stop", "restart"]},
-      {"name": "grok-acp", "actions": ["start", "stop", "restart"]},
       {"name": "clutch-web", "actions": ["start", "stop", "restart"]}
     ]
   },
@@ -50,7 +56,25 @@
       {"unit": "fleet-housekeep.timer", "scope": "system"},
       {"unit": "box-disk-hygiene.timer", "scope": "system"},
       {"unit": "docker.service", "scope": "system"},
-      {"unit": "tailscaled.service", "scope": "system"}
+      {"unit": "tailscaled.service", "scope": "system"},
+      {"unit": "afc-wake-router.service", "scope": "user"},
+      {"unit": "afc-wake-tls.service", "scope": "user"},
+      {"unit": "fleet-vm-status.timer", "scope": "user"},
+      {"unit": "operator-sheets-drain.timer", "scope": "system"},
+      {"unit": "fleet-coding-memory.service", "scope": "system"},
+      {"unit": "shellular.service", "scope": "system"},
+      {"unit": "congress-health-recover.service", "scope": "system"},
+      {"unit": "ct-deploy-overlap.service", "scope": "system"},
+      {"unit": "afc-wa-bridge.service", "scope": "system"},
+      {"unit": "clutch-chat-bridge.service", "scope": "system"},
+      {"unit": "claude-remote-control.service", "scope": "system"},
+      {"unit": "opencode-server.service", "scope": "system"},
+      {"unit": "codex-operator-coordination-check.timer", "scope": "system"},
+      {"unit": "lane-placement-watch.timer", "scope": "system"},
+      {"unit": "lane-auto-retire.timer", "scope": "system"},
+      {"unit": "fleet-rag-nightly.timer", "scope": "system"},
+      {"unit": "usage-monitor-replica-status.timer", "scope": "system"},
+      {"unit": "ct-deploy-guard.timer", "scope": "system"}
     ],
     "updates": [
       {"name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system"}
