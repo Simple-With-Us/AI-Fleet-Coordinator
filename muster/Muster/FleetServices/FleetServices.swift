@@ -124,7 +124,6 @@ public enum FleetServiceRegistry {
         pm2("xcode-health", "Xcode Health"),
         pm2("agy-acp", "Antigravity ACP"),
         pm2("grok-leader", "Grok Leader"),
-        pm2("grok-acp", "Grok ACP"),
         pm2("clutch-web", "Clutch Web"),
     ]
 

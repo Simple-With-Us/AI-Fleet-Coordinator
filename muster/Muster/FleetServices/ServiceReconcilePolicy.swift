@@ -93,8 +93,6 @@ public enum ServicePolicyTable {
             "A long-running bridge in the pm2 ecosystem file, and starting it again is safe."),
         row("grok-leader", .startAtLoginOnly,
             "It exits on purpose when another leader holds its lock, so Muster starts it once when Muster starts and never fights the lock."),
-        row("grok-acp", .keepRunning,
-            "A long-running bridge in the pm2 ecosystem file, and starting it again is safe."),
         row("clutch-web", .startAtLoginOnly,
             "It exits on purpose when something else holds its port, so Muster starts it once when Muster starts and never fights the port."),
     ]
@@ -113,6 +111,7 @@ public enum ServicePolicyTable {
     /// leaves every one of them alone.
     private static let agents: [(String, String)] = [
         ("com.jay.botfleet-server", handReason),
+        ("com.jay.claude-remote-control", keepAliveReason),
         ("com.jay.fleet-api-health", scheduledReason),
         ("com.jay.fleet-bearer-status", scheduledReason),
         ("com.jay.fleet-gdrive-backup", scheduledReason),
@@ -124,16 +123,22 @@ public enum ServicePolicyTable {
         ("com.jay.github-outbox-bridge", scheduledReason),
         ("com.jay.grok-idle-unload", scheduledReason),
         ("com.jay.ios-testflight-freshness", scheduledReason),
+        ("com.jay.lark-mm-bridge", keepAliveReason),
         ("com.jay.mac-cleanup", scheduledReason),
         ("com.jay.mac-facts-publish", scheduledReason),
         ("com.jay.mac-process-watch", scheduledReason),
         ("com.jay.mac-resource-watch", scheduledReason),
         ("com.jay.mac-seat-watch", handReason),
+        ("com.jay.merge-shepherd", scheduledReason),
         ("com.jay.needs-owner-notify", scheduledReason),
         ("com.jay.operator-notes-runner", keepAliveReason),
         ("com.jay.operator-wake-alerter", handReason),
+        ("com.jay.provider-knob-sync", scheduledReason),
         ("com.jay.sim-idle-reaper", scheduledReason),
         ("com.jay.simple-tools-runtime-sync", handReason),
+        ("com.jays.antigravity-usage-collector", scheduledReason),
+        ("com.jays.mac-server-watchdog", scheduledReason),
+        ("com.jays.subscription-quota-collector", scheduledReason),
         ("com.jays.weekly-fleet-mode-digest", scheduledReason),
     ]
 
@@ -157,7 +162,7 @@ public enum ServicePolicyTable {
         }
         for agent in ServicePolicyTable.agents {
             out.append(ServicePolicyRow(id: agent.0,
-                                        title: OpsNames.agentTitle(agent.0),
+                                        title: OpsNames.menuAgentTitle(agent.0),
                                         source: .allowlistedAgent,
                                         policy: .leaveAlone,
                                         reason: agent.1))

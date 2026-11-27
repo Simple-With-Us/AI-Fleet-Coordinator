@@ -77,6 +77,7 @@ enum MenuCommand: Equatable {
     case checkMac
     case openServerStatus
     case openServices
+    case openBackgroundAgents
     case openComplianceGrid
     case openMuster
     case askServer
@@ -126,6 +127,7 @@ struct ServerPlaceSummary: Equatable {
 /// Everything the menu reads,  taken once.
 struct MachineMenuInputs {
     var services: FleetServices?
+    var macServices: MacServicesReading? = nil
     var lastReadAt: Date?
     /// The red cells,  when the last run could be trusted.
     var redCells: [DriftRedCell]?
@@ -245,20 +247,64 @@ enum MachineMenuCopy {
         let problems = rows.filter { pair in
             isProblem(pair.entry) && !(isPM2Row(pair.entry) && !pm2Answered)
         }
-        if problems.isEmpty, !entries.isEmpty {
-            items.append(.line("Services:  \(serviceCounts(entries))"))
+
+        // Category submenus only on screen 1:  no loose individual failing service rows.
+        // Problem items sort to the top inside their own submenu.
+        let coreRows = rows.filter { $0.entry.menuCategory == .core }
+        if !coreRows.isEmpty {
+            let sorted = coreRows.filter { isProblem($0.entry) } + coreRows.filter { !isProblem($0.entry) }
+            let summary = serviceCounts(coreRows.map(\.entry))
+            items.append(.group(title: "Core Services \(FleetHost.mac.onTitle):  \(summary)",
+                                items: sorted.map { MenuItem.row($0.row) }))
         }
-        items.append(contentsOf: problems.map { MenuItem.row($0.row) })
+
+        let bridgeRows = rows.filter { $0.entry.menuCategory == .platformBridge }
+        let macAgents = (inputs.macServices?.isCurrent == true) ? (inputs.macServices?.agents ?? []) : []
+        let bridgeAgents = macAgents.filter { OpsNames.isMacPlatformBridgeAgent($0.label) }
+        let otherAgents = macAgents.filter { !OpsNames.isMacPlatformBridgeAgent($0.label) }
+
+        if !bridgeRows.isEmpty || !bridgeAgents.isEmpty {
+            let sortedServices = bridgeRows.filter { isProblem($0.entry) } + bridgeRows.filter { !isProblem($0.entry) }
+            let sortedBridgeAgents = bridgeAgents.filter { $0.state != .passed } + bridgeAgents.filter { $0.state == .passed }
+            var bridgeItems = sortedServices.map { MenuItem.row($0.row) }
+            bridgeItems.append(contentsOf: sortedBridgeAgents.map { MenuItem.line(macAgentLine($0)) })
+            let summary = bridgeSummary(services: bridgeRows.map(\.entry), agents: bridgeAgents)
+            items.append(.group(title: "Platform Bridges \(FleetHost.mac.onTitle):  \(summary)",
+                                items: bridgeItems))
+        }
+
+        if !otherAgents.isEmpty {
+            let sorted = otherAgents.filter { $0.state != .passed } + otherAgents.filter { $0.state == .passed }
+            var agentItems = sorted.map { MenuItem.line(macAgentLine($0)) }
+            agentItems.append(.command(title: "Open Background Agents", .openBackgroundAgents))
+            let loaded = otherAgents.filter(\.loaded).count
+            let drifted = otherAgents.filter { $0.state == .drift }.count
+            let summary = drifted > 0
+                ? "\(drifted) drifted, \(loaded) of \(otherAgents.count) loaded"
+                : "\(loaded) of \(otherAgents.count) loaded"
+            items.append(.group(title: "Background Agents \(FleetHost.mac.onTitle):  \(summary)",
+                                items: agentItems))
+        }
+
         items.append(seatItem(inputs))
-        if let services = inputs.services {
-            let sorted = rows.filter { isProblem($0.entry) } + rows.filter { !isProblem($0.entry) }
-            items.append(.group(title: services.menuTitle, items: sorted.map { MenuItem.row($0.row) }))
-        }
         items.append(.command(title: "Check The Mac Again", .checkMac))
 
         let health = macHealth(inputs, problems: problems.count, fetchStopped: fetchStopped,
                                macIsCurrent: macIsCurrent, pm2Answered: pm2Answered)
         return MacPlaceSummary(health: health, items: items)
+    }
+
+    private static func macAgentLine(_ agent: MacAgent) -> String {
+        "\(OpsNames.menuAgentTitle(agent.label)):  \(agent.statusText)"
+    }
+
+    private static func bridgeSummary(services: [FleetServiceEntry], agents: [MacAgent]) -> String {
+        guard !agents.isEmpty else { return serviceCounts(services) }
+        var parts: [String] = []
+        if !services.isEmpty { parts.append(serviceCounts(services)) }
+        let loaded = agents.filter(\.loaded).count
+        parts.append("\(loaded) of \(agents.count) agents loaded")
+        return parts.joined(separator: ", ")
     }
 
     private static func macHealth(_ inputs: MachineMenuInputs, problems: Int, fetchStopped: Bool,
@@ -529,15 +575,6 @@ enum MachineMenuCopy {
 
     private static func currentItems(_ status: ServerStatusReading, allowlist: OpsAllowlist?) -> [MenuItem] {
         var items: [MenuItem] = []
-        let services = status.services
-        let timersWord = services.allSatisfy { $0.unit.hasSuffix(".timer") } ? "Timers" : "Services"
-        if services.isEmpty {
-            items.append(.line("Timers \(FleetHost.server.onTitle):  not known"))
-        } else {
-            let active = services.filter { $0.activeState == "active" }.count
-            items.append(.line("\(timersWord):  \(active) of \(services.count) active"))
-        }
-        items.append(.line(appsLine(status.coolify)))
         items.append(.line(fullnessLine(status.hostMetrics)))
         if let load = status.hostMetrics?.loadFraction {
             if load >= 2 { items.append(.line(String(format: "Load %.1f per cpu", load))) }
@@ -545,23 +582,58 @@ enum MachineMenuCopy {
             // Nothing else says so,  and it keeps the bar from reading OK.
             items.append(.line("Load not known"))
         }
-        let rows = services.map { (service: $0, row: unitRow($0, allowlist: allowlist)) }
-        items.append(contentsOf: rows.filter { countsAgainst($0.service) }.map { MenuItem.row($0.row) })
-        if !rows.isEmpty {
-            items.append(.group(title: "\(timersWord) \(FleetHost.server.onTitle) (\(rows.count))",
-                                items: rows.map { MenuItem.row($0.row) }))
+
+        items.append(appsItem(status.coolify))
+
+        let services = status.services
+        if services.isEmpty {
+            items.append(.line("Timers \(FleetHost.server.onTitle):  not known"))
+        } else {
+            let coreServices = services.filter { !$0.unit.hasSuffix(".timer") && !OpsNames.isServerPlatformBridge($0.unit) }
+            let bridges = services.filter { OpsNames.isServerPlatformBridge($0.unit) }
+            let timers = services.filter { $0.unit.hasSuffix(".timer") }
+
+            if let group = unitGroup(titlePrefix: "Services \(FleetHost.server.onTitle)",
+                                     units: coreServices, allowlist: allowlist) {
+                items.append(group)
+            }
+            if let group = unitGroup(titlePrefix: "Platform Bridges \(FleetHost.server.onTitle)",
+                                     units: bridges, allowlist: allowlist) {
+                items.append(group)
+            }
+            if let group = unitGroup(titlePrefix: "Timers \(FleetHost.server.onTitle)",
+                                     units: timers, allowlist: allowlist) {
+                items.append(group)
+            }
         }
         return items
     }
 
-    private static func appsLine(_ apps: [CoolifyResource]) -> String {
+    private static func unitGroup(titlePrefix: String,
+                                  units: [ServerService],
+                                  allowlist: OpsAllowlist?) -> MenuItem? {
+        guard !units.isEmpty else { return nil }
+        let sorted = units.filter(countsAgainst) + units.filter { !countsAgainst($0) }
+        let active = units.filter { $0.activeState == "active" }.count
+        let rows = sorted.map { MenuItem.row(unitRow($0, allowlist: allowlist)) }
+        return .group(title: "\(titlePrefix):  \(active) of \(units.count) active", items: rows)
+    }
+
+    private static func appsItem(_ apps: [CoolifyResource]) -> MenuItem {
         let seen = apps.filter { $0.resourceStatus != .absent }
-        guard !seen.isEmpty else { return "Apps:  not known" }
+        guard !seen.isEmpty else { return .line("Apps:  not known") }
         let running = seen.filter { $0.resourceStatus == .running }.count
         let failed = seen.filter { $0.resourceStatus == .exited || $0.resourceStatus == .unhealthy }.count
         let unknown = seen.count - running - failed
         let extra = unknown > 0 ? ", \(unknown) not known" : ""
-        return "Apps:  \(running) running, \(failed) failed\(extra)"
+        let sorted = seen.filter { $0.resourceStatus != .running } + seen.filter { $0.resourceStatus == .running }
+        var children: [MenuItem] = sorted.map { app in
+            let statusText = app.signalText() ?? app.resourceStatus.rawValue
+            return .line("\(app.name):  \(statusText)")
+        }
+        children.append(.command(title: "Open Server Status", .openServerStatus))
+        return .group(title: "Apps \(FleetHost.server.onTitle):  \(running) running, \(failed) failed\(extra)",
+                      items: children)
     }
 
     private static func fullnessLine(_ metrics: HostMetrics?) -> String {
@@ -617,7 +689,7 @@ enum MachineMenuCopy {
     /// menu:  stopping the report timer would blind this very section within 45 minutes,
     /// so Stop stays in the panel,  behind the plan and Touch ID.
     static func unitRow(_ service: ServerService, allowlist: OpsAllowlist?) -> MenuRow {
-        let title = "\(OpsNames.unitTitle(service.unit)):  \(service.activeState ?? "not known")"
+        let title = "\(OpsNames.menuUnitTitle(service.unit)):  \(service.activeState ?? "not known")"
         guard service.controllable, let verbs = allowlist?.verbs(forServerUnit: service.unit), !verbs.isEmpty else {
             return MenuRow(title: title, actions: [])
         }

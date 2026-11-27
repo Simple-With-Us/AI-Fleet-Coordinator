@@ -88,6 +88,8 @@ struct DriftMenuBarContent: View {
             MusterWindow.show(.serverStatus, openWindow: openWindow)
         case .openServices:
             MusterWindow.show(.services, openWindow: openWindow)
+        case .openBackgroundAgents:
+            MusterWindow.show(.macAgents, openWindow: openWindow)
         case .openComplianceGrid:
             MusterWindow.show(.complianceGrid, openWindow: openWindow)
         case .openMuster:
