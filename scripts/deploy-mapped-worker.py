@@ -330,6 +330,8 @@ def verify_deployment_continuity(name, before_id, version):
     if [{"version_id": v.get("version_id"), "percentage": v.get("percentage")} for v in versions] != expected:
         raise RuntimeError("Concurrent deployment detected: current traffic differs")
     previous = deployments[1].get("id") if len(deployments) > 1 else None
+    if before_id is not None and previous is None:
+        raise RuntimeError("Deployment predecessor history unavailable; cannot verify promotion continuity")
     if previous != before_id:
         raise RuntimeError("Concurrent deployment detected in promotion window; inspect history, no blind rollback")
 

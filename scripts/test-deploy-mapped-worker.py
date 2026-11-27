@@ -793,6 +793,12 @@ class DeploymentContinuityChecks(unittest.TestCase):
  def test_clean_serial_promotion(self):
   with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100}]},{"id":"old"}]}):
    m.verify_deployment_continuity("w","old","version")
+ def test_first_deployment_accepts_no_predecessor(self):
+  with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100}]}]}):
+   m.verify_deployment_continuity("w",None,"version")
+ def test_missing_expected_predecessor_is_unverifiable_not_success(self):
+  with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100}]}]}), self.assertRaisesRegex(RuntimeError,"history unavailable"):
+   m.verify_deployment_continuity("w","old","version")
  def test_response_extension_fields_are_ignored(self):
   with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100,"extra":"future"}]},{"id":"old"}]}):
    m.verify_deployment_continuity("w","old","version")
