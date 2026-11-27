@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Serialized exact-main code deployment. Activation and credentials are external."""
 
+import tempfile
 import datetime
 import fnmatch
 import importlib.util
@@ -10,7 +11,6 @@ import pathlib
 import re
 import subprocess
 import sys
-import tempfile
 import tomllib
 import urllib.error
 import urllib.request
@@ -322,30 +322,23 @@ def deployment_head(name):
         raise RuntimeError("Live deployment identity missing")
     return identity
 
-
 def verify_deployment_continuity(name, before_id, version):
     """Detect, never silently bless, an external promotion in the final API-call gap."""
     deployments = api("/workers/scripts/" + name + "/deployments")["deployments"]
     expected = [{"version_id": version, "percentage": 100}]
-    if not deployments or deployments[0].get("versions") != expected:
+    versions = deployments[0].get("versions", []) if deployments else []
+    if [{"version_id": v.get("version_id"), "percentage": v.get("percentage")} for v in versions] != expected:
         raise RuntimeError("Concurrent deployment detected: current traffic differs")
     previous = deployments[1].get("id") if len(deployments) > 1 else None
     if previous != before_id:
-        raise RuntimeError(
-            "Concurrent deployment detected in promotion window; inspect history, no blind rollback"
-        )
-
+        raise RuntimeError("Concurrent deployment detected in promotion window; inspect history, no blind rollback")
 
 def uploaded_version(command, flags, env, name, sha):
     """Use Wrangler's private JSONL receipt, never a paginated newest-version guess."""
     with tempfile.TemporaryDirectory(prefix="worker-upload-") as directory:
         output = pathlib.Path(directory) / "receipt.jsonl"
-        subprocess.run(
-            [*command, *flags],
-            check=True,
-            timeout=DEPLOY_TIMEOUT_SECONDS,
-            env={**env, "WRANGLER_OUTPUT_FILE_PATH": str(output)},
-        )
+        subprocess.run([*command, *flags], check=True, timeout=DEPLOY_TIMEOUT_SECONDS,
+                       env={**env, "WRANGLER_OUTPUT_FILE_PATH": str(output)})
         try:
             if output.stat().st_size > 65536:
                 raise ValueError("oversized receipt")
@@ -381,9 +374,7 @@ def publish_version(name, target, sha):
     version_id = uploaded_version(
         [command[0], "versions", "upload", *config],
         ["--keep-vars", "--strict", "--tag", sha, "--message", "main " + sha],
-        env,
-        name,
-        sha,
+        env, name, sha,
     )
     if current_main() != sha:
         raise RuntimeError("Superseded after upload; production unchanged")
@@ -412,7 +403,6 @@ def publish_version(name, target, sha):
         raise RuntimeError("Production receipt is not the uploaded version at 100 percent")
 
     verify_deployment_continuity(name, before_id, version_id)
-
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--secrets":
