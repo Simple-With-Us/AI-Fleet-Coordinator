@@ -99,7 +99,8 @@ grok_leader_lock_held() {
 # Deprecated / off-Mac (do not watch or resurrect): mac-collab, mac-collab-litestream,
 # mac-collab-sync and mac-collab-writeback (all retired 2026-10-19, AFC-363;  the board
 # archive is gone, Linear is the tracker), scout, senate-relay,
-# senate-tunnel, residential-proxy, Congress/Socratic/Usage mac-xcode runners.
+# senate-tunnel, residential-proxy, Congress/Socratic/Usage mac-xcode runners,
+# seat-mcp and standalone grok-acp (retired 2026-11-27, AFC-926).
 # Slack retired on 2026-10-07: cursor-slack-sync and the slack-agent-inbox
 # launchd job are gone and must not be watched or resurrected.
 # The BotFleet MCP server is not in this list:  the owner parked it on purpose
@@ -112,9 +113,7 @@ expect_pm2=(
   xcode-health
   agy-acp
   grok-leader
-  grok-acp
   clutch-web
-  seat-mcp
 )
 
 # "label plist-basename [alias-label...]"  (plists live in ~/Library/LaunchAgents)
@@ -173,7 +172,6 @@ expect_files=(
   "${HOME}/apps/check-hetzner-cx43.sh"
   "${HOME}/Code/Socratic-Trade/scripts/sync-provider-knobs.sh"
   "${HOME}/apps/ios-fleet/ship-now-gui.sh"
-  "${HOME}/apps/grok-acp-runtime/start.sh"
   "${HOME}/apps/grok-acp-runtime/grok-idle-unload.py"
   "${HOME}/apps/sim-idle-reaper.py"
   "${HOME}/apps/clutch-runtime/scripts/start-web.sh"
