@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from simple_tools import subscribe_all as S
 from simple_tools import zulip as Z
@@ -138,6 +139,39 @@ class SubscribeAllTests(unittest.TestCase):
             os.environ.pop(token_name, None)
             if previous is not None:
                 os.environ[token_name] = previous
+
+    def test_service_token_bounds_match_the_shared_client(self) -> None:
+        """subscribe_all keeps a local copy of the shared token rule (its image lacks the shared
+        client), so the two must agree on every boundary."""
+        import fleet_infisical as FI
+
+        cases = {
+            "shortest valid": "st." + "a" * 17,
+            "one too short": "st." + "a" * 16,
+            "old 2048 cap": "st." + "a" * 2045,
+            "just over the old cap": "st." + "a" * 2046,
+            "longest valid": "st." + "a" * 8189,
+            "one too long": "st." + "a" * 8190,
+            "no prefix": "x" * 40,
+            "inner space": "st." + "a" * 10 + " " + "b" * 10,
+            "inner tab": "st." + "a" * 10 + "\t" + "b" * 10,
+            "inner NUL": "st." + "a" * 10 + "\0" + "b" * 10,
+        }
+        for name, token in cases.items():
+            with self.subTest(name):
+                try:
+                    FI.check_service_token(token)
+                    shared_ok = True
+                except FI.SecretsError:
+                    shared_ok = False
+                # An environment variable cannot hold NUL, so the read itself is stubbed.
+                with mock.patch.object(S.os.environ, "get", return_value=token):
+                    try:
+                        local_ok = S._service_token() == token.strip()
+                    except S.Failure:
+                        local_ok = False
+                self.assertEqual(local_ok, shared_ok)
+        self.assertEqual(S.SERVICE_TOKEN_MAX_LENGTH, 8192)
 
     def test_listener_daemon_imports_without_the_fleet_secrets_package(self) -> None:
         repo = Path(__file__).resolve().parents[3]

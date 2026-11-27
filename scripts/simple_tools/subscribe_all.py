@@ -119,12 +119,19 @@ def mac_credentials() -> list[Z.Credentials]:
     return out
 
 
+# The listener image does not carry the shared Infisical client, so this bound is a local copy of
+# fleet_infisical.check_service_token's rule (20 to 8192 characters, "st." prefix, no whitespace
+# or NUL).  A parity test in test_subscribe_all.py compares the two at the boundaries so they
+# cannot drift apart again.
+SERVICE_TOKEN_MAX_LENGTH = 8192
+
+
 def _service_token() -> str:
     token = os.environ.get(INFISICAL_TOKEN_ENV, "").strip()
     if (
         not token.startswith("st.")
-        or not 20 <= len(token) <= 2048
-        or any(c.isspace() for c in token)
+        or not 20 <= len(token) <= SERVICE_TOKEN_MAX_LENGTH
+        or any(c.isspace() or c == "\0" for c in token)
     ):
         raise Failure(f"{INFISICAL_TOKEN_ENV} is missing or is not a valid service token")
     return token
