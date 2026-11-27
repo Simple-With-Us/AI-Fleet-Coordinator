@@ -2620,6 +2620,33 @@ class TestReadiness(unittest.TestCase):
         self.assertEqual(a.cmd, "readiness")
 
 
+class RemoteCodeAllowList(unittest.TestCase):
+    """The hosted server's error codes are recognized, so a hold is shown as a hold and not as a generic error."""
+
+    def test_every_hosted_error_code_is_allowed(self):
+        src = Path(__file__).resolve().parents[1] / "simple-tools-mcp" / "src"
+        found = set()
+        for path in src.glob("*.js"):
+            text = path.read_text()
+            found.update(re.findall(r'new ToolError\("([a-z_]+)"', text))
+            found.update(re.findall(r'(?<![A-Za-z])ToolError\("([a-z_]+)"', text))
+        self.assertTrue(found)
+        self.assertEqual(found - set(git._REMOTE_CODES), set())
+
+    def test_origin_held_keeps_its_code(self):
+        self.assertEqual(git._error_code_of({"structuredContent": {"code": "origin_held"}}), "origin_held")
+        self.assertEqual(
+            git._error_code_of({"_meta": {"simple-tools/error": {"code": "origin_held"}}}), "origin_held"
+        )
+        self.assertEqual(
+            git._error_code_of({"content": [{"type": "text", "text": '{"code": "origin_held"}'}]}), "origin_held"
+        )
+
+    def test_a_lookalike_or_non_string_code_is_not_recognized(self):
+        for code in ("origin_held_extra", "ORIGIN_HELD", "ghp_" + "A" * 40, 5, None):
+            self.assertIsNone(git._error_code_of({"structuredContent": {"code": code}}))
+
+
 if __name__ == "__main__":
     unittest.main()
 

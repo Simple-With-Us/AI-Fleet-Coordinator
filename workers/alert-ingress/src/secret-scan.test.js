@@ -9,7 +9,10 @@
 // worker's tool schemas into the bundle.  This test is what keeps the copy
 // honest:  it fails the moment the three lists drift apart.
 //
-// Skips itself where python3 is missing.
+// Locally it skips itself where python3 is missing or too old for the Python suite.
+// Under CI (CI is set) nothing is skipped:  a missing or broken Python, or output that
+// is not the expected JSON, fails the first parity test with the reason, so the drift
+// check cannot go quiet.  A dump that parses badly fails everywhere, never skips.
 //
 // Run: node --test workers/alert-ingress/src/*.test.js
 
@@ -19,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanForCredential } from "./secret-scan.js";
+import { scanSecret as scanMcp } from "../../../scripts/simple-tools-mcp/src/contract.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../../..");
@@ -33,15 +37,42 @@ const PROGRAM = [
   "source = t.source_expressions()",
   "print(json.dumps({'samples': samples, 'clean': clean, 'source': source}))",
 ].join("\n");
-const dump = spawnSync("python3", ["-c", PROGRAM], {
-  cwd: SCRIPTS,
-  encoding: "utf8",
-  env: { ...process.env, PYTHONPATH: SCRIPTS },
-});
-const tables = dump.status === 0 ? JSON.parse(dump.stdout) : null;
-const skip = tables ? false : `python3 or the Python suite is unavailable (status ${dump.status})`;
+// The dump is read inside a try:  a throw at the top level of a test file takes every test
+// in it down with an unreadable stack, and a bad dump must name itself instead.
+function loadTables() {
+  const dump = spawnSync("python3", ["-c", PROGRAM], {
+    cwd: SCRIPTS,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONPATH: SCRIPTS },
+  });
+  if (dump.status !== 0) {
+    const why = dump.error
+      ? `python3 could not run (${dump.error.code ?? "error"})`
+      : `python3 or the Python suite is unavailable (status ${dump.status})`;
+    return { tables: null, why, unavailable: true };
+  }
+  return parseDump(dump.stdout);
+}
+// Never throws:  an unusable dump is a result that fails the first parity test.
+function parseDump(stdout) {
+  try {
+    const parsed = JSON.parse(stdout);
+    if (!parsed || !Array.isArray(parsed.samples) || !Array.isArray(parsed.clean) || !Array.isArray(parsed.source)) {
+      return { tables: null, why: "the Python dump is not the expected shape", unavailable: false };
+    }
+    return { tables: parsed, why: "", unavailable: false };
+  } catch {
+    return { tables: null, why: "the Python dump is not valid JSON", unavailable: false };
+  }
+}
+const loaded = loadTables();
+const tables = loaded.tables;
+// Skipping is only for a developer machine without a usable Python.  CI never skips.
+const skip = !tables && loaded.unavailable && !process.env.CI ? loaded.why : false;
+const needTables = () => assert.ok(tables, `the Python scanner tables did not load: ${loaded.why}`);
 
 test("every fleet token kind the Python scanner knows is refused here, with the same kind", { skip }, () => {
+  needTables();
   assert.ok(tables.samples.length >= 20);
   const kinds = new Set();
   for (const [kind, text, python] of tables.samples) {
@@ -50,6 +81,12 @@ test("every fleet token kind the Python scanner knows is refused here, with the 
       scanForCredential(text),
       kind,
       `ingress: ${kind} in ${JSON.stringify(text.slice(0, 14))}`,
+    );
+    // The third copy:  the hosted MCP Worker's.  All three must name the same kind.
+    assert.equal(
+      scanMcp(text),
+      kind,
+      `MCP Worker: ${kind} in ${JSON.stringify(text.slice(0, 14))}`,
     );
     kinds.add(kind);
   }
@@ -70,9 +107,11 @@ test("every fleet token kind the Python scanner knows is refused here, with the 
 });
 
 test("ordinary text that only looks like a token passes here as it does in Python", { skip }, () => {
+  needTables();
   assert.ok(tables.clean.length >= 25);
   for (const [text, python] of tables.clean) {
     assert.equal(python, null);
+    assert.equal(scanMcp(text), null, `MCP Worker flagged ${JSON.stringify(text.slice(0, 30))}`);
     assert.equal(
       scanForCredential(text),
       null,
@@ -123,6 +162,18 @@ test("long adversarial inputs do not blow up", () => {
 // preserve masking of environment references in alerts, rather than weakening it
 // merely to make a source-code corpus pass this unrelated redaction consumer.
 test("source assignment expressions stay conservatively masked in alert ingress", { skip }, () => {
+  needTables();
   assert.ok(tables.source.length >= 3);
   for (const text of tables.source) assert.ok(scanForCredential(text));
+});
+
+// An unusable dump is a failure, not a skip:  only a missing Python may skip, and never under CI.
+test("a Python dump that is not JSON or not the expected shape is a failure, not a skip", () => {
+  for (const [stdout, why] of [["not json", "not valid JSON"], ["", "not valid JSON"], ["{}", "not the expected shape"], ["null", "not the expected shape"]]) {
+    const result = parseDump(stdout);
+    assert.equal(result.tables, null);
+    assert.ok(result.why.includes(why), result.why);
+    assert.equal(result.unavailable, false, "only a missing Python may skip");
+  }
+  assert.ok(parseDump('{"samples":[],"clean":[],"source":[]}').tables);
 });

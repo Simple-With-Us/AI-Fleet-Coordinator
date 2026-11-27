@@ -18,7 +18,10 @@
 // string is scanned for a credential before it can be persisted or relayed,
 // and the whole body is bounded in depth and in total nodes.
 //
-// Unknown vendor fields are dropped rather than refused.  A Sentry body
+// The bound is on the WHOLE input, not on the declared shape:  a parse first
+// walks every value the body carries, declared or not, and refuses a body
+// past the depth or node budget.  Only after that does the declared shape
+// pick its fields.  Unknown vendor fields are then dropped rather than refused.  A Sentry body
 // carries fields the fleet never reads (actor, installation, tags), and
 // refusing a genuine alert over a field nobody reads would lose the alert;
 // dropping it keeps it out of the parsed result all the same.
@@ -161,6 +164,39 @@ function parseValue(shape, value, path, budget) {
 }
 
 /**
+ * Bound the whole input before the declared shape reads any of it.
+ *
+ * Every value is counted, whether or not the schema declares it, so a body
+ * of many unknown keys or a deep unknown subtree is refused on the same
+ * budget as a declared one.  The walk is iterative (an explicit stack), so a
+ * deep body cannot overflow the call stack, and it stops at the first value
+ * past the budget, so a wide body costs at most MAX_NODES visits.  Depth is
+ * counted from the root at 0, as the entry point's own walk counts it.
+ */
+function boundWholeBody(root) {
+  let nodes = 0;
+  const stack = [[root, 0]];
+  while (stack.length > 0) {
+    const [value, depth] = stack.pop();
+    if (++nodes > MAX_NODES) throw new SchemaError("payload too large", null);
+    if (depth > MAX_DEPTH) throw new SchemaError("payload nested too deep", null);
+    if (value === null || typeof value !== "object") continue;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        stack.push([item, depth + 1]);
+        if (stack.length + nodes > MAX_NODES + 1) throw new SchemaError("payload too large", null);
+      }
+    } else {
+      for (const key in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        stack.push([value[key], depth + 1]);
+        if (stack.length + nodes > MAX_NODES + 1) throw new SchemaError("payload too large", null);
+      }
+    }
+  }
+}
+
+/**
  * Parse a value against a schema.
  *
  * The answer is either `{ success: true, data }` or
@@ -169,6 +205,7 @@ function parseValue(shape, value, path, budget) {
  */
 export function safeParse(shape, value) {
   try {
+    boundWholeBody(value);
     return {
       success: true,
       data: parseValue(shape, value, "", {

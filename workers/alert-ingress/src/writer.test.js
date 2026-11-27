@@ -7,6 +7,16 @@ function storage() {
   const data = new Map();
   return {
     data,
+    // Durable Object storage serializes transaction callbacks.  Model that
+    // capability explicitly now that production refuses nontransactional storage.
+    transaction: (() => {
+      let tail = Promise.resolve();
+      return function (fn) {
+        const run = tail.then(() => fn(this));
+        tail = run.catch(() => {});
+        return run;
+      };
+    })(),
     async get(k) {
       return data.get(k);
     },
