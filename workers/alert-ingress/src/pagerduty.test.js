@@ -39,6 +39,14 @@ function fakeKV() {
 function fakeStorage() {
   const data = new Map();
   return {
+    transaction: (() => {
+      let tail = Promise.resolve();
+      return function (fn) {
+        const run = tail.then(() => fn(this));
+        tail = run.catch(() => {});
+        return run;
+      };
+    })(),
     async get(key) {
       return data.get(key);
     },

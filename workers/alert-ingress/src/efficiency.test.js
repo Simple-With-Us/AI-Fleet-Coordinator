@@ -22,6 +22,16 @@ function storage() {
   const counts = { put: 0, listed: [] };
   return {
     data,
+    // Durable Object storage serializes transaction callbacks.  Model that
+    // capability explicitly now that production refuses nontransactional storage.
+    transaction: (() => {
+      let tail = Promise.resolve();
+      return function (fn) {
+        const run = tail.then(() => fn(this));
+        tail = run.catch(() => {});
+        return run;
+      };
+    })(),
     counts,
     async get(key) {
       return data.get(key);
