@@ -13,7 +13,7 @@ final class FleetServicesTests: XCTestCase {
         let ids = FleetServiceRegistry.all.map(\.id)
         // The supported pm2 applications in this admin view.
         for appName in ["shellular", "vision-worker", "xcode-health",
-                        "agy-acp", "grok-leader", "grok-acp", "clutch-web",
+                        "agy-acp", "grok-leader", "clutch-web",
                         "botfleet-mcp"] {
             XCTAssertTrue(ids.contains(appName), "\(appName) is missing from the registry")
         }
@@ -22,11 +22,12 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertTrue(ids.contains("app.botfleet.companion"))
         XCTAssertTrue(ids.contains("com.jay.operator"))
         XCTAssertFalse(ids.contains("seat-mcp"))
+        XCTAssertFalse(ids.contains("grok-acp"))
         // The Code mirror keeper is a launchd agent since the Nov 25, 2026 cutover,  so
         // the pm2 app name is gone and the label is the service's id.
         XCTAssertTrue(ids.contains("com.jay.code-main-keeper"))
         XCTAssertFalse(ids.contains("code-main-keeper"))
-        XCTAssertEqual(ids.count, 12)
+        XCTAssertEqual(ids.count, 11)
     }
 
     /// The Mac's eavesdropper (`com.jay.operator`) is on the Services list as a LaunchAgent,
@@ -303,9 +304,9 @@ final class FleetServicesTests: XCTestCase {
 
     func testTheFleetServicesMenuHasOneRowPerService() {
         let services = FleetServices(serverState: .running, states: [:])
-        XCTAssertEqual(services.menuItems.count, 12)
+        XCTAssertEqual(services.menuItems.count, 11)
         XCTAssertEqual(services.menuItems.first?.id, "botfleet-mcp")
-        XCTAssertEqual(services.menuTitle, "Services On The Mac (12)")
+        XCTAssertEqual(services.menuTitle, "Services On The Mac (11)")
     }
 
     func testEachMenuRowShowsTheStateAndTheActions() {
@@ -1120,17 +1121,18 @@ final class FleetServicesTests: XCTestCase {
         let commands = FleetServiceCommands()
         commands.pm2Listing = """
         [{"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}},
-         {"name": "grok-acp", "pid": 0, "pm2_env": {"status": "errored"}}]
+         {"name": "agy-acp", "pid": 0, "pm2_env": {"status": "errored"}}]
         """
         let home = try makeHome(serverInstalled: true)
         defer { try? FileManager.default.removeItem(at: home) }
         let control = makeControl(commands: commands, home: home)
         let states = await control.states(serverState: .running)
         XCTAssertEqual(states["shellular"], .running)
-        XCTAssertEqual(states["grok-acp"], .failed)
+        XCTAssertEqual(states["agy-acp"], .failed)
         // An application pm2 has no record of is not stopped:  it is not in this Mac's pm2.
         XCTAssertEqual(states["vision-worker"], .notInPM2)
         XCTAssertNil(states["seat-mcp"])
+        XCTAssertNil(states["grok-acp"])
     }
 
     // MARK: - Helpers
