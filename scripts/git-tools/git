@@ -3593,7 +3593,9 @@ def collect_readiness(read, repo, number, expected_head=None, max_pages=20):
     return report
 
 
-def cmd_readiness(tools, a, bearer, server_seat, deadline):
+def _readiness_reader(tools, bearer, server_seat, deadline):
+    """The bounded reader readiness, watch and run-log share:  only pinned read tools, schema checked, actor
+    resolved, a refusal reported as a refusal and anything else as unknown."""
     def read(name, args):
         entry = tools.get(name)
         if not entry or entry.get("read") is not True or name not in READ_TOOLS:
@@ -3612,9 +3614,180 @@ def cmd_readiness(tools, a, bearer, server_seat, deadline):
         if not isinstance(value, dict) or not value:
             raise ReadinessUnknown("structured read unavailable: " + name)
         return value
+    return read
+
+
+def cmd_readiness(tools, a, bearer, server_seat, deadline):
+    read = _readiness_reader(tools, bearer, server_seat, deadline)
     report = collect_readiness(read, a.repo, a.number, a.expected_head)
     print(json.dumps(report, indent=2))
     return 0 if report["verdict"] == "observed_checks_passed" else 1
+
+
+# ------------------------------------------------------- watch and run-log (read-only)
+
+WATCH_EXIT_FAILED = 1
+RUN_LOG_MAX_PAGES = 16  # 16 reads of up to 256 KiB each
+WATCH_EXIT_UNKNOWN = 2
+WATCH_EXIT_PENDING = 8  # the gh convention: checks still pending when the watch ended
+WATCH_MIN_INTERVAL_S = 10
+_OK_CONCLUSIONS = ("success", "neutral", "skipped")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_LOG_STAMP = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT[\d:.]+Z ")
+_LOG_ERROR = re.compile(
+    r"(##\[error\]|(?<![\w*] )(?<!\w)error: |\bfatal:|\bFAIL\b|\bFailing tests?\b|\bAssertionError\b|"
+    r"Test Case .* failed|\bTesting failed\b|\bnot ok\b|\bTraceback\b|\bexit code [1-9]|"
+    r"Process completed with exit code|\*\* TEST FAILED \*\*|XCTAssert\w* failed)"
+)
+
+
+def summarize_checks(report):
+    """pending / failed / passed check names for one readiness report.  Pure, so the watch loop is testable."""
+    pending, failed, passed = [], [], []
+    for c in report.get("checks") or []:
+        if c.get("status") != "completed":
+            pending.append(c.get("name"))
+        elif c.get("conclusion") in _OK_CONCLUSIONS:
+            passed.append(c.get("name"))
+        else:
+            failed.append("%s (%s)" % (c.get("name"), c.get("conclusion")))
+    return pending, failed, passed
+
+
+def watch_decision(report, fail_fast=False, require_ready=False):
+    """None while the watch should keep polling, otherwise (exit status, reason)."""
+    if report.get("relay_reason"):
+        return WATCH_EXIT_UNKNOWN, "relay refused: " + str(report["relay_reason"])
+    if report.get("merged"):
+        return 0, "PR merged"
+    if report.get("state") == "closed":
+        return WATCH_EXIT_FAILED, "PR closed without merge"
+    pending, failed, _ = summarize_checks(report)
+    if failed and (fail_fast or not pending):
+        return WATCH_EXIT_FAILED, "checks failed: " + ", ".join(failed)
+    if not report.get("checks") or pending:
+        return None
+    if require_ready:
+        if report.get("verdict") == "observed_checks_passed":
+            return 0, "all checks passed and the PR report is clean"
+        return None
+    return 0, "all checks passed"
+
+
+def watch_line(report):
+    pending, failed, passed = summarize_checks(report)
+    threads = (report.get("review_threads") or {}).get("unresolved")
+    head = report.get("head") or ""
+    on_head = any(r.get("commit_id") == head for r in report.get("reviews") or [])
+    return "head %s checks pending=%d failed=%d passed=%d threads_unresolved=%s review_on_head=%s merge_state=%s" % (
+        head[:8], len(pending), len(failed), len(passed),
+        "?" if threads is None else len(threads), "yes" if on_head else "no",
+        report.get("github_merge_state", "?"))
+
+
+def run_watch(read_for_poll, repo, number, interval, timeout_s, fail_fast, require_ready, expected_head,
+              sleep=time.sleep, clock=time.monotonic, out=None):
+    """Poll readiness until a decision, a head change, a refusal, repeated unknowns or the timeout."""
+    out = out or sys.stdout
+    stop_at = clock() + timeout_s
+    last_line, unknown_polls = None, 0
+    while True:
+        report = collect_readiness(read_for_poll(), repo, number, expected_head)
+        if report.get("complete"):
+            unknown_polls = 0
+            line = watch_line(report)
+            if line != last_line:
+                print(time.strftime("%H:%M:%S ") + line, file=out, flush=True)
+                last_line = line
+            decided = watch_decision(report, fail_fast, require_ready)
+            if decided:
+                print(decided[1], file=out, flush=True)
+                return decided[0]
+        else:
+            decided = watch_decision(report, fail_fast, require_ready) if report.get("relay_reason") else None
+            if decided:
+                print(decided[1], file=out, flush=True)
+                return decided[0]
+            unknown_polls += 1
+            print("report incomplete: " + "; ".join(report.get("unknowns") or ["unknown"]), file=out, flush=True)
+            if unknown_polls >= 3:
+                print("giving up after 3 incomplete reports in a row", file=out, flush=True)
+                return WATCH_EXIT_UNKNOWN
+        if clock() + interval >= stop_at:
+            print("timed out with checks still pending", file=out, flush=True)
+            return WATCH_EXIT_PENDING
+        sleep(interval)
+
+
+def cmd_watch(tools, a, bearer, server_seat, deadline):
+    interval = max(WATCH_MIN_INTERVAL_S, a.interval)
+    if a.timeout <= 0:
+        die("--timeout must be positive")
+
+    def read_for_poll():  # every poll draws its own overall budget
+        return _readiness_reader(tools, bearer, server_seat, time.monotonic() + OVERALL_DEADLINE_S)
+
+    return run_watch(read_for_poll, a.repo, a.number, interval, a.timeout, a.fail_fast, a.ready,
+                     a.expected_head)
+
+
+def clean_log_lines(text):
+    return [_LOG_STAMP.sub("", _ANSI.sub("", line)).rstrip() for line in text.splitlines()]
+
+
+def failure_excerpt(lines, context=2, max_lines=40):
+    """The lines around the first errors, else the tail:  what gh run view --log-failed is used for."""
+    hits = [i for i, line in enumerate(lines) if _LOG_ERROR.search(line)]
+    if not hits:
+        return lines[-max_lines:]
+    keep = set()
+    for i in hits:
+        keep.update(range(max(0, i - context), min(len(lines), i + context + 1)))
+    ordered = sorted(keep)
+    return [lines[i] for i in ordered[:max_lines]]
+
+
+def cmd_run_log(tools, a, bearer, server_seat, deadline):
+    read = _readiness_reader(tools, bearer, server_seat, deadline)
+    try:
+        jobs = read("gr_wf_run_jobs", {"repo": a.repo, "run_id": a.run_id}).get("jobs")
+        if not isinstance(jobs, list):
+            raise ReadinessUnknown("run jobs missing")
+        shown = 0
+        for job in jobs:
+            bad = job.get("conclusion") not in _OK_CONCLUSIONS and job.get("status") == "completed"
+            if a.failed and not bad:
+                continue
+            print("job %s (%s): %s" % (job.get("name"), job.get("id"), job.get("conclusion") or job.get("status")))
+            steps = [s.get("name") for s in job.get("steps") or []
+                     if s.get("conclusion") not in (None, "success", "skipped", "neutral")]
+            if steps:
+                print("  failed steps: " + ", ".join(str(s) for s in steps))
+            if bad and isinstance(job.get("id"), int):
+                text, offset, truncated = "", 0, False
+                for _ in range(RUN_LOG_MAX_PAGES):
+                    args = {"repo": a.repo, "job_id": job["id"]}
+                    if offset:
+                        args["offset"] = offset
+                    log = read("gr_wf_job_log", args)
+                    text += log.get("content") if isinstance(log.get("content"), str) else ""
+                    nxt = log.get("next_offset")
+                    if log.get("complete") is not False or type(nxt) is not int or nxt <= offset:
+                        break
+                    offset = nxt
+                else:
+                    truncated = True
+                if truncated:
+                    print("  (log is longer than %d reads; the end is not shown)" % RUN_LOG_MAX_PAGES)
+                for line in failure_excerpt(clean_log_lines(text), max_lines=a.lines):
+                    print("  | " + line[:300])
+            shown += 1
+        if shown == 0:
+            print("no failed jobs" if a.failed else "no jobs")
+        return 0
+    except ReadinessUnknown as exc:
+        print("unknown: " + str(exc), file=sys.stderr)
+        return WATCH_EXIT_UNKNOWN
 
 
 # ----------------------------------------------------------------- parser / main
@@ -3649,6 +3822,28 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("repo")
     pr.add_argument("number", type=int)
     pr.add_argument("--expected-head", help="fail closed if the current full head SHA differs")
+    pwt = sub.add_parser(
+        "watch",
+        help="read-only wait on a PR's checks (gh pr checks --watch);  exits 0 passed, 1 failed, 8 timed out, 2 unknown",
+        allow_abbrev=False,
+    )
+    pwt.add_argument("repo")
+    pwt.add_argument("number", type=int)
+    pwt.add_argument("--interval", type=int, default=30, help="seconds between polls (minimum 10, default 30)")
+    pwt.add_argument("--timeout", type=int, default=3600, help="seconds to wait (default 3600)")
+    pwt.add_argument("--fail-fast", action="store_true", help="stop at the first failed check")
+    pwt.add_argument("--ready", action="store_true",
+                     help="also wait for the full readiness report to be clean (threads, review on this head)")
+    pwt.add_argument("--expected-head", help="fail closed if the current full head SHA differs")
+    prl = sub.add_parser(
+        "run-log",
+        help="read-only failed jobs, failed steps and the error lines of a workflow run (gh run view --log-failed)",
+        allow_abbrev=False,
+    )
+    prl.add_argument("repo")
+    prl.add_argument("run_id", type=int)
+    prl.add_argument("--failed", action="store_true", help="only jobs that did not succeed")
+    prl.add_argument("--lines", type=int, default=40, help="most log lines shown per failed job (default 40)")
     pc = sub.add_parser(
         "call", help="call one tool:  call NAME --args-json JSON|@FILE|-", allow_abbrev=False
     )
@@ -3773,6 +3968,10 @@ def main(argv: list[str] | None = None) -> int:
     tools = discover_tools(bearer, overall_deadline)
     if a.cmd == "readiness":
         return cmd_readiness(tools, a, bearer, server_seat, overall_deadline)
+    if a.cmd == "watch":
+        return cmd_watch(tools, a, bearer, server_seat, overall_deadline)
+    if a.cmd == "run-log":
+        return cmd_run_log(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "publish":
         return cmd_publish(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "push":
