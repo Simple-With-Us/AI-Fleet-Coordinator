@@ -2634,12 +2634,16 @@ class RemoteCodeAllowList(unittest.TestCase):
         self.assertEqual(found - set(git._REMOTE_CODES), set())
 
     def test_origin_held_keeps_its_code(self):
-        self.assertEqual(git._error_code_of({"structuredContent": {"code": "origin_held"}}), "origin_held")
         self.assertEqual(
-            git._error_code_of({"_meta": {"simple-tools/error": {"code": "origin_held"}}}), "origin_held"
+            git._error_code_of({"structuredContent": {"code": "origin_held"}}), "origin_held"
         )
         self.assertEqual(
-            git._error_code_of({"content": [{"type": "text", "text": '{"code": "origin_held"}'}]}), "origin_held"
+            git._error_code_of({"_meta": {"simple-tools/error": {"code": "origin_held"}}}),
+            "origin_held",
+        )
+        self.assertEqual(
+            git._error_code_of({"content": [{"type": "text", "text": '{"code": "origin_held"}'}]}),
+            "origin_held",
         )
 
     def test_a_lookalike_or_non_string_code_is_not_recognized(self):
