@@ -62,17 +62,28 @@ class Reader:
 
 class PublishApi:
     def __init__(self, items=None, changed=False):
-        self.items = items if items is not None else [{"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}]
+        self.items = (
+            items
+            if items is not None
+            else [
+                {
+                    "id": "12345678-1234-1234-1234-123456789abc",
+                    "annotations": {"workers/tag": SHA_A},
+                }
+            ]
+        )
         self.listings = 0
         self.deployments = 0
         self.changed = changed
+
     def __call__(self, path):
         if path.endswith("/settings"):
             return {}
         if path.endswith("/deployments"):
             self.deployments += 1
             vid = "old" if self.deployments < 3 else "12345678-1234-1234-1234-123456789abc"
-            if self.changed and self.deployments == 2: vid = "concurrent"
+            if self.changed and self.deployments == 2:
+                vid = "concurrent"
             return {"deployments": [{"versions": [{"version_id": vid, "percentage": 100}]}]}
         self.listings += 1
         return {"items": [] if self.listings == 1 else self.items}
@@ -226,7 +237,12 @@ class Checks(unittest.TestCase):
             "api": None,
         }
         defaults.update(patches)
-        active = [patch.object(m, k, side_effect=PublishApi()) if k == "api" and v is None else patch.object(m, k, return_value=v) for k, v in defaults.items()]
+        active = [
+            patch.object(m, k, side_effect=PublishApi())
+            if k == "api" and v is None
+            else patch.object(m, k, return_value=v)
+            for k, v in defaults.items()
+        ]
         with (
             patch.object(m.sys, "argv", ["deploy", "x"]),
             patch.dict(m.TARGETS, {"x": target}),
@@ -247,10 +263,12 @@ class Checks(unittest.TestCase):
 
     def publish_fixture(self, items, mains=None, guards=None):
         target = {"command": ["wrangler", "deploy"], "config": "x.toml"}
-        with (patch.object(m, "api", side_effect=PublishApi(items)),
-              patch.object(m, "current_main", side_effect=mains or [SHA_A]),
-              patch.object(m, "guard_tripped", side_effect=guards or [False]),
-              patch.object(m.subprocess, "run") as run):
+        with (
+            patch.object(m, "api", side_effect=PublishApi(items)),
+            patch.object(m, "current_main", side_effect=mains or [SHA_A]),
+            patch.object(m, "guard_tripped", side_effect=guards or [False]),
+            patch.object(m.subprocess, "run") as run,
+        ):
             m.publish_version("x", target, SHA_A)
         return run
 
@@ -268,31 +286,48 @@ class Checks(unittest.TestCase):
 
     def test_missing_duplicate_wrong_and_malformed_versions_refuse_promotion(self):
         good = {"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}
-        for items in ([], [good, good], [{**good, "annotations": {"workers/tag": SHA_B}}],
-                      [{**good, "id": "not-a-version"}]):
+        for items in (
+            [],
+            [good, good],
+            [{**good, "annotations": {"workers/tag": SHA_B}}],
+            [{**good, "id": "not-a-version"}],
+        ):
             with self.subTest(items=items), patch.object(m.subprocess, "run") as run:
-                with patch.object(m, "api", side_effect=PublishApi(items)), self.assertRaises(RuntimeError):
-                    m.publish_version("x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A)
+                with (
+                    patch.object(m, "api", side_effect=PublishApi(items)),
+                    self.assertRaises(RuntimeError),
+                ):
+                    m.publish_version(
+                        "x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A
+                    )
                 self.assertEqual(run.call_count, 1)
 
     def test_concurrent_live_version_change_refuses_promotion(self):
-        with (patch.object(m, "api", side_effect=PublishApi(changed=True)),
-              patch.object(m, "current_main", return_value=SHA_A),
-              patch.object(m, "guard_tripped", return_value=False),
-              patch.object(m.subprocess, "run") as run,
-              self.assertRaisesRegex(RuntimeError, "changed during upload")):
+        with (
+            patch.object(m, "api", side_effect=PublishApi(changed=True)),
+            patch.object(m, "current_main", return_value=SHA_A),
+            patch.object(m, "guard_tripped", return_value=False),
+            patch.object(m.subprocess, "run") as run,
+            self.assertRaisesRegex(RuntimeError, "changed during upload"),
+        ):
             m.publish_version("x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A)
         self.assertEqual(run.call_count, 1)
 
     def test_merge_or_guard_change_after_upload_refuses_promotion(self):
-        items = [{"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}]
+        items = [
+            {"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}
+        ]
         for head, tripped in ((SHA_B, False), (SHA_A, True)):
             with self.subTest(head=head, tripped=tripped), patch.object(m.subprocess, "run") as run:
-                with (patch.object(m, "api", side_effect=PublishApi(items)),
-                      patch.object(m, "current_main", return_value=head),
-                      patch.object(m, "guard_tripped", return_value=tripped),
-                      self.assertRaises(RuntimeError)):
-                    m.publish_version("x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A)
+                with (
+                    patch.object(m, "api", side_effect=PublishApi(items)),
+                    patch.object(m, "current_main", return_value=head),
+                    patch.object(m, "guard_tripped", return_value=tripped),
+                    self.assertRaises(RuntimeError),
+                ):
+                    m.publish_version(
+                        "x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A
+                    )
                 self.assertEqual(run.call_count, 1)
 
     def test_tripped_worker_is_refused_before_any_mutation(self):

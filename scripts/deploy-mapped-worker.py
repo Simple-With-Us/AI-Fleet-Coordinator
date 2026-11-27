@@ -323,11 +323,29 @@ def publish_version(name, target, sha):
     config = ["--config", target["config"]]
     before = {v["id"] for v in api("/workers/scripts/" + name + "/versions?per_page=50")["items"]}
     live_before = live_deployment(name)
-    subprocess.run([command[0], "versions", "upload", *config, "--keep-vars",
-                    "--strict", "--tag", sha, "--message", "main " + sha],
-                   check=True, timeout=DEPLOY_TIMEOUT_SECONDS, env=env)
+    subprocess.run(
+        [
+            command[0],
+            "versions",
+            "upload",
+            *config,
+            "--keep-vars",
+            "--strict",
+            "--tag",
+            sha,
+            "--message",
+            "main " + sha,
+        ],
+        check=True,
+        timeout=DEPLOY_TIMEOUT_SECONDS,
+        env=env,
+    )
     items = api("/workers/scripts/" + name + "/versions?per_page=50")["items"]
-    candidates = [v for v in items if v.get("id") not in before and (v.get("annotations") or {}).get("workers/tag") == sha]
+    candidates = [
+        v
+        for v in items
+        if v.get("id") not in before and (v.get("annotations") or {}).get("workers/tag") == sha
+    ]
     if len(candidates) != 1 or not re.fullmatch(
         r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", candidates[0].get("id", "")
     ):
@@ -339,9 +357,21 @@ def publish_version(name, target, sha):
         raise RuntimeError("Usage guard tripped after upload; production unchanged")
     if live_deployment(name) != live_before:
         raise RuntimeError("Live deployment changed during upload; production unchanged")
-    subprocess.run([command[0], "versions", "deploy", version_id + "@100", *config,
-                    "--yes", "--message", "main " + sha],
-                   check=True, timeout=DEPLOY_TIMEOUT_SECONDS, env=env)
+    subprocess.run(
+        [
+            command[0],
+            "versions",
+            "deploy",
+            version_id + "@100",
+            *config,
+            "--yes",
+            "--message",
+            "main " + sha,
+        ],
+        check=True,
+        timeout=DEPLOY_TIMEOUT_SECONDS,
+        env=env,
+    )
     active = live_deployment(name)
     versions = active.get("versions", []) if active else []
     if versions != [{"version_id": version_id, "percentage": 100}]:
