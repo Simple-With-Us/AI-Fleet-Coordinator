@@ -35,7 +35,9 @@ class AutofixProviderModelTests(unittest.TestCase):
     def test_openrouter_route_and_default_base(self) -> None:
         self.assertEqual(sh('autofix_route_for_base "https://openrouter.ai/api"'), "openrouter")
         self.assertEqual(sh('autofix_route_for_base "https://openrouter.ai/api/v1"'), "invalid")
-        self.assertEqual(sh("autofix_default_base_for_route openrouter"), "https://openrouter.ai/api")
+        self.assertEqual(
+            sh("autofix_default_base_for_route openrouter"), "https://openrouter.ai/api"
+        )
 
     def test_openrouter_slug_is_not_rewritten(self) -> None:
         resolved = sh(
