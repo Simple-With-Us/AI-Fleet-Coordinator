@@ -1278,7 +1278,7 @@ enum ServerSettingsBuilder {
             if case .seats = spec, current == nil { reason = ServerSettingsCopy.listNotReported }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil,
                                      title: title, current: current,
-                                     control: editableControl(spec), readOnlyReason: reason,
+                                     control: editableControl(spec, current: current), readOnlyReason: reason,
                                      defaultValue: isStructure ? seatSendableDefaults[name] : nil,
                                      information: information, seatContext: seatContext)]
         }
