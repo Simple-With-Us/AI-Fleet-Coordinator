@@ -67,6 +67,14 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
         r"/cli-logins",
         r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$",
     ),
+    # The Worker's listener read keys (OPS-1047):  one name per seat whose eavesdropper_* tools
+    # read /listener/v1/<SEAT>, in Fleet-OPS prod /wake.  The value is the seat's own
+    # <CODE>_ROUTINE_KEY copied from the listener's one home (AFC prod /zulip),  so the write
+    # moves an existing per-seat credential to the reader that needs it and never mints one.
+    (
+        r"/wake",
+        r"^WAKE_HMAC_KEY_[A-Z][A-Z0-9_-]{0,31}$",
+    ),
 )
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0

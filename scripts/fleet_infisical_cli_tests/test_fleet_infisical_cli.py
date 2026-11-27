@@ -981,6 +981,9 @@ class SetTests(Base):
                     r"/cli-logins",
                     r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$",
                 ),
+                # The Worker's listener read keys (OPS-1047),  one per seat,  value copied
+                # from the listener's own <CODE>_ROUTINE_KEY (AFC prod /zulip).
+                (r"/wake", r"^WAKE_HMAC_KEY_[A-Z][A-Z0-9_-]{0,31}$"),
             ),
         )
 
