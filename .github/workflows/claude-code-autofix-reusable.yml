@@ -175,7 +175,7 @@ jobs:
           fi
           if [ "$route" = "meta" ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ] && [ "$model_minimax" = "no" ]; then exit 0; fi
           if [ "$route" = "openrouter" ] && [ -n "$VAR_MODEL" ] && [ -n "$OPENROUTER_TOKEN" ] && [ "$model_minimax" = "no" ]; then exit 0; fi
-          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned, or exactly https://openrouter.ai/api with a vendor/model SWU_AUTOFIX_MODEL slug and OPENROUTER_API_KEY provisioned;  got base_set=$([ -n "$VAR_BASE" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
+          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned, or exactly https://openrouter.ai/api with a vendor/model SWU_AUTOFIX_MODEL slug and OPENROUTER_API_KEY provisioned;  got base_set=$([ -n "$VAR_BASE" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no) openrouter_token_set=$([ -n "$OPENROUTER_TOKEN" ] && echo yes || echo no)"
           exit 1
 
       - name: Autofix Request Gate
