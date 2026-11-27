@@ -92,8 +92,14 @@ def value_shape_ok(path: str, value: str) -> bool:
 
     /wake holds listener read keys:  64 lowercase hex,  the routine-key format
     (`openssl rand -hex 32`).  Every other allowlisted path carries no shape rule,  so the
-    write is judged by its allowlist entry alone.
+    write is judged by its allowlist entry alone.  Malformed inputs defer to the contracted
+    validation instead of crashing:  a non-string path passes through to check_path's
+    refusal,  and a non-string value refuses the shape.
     """
+    if not isinstance(path, str):
+        return True
+    if not isinstance(value, str):
+        return False
     for folder, shape in VALUE_SHAPES:
         if re.fullmatch(folder, path) and not re.fullmatch(shape, value):
             return False
