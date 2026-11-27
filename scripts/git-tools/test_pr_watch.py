@@ -128,10 +128,23 @@ class WatchLoop(unittest.TestCase):
     def test_timeout_waits_the_full_budget(self):
         now = [0.0]
         orig = git.collect_readiness
-        git.collect_readiness = lambda read, repo, number, head=None, **k: report([chk("a", "queued")])
+        git.collect_readiness = lambda read, repo, number, head=None, **k: report(
+            [chk("a", "queued")]
+        )
         try:
-            code = git.run_watch(lambda: None, "O/R", 1, 10, 35, False, False, None,
-                                 sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0], out=io.StringIO())
+            code = git.run_watch(
+                lambda: None,
+                "O/R",
+                1,
+                10,
+                35,
+                False,
+                False,
+                None,
+                sleep=lambda s: now.__setitem__(0, now[0] + s),
+                clock=lambda: now[0],
+                out=io.StringIO(),
+            )
         finally:
             git.collect_readiness = orig
         self.assertEqual(code, git.WATCH_EXIT_PENDING)
