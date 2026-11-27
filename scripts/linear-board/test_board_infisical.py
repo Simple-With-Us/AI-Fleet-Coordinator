@@ -17,6 +17,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_board as T
@@ -300,6 +301,87 @@ class InfisicalTests(T.BoardTest):
                     self.vault.requests,
                     "a mis-scoped token never reaches the secret read",
                 )
+
+
+class ExpiryMetadataTests(unittest.TestCase):
+    """An omitted lifetime is not an explicitly non-expiring registration."""
+
+    def setUp(self):
+        self.cli = T.load_cli()
+
+    def test_linear_grants_require_present_expiry_but_preserve_explicit_null(self):
+        for writer in (False, True):
+            for present, expiry, accepted in (
+                (False, None, False),
+                (True, None, True),
+                (True, "2099-01-01T00:00:00Z", True),
+                (True, "2000-01-01T00:00:00Z", False),
+                (True, "", False),
+            ):
+                with self.subTest(writer=writer, present=present, expiry=expiry):
+                    grant = {
+                        "workspace": "proj-afc",
+                        "permissions": ["read", "write"] if writer else ["read"],
+                        "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+                    }
+                    if present:
+                        grant["expiresAt"] = expiry
+                    client = self.cli.Infisical()
+                    client._expected_project = "proj-afc"
+                    client._call = Mock(return_value=grant)
+                    with patch.object(self.cli, "warn"):
+                        result = client._verify_scope("mock-token", writer=writer)
+                    self.assertEqual(result is not None, accepted)
+                    self.assertEqual(bool(client._verified_tokens), accepted)
+
+    def test_tools_reader_checks_lifetime_before_fetching_key(self):
+        for present, expiry, accepted in (
+            (False, None, False),
+            (True, None, True),
+            (True, "2099-01-01T00:00:00Z", True),
+            (True, "2000-01-01T00:00:00Z", False),
+            (True, "", False),
+        ):
+            with self.subTest(present=present, expiry=expiry):
+                grant = {
+                    "workspace": "proj-tools",
+                    "permissions": ["read"],
+                    "scopes": [{"environment": "prod", "secretPath": "/tools"}],
+                }
+                if present:
+                    grant["expiresAt"] = expiry
+                requests = []
+
+                def opened(request, **kwargs):
+                    requests.append(request.full_url)
+                    payload = (
+                        grant
+                        if len(requests) == 1
+                        else {
+                            "secret": {
+                                "secretKey": self.cli.BEARER_VERIFY_KEY_NAME,
+                                "secretValue": "fixture-key",
+                            }
+                        }
+                    )
+                    return T.io.BytesIO(json.dumps(payload).encode())
+
+                transport = Mock()
+                transport.open.side_effect = opened
+
+                def environment(key, *args):
+                    return "proj-tools" if key == self.cli.BEARER_TOOLS_PROJECT_ENV else None
+
+                with (
+                    patch.object(
+                        self.cli, "_secret_from_file_or_env", return_value="fixture-token"
+                    ),
+                    patch.object(self.cli, "env", side_effect=environment),
+                    patch.object(self.cli, "opener", return_value=transport),
+                ):
+                    result = self.cli.tools_verify_key()
+                self.assertEqual(result, "fixture-key" if accepted else "")
+                self.assertEqual(len(requests), 2 if accepted else 1)
 
 
 if __name__ == "__main__":
