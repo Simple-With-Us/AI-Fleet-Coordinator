@@ -125,6 +125,22 @@ class WatchLoop(unittest.TestCase):
         code, out, _ = self.run_loop([report([chk("a", "queued")])], timeout_s=35)
         self.assertEqual(code, git.WATCH_EXIT_PENDING)
 
+    def test_timeout_waits_the_full_budget(self):
+        now = [0.0]
+        orig = git.collect_readiness
+        git.collect_readiness = lambda read, repo, number, head=None, **k: report([chk("a", "queued")])
+        try:
+            code = git.run_watch(lambda: None, "O/R", 1, 10, 35, False, False, None,
+                                 sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0], out=io.StringIO())
+        finally:
+            git.collect_readiness = orig
+        self.assertEqual(code, git.WATCH_EXIT_PENDING)
+        self.assertEqual(now[0], 35.0)
+
+    def test_timeout_shorter_than_interval_still_polls_twice(self):
+        code, _, n = self.run_loop([report([chk("a", "queued")])], timeout_s=5, interval=10)
+        self.assertEqual((code, n), (git.WATCH_EXIT_PENDING, 2))
+
     def test_unchanged_lines_are_not_repeated(self):
         _, out, _ = self.run_loop([report([chk("a", "queued")])] * 3 + [report([chk("a")])])
         self.assertEqual(out.count("pending=1"), 1)
@@ -164,6 +180,16 @@ class RunLog(unittest.TestCase):
     def test_excerpt_is_bounded(self):
         lines = ["error: bad %d" % i for i in range(100)]
         self.assertEqual(len(git.failure_excerpt(lines, max_lines=10)), 10)
+
+    def test_clean_lines_make_terminal_control_characters_visible(self):
+        got = git.clean_log_lines("\x1b]0;title\x07plain \x07bell \x1b]8;;http://x\x1b\\link")
+        self.assertEqual(got, ["plain \\x07bell link"])
+
+    def test_lines_must_be_positive(self):
+        self.assertEqual(git._positive_int("5"), 5)
+        for bad in ("0", "-1"):
+            with self.assertRaises(git.argparse.ArgumentTypeError):
+                git._positive_int(bad)
 
 
 if __name__ == "__main__":

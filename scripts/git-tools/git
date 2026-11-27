@@ -3713,10 +3713,11 @@ def run_watch(read_for_poll, repo, number, interval, timeout_s, fail_fast, requi
             if unknown_polls >= 3:
                 print("giving up after 3 incomplete reports in a row", file=out, flush=True)
                 return WATCH_EXIT_UNKNOWN
-        if clock() + interval >= stop_at:
+        now = clock()
+        if now >= stop_at:
             print("timed out with checks still pending", file=out, flush=True)
             return WATCH_EXIT_PENDING
-        sleep(interval)
+        sleep(min(interval, stop_at - now))
 
 
 def cmd_watch(tools, a, bearer, server_seat, deadline):
@@ -3731,8 +3732,11 @@ def cmd_watch(tools, a, bearer, server_seat, deadline):
                      a.expected_head)
 
 
+_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
+
+
 def clean_log_lines(text):
-    return [_LOG_STAMP.sub("", _ANSI.sub("", line)).rstrip() for line in text.splitlines()]
+    return [_visible(_LOG_STAMP.sub("", _OSC.sub("", _ANSI.sub("", line)))).rstrip() for line in text.splitlines()]
 
 
 def failure_excerpt(lines, context=2, max_lines=40):
@@ -3747,6 +3751,13 @@ def failure_excerpt(lines, context=2, max_lines=40):
     return [lines[i] for i in ordered[:max_lines]]
 
 
+def _positive_int(value):
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
+
+
 def cmd_run_log(tools, a, bearer, server_seat, deadline):
     read = _readiness_reader(tools, bearer, server_seat, deadline)
     try:
@@ -3758,11 +3769,11 @@ def cmd_run_log(tools, a, bearer, server_seat, deadline):
             bad = job.get("conclusion") not in _OK_CONCLUSIONS and job.get("status") == "completed"
             if a.failed and not bad:
                 continue
-            print("job %s (%s): %s" % (job.get("name"), job.get("id"), job.get("conclusion") or job.get("status")))
+            print(_visible("job %s (%s): %s" % (job.get("name"), job.get("id"), job.get("conclusion") or job.get("status"))))
             steps = [s.get("name") for s in job.get("steps") or []
                      if s.get("conclusion") not in (None, "success", "skipped", "neutral")]
             if steps:
-                print("  failed steps: " + ", ".join(str(s) for s in steps))
+                print(_visible("  failed steps: " + ", ".join(str(s) for s in steps)))
             if bad and isinstance(job.get("id"), int):
                 text, offset, truncated = "", 0, False
                 for _ in range(RUN_LOG_MAX_PAGES):
@@ -3843,7 +3854,7 @@ def build_parser() -> argparse.ArgumentParser:
     prl.add_argument("repo")
     prl.add_argument("run_id", type=int)
     prl.add_argument("--failed", action="store_true", help="only jobs that did not succeed")
-    prl.add_argument("--lines", type=int, default=40, help="most log lines shown per failed job (default 40)")
+    prl.add_argument("--lines", type=_positive_int, default=40, help="most log lines shown per failed job (default 40)")
     pc = sub.add_parser(
         "call", help="call one tool:  call NAME --args-json JSON|@FILE|-", allow_abbrev=False
     )
