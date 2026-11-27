@@ -27,7 +27,7 @@
     "canary": {
       "url": "https://agents.simplewithus.com/mcp",
       "bearer_env": "MCP_CANARY_BEARER",
-      "tool": "identities"
+      "tool": "deploy_canary"
     }
   },
   "alert-ingress": {

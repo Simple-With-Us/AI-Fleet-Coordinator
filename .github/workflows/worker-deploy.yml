@@ -30,8 +30,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    # Two gates, both off until the owner arms them.  SIMPLE_TOOLS_MCP_DEPLOY_ENABLED
-    # is this Worker's own: DEPLOY.md still says it is deployed by hand, never from CI.
+    # Both activation switches are verified during the approved rollout.
     if: vars.WORKER_DEPLOY_ENABLED == 'true' && vars.SIMPLE_TOOLS_MCP_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -55,6 +54,8 @@ jobs:
         working-directory: scripts/simple-tools-mcp
       - run: echo "$GITHUB_WORKSPACE/scripts/simple-tools-mcp/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
+        working-directory: scripts/simple-tools-mcp
+      - run: npm run test:workerd
         working-directory: scripts/simple-tools-mcp
       - run: python3 scripts/test-deploy-mapped-worker.py
       - run: python3 scripts/test_worker_secret_sync.py

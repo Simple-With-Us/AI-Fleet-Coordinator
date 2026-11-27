@@ -67,6 +67,7 @@ import {
 } from "./policy.js";
 import { verifyAccessJwt, parseServiceClientIds } from "./access.js";
 import { serveMcpConfig } from "./mcp-config.js";
+import { canaryBearerFromRequest, verifyCanaryBearer, serveCanaryMcp } from "./service-canary-mcp.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials, seatCredentialRecordNames } from "./bearer-identities.js";
@@ -851,6 +852,19 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
   const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = { token: grantRef, clientId: "sbt-bearer", scopes, extra: { seat } };
   return serveRoutedMcp(request, routed, authInfo, null);
+}
+
+
+// ---------------------------------------------------------------- /mcp with the service canary bearer
+
+/** The deployment canary's own bearer (src/service-canary-mcp.js):  no seat, gate or credential behind it.  A
+ *  wrong or unconfigured bearer is the same generic 401 and the same bad-bearer memory as a seat bearer's. */
+async function serveServiceCanary(request, env, token, credential) {
+  if (!(await verifyCanaryBearer(env, token))) {
+    if (credential) rememberBadBearer(credential);
+    return invalidToken("This token is not valid.");
+  }
+  return serveCanaryMcp(request);
 }
 
 // ---------------------------------------------------------------- /internal/wake/<SEAT>
@@ -1891,12 +1905,15 @@ async function serveRequest(request, env, ctx) {
     }
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
     const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
+    const canaryBearer = route === "mcp" && !gbBearer && !sbtBearer ? canaryBearerFromRequest(request) : null;
     const hasAuthorization = request.headers.has("authorization");
     const response = gbBearer
       ? await serveGbBearerMcp(request, env, gbBearer, ctx, credential)
       : sbtBearer
         ? await serveSbtBearerMcp(request, env, sbtBearer, ctx, credential)
-        : await fetchProvider(request, env, ctx);
+        : canaryBearer
+          ? await serveServiceCanary(request, env, canaryBearer, credential)
+          : await fetchProvider(request, env, ctx);
     // A failed authentication counts against its IP, and past the limit it writes nothing.
     const writeRow = !(route === "mcp" && response.status === 401 && hasAuthorization) || await noteAuthFailure(request, env, credential);
     // An unauthenticated MCP discovery 401 is normal OAuth negotiation.

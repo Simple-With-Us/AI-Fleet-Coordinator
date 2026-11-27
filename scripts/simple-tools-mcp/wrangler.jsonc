@@ -224,6 +224,9 @@
     // connects without the owner's browser login.  Not secrets.  Empty = off.  Added by the owner after the
     // Access service token and its Service Auth policy exist.
     "ADMIN_API_SERVICE_CLIENT_IDS": "1844b185d553e0fa138dcde71b3e9914.access",
+    // SHA-256 digest (64 lowercase hex) of the deployment canary's bearer, `scn_` plus random characters.  The
+    // bearer itself lives only in CI (MCP_CANARY_BEARER).  Not a secret.  Empty = every scn_ bearer is refused.
+    "SERVICE_CANARY_BEARER_SHA256": "d709e2c31ca28c6810104220a0935272695f63291a5e7dbfac0ed896ca633393",
     // Fleet recall (spec 1.1):  the recall service's REST twin.  The Worker
     // accepts exactly this origin.  Its three secrets are RECALL_API_TOKEN,
     // RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET (DEPLOY.md);
