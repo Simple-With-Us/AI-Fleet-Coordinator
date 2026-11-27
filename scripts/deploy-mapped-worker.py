@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Serialized exact-main code deployment. Activation and credentials are external."""
 
+import tempfile
 import datetime
 import fnmatch
 import importlib.util
@@ -312,6 +313,99 @@ def load_secret_sync():
     return module
 
 
+def deployment_head(name):
+    deployments = api("/workers/scripts/" + name + "/deployments")["deployments"]
+    if not deployments:
+        return None
+    identity = deployments[0].get("id")
+    if not identity:
+        raise RuntimeError("Live deployment identity missing")
+    return identity
+
+def verify_deployment_continuity(name, before_id, version):
+    """Detect, never silently bless, an external promotion in the final API-call gap."""
+    response = api("/workers/scripts/" + name + "/deployments")
+    deployments = response.get("deployments") if isinstance(response, dict) else None
+    if not isinstance(deployments, list) or not deployments or any(not isinstance(d, dict) for d in deployments[:2]):
+        raise RuntimeError("Concurrent deployment unverifiable: malformed deployment history")
+    expected = [{"version_id": version, "percentage": 100}]
+    versions = deployments[0].get("versions") if deployments else []
+    if not isinstance(versions, list) or any(not isinstance(v, dict) for v in versions):
+        raise RuntimeError("Concurrent deployment unverifiable: malformed versions list")
+    if [{"version_id": v.get("version_id"), "percentage": v.get("percentage")} for v in versions] != expected:
+        raise RuntimeError("Concurrent deployment detected: current traffic differs")
+    previous = deployments[1].get("id") if len(deployments) > 1 else None
+    if before_id is not None and previous is None:
+        raise RuntimeError("Deployment predecessor history unavailable; cannot verify promotion continuity")
+    if previous != before_id:
+        raise RuntimeError("Concurrent deployment detected in promotion window; inspect history, no blind rollback")
+
+def uploaded_version(command, flags, env, name, sha):
+    """Use Wrangler's private JSONL receipt, never a paginated newest-version guess."""
+    with tempfile.TemporaryDirectory(prefix="worker-upload-") as directory:
+        output = pathlib.Path(directory) / "receipt.jsonl"
+        subprocess.run([*command, *flags], check=True, timeout=DEPLOY_TIMEOUT_SECONDS,
+                       env={**env, "WRANGLER_OUTPUT_FILE_PATH": str(output)})
+        try:
+            if output.stat().st_size > 65536:
+                raise ValueError("oversized receipt")
+            entries = [json.loads(line) for line in output.read_text().splitlines() if line.strip()]
+            uploads = [entry for entry in entries if entry.get("type") == "version-upload"]
+            if len(uploads) != 1:
+                raise ValueError("ambiguous receipt")
+            upload = uploads[0]
+            version = upload.get("version_id", "")
+            if upload.get("worker_name") != name or not re.fullmatch(
+                r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", version
+            ):
+                raise ValueError("wrong Worker or version")
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            raise RuntimeError("Uploaded version receipt is not exact") from error
+    details = api("/workers/scripts/" + name + "/versions/" + version)
+    if details.get("id") != version or (details.get("annotations") or {}).get("workers/tag") != sha:
+        raise RuntimeError("Uploaded version does not match the expected commit")
+    return version
+
+
+def publish_version(name, target, sha):
+    """Upload code without touching routes, then promote the one exact uploaded version.
+
+    Structured upload receipt and direct version API bind identity to this commit.
+    Unknown, duplicate or changed evidence refuses traffic promotion.
+    """
+    command = target["command"]
+    env = {**os.environ, "CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "WRANGLER_SEND_METRICS": "false"}
+    config = ["--config", target["config"]]
+    live_before = live_deployment(name)
+    before_id = deployment_head(name)
+    version_id = uploaded_version(
+        [command[0], "versions", "upload", *config],
+        ["--keep-vars", "--strict", "--tag", sha, "--message", "main " + sha],
+        env, name, sha,
+    )
+    if current_main() != sha:
+        raise RuntimeError("Superseded after upload; production unchanged")
+    if guard_tripped(name):
+        raise RuntimeError("Usage guard tripped after upload; production unchanged")
+    if live_deployment(name) != live_before:
+        raise RuntimeError("Live deployment changed during upload; production unchanged")
+    subprocess.run(
+        [
+            command[0],
+            "versions",
+            "deploy",
+            version_id + "@100",
+            *config,
+            "--yes",
+            "--message",
+            "main " + sha,
+        ],
+        check=True,
+        timeout=DEPLOY_TIMEOUT_SECONDS,
+        env=env,
+    )
+    verify_deployment_continuity(name, before_id, version_id)
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--secrets":
         raise SystemExit(load_secret_sync().cli(sys.argv[2:], account=ACCOUNT, guard=guard_tripped))
@@ -369,12 +463,7 @@ def main():
         return
     if guard_tripped(name):
         raise SystemExit(name + " was stopped by the budget guard; re-arm by hand before deploying")
-    subprocess.run(
-        [*target["command"], "--keep-vars", "--strict", "--tag", sha, "--message", "main " + sha],
-        check=True,
-        timeout=DEPLOY_TIMEOUT_SECONDS,
-        env={**os.environ, "CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "WRANGLER_SEND_METRICS": "false"},
-    )
+    publish_version(name, target, sha)
     if deployed_tag(name) != sha:
         raise RuntimeError("Exact version receipt does not match")
     verify_live(target)

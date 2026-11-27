@@ -9,7 +9,7 @@ Two pipelines deploy this repository's Workers, and each Worker belongs to exact
 
 `pr-conflict-watch` was the alert pipeline's second target until it was retired on 2026-11-06 at the owner's request.  It had posted no alert since Oct 21, and its source, its target entry and its Zulip cutover receipt gate were removed.  `alert-ingress` is now the alert pipeline's only target, and the pipeline keeps its multi-target handling for a future one.
 
-Both pipelines test current main, serialize deployments, recheck main immediately before mutation, tag the Worker version with the exact SHA, verify 100% production routing to that version, then probe it.  Wrangler uses `--keep-vars` and `--strict`.  Existing schema, bindings and migrations remain owned by each Worker's reviewed configuration.  Every probe and API request sends an explicit User-Agent, because Cloudflare answers error 1010 to Python's default one.  Neither workflow deletes a Worker secret.  The mapped pipeline lists secret drift by name and puts a secret only when `WORKER_SECRET_SYNC_APPLY` is exactly `true`.  That variable is unset in this repository, so a run does not rotate secrets unless the owner sets it.  `CLOUDFLARE_FLEET_API_TOKEN` (Fleet-OPS, prod, root) is the existing scoped deploy credential.  Do not widen access or publish private receipt data to satisfy a probe.
+Both pipelines test current main, serialize deployments, recheck main immediately before mutation, tag the Worker version with the exact SHA, verify 100% production routing to that version, then probe it.  The mapped publisher uploads an immutable version with `--keep-vars` and `--strict`, identifies exactly one newly uploaded version with the commit tag, rechecks main, the usage guard and the live deployment, then promotes that version at 100 percent without editing custom-domain routes. Upload and promotion each have a finite timeout. A failed promotion or receipt does not count as deployment proof.  Existing schema, bindings and migrations remain owned by each Worker's reviewed configuration.  Every probe and API request sends an explicit User-Agent, because Cloudflare answers error 1010 to Python's default one.  Neither workflow deletes a Worker secret.  The mapped pipeline lists secret drift by name and puts a secret only when `WORKER_SECRET_SYNC_APPLY` is exactly `true`.  That variable is unset in this repository, so a run does not rotate secrets unless the owner sets it.  The mapped publisher reads `CLOUDFLARE_ST_MCP_DEPLOY` from Fleet-OPS prod `/cloudflare`; its dedicated read-only service-token binding is `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`. Alert publishing retains its separate release credential.  Do not widen access or publish private receipt data to satisfy a probe.
 
 ## What Makes A Deploy
 
@@ -46,15 +46,13 @@ To record a receipt:
 
 ## Arming `simple-tools-mcp`
 
-`scripts/simple-tools-mcp/DEPLOY.md` still says this Worker is deployed by hand and never from CI.  That is an open owner decision, and nothing here changes it.  The automation is prepared and stays off until the owner answers.  To arm it after that answer:
+Autonomous deploy-on-merge is approved for all maintained Workers. Activation still requires working credential delivery, preserved settings and authenticated functional proof.
 
-1. Update the never-from-CI wording in `DEPLOY.md`, `wrangler.jsonc`, `package.json` and `simple-tools-mcp.yml`.
-2. Declare the live limits in `wrangler.jsonc`.
-3. Create the `MCP_CANARY_BEARER` repository secret with a bearer chosen for the canary.
-4. Set `WORKER_DEPLOY_ENABLED` and `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED` to `true`.
-5. Create the Infisical folder, the digest key, the read-only service token, and the GitHub secret `WORKER_SECRET_SYNC_INFISICAL_TOKEN` named in `scripts/simple-tools-mcp/DEPLOY.md` under Worker secret sync.  The secret step fails closed without them.
+CI reads the service-only MCP canary bearer from Infisical Fleet-OPS prod `/cloudflare` through its dedicated finite read-only service token. No seat bearer is delivered to CI. The canary authenticates on the real MCP route, initializes, lists the single `deploy_canary` tool and calls it for a fixed read-only answer. It grants no seat, upstream, storage or delegation capability. Missing credentials or failed proof block publishing. The same service proof runs before upload and after exact promotion, including no-change runs.
 
-Once armed, a deploy waits if the Worker was deployed in the last hour, and the next scheduled run retries, so a burst of merges cannot restart the Durable Objects repeatedly.  The canary replaces trust in the static `/health` route:  an unauthenticated `initialize` must answer the OAuth 401, then the bearer must initialize, list the tools and call the read-only `identities` tool.  The job refuses to start a deploy when the canary bearer is absent, and it runs the same canary against the old version before uploading, so an expired bearer stops the deploy instead of failing it after new code is live.  Seat bearers last 90 days.  A failed canary fails the run and leaves the new version live, so recovery is the rollback below.  A run that deploys nothing certifies the live Worker the same way, so a failed canary keeps failing every scheduled run until it is fixed.  That costs six requests to the Worker per run, the probe and five for the canary, at two runs an hour, once armed.
+The old live Worker does not implement this service path. Its one-time bootstrap is separate from routine CI: the operator proves existing live MCP through its own working transport, verifies current reviewed main, limits and guard, publishes exactly that main with the reviewed immutable-receipt publisher, then proves the dedicated service canary against the exact100percent live version. Only successful postproof permits arming `WORKER_DEPLOY_ENABLED` and `SIMPLE_TOOLS_MCP_DEPLOY_ENABLED`. Previews remain disabled. An operator preproof does not certify the old live publisher canary path.
+
+Once armed, a deploy waits if the Worker was deployed in the last hour, and the next scheduled run retries, so a burst of merges cannot restart Durable Objects repeatedly. A failed postproof fails the run and leaves the version live for deliberate recovery, never a blind rollback over an external writer. Secret drift remains a separate disabled-by-default gate.
 
 ## Rollback And Roll-Forward
 
@@ -64,10 +62,7 @@ The pre-deploy probe is deliberately fail-closed: neither pipeline mutates a Wor
 
 No public health bypass is introduced.  Ambiguous `start-jays-services`, `fleet-share-api` and the BotFleet broker are not included.  No iOS workflow is changed.
 
-CI reads the scoped Cloudflare token from Fleet-OPS/prod/root using a per-use-case
-Infisical service token.  Bind the Fleet-OPS/prod root-scoped read token for this
-workflow as `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`; bind a separate Fleet-OPS/prod
-root-scoped read token for alert-worker deploys as `AFC_ALERT_WORKERS_INFISICAL_TOKEN`.
+CI reads the mapped Cloudflare token from Fleet-OPS prod `/cloudflare` using `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`. The separate alert publisher reads its credential from `/alert-workers-release` using `AFC_ALERT_WORKERS_INFISICAL_TOKEN`. Readers are exact-folder and read-only, never root-wide. See `worker-deploy-service-credentials.md` for renewal and source locators.
 
 The source migration also requires explicit project configuration before activation.  Telemetry snippet generation requires the component-specific `INFISICAL_TELEMETRY_CONFIG_PROJECT_ID` alongside `INFISICAL_TELEMETRY_CONFIG_READ_TOKEN`; the generic `INFISICAL_PROJECT_ID` never supplies this bootstrap.  Before running the telemetry generator, stage and read back the exact project's dedicated selector and reader binding together.  Wise relay execution requires `INFISICAL_FLEET_OPS_PROJECT_ID` alongside `WISE_RELAY_INFISICAL_TOKEN`.  Missing or malformed project configuration fails before network access, and token metadata must match the independently configured project.
 

@@ -3,7 +3,7 @@ name: simple-tools MCP Worker
 # The hosted ST-MCP Worker's workerd flow:  the bundled Worker run in
 # Miniflare against fake Access certificates, mocked client metadata documents
 # and a fake Zulip.  Path-filtered, so it costs nothing on unrelated PRs.  It never
-# deploys and holds no secrets:  a merge is not a deploy (DEPLOY.md).
+# deploys and holds no secrets; publishing belongs to worker-deploy.yml.
 # The pure unit suites also run in ci.yml, with no npm install.
 
 on:

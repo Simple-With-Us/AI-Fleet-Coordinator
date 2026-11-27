@@ -60,7 +60,51 @@ class Reader:
         return self.responses[path]
 
 
+class PublishApi:
+    def __init__(self, items=None, changed=False):
+        self.items = (
+            items
+            if items is not None
+            else [
+                {
+                    "id": "12345678-1234-1234-1234-123456789abc",
+                    "annotations": {"workers/tag": SHA_A},
+                }
+            ]
+        )
+        self.listings = 0
+        self.deployments = 0
+        self.changed = changed
+
+    def __call__(self, path):
+        if path.endswith("/settings"):
+            return {}
+        if path.endswith("/deployments"):
+            self.deployments += 1
+            vid = "old" if self.deployments < 3 else "12345678-1234-1234-1234-123456789abc"
+            if self.changed and self.deployments == 2:
+                vid = "concurrent"
+            return {"deployments": [{"versions": [{"version_id": vid, "percentage": 100}]}]}
+        if "/versions/" in path:
+            return self.items[0] if len(self.items) == 1 else {}
+        raise AssertionError(path)
+
+
+def upload_receipt(command, **kwargs):
+    if command[1:3] == ["versions", "upload"]:
+        pathlib.Path(kwargs["env"]["WRANGLER_OUTPUT_FILE_PATH"]).write_text(json.dumps({
+            "type": "version-upload", "worker_name": "x",
+            "version_id": "12345678-1234-1234-1234-123456789abc",
+        }) + "\n")
+
+
 class Checks(unittest.TestCase):
+    def setUp(self):
+        for name in ("deployment_head", "verify_deployment_continuity"):
+            active = patch.object(m, name, return_value="old")
+            active.start()
+            self.addCleanup(active.stop)
+
     def test_partial_rollout_is_not_exact_receipt(self):
         with patch.object(
             m,
@@ -205,16 +249,21 @@ class Checks(unittest.TestCase):
             "worker_changed": True,
             "seconds_since_last_deploy": 86400,
             "config_limits": {},
-            "api": {},
+            "api": None,
         }
         defaults.update(patches)
-        active = [patch.object(m, k, return_value=v) for k, v in defaults.items()]
+        active = [
+            patch.object(m, k, side_effect=PublishApi())
+            if k == "api" and v is None
+            else patch.object(m, k, return_value=v)
+            for k, v in defaults.items()
+        ]
         with (
             patch.object(m.sys, "argv", ["deploy", "x"]),
             patch.dict(m.TARGETS, {"x": target}),
             patch.dict(os.environ, env or {}),
             patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n"),
-            patch.object(m.subprocess, "run") as run,
+            patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
             patch.object(m, "probe") as probe,
             patch.object(m, "mcp_canary", side_effect=canary_error) as canary,
         ):
@@ -226,6 +275,75 @@ class Checks(unittest.TestCase):
                 for active_patch in active:
                     active_patch.stop()
         return run, probe, canary
+
+    def publish_fixture(self, items, mains=None, guards=None):
+        target = {"command": ["wrangler", "deploy"], "config": "x.toml"}
+        with (
+            patch.object(m, "api", side_effect=PublishApi(items)),
+            patch.object(m, "current_main", side_effect=mains or [SHA_A]),
+            patch.object(m, "guard_tripped", side_effect=guards or [False]),
+            patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
+        ):
+            m.publish_version("x", target, SHA_A)
+        return run
+
+    def test_version_promotion_uses_only_exact_uploaded_identity(self):
+        version = "12345678-1234-1234-1234-123456789abc"
+        run = self.publish_fixture([{"id": version, "annotations": {"workers/tag": SHA_A}}])
+        self.assertEqual(run.call_count, 2)
+        upload, promote = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(upload[:3], ["wrangler", "versions", "upload"])
+        self.assertIn("--keep-vars", upload)
+        self.assertIn("--strict", upload)
+        self.assertEqual(promote[:4], ["wrangler", "versions", "deploy", version + "@100"])
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], m.DEPLOY_TIMEOUT_SECONDS)
+
+    def test_missing_duplicate_wrong_and_malformed_versions_refuse_promotion(self):
+        good = {"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}
+        for items in (
+            [],
+            [good, good],
+            [{**good, "annotations": {"workers/tag": SHA_B}}],
+            [{**good, "id": "not-a-version"}],
+        ):
+            with self.subTest(items=items), patch.object(m.subprocess, "run", side_effect=upload_receipt) as run:
+                with (
+                    patch.object(m, "api", side_effect=PublishApi(items)),
+                    self.assertRaises(RuntimeError),
+                ):
+                    m.publish_version(
+                        "x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A
+                    )
+                self.assertEqual(run.call_count, 1)
+
+    def test_concurrent_live_version_change_refuses_promotion(self):
+        with (
+            patch.object(m, "api", side_effect=PublishApi(changed=True)),
+            patch.object(m, "current_main", return_value=SHA_A),
+            patch.object(m, "guard_tripped", return_value=False),
+            patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
+            self.assertRaisesRegex(RuntimeError, "changed during upload"),
+        ):
+            m.publish_version("x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A)
+        self.assertEqual(run.call_count, 1)
+
+    def test_merge_or_guard_change_after_upload_refuses_promotion(self):
+        items = [
+            {"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}
+        ]
+        for head, tripped in ((SHA_B, False), (SHA_A, True)):
+            with self.subTest(head=head, tripped=tripped), patch.object(m.subprocess, "run", side_effect=upload_receipt) as run:
+                with (
+                    patch.object(m, "api", side_effect=PublishApi(items)),
+                    patch.object(m, "current_main", return_value=head),
+                    patch.object(m, "guard_tripped", return_value=tripped),
+                    self.assertRaises(RuntimeError),
+                ):
+                    m.publish_version(
+                        "x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A
+                    )
+                self.assertEqual(run.call_count, 1)
 
     def test_tripped_worker_is_refused_before_any_mutation(self):
         with patch.object(m.subprocess, "run") as outer:
@@ -270,13 +388,13 @@ class Checks(unittest.TestCase):
                     },
                 ),
                 patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n") as rev_parse,
-                patch.object(m.subprocess, "run") as run,
+                patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
                 patch.object(m, "verify_live"),
                 patch.object(m, "current_main", return_value=SHA_A),
                 patch.object(m, "guard_tripped", return_value=False),
                 patch.object(m, "worker_changed", return_value=True),
                 patch.object(m, "config_limits", return_value={}),
-                patch.object(m, "api", return_value={}),
+                patch.object(m, "api", side_effect=PublishApi()),
             ):
                 m.main()
         self.assertEqual(rev_parse.call_args.kwargs["timeout"], m.GIT_TIMEOUT_SECONDS)
@@ -312,17 +430,17 @@ class Checks(unittest.TestCase):
                     },
                 ),
                 patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n"),
-                patch.object(m.subprocess, "run") as run,
+                patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
                 patch.object(m, "probe"),
                 patch.object(m, "mcp_canary") as canary,
                 patch.object(m, "current_main", return_value=SHA_A),
                 patch.object(m, "guard_tripped", return_value=False),
                 patch.object(m, "worker_changed", return_value=True),
                 patch.object(m, "config_limits", return_value={}),
-                patch.object(m, "api", return_value={}),
+                patch.object(m, "api", side_effect=PublishApi()),
             ):
                 m.main()
-        self.assertIn(SHA_A, run.call_args.args[0])
+        self.assertIn("main " + SHA_A, run.call_args.args[0])
         self.assertEqual(canary.call_count, 2)
 
     def test_stale_canary_bearer_stops_the_deploy_before_upload(self):
@@ -342,14 +460,14 @@ class Checks(unittest.TestCase):
                 },
             ),
             patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n"),
-            patch.object(m.subprocess, "run") as run,
+            patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
             patch.object(m, "probe"),
             patch.object(m, "mcp_canary", side_effect=RuntimeError("MCP canary")),
             patch.object(m, "current_main", return_value=SHA_A),
             patch.object(m, "guard_tripped", return_value=False),
             patch.object(m, "worker_changed", return_value=True),
             patch.object(m, "config_limits", return_value={}),
-            patch.object(m, "api", return_value={}),
+            patch.object(m, "api", side_effect=PublishApi()),
             self.assertRaisesRegex(RuntimeError, "MCP canary"),
         ):
             m.main()
@@ -373,13 +491,13 @@ class Checks(unittest.TestCase):
                 },
             ),
             patch.object(m.subprocess, "check_output", return_value=SHA_A + "\n"),
-            patch.object(m.subprocess, "run") as run,
+            patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
             patch.object(m, "probe"),
             patch.object(m, "mcp_canary"),
             patch.object(m, "current_main", return_value=SHA_A),
             patch.object(m, "worker_changed", return_value=True),
             patch.object(m, "config_limits", return_value={}),
-            patch.object(m, "api", return_value={}),
+            patch.object(m, "api", side_effect=PublishApi()),
             self.assertRaisesRegex(SystemExit, "budget guard"),
         ):
             m.main()
@@ -420,7 +538,7 @@ class Checks(unittest.TestCase):
             patch.dict(m.TARGETS, {"x": target}),
             patch.dict(os.environ, {"X_ENABLED": "false"}),
             patch.object(m, "current_main") as current,
-            patch.object(m.subprocess, "run") as run,
+            patch.object(m.subprocess, "run", side_effect=upload_receipt) as run,
         ):
             m.main()
         current.assert_not_called()
@@ -644,6 +762,66 @@ class Checks(unittest.TestCase):
         self.assertNotIn("super-secret", str(caught.exception))
         self.assertNotIn("boom", str(caught.exception))
 
+
+
+class UploadReceiptChecks(unittest.TestCase):
+ def invoke(self, receipt, details=None, error=None):
+  version="12345678-1234-1234-1234-123456789abc"
+  def write(command, **kwargs):
+   if error: raise error
+   if receipt is not None: m.pathlib.Path(kwargs["env"]["WRANGLER_OUTPUT_FILE_PATH"]).write_text(receipt)
+  with patch.object(m.subprocess,"run",side_effect=write) as run, patch.object(m,"api",return_value=details if details is not None else {"id":version,"annotations":{"workers/tag":"commit"}}) as api:
+   result=m.uploaded_version(["wrangler","versions","upload"],["--tag","commit"],{},"worker","commit")
+   self.assertEqual(run.call_args.kwargs["timeout"],600)
+   self.assertEqual(api.call_args.args[0],"/workers/scripts/worker/versions/"+version)
+   return result
+ def receipt(self, **change):
+  return json.dumps({"type":"version-upload","worker_name":"worker","version_id":"12345678-1234-1234-1234-123456789abc",**change})+"\n"
+ def test_receipt_uses_exact_direct_api_identity_not_version_listing(self):
+  self.assertEqual(self.invoke(self.receipt()),"12345678-1234-1234-1234-123456789abc")
+ def test_receipt_missing_malformed_wrong_worker_or_version_refuses(self):
+  for receipt in (None,"broken",self.receipt()*2,self.receipt(worker_name="other"),self.receipt(version_id="bad"),"x"*65537):
+   with self.subTest(receipt=str(receipt)[:20]), self.assertRaises(RuntimeError):self.invoke(receipt)
+ def test_direct_api_wrong_commit_or_identity_refuses(self):
+  for details in ({},{"id":"other","annotations":{"workers/tag":"commit"}},{"id":"12345678-1234-1234-1234-123456789abc","annotations":{"workers/tag":"old"}}):
+   with self.assertRaises(RuntimeError):self.invoke(self.receipt(),details)
+ def test_hung_upload_raises_timeout_without_promotion(self):
+  with self.assertRaises(m.subprocess.TimeoutExpired):self.invoke(None,error=m.subprocess.TimeoutExpired("wrangler",600))
+
+
+class DeploymentContinuityChecks(unittest.TestCase):
+ def test_malformed_history_envelope_refuses_cleanly(self):
+  for response in (None, [], "bad", {}, {"other": []}):
+   with patch.object(m,"api",return_value=response), self.assertRaisesRegex(RuntimeError,"malformed deployment history"):
+    m.verify_deployment_continuity("w","old","version")
+
+ def test_malformed_history_refuses_cleanly(self):
+  for history in (None, {}, "bad", [None], ["bad"], [{"id":"new"},None], [{"id":"new"},"bad"]):
+   with patch.object(m,"api",return_value={"deployments":history}), self.assertRaisesRegex(RuntimeError,"malformed deployment history"):
+    m.verify_deployment_continuity("w","old","version")
+
+ def test_null_and_malformed_versions_refuse_cleanly(self):
+  for versions in (None, {}, "bad", [None], ["bad"]):
+   with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":versions},{"id":"old"}]}), self.assertRaisesRegex(RuntimeError,"malformed versions"):
+    m.verify_deployment_continuity("w","old","version")
+
+ def test_clean_serial_promotion(self):
+  with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100}]},{"id":"old"}]}):
+   m.verify_deployment_continuity("w","old","version")
+ def test_first_deployment_accepts_no_predecessor(self):
+  with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100}]}]}):
+   m.verify_deployment_continuity("w",None,"version")
+ def test_missing_expected_predecessor_is_unverifiable_not_success(self):
+  with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100}]}]}), self.assertRaisesRegex(RuntimeError,"history unavailable"):
+   m.verify_deployment_continuity("w","old","version")
+ def test_response_extension_fields_are_ignored(self):
+  with patch.object(m,"api",return_value={"deployments":[{"id":"new","versions":[{"version_id":"version","percentage":100,"extra":"future"}]},{"id":"old"}]}):
+   m.verify_deployment_continuity("w","old","version")
+
+ def test_interleaved_promotion_and_changed_traffic_fail(self):
+  for entries in ([{"id":"new","versions":[{"version_id":"version","percentage":100}]},{"id":"other"}], [{"id":"other","versions":[{"version_id":"other","percentage":100}]},{"id":"new"}], []):
+   with patch.object(m,"api",return_value={"deployments":entries}), self.assertRaisesRegex(RuntimeError,"Concurrent deployment"):
+    m.verify_deployment_continuity("w","old","version")
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,8 +30,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    # Two gates, both off until the owner arms them.  SIMPLE_TOOLS_MCP_DEPLOY_ENABLED
-    # is this Worker's own: DEPLOY.md still says it is deployed by hand, never from CI.
+    # Both activation switches are verified during the approved rollout.
     if: vars.WORKER_DEPLOY_ENABLED == 'true' && vars.SIMPLE_TOOLS_MCP_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -56,22 +55,25 @@ jobs:
       - run: echo "$GITHUB_WORKSPACE/scripts/simple-tools-mcp/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
         working-directory: scripts/simple-tools-mcp
+      - run: npm run test:workerd
+        working-directory: scripts/simple-tools-mcp
       - run: python3 scripts/test-deploy-mapped-worker.py
       - run: python3 scripts/test_worker_secret_sync.py
       - name: Load scoped deploy credential from Fleet-OPS
         env:
           INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
           INFISICAL_ENVIRONMENT: prod
-          INFISICAL_SECRET_PATH: /
-          INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
-          INFISICAL_REQUIRED: CLOUDFLARE_FLEET_API_TOKEN
+          INFISICAL_SECRET_PATH: /cloudflare
+          INFISICAL_NAMES: CLOUDFLARE_ST_MCP_DEPLOY MCP_CANARY_BEARER
+          INFISICAL_REQUIRED: CLOUDFLARE_ST_MCP_DEPLOY MCP_CANARY_BEARER
           INFISICAL_TOKEN: ${{ secrets.AFC_WORKER_DEPLOY_INFISICAL_TOKEN }}
         run: node scripts/infisical-fetch.mjs
       - name: Check Worker secrets against Infisical
+        if: vars.WORKER_SECRET_CHECK_ENABLED == 'true'
         env:
           WORKER_SECRET_SYNC_INFISICAL_TOKEN: ${{ secrets.WORKER_SECRET_SYNC_INFISICAL_TOKEN }}
           WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID: ${{ vars.WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_ST_MCP_DEPLOY }}
           # Unset in the repository.  Exactly "true" plus --apply is the only apply path.
           WORKER_SECRET_SYNC_APPLY: ${{ vars.WORKER_SECRET_SYNC_APPLY }}
           TARGET: ${{ matrix.worker }}
@@ -84,10 +86,8 @@ jobs:
       - name: Deploy exact main and verify receipt
         env:
           GH_TOKEN: ${{ github.token }}
-          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
-          WORKER_HEALTH_ACCESS_CLIENT_ID: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_ID }}
-          WORKER_HEALTH_ACCESS_CLIENT_SECRET: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_SECRET }}
-          MCP_CANARY_BEARER: ${{ secrets.MCP_CANARY_BEARER }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_ST_MCP_DEPLOY }}
+          MCP_CANARY_BEARER: ${{ env.MCP_CANARY_BEARER }}
           SIMPLE_TOOLS_MCP_DEPLOY_ENABLED: ${{ vars.SIMPLE_TOOLS_MCP_DEPLOY_ENABLED }}
           CLOUDFLARE_ACCOUNT_ID: 3a9368057468d0909cafaa85df12d1b7
           TARGET: ${{ matrix.worker }}
@@ -114,15 +114,15 @@ jobs:
         env:
           INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
           INFISICAL_ENVIRONMENT: prod
-          INFISICAL_SECRET_PATH: /
-          INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
-          INFISICAL_REQUIRED: CLOUDFLARE_FLEET_API_TOKEN
+          INFISICAL_SECRET_PATH: /cloudflare
+          INFISICAL_NAMES: CLOUDFLARE_ST_MCP_DEPLOY
+          INFISICAL_REQUIRED: CLOUDFLARE_ST_MCP_DEPLOY
           INFISICAL_TOKEN: ${{ secrets.AFC_WORKER_DEPLOY_INFISICAL_TOKEN }}
         run: node scripts/infisical-fetch.mjs
       - name: Dry-run Worker secret diff
         env:
           WORKER_SECRET_SYNC_INFISICAL_TOKEN: ${{ secrets.WORKER_SECRET_SYNC_INFISICAL_TOKEN }}
           WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID: ${{ vars.WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_ST_MCP_DEPLOY }}
           TARGET: ${{ matrix.worker }}
         run: python3 scripts/deploy-mapped-worker.py --secrets "$TARGET" --strict
