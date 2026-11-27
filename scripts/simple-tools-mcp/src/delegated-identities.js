@@ -16,7 +16,7 @@ import RENAMED from "../../simple_tools/mcp/renamed-tools.json" with { type: "js
 import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS, UnknownTool } from "./hosted-tools.js";
 import { resolveSecret, infisicalMode } from "./infisical.js";
 import { ToolError, errorResult, okResult, scanSecret, schemaProblem } from "./contract.js";
-import { EVENTS_ONLY_SEATS, SHARED_IDENTITY_SEATS } from "./config.js";
+import { EVENTS_ONLY_SEATS, SHARED_IDENTITY_SEATS, SHARED_CLAUDE_SEATS } from "./config.js";
 import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
 import { guideResult, GuideArgs, GUIDE_URL } from "./guide.js";
 import { canonicalSeatName } from "./identity-aliases.js";
@@ -36,6 +36,10 @@ export { SHARED_IDENTITY_SEATS };
 
 /** The identities a grant for `seat` may act as:  its own seat first. */
 export function allowedIdentities(seat) {
+  // CLAUDE and DUET are two Claude.ai apps that must share ONE connector (Claude.ai refuses a
+  // second connector with the same server URL), so a grant for either may act as either.  Nothing
+  // else joins them:  no other seat and no GB bot.
+  if (SHARED_CLAUDE_SEATS.includes(seat)) return Object.freeze([seat, ...SHARED_CLAUDE_SEATS.filter((peer) => peer !== seat)]);
   return Object.freeze([seat]);
 }
 

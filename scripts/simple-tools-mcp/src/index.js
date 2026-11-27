@@ -45,6 +45,7 @@ import {
   LISTENER_KEY_SECRET_NAMES,
   KNOWN_SEATS,
   GRANT_MAX_AGE_MS,
+  SHARED_CLAUDE_SEATS,
 } from "./config.js";
 import {
   hostAllowed,
@@ -555,7 +556,53 @@ async function serveMcp(request, env, ctx) {
   });
   // The authenticated grant assigns the acting principal. No per-call peer or
   // bot credential loader is installed, even for legacy shared OAuth seats.
-  const routedTools = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
+  // CLAUDE and DUET share one Claude.ai connector, so a grant for either may act as the other
+  // (allowedIdentities).  The peer is built from ITS OWN server-held credentials, verified as its own
+  // member bot on every call (callerGate differs), audited under the grant's seat and the claimed
+  // identity.  No git-relay assertion is minted for the peer: its gr_* tools stay unavailable.
+  const createPeer = SHARED_CLAUDE_SEATS.includes(seat) ? async (identity) => {
+    if (!SHARED_CLAUDE_SEATS.includes(identity) || identity === seat || !config.hostedSeats.includes(identity) || config.eventsOnlySeats.includes(identity)) {
+      throw new ToolError("not_configured", `This server cannot act as ${identity}.`);
+    }
+    const peerGate = gate(env, identity);
+    const peerKey = await seatKeyRead(SEAT_SECRETS[identity]);
+    const peerLinearPair = await resolveLinearPair(env, seatTagForSeat(identity));
+    const peerFleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
+    const peerWakeName = listenerSecretName(identity);
+    const peerWakeKey = peerWakeName
+      ? await resolveSecret(env, { name: peerWakeName, path: "/wake", envName: peerWakeName, optional: true })
+      : "";
+    const peerGr = wireGrFront({ grSecrets, env, grClient: null, relayAuthAvailable: false });
+    return new HostedTools({
+      seat: identity,
+      callerSeat: seat,
+      callerGate: seatGate,
+      verifySeat: true,
+      scopes,
+      clientId: typeof auth.clientId === "string" ? auth.clientId : "",
+      grantRef,
+      paused: result.code === "paused",
+      config,
+      zulip: peerKey ? new ZulipClient({ email: config.botEmails[identity], key: peerKey, ownerUserId: config.ownerUserId }) : null,
+      key: peerKey,
+      gate: peerGate,
+      audit: auditSinkFor(ctx),
+      whatsappGate: gate(env, "JET"),
+      cf: { asn: request.cf?.asn, country: request.cf?.country },
+      recall: recallClientFromResolved(recallSecrets, env),
+      gr: peerGr.gr,
+      grUnavailableReason: peerGr.grUnavailableReason,
+      grMissingEnv: peerGr.grMissingEnv,
+      linear: linearClientFromPair(peerLinearPair, identity, { gate: peerGate, quota: linearQuotaFromEnv(env) }),
+      linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
+      fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: peerFleetlinkTokens }),
+      listener: listenerClientFromEnv(env, identity, { wakeKey: peerWakeKey }),
+      notes: operatorNotesClientFromEnv(env),
+      diagnosticsGate: gate(env, GATE_LOG_NAME),
+      workerEnv: env,
+    });
+  } : null;
+  const routedTools = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: createPeer });
   const authInfo = {
     token: auth.token,
     clientId: auth.clientId,
