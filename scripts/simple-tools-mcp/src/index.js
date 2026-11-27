@@ -668,6 +668,13 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
   const recallSecrets = await resolveRecallSecrets(env);
+  // The eavesdropper key resolves through Infisical too (optional:  no wake key
+  // means no eavesdropper tools, never a 500 - src/eavesdropper.js).  Same pass
+  // as the sbt-bearer path, for the GB bearer seats in the read map.
+  const listenerSecret = listenerSecretName(identity);
+  const listenerWakeKey = listenerSecret
+    ? await resolveSecret(env, { name: listenerSecret, path: "/wake", envName: listenerSecret, optional: true })
+    : "";
   const grSecrets = await resolveGrSecrets(env);
   const grWire = wireGrFront({
     grSecrets,
@@ -697,6 +704,7 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
+    listener: listenerClientFromEnv(env, identity, { wakeKey: listenerWakeKey }),
     notes: operatorNotesClientFromEnv(env),
     diagnosticsGate: gate(env, GATE_LOG_NAME),
     workerEnv: env,
