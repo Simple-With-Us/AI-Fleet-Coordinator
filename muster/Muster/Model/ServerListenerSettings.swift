@@ -991,9 +991,12 @@ enum ServerSettingsCopy {
     /// so only those are written through the server's settings editor.
     static let knobHome = "A knob, and a knob's home is Infisical.\(gap)Muster shows the value the server holds and does not write it into the server's listener file.\(gap)It becomes editable in Controls once it is a registered knob.\(gap)Only a seat's routing (on or off, wake type) and its optional wake switches are listener-file config Muster sends here."
 
-static let applyOff = "Applying changes is switched off on the server.\(gap)Every edit is refused until the owner switches it on in the server's allowlist."
+    static let applyOff = "Applying changes is switched off on the server.\(gap)Every edit is refused until the owner switches it on in the server's allowlist."
     static let applyUnknown = "The server did not say whether applying changes is switched on."
     static let applyOn = "Each edit is saved as it is made:  Muster sends the value, the revision it read and the server's own check, and the server applies that revision or nothing."
+    /// An older editor can leave a notes-queue list out of a successful read (skippedAllowlist).
+    /// The read then cannot see the seats the list would overwrite, so it stays read only.
+    static let listNotReported = "The server did not report this list.\(gap)Editing it here could overwrite seats this read cannot see, so it stays read only until a current editor reports it."
 
     static func groupTitle(table: String) -> String {
         switch table {
@@ -1246,7 +1249,11 @@ enum ServerSettingsBuilder {
             func editableControl(_ spec: ServerSettingSpec, sub: String? = nil, current: ServerSettingValue? = nil) -> ServerSettingControl? {
                 switch spec {
                 case .pairs: return .pairs
-                case .seats(let count, let length): return .seats(maxItems: count, maxLength: length)
+                case .seats(let count, let length):
+                    // An older editor can omit a list (skippedAllowlist), and this read then cannot
+                    // see the seats it would overwrite, so an unreported list stays read only.
+                    guard current != nil else { return nil }
+                    return .seats(maxItems: count, maxLength: length)
                 case .seatEnv:
                     guard let sub else { return nil }
                     let existing: String?
@@ -1266,9 +1273,12 @@ enum ServerSettingsBuilder {
                                      information: name == "budget" && sub == "usd_per_day" ? ServerSettingsCopy.usdRecordedOnly : nil)
                 }
             }
+            // A seats list the server did not report keeps its editor off, with the reason why.
+            var reason: String? = nil
+            if case .seats = spec, current == nil { reason = ServerSettingsCopy.listNotReported }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil,
                                      title: title, current: current,
-                                     control: editableControl(spec), readOnlyReason: nil,
+                                     control: editableControl(spec, current: current), readOnlyReason: reason,
                                      defaultValue: isStructure ? seatSendableDefaults[name] : nil,
                                      information: information, seatContext: seatContext)]
         }

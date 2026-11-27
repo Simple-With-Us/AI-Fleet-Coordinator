@@ -89,4 +89,34 @@ final class NotesQueueHealthTests: XCTestCase {
         XCTAssertTrue(health.lines.contains { $0.contains("1 invalid entry") })
         XCTAssertTrue(health.warnings.contains { $0.contains("1 invalid entry") })
     }
+
+    /// An older editor can omit a list from a successful read (skippedAllowlist).  An omitted
+    /// list reads "not reported" and never as an empty one:  the empty-list warning fires only
+    /// for lists the server actually reported as empty.
+    func test_an_omitted_list_is_not_reported_and_never_reads_as_empty() {
+        var omitted = settings
+        omitted.removeValue(forKey: "notes_queue.worker_seats")
+        omitted.removeValue(forKey: "notes_queue.server_seats")
+        let both = NotesQueueHealth.make(settings: omitted, doctor: nil)
+        XCTAssertTrue(both.workerReported == false && both.serverReported == false)
+        XCTAssertTrue(both.lines.contains { $0.contains("not reported through the Worker key") })
+        XCTAssertTrue(both.lines.contains { $0.contains("not reported through the Server key") })
+        XCTAssertFalse(both.warnings.contains { $0.contains("Both seat lists are empty") })
+        XCTAssertTrue(both.warnings.contains { $0.contains("coverage is not known") })
+
+        var one = omitted
+        one["notes_queue.worker_seats"] = .list([.text("CLAUDE")])
+        let mixed = NotesQueueHealth.make(settings: one, doctor: nil)
+        XCTAssertTrue(mixed.lines.contains { $0.contains("1 through the Worker key") })
+        XCTAssertTrue(mixed.lines.contains { $0.contains("not reported through the Server key") })
+        XCTAssertTrue(mixed.warnings.contains { $0.contains("coverage is not known") })
+
+        // Explicit empty arrays stay the true-zero control the caveat names.
+        var zero = settings
+        zero["notes_queue.worker_seats"] = .list([])
+        zero["notes_queue.server_seats"] = .list([])
+        let empty = NotesQueueHealth.make(settings: zero, doctor: nil)
+        XCTAssertTrue(empty.warnings.contains("Both seat lists are empty, so no seat may enqueue a request."))
+        XCTAssertFalse(empty.warnings.contains { $0.contains("coverage is not known") })
+    }
 }
