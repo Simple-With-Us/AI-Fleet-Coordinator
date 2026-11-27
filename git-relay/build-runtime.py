@@ -51,6 +51,7 @@ MODULES = (
     "same_path_reuse",
     "seat_add_policy",
     "hook_verbs",
+    "repo_admin_verbs",
     "secret_scan",
     "secret_verbs",
     "server",

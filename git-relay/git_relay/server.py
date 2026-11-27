@@ -1113,6 +1113,8 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_org_hook_delete",
         "wf_org_hook_ping",
         "wf_deploy_key_add",
+        "wf_repo_update",
+        "wf_repo_topics_set",
         "wf_deploy_key_delete",
         "wf_environment_put",
         "wf_environment_delete",

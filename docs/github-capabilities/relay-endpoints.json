@@ -617,6 +617,15 @@
   "wf_org_hook_ping": [
     "/orgs/{...}/hooks/{...}/pings"
   ],
+  "wf_repo_settings": [
+    "/repos/{...}"
+  ],
+  "wf_repo_update": [
+    "/repos/{...}"
+  ],
+  "wf_repo_topics_set": [
+    "/repos/{...}/topics"
+  ],
   "wf_deploy_key_get": [
     "/repos/{...}/keys/{...}"
   ],
