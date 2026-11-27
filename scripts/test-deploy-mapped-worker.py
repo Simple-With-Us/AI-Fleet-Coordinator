@@ -60,6 +60,24 @@ class Reader:
         return self.responses[path]
 
 
+class PublishApi:
+    def __init__(self, items=None, changed=False):
+        self.items = items if items is not None else [{"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}]
+        self.listings = 0
+        self.deployments = 0
+        self.changed = changed
+    def __call__(self, path):
+        if path.endswith("/settings"):
+            return {}
+        if path.endswith("/deployments"):
+            self.deployments += 1
+            vid = "old" if self.deployments < 3 else "12345678-1234-1234-1234-123456789abc"
+            if self.changed and self.deployments == 2: vid = "concurrent"
+            return {"deployments": [{"versions": [{"version_id": vid, "percentage": 100}]}]}
+        self.listings += 1
+        return {"items": [] if self.listings == 1 else self.items}
+
+
 class Checks(unittest.TestCase):
     def test_partial_rollout_is_not_exact_receipt(self):
         with patch.object(
@@ -205,10 +223,10 @@ class Checks(unittest.TestCase):
             "worker_changed": True,
             "seconds_since_last_deploy": 86400,
             "config_limits": {},
-            "api": {},
+            "api": None,
         }
         defaults.update(patches)
-        active = [patch.object(m, k, return_value=v) for k, v in defaults.items()]
+        active = [patch.object(m, k, side_effect=PublishApi()) if k == "api" and v is None else patch.object(m, k, return_value=v) for k, v in defaults.items()]
         with (
             patch.object(m.sys, "argv", ["deploy", "x"]),
             patch.dict(m.TARGETS, {"x": target}),
@@ -226,6 +244,56 @@ class Checks(unittest.TestCase):
                 for active_patch in active:
                     active_patch.stop()
         return run, probe, canary
+
+    def publish_fixture(self, items, mains=None, guards=None):
+        target = {"command": ["wrangler", "deploy"], "config": "x.toml"}
+        with (patch.object(m, "api", side_effect=PublishApi(items)),
+              patch.object(m, "current_main", side_effect=mains or [SHA_A]),
+              patch.object(m, "guard_tripped", side_effect=guards or [False]),
+              patch.object(m.subprocess, "run") as run):
+            m.publish_version("x", target, SHA_A)
+        return run
+
+    def test_version_promotion_uses_only_exact_uploaded_identity(self):
+        version = "12345678-1234-1234-1234-123456789abc"
+        run = self.publish_fixture([{"id": version, "annotations": {"workers/tag": SHA_A}}])
+        self.assertEqual(run.call_count, 2)
+        upload, promote = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(upload[:3], ["wrangler", "versions", "upload"])
+        self.assertIn("--keep-vars", upload)
+        self.assertIn("--strict", upload)
+        self.assertEqual(promote[:4], ["wrangler", "versions", "deploy", version + "@100"])
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], m.DEPLOY_TIMEOUT_SECONDS)
+
+    def test_missing_duplicate_wrong_and_malformed_versions_refuse_promotion(self):
+        good = {"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}
+        for items in ([], [good, good], [{**good, "annotations": {"workers/tag": SHA_B}}],
+                      [{**good, "id": "not-a-version"}]):
+            with self.subTest(items=items), patch.object(m.subprocess, "run") as run:
+                with patch.object(m, "api", side_effect=PublishApi(items)), self.assertRaises(RuntimeError):
+                    m.publish_version("x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A)
+                self.assertEqual(run.call_count, 1)
+
+    def test_concurrent_live_version_change_refuses_promotion(self):
+        with (patch.object(m, "api", side_effect=PublishApi(changed=True)),
+              patch.object(m, "current_main", return_value=SHA_A),
+              patch.object(m, "guard_tripped", return_value=False),
+              patch.object(m.subprocess, "run") as run,
+              self.assertRaisesRegex(RuntimeError, "changed during upload")):
+            m.publish_version("x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A)
+        self.assertEqual(run.call_count, 1)
+
+    def test_merge_or_guard_change_after_upload_refuses_promotion(self):
+        items = [{"id": "12345678-1234-1234-1234-123456789abc", "annotations": {"workers/tag": SHA_A}}]
+        for head, tripped in ((SHA_B, False), (SHA_A, True)):
+            with self.subTest(head=head, tripped=tripped), patch.object(m.subprocess, "run") as run:
+                with (patch.object(m, "api", side_effect=PublishApi(items)),
+                      patch.object(m, "current_main", return_value=head),
+                      patch.object(m, "guard_tripped", return_value=tripped),
+                      self.assertRaises(RuntimeError)):
+                    m.publish_version("x", {"command": ["wrangler", "deploy"], "config": "x.toml"}, SHA_A)
+                self.assertEqual(run.call_count, 1)
 
     def test_tripped_worker_is_refused_before_any_mutation(self):
         with patch.object(m.subprocess, "run") as outer:
@@ -276,7 +344,7 @@ class Checks(unittest.TestCase):
                 patch.object(m, "guard_tripped", return_value=False),
                 patch.object(m, "worker_changed", return_value=True),
                 patch.object(m, "config_limits", return_value={}),
-                patch.object(m, "api", return_value={}),
+                patch.object(m, "api", side_effect=PublishApi()),
             ):
                 m.main()
         self.assertEqual(rev_parse.call_args.kwargs["timeout"], m.GIT_TIMEOUT_SECONDS)
@@ -319,10 +387,10 @@ class Checks(unittest.TestCase):
                 patch.object(m, "guard_tripped", return_value=False),
                 patch.object(m, "worker_changed", return_value=True),
                 patch.object(m, "config_limits", return_value={}),
-                patch.object(m, "api", return_value={}),
+                patch.object(m, "api", side_effect=PublishApi()),
             ):
                 m.main()
-        self.assertIn(SHA_A, run.call_args.args[0])
+        self.assertIn("main " + SHA_A, run.call_args.args[0])
         self.assertEqual(canary.call_count, 2)
 
     def test_stale_canary_bearer_stops_the_deploy_before_upload(self):
@@ -349,7 +417,7 @@ class Checks(unittest.TestCase):
             patch.object(m, "guard_tripped", return_value=False),
             patch.object(m, "worker_changed", return_value=True),
             patch.object(m, "config_limits", return_value={}),
-            patch.object(m, "api", return_value={}),
+            patch.object(m, "api", side_effect=PublishApi()),
             self.assertRaisesRegex(RuntimeError, "MCP canary"),
         ):
             m.main()
@@ -379,7 +447,7 @@ class Checks(unittest.TestCase):
             patch.object(m, "current_main", return_value=SHA_A),
             patch.object(m, "worker_changed", return_value=True),
             patch.object(m, "config_limits", return_value={}),
-            patch.object(m, "api", return_value={}),
+            patch.object(m, "api", side_effect=PublishApi()),
             self.assertRaisesRegex(SystemExit, "budget guard"),
         ):
             m.main()

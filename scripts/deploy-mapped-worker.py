@@ -312,6 +312,42 @@ def load_secret_sync():
     return module
 
 
+def publish_version(name, target, sha):
+    """Upload code without touching routes, then promote the one exact uploaded version.
+
+    No CLI output is parsed for identity. The tag and version API bind the upload to
+    this commit; unknown, duplicate or changed evidence refuses traffic promotion.
+    """
+    command = target["command"]
+    env = {**os.environ, "CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "WRANGLER_SEND_METRICS": "false"}
+    config = ["--config", target["config"]]
+    before = {v["id"] for v in api("/workers/scripts/" + name + "/versions?per_page=50")["items"]}
+    live_before = live_deployment(name)
+    subprocess.run([command[0], "versions", "upload", *config, "--keep-vars",
+                    "--strict", "--tag", sha, "--message", "main " + sha],
+                   check=True, timeout=DEPLOY_TIMEOUT_SECONDS, env=env)
+    items = api("/workers/scripts/" + name + "/versions?per_page=50")["items"]
+    candidates = [v for v in items if v.get("id") not in before and (v.get("annotations") or {}).get("workers/tag") == sha]
+    if len(candidates) != 1 or not re.fullmatch(
+        r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", candidates[0].get("id", "")
+    ):
+        raise RuntimeError("Uploaded version identity is not unique and exact")
+    version_id = candidates[0]["id"]
+    if current_main() != sha:
+        raise RuntimeError("Superseded after upload; production unchanged")
+    if guard_tripped(name):
+        raise RuntimeError("Usage guard tripped after upload; production unchanged")
+    if live_deployment(name) != live_before:
+        raise RuntimeError("Live deployment changed during upload; production unchanged")
+    subprocess.run([command[0], "versions", "deploy", version_id + "@100", *config,
+                    "--yes", "--message", "main " + sha],
+                   check=True, timeout=DEPLOY_TIMEOUT_SECONDS, env=env)
+    active = live_deployment(name)
+    versions = active.get("versions", []) if active else []
+    if versions != [{"version_id": version_id, "percentage": 100}]:
+        raise RuntimeError("Production receipt is not the uploaded version at 100 percent")
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--secrets":
         raise SystemExit(load_secret_sync().cli(sys.argv[2:], account=ACCOUNT, guard=guard_tripped))
@@ -369,12 +405,7 @@ def main():
         return
     if guard_tripped(name):
         raise SystemExit(name + " was stopped by the budget guard; re-arm by hand before deploying")
-    subprocess.run(
-        [*target["command"], "--keep-vars", "--strict", "--tag", sha, "--message", "main " + sha],
-        check=True,
-        timeout=DEPLOY_TIMEOUT_SECONDS,
-        env={**os.environ, "CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "WRANGLER_SEND_METRICS": "false"},
-    )
+    publish_version(name, target, sha)
     if deployed_tag(name) != sha:
         raise RuntimeError("Exact version receipt does not match")
     verify_live(target)
