@@ -57,23 +57,32 @@ class CategoryTests(unittest.TestCase):
         crafted = base64.b64encode(bytes(range(129, 257 - 1))).decode()
         flagged = {sealed, crafted, "plain-name"}
         scanner = mock.Mock()
-        scanner.scan.side_effect = lambda text, known=None: "assigned secret" if text in flagged else None
+        scanner.scan.side_effect = lambda text, known=None: (
+            "assigned secret" if text in flagged else None
+        )
         args = {"repo": "o/r", "name": "N", "encrypted_value": sealed, "key_id": "1"}
         with mock.patch.object(git, "_scanner", return_value=scanner):
             # not produced by _seal: refused, even though it is binary base64 of any length
-            self.assertIn("encrypted_value", git._scan_arguments(args, "", "gr_wf_secret_put_org_actions"))
+            self.assertIn(
+                "encrypted_value", git._scan_arguments(args, "", "gr_wf_secret_put_org_actions")
+            )
             git._SEALED_VALUES.add(sealed)
             try:
                 self.assertIsNone(git._scan_arguments(args, "", "gr_wf_secret_put_org_actions"))
                 self.assertIsNone(git._scan_arguments(args, "", "gr_wf_secret_put_repo_actions"))
                 # a different value in the field is still scanned
                 other = {**args, "encrypted_value": crafted}
-                self.assertIn("encrypted_value", git._scan_arguments(other, "", "gr_wf_secret_put_org_actions"))
+                self.assertIn(
+                    "encrypted_value",
+                    git._scan_arguments(other, "", "gr_wf_secret_put_org_actions"),
+                )
                 # any other tool is still scanned
                 self.assertIn("encrypted_value", git._scan_arguments(args, "", "gr_comment_pr"))
                 self.assertIn("encrypted_value", git._scan_arguments(args, "", None))
                 # any other field of the same call is still scanned
-                result = git._scan_arguments({**args, "name": "plain-name"}, "", "gr_wf_secret_put_org_actions")
+                result = git._scan_arguments(
+                    {**args, "name": "plain-name"}, "", "gr_wf_secret_put_org_actions"
+                )
                 self.assertIn("secret_scan:name", result)
             finally:
                 git._SEALED_VALUES.discard(sealed)
