@@ -148,6 +148,29 @@ class WriteIntentTests(unittest.TestCase):
             self.assertNotIn(self.value.encode(), data)
             self.assertNotIn(self.token.encode(), data)
 
+    def test_wake_listener_read_key_value_shape_is_enforced_before_the_ledger(self):
+        # /wake holds listener read keys (64 lowercase hex, the routine-key format).  The
+        # shape check runs before the intent ledger, so a junk value is refused outright
+        # and no intent row is created for a write that can never be allowed.
+        for bad in ["not-a-key", "0x" + "ab" * 31, secrets.token_urlsafe(40)]:
+            with self.subTest(value=bad[:12]):
+                before = len(self.calls)
+                with self.assertRaises(core.SecretsError) as raised:
+                    core.put_secret(
+                        "WAKE_HMAC_KEY_ZC",
+                        "/wake",
+                        bad,
+                        self.env,
+                        intent=self.new_intent("wake-shape-junk"),
+                    )
+                self.assertIn("write-value-invalid", str(raised.exception))
+                self.assertEqual(len(self.calls), before, "no provider call for a bad value")
+        # A well-formed key passes the shape gate;  a folder with no shape accepts anything.
+        good = "ab" * 32
+        self.assertTrue(core.value_shape_ok("/wake", good))
+        self.assertTrue(core.value_shape_ok("/linear", good))
+        self.assertFalse(core.value_shape_ok("/wake", "junk"))
+
     def test_missing_secret_posts_once_only_after_definite_patch_404(self):
         self.statuses = [404, 201]
         self.assertEqual(self.put().result, "created")

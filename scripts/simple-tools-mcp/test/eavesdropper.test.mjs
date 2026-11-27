@@ -250,7 +250,14 @@ test("listenerSecretName: wake seats keep their wake key, the read-key seats get
   assert.equal(listenerSecretName("CLAUDE"), "WAKE_HMAC_KEY_CLAUDE");
   assert.equal(listenerSecretName("CODEX"), "WAKE_HMAC_KEY_CODEX");
   assert.equal(listenerSecretName("CURSOR"), "WAKE_HMAC_KEY_CURSOR");
-  assert.equal(listenerSecretName("AG"), null);
+  // ZC is a read-key seat:  its wake rides the server-side zcode delivery.
+  assert.equal(listenerSecretName("ZC"), "WAKE_HMAC_KEY_ZC");
+  // Nov 27, 2026:  every remaining live seat gets a read key,  so its eavesdropper_* tools
+  // sign /listener/v1/<SEAT> with the listener's own <CODE>_ROUTINE_KEY value.
+  assert.equal(listenerSecretName("AG"), "WAKE_HMAC_KEY_AG");
+  assert.equal(listenerSecretName("MM"), "WAKE_HMAC_KEY_MM");
+  assert.equal(listenerSecretName("GB-COMPILER"), "WAKE_HMAC_KEY_GB_COMPILER");
+  assert.equal(listenerSecretName("BF-DEPLOYER"), "WAKE_HMAC_KEY_BF_DEPLOYER");
   assert.equal(listenerSecretName("__proto__"), null);
 });
 

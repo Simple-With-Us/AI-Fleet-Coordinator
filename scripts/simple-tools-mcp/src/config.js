@@ -148,11 +148,50 @@ export const WAKE_SECRETS = Object.freeze({
 // Owner, Nov 10 2026 ("make the wake key for everyone"):  every hosted seat gets a read key.  CLAUDE, CODEX and CURSOR have
 // no wake route either (their wake is `inbox`), so they are listed here like MA.  Each is the same value as the listener's
 // <CODE>_ROUTINE_KEY (Infisical AI Fleet Coordinator, prod, /zulip) and is installed as a Worker secret of this name.
+// Nov 27, 2026:  every remaining live seat becomes a read-key seat,  so its eavesdropper_*
+// tools sign /listener/v1/<SEAT> with the listener's own <CODE>_ROUTINE_KEY value (Fleet-OPS
+// prod /wake, resolved Infisical-first).  Seats in WAKE_SECRETS keep their wake keys.
 export const LISTENER_READ_SECRETS = Object.freeze({
   MA: "WAKE_HMAC_KEY_MA",
   CLAUDE: "WAKE_HMAC_KEY_CLAUDE",
   CODEX: "WAKE_HMAC_KEY_CODEX",
   CURSOR: "WAKE_HMAC_KEY_CURSOR",
+  // ZC's wake rides the server-side zcode delivery, not /internal/wake, so it is a read-key
+  // seat like MA:  the eavesdropper_* tools sign /listener/v1/ZC with this key (Nov 27, 2026).
+  ZC: "WAKE_HMAC_KEY_ZC",
+  AG: "WAKE_HMAC_KEY_AG",
+  CLUTCH: "WAKE_HMAC_KEY_CLUTCH",
+  FX: "WAKE_HMAC_KEY_FX",
+  GROK: "WAKE_HMAC_KEY_GROK",
+  KIMI: "WAKE_HMAC_KEY_KIMI",
+  MC: "WAKE_HMAC_KEY_MC",
+  MM: "WAKE_HMAC_KEY_MM",
+  OPENCODE: "WAKE_HMAC_KEY_OPENCODE",
+  AMP: "WAKE_HMAC_KEY_AMP",
+  "GB-COMPILER": "WAKE_HMAC_KEY_GB_COMPILER",
+  "GB-DIRECTOR": "WAKE_HMAC_KEY_GB_DIRECTOR",
+  "GB-FIXER": "WAKE_HMAC_KEY_GB_FIXER",
+  "GB-DESIGNER": "WAKE_HMAC_KEY_GB_DESIGNER",
+  "GB-HOUSEKEEPER": "WAKE_HMAC_KEY_GB_HOUSEKEEPER",
+  "GB-PUBLISHER": "WAKE_HMAC_KEY_GB_PUBLISHER",
+  "GB-DEPLOYER": "WAKE_HMAC_KEY_GB_DEPLOYER",
+  "GB-MONITOR": "WAKE_HMAC_KEY_GB_MONITOR",
+  "GB-PLUMBER": "WAKE_HMAC_KEY_GB_PLUMBER",
+  "GB-ORACLE": "WAKE_HMAC_KEY_GB_ORACLE",
+  "GB-TRADER": "WAKE_HMAC_KEY_GB_TRADER",
+  "GB-ENGINEER": "WAKE_HMAC_KEY_GB_ENGINEER",
+  "BF-DIRECTOR": "WAKE_HMAC_KEY_BF_DIRECTOR",
+  "BF-COMPILER": "WAKE_HMAC_KEY_BF_COMPILER",
+  "BF-DEPLOYER": "WAKE_HMAC_KEY_BF_DEPLOYER",
+  "BF-DESIGNER": "WAKE_HMAC_KEY_BF_DESIGNER",
+  "BF-ENGINEER": "WAKE_HMAC_KEY_BF_ENGINEER",
+  "BF-FIXER": "WAKE_HMAC_KEY_BF_FIXER",
+  "BF-HOUSEKEEPER": "WAKE_HMAC_KEY_BF_HOUSEKEEPER",
+  "BF-MONITOR": "WAKE_HMAC_KEY_BF_MONITOR",
+  "BF-PLUMBER": "WAKE_HMAC_KEY_BF_PLUMBER",
+  "BF-ORACLE": "WAKE_HMAC_KEY_BF_ORACLE",
+  "BF-TRADER": "WAKE_HMAC_KEY_BF_TRADER",
+  "BF-PUBLISHER": "WAKE_HMAC_KEY_BF_PUBLISHER",
 });
 
 // Every secret name that holds a seat's listener key, wake or read-only.  The spike, health and WhatsApp keys must never equal

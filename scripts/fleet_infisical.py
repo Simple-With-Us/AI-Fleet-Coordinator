@@ -67,7 +67,45 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
         r"/cli-logins",
         r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$",
     ),
+    # The Worker's listener read keys (OPS-1047):  one enumerated name per read-key seat,
+    # in Fleet-OPS prod /wake.  The value is the seat's own <CODE>_ROUTINE_KEY copied from
+    # the listener's one home (AFC prod /zulip),  so the write moves an existing per-seat
+    # credential to the reader that needs it and never mints one.  Enumerated, so a writer
+    # can never mint an arbitrary WAKE_HMAC_KEY_* name (kody on #2610).  CLAUDE, CODEX and
+    # CURSOR are absent:  their keys were installed on Nov 10, 2026 and need no further write.
+    (
+        r"/wake",
+        r"^WAKE_HMAC_KEY_(MA|ZC|AG|CLUTCH|FX|GROK|KIMI|MC|MM|OPENCODE|AMP"
+        r"|GB_[A-Z]+|BF_[A-Z]+)$",
+    ),
 )
+
+# A value shape per writable folder (whole-folder match), checked by put_secret before the
+# intent ledger.  The /wake listener read keys are 64 lowercase hex (openssl rand -hex 32,
+# DEPLOY.md),  so a wrong or junk value from a writer bug can never land and silently break
+# another seat's reads.  A folder with no shape accepts any value the write token carries.
+VALUE_SHAPES: tuple[tuple[str, str], ...] = ((r"/wake", r"[0-9a-f]{64}"),)
+
+
+def value_shape_ok(path: str, value: str) -> bool:
+    """Whether a value is in the stored shape the path's writer enforces before the ledger.
+
+    /wake holds listener read keys:  64 lowercase hex,  the routine-key format
+    (`openssl rand -hex 32`).  Every other allowlisted path carries no shape rule,  so the
+    write is judged by its allowlist entry alone.  Malformed inputs defer to the contracted
+    validation instead of crashing:  a non-string path passes through to check_path's
+    refusal,  and a non-string value refuses the shape.
+    """
+    if not isinstance(path, str):
+        return True
+    if not isinstance(value, str):
+        return False
+    for folder, shape in VALUE_SHAPES:
+        if re.fullmatch(folder, path) and not re.fullmatch(shape, value):
+            return False
+    return True
+
+
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -2241,10 +2279,16 @@ def put_secret(
     """
     env = dict(env)
     env[ENV_WRITE_PATHS] = path
+    if not isinstance(value, str) or "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
+        # A value that cannot be stored at all is refused before the shape table:  no row,
+        # no provider call, and the caller corrects the value instead of reconciling.
+        raise SecretsError("write-value-invalid", 2)
+    if not value_shape_ok(path, value):
+        # A shape the destination cannot hold is refused before the intent ledger:  no row,
+        # no provider call, and the caller corrects the value instead of reconciling.
+        raise SecretsError("write-value-invalid", 2)
     project, provider, namespace, deadline = _write_context(name, path, env, intent, timeout)
     env[ENV_API] = provider
-    if not isinstance(value, str) or "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
-        raise SecretsError("write-value-invalid", 2)
     record = _write_record(intent, provider, project, path, name, _write_digest(value))
     ledger = _write_ledger(intent.state_dir)
     try:
