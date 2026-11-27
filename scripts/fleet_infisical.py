@@ -88,23 +88,15 @@ VALUE_SHAPES: tuple[tuple[str, str], ...] = ((r"/wake", r"[0-9a-f]{64}"),)
 
 
 def value_shape_ok(path: str, value: str) -> bool:
-    """True unless a whole-folder value shape refuses the value.  A folder with no shape
-    accepts any value the write token carries."""
-    for folder, shape in VALUE_SHAPES:
-        if re.fullmatch(folder, path) and not re.fullmatch(shape, value):
-            return False
-    return True
-
-
-def value_shape_ok(path: str, value: str) -> bool:
     """Whether a value is in the stored shape the path's writer enforces before the ledger.
 
     /wake holds listener read keys:  64 lowercase hex,  the routine-key format
     (`openssl rand -hex 32`).  Every other allowlisted path carries no shape rule,  so the
     write is judged by its allowlist entry alone.
     """
-    if path == "/wake":
-        return re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    for folder, shape in VALUE_SHAPES:
+        if re.fullmatch(folder, path) and not re.fullmatch(shape, value):
+            return False
     return True
 
 
@@ -2281,16 +2273,16 @@ def put_secret(
     """
     env = dict(env)
     env[ENV_WRITE_PATHS] = path
+    if not isinstance(value, str) or "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
+        # A value that cannot be stored at all is refused before the shape table:  no row,
+        # no provider call, and the caller corrects the value instead of reconciling.
+        raise SecretsError("write-value-invalid", 2)
     if not value_shape_ok(path, value):
         # A shape the destination cannot hold is refused before the intent ledger:  no row,
         # no provider call, and the caller corrects the value instead of reconciling.
         raise SecretsError("write-value-invalid", 2)
     project, provider, namespace, deadline = _write_context(name, path, env, intent, timeout)
     env[ENV_API] = provider
-    if not isinstance(value, str) or "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
-        raise SecretsError("write-value-invalid", 2)
-    if not value_shape_ok(path, value):
-        raise SecretsError("write-value-invalid", 2)
     record = _write_record(intent, provider, project, path, name, _write_digest(value))
     ledger = _write_ledger(intent.state_dir)
     try:
