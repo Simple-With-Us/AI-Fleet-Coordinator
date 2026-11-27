@@ -11,27 +11,64 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-27@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261127
 DTEND;VALUE=DATE:20261128
-SUMMARY:Fleet: 13 merged · 0 opened · 0 closed
-DESCRIPTION:13 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 68 merged · 0 opened · 0 closed
+DESCRIPTION:68 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#2399] (codex) AFC-859 shared cloud feed conso
  lidation (DO NOT MERGE)\n- [AI-Fleet-Coordinator#2608] (zcode) Muster: An 
  Omitted Notes-Queue List Is Not Reported\, Never Empty\n- [AI-Fleet-Coordi
  nator#2609] chore: record com.socratictrade.ios 0.1.0 in the fleet iOS man
- ifest\n- [BotFleet#2241] (zcode) BF-2707: Bind The Infisical Bootstrap On 
- The iOS Ship Job\n- [Clutch#348] (instinct) Make the host switcher in a Ma
- c thread window switch that window\n- [Clutch#354] (instinct) Reload the t
- hread list when the host changes\n- [Clutch#355] (instinct) Steer a runnin
- g turn from a thread preview\n- [Clutch#357] (muse) Badge Sidebar Context 
- And Preview Attachments\n- [Clutch#358] (muse) Keep Mac Thumbnail Aspect F
- rom Its Pixels\n- [HogHunter#404] (muse) Unify the dashboard Overview into
-  one scroll region\n- [HogHunter#405] (instinct) Fix disk pressure reclaim
-  gates and preserve Xcode simulators\n- [HogHunter#406] (instinct) Overvie
- w: compact summary\, Activity takes the rest\, Swap meter on Mac\n- [Socra
- tic-Trade#5495] (zcode) ST-4687: iOS batch 3 — price alerts\, @Observabl
- e TabPreferences\, coach drafts\, charts\, scan search
+ ifest\n- [AI-Fleet-Coordinator#2610] (zcode) Give Every Live Seat A Listen
+ er Read Key\n- [AI-Fleet-Coordinator#2611] chore: record the fleet iOS ver
+ sions in the manifest\n- [AI-Fleet-Coordinator#2612] (instinct) simple-git
+ : read-only watch and run-log (gh pr checks — watch\, gh run view — lo
+ g-failed)\n- [AI-Fleet-Coordinator#2613] (cursor) docs(protocols): update 
+ Zulip Fleet Guide with @-tag rule and current Fleet Tools protocol\n- [AI-
+ Fleet-Coordinator#2614] (instinct\, claude) Host DUET with a manual client
+  id on the shared — callback\n- [AI-Fleet-Coordinator#2615] chore: recor
+ d the fleet iOS versions in the manifest\n- [AI-Fleet-Coordinator#2616] (i
+ nstinct) Qualify autonomous Worker publishing with exact version promotion
+ \n- [AI-Fleet-Coordinator#2617] (instinct) Close alert release review gaps
+  with bounded waiters and atomic claims\n- [AI-Fleet-Coordinator#2618] (in
+ stinct) Read complete bounded thread evidence for alert releases\n- [AI-Fl
+ eet-Coordinator#2619] (instinct\, claude) One .ai connection serves — an
+ d DUET\, each call names its identity\n- [AI-Fleet-Coordinator#2620] (inst
+ inct) Match subscription service-token validation to shared client\n- [AI-
+ Fleet-Coordinator#2621] chore: com.simplewithus.codecaps.ios 0.1.0\n- [AI-
+ Fleet-Coordinator#2622] (instinct) Mark unsupported historical Worker test
+  claims unverified\n- [AI-Fleet-Coordinator#2623] (instinct) Reject absent
+  Infisical lifetime metadata in board\n- [AI-Fleet-Coordinator#2625] (inst
+ inct) Repo settings verbs: read settings\, update settings\, set topics\, 
+ for every seat\n- [AI-Fleet-Coordinator#2626] chore: record the fleet iOS 
+ versions in the manifest\n- [AI-Fleet-Coordinator#2627] (instinct) Diagnos
+ e unmapped ZCode resume exits without private output\n- [AI-Fleet-Coordina
+ tor#2629] chore: record the fleet iOS versions in the manifest\n- [BotFlee
+ t#2241] (zcode) BF-2707: Bind The Infisical Bootstrap On The iOS Ship Job\
+ n- [BotFleet#2242] (ag) Fix BotFleetMac Settings Button And Blank App Icon
+  (Fixes BF-2708)\n- [BotFleet#2243] (minimax) BF-2706: Allow first iOS Tes
+ tFlight ship when no prior App Store release exists (Option A)\n- [BotFlee
+ t#2244] (claude) BF-2710: Import legacy bots and transcripts into the nati
+ ve store on first harness-free launch\n- [BotFleet#2245] (zcode) BF-2652: 
+ Make The Linux Companion Bridge Speak The Shipped iOS App's Contract\n- [B
+ otFleet#2247] (zcode) BF-2712: Report Undefined Names In Node Scripts With
+  The Linter\n- [BotFleet#2248] (zcode) BF-2652: Answer 401 To A Device Cre
+ dential The Bridge Does Not Know\n- [BotFleet#2249] (zcode) BF-2652: Recor
+ d The Slot 1 And Slot 2 Receipts For The Server The Bridge Runs On\n- [Bot
+ Fleet#2250] (zcode) BF-2713: Open A Server Pairing Window From The Mac App
+ 's Phone Settings\n- [BotFleet#2251] (zcode) BF-2715: Close The Fake OpenA
+ I Server's Connection With Each Answer\n- [BotFleet#2252] (zcode) BF-2714:
+  The Phone Prefers The Server Bridge When Placement Is serverFirst\n- [Clu
+ tch#346] (muse) Native Quick Wins: Honest Streams\, Gates\, Widgets\, And 
+ Telemetry\n- [Clutch#347] (muse) Keep Drafts And Reconnect The Host Mux\n-
+  [Clutch#348] (instinct) Make the host switcher in a Mac thread window swi
+ tch that window\n- [Clutch#349] (muse) Give iOS Thread Rows The Mac's Acti
+ ons\n- [Clutch#350] (muse) Render Assistant Prose As Markdown\, Follow The
+  Tail\, Read Cards Once\n- [Clutch#351] (muse) Cap Permission Evidence And
+  Confirm Allow Always\n- [Clutch#352] (muse) Forward Field Diagnostics And
+  Log The Connection Edges\n- [Clutch#354] (instinct) Reload the thread lis
+ t when the host changes\n  … +28 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-27
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -39,7 +76,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-26@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261126
 DTEND;VALUE=DATE:20261127
 SUMMARY:Fleet: 54 merged · 0 opened · 0 closed
@@ -101,7 +138,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-25@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261125
 DTEND;VALUE=DATE:20261126
 SUMMARY:Fleet: 135 merged · 0 opened · 0 closed
@@ -169,7 +206,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-24@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261124
 DTEND;VALUE=DATE:20261125
 SUMMARY:Fleet: 82 merged · 0 opened · 0 closed
@@ -235,7 +272,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-23@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261123
 DTEND;VALUE=DATE:20261124
 SUMMARY:Fleet: 89 merged · 0 opened · 0 closed
@@ -309,7 +346,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-22@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261122
 DTEND;VALUE=DATE:20261123
 SUMMARY:Fleet: 72 merged · 0 opened · 0 closed
@@ -378,7 +415,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-21@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261121
 DTEND;VALUE=DATE:20261122
 SUMMARY:Fleet: 114 merged · 0 opened · 0 closed
@@ -441,7 +478,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-20@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261121
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -505,7 +542,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
 SUMMARY:Fleet: 58 merged · 0 opened · 0 closed
@@ -571,7 +608,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -642,7 +679,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -684,7 +721,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -741,7 +778,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -802,7 +839,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -863,7 +900,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -921,7 +958,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -985,7 +1022,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -1053,7 +1090,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -1117,48 +1154,48 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
-SUMMARY:Fleet: 75 merged · 0 opened · 0 closed
-DESCRIPTION:75 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 74 merged · 0 opened · 0 closed
+DESCRIPTION:74 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#1556] Operator Session Registry\n- [AI-Fleet-
- Coordinator#1573] 618 Fleet Ops Sync Skip\n- [AI-Fleet-Coordinator#1675] P
- repare isolated 1614 finite relay transaction (source only)\n- [AI-Fleet-C
- oordinator#1687] code-main-sync: post dirty or failing Code clones to Zuli
- p (AFC-677)\n- [AI-Fleet-Coordinator#1690] pr-sweep: resolve the lane tool
-  from PATH on the server host\n- [AI-Fleet-Coordinator#1692] The lettered 
- title is written as a custom rename the app will not clobber (OPS-1048)\n-
-  [AI-Fleet-Coordinator#1694] chore: com.simplewithus.codecaps.ios 0.1.0\n-
-  [BotFleet#1653] Fallback Gap Refuse\n- [BotFleet#1656] Kody High Callview
-  Visual\n- [BotFleet#1728] Update non-major dependencies\n- [BotFleet#1729
- ] BF-2627: TV-Face packs under 2MB + recolorable none/shell/full\n- [BotFl
- eet#1730] Update dependency posthog-js to v1.445.5\n- [BotFleet#1731] Comp
- ile gates: dedupe webhook wakes by head SHA (BF-2655)\n- [BotFleet#1732] O
- PS-1052 / BF-2552: post-sync ensure-tf-ready recheck for hosted iOS ship\n
- - [BotFleet#1733] (sentry) Update dependency — to v9.33.0\n- [BotFleet#1
- 734] Update non-major dependencies\n- [BotFleet#1735] Update non-major dep
- endencies\n- [BotFleet#1736] chore(renovate): verify frozen lockfile after
-  non-major lockfile regen\n- [BotFleet#1737] BF-2201: Align setupCommands 
- mount tests with shellWord quoting\n- [Clutch#256] (app-clutch) OPS-1052: 
- post-sync TestFlight readiness recheck\n- [Clutch#257] (sentry) Update dep
- endency — to v9.33.0\n- [Congress.Trade#2956] Peer Price Fetch Cost\n- [
- Congress.Trade#3005] (claude) Relay-First GitHub Route in AGENTS.md and .m
- d\n- [Congress.Trade#3006] (cursor) ct-2407-ct-2397-publisher-rows-d1f5\n-
-  [Congress.Trade#3012] (cursor) local-vision-all-no-amount-hold\n- [Congre
- ss.Trade#3031] publisher/reconcile-published-errored\n- [Congress.Trade#30
- 34] Senate Fetcher Run Heartbeat for the Review Queue (CT-2462)\n- [Congre
- ss.Trade#3035] Post-Merge Sentinel Re-Dispatches Runs That Never Started\n
- - [Congress.Trade#3039] Mark no-longer-trading peer prices terminal so the
-  stall clock ignores them\n- [ContactLogo#308] Launch Enum Off Main\n- [Co
- ntactLogo#318] Deploy Baseline Recovery\n- [ContactLogo#319] Relay-First G
- itHub Route in AGENTS.md\n- [DealDex#567] Member Plan Docs\n- [DealDex#573
- ] Swu Wordmark\n- [DealDex#575] Relay-First GitHub Route in AGENTS.md\n- [
- DealDex#576] OPS-1052: post-sync TestFlight readiness recheck (DealDex ios
- -ship)\n- [DealDex#577] chore(deps): update non-major dependencies\n- [Fle
- etLink#187] Admin Order Fixture Tests\n- [FleetLink#197] Relay-First GitHu
- b Route in AGENTS.md\n- [FleetLink#198] OPS-1052: Fix ensure-tf-ready rc 5
- /6 labels and post-sync readiness (FleetLink)\n  … +35 more
+ Coordinator#1675] Prepare isolated 1614 finite relay transaction (source o
+ nly)\n- [AI-Fleet-Coordinator#1687] code-main-sync: post dirty or failing 
+ Code clones to Zulip (AFC-677)\n- [AI-Fleet-Coordinator#1690] pr-sweep: re
+ solve the lane tool from PATH on the server host\n- [AI-Fleet-Coordinator#
+ 1692] The lettered title is written as a custom rename the app will not cl
+ obber (OPS-1048)\n- [AI-Fleet-Coordinator#1694] chore: com.simplewithus.co
+ decaps.ios 0.1.0\n- [BotFleet#1653] Fallback Gap Refuse\n- [BotFleet#1656]
+  Kody High Callview Visual\n- [BotFleet#1728] Update non-major dependencie
+ s\n- [BotFleet#1729] BF-2627: TV-Face packs under 2MB + recolorable none/s
+ hell/full\n- [BotFleet#1730] Update dependency posthog-js to v1.445.5\n- [
+ BotFleet#1731] Compile gates: dedupe webhook wakes by head SHA (BF-2655)\n
+ - [BotFleet#1732] OPS-1052 / BF-2552: post-sync ensure-tf-ready recheck fo
+ r hosted iOS ship\n- [BotFleet#1733] (sentry) Update dependency — to v9.
+ 33.0\n- [BotFleet#1734] Update non-major dependencies\n- [BotFleet#1735] U
+ pdate non-major dependencies\n- [BotFleet#1736] chore(renovate): verify fr
+ ozen lockfile after non-major lockfile regen\n- [BotFleet#1737] BF-2201: A
+ lign setupCommands mount tests with shellWord quoting\n- [Clutch#256] (app
+ -clutch) OPS-1052: post-sync TestFlight readiness recheck\n- [Clutch#257] 
+ (sentry) Update dependency — to v9.33.0\n- [Congress.Trade#2956] Peer Pr
+ ice Fetch Cost\n- [Congress.Trade#3005] (claude) Relay-First GitHub Route 
+ in AGENTS.md and .md\n- [Congress.Trade#3006] (cursor) ct-2407-ct-2397-pub
+ lisher-rows-d1f5\n- [Congress.Trade#3012] (cursor) local-vision-all-no-amo
+ unt-hold\n- [Congress.Trade#3031] publisher/reconcile-published-errored\n-
+  [Congress.Trade#3034] Senate Fetcher Run Heartbeat for the Review Queue (
+ CT-2462)\n- [Congress.Trade#3035] Post-Merge Sentinel Re-Dispatches Runs T
+ hat Never Started\n- [Congress.Trade#3039] Mark no-longer-trading peer pri
+ ces terminal so the stall clock ignores them\n- [ContactLogo#308] Launch E
+ num Off Main\n- [ContactLogo#318] Deploy Baseline Recovery\n- [ContactLogo
+ #319] Relay-First GitHub Route in AGENTS.md\n- [DealDex#567] Member Plan D
+ ocs\n- [DealDex#573] Swu Wordmark\n- [DealDex#575] Relay-First GitHub Rout
+ e in AGENTS.md\n- [DealDex#576] OPS-1052: post-sync TestFlight readiness r
+ echeck (DealDex ios-ship)\n- [DealDex#577] chore(deps): update non-major d
+ ependencies\n- [FleetLink#187] Admin Order Fixture Tests\n- [FleetLink#197
+ ] Relay-First GitHub Route in AGENTS.md\n- [FleetLink#198] OPS-1052: Fix e
+ nsure-tf-ready rc 5/6 labels and post-sync readiness (FleetLink)\n- [HogHu
+ nter#329] Relay-First GitHub Route in AGENTS.md\n  … +34 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-09
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1166,54 +1203,53 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
-SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
-DESCRIPTION:42 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [BotFleet#1555] Verify Canonical Native Updates And Final Archive S
- ignatures\n- [BotFleet#1594] Package The Native Headless Host With Verifie
- d Mach-O Identity\n- [BotFleet#1604] feat(engines): let local OpenAI-compa
- tible servers wait longer for a reply\n- [BotFleet#1610] Wire TV-Face One-
- File Packs And Ship Color Shells\n- [BotFleet#1621] Update dependency undi
- ci to v8.12.2 [SECURITY]\n- [BotFleet#1622] Update non-major dependencies\
- n- [BotFleet#1623] Update dependency Sparkle to v2.10.1\n- [BotFleet#1624]
-  Update non-major dependencies\n- [BotFleet#1625] Update non-major depende
- ncies\n- [BotFleet#1626] Update dependency next to v16.4.5\n- [BotFleet#16
- 27] Update dependency electron to v45.2.2\n- [Congress.Trade#2936] Update 
- non-major dependencies\n- [Congress.Trade#2951] fix(senate-html): split eF
- D Company:/Description: detail out of assetName\n- [Congress.Trade#2952] t
- est(admin): pin the clock in the Senate intake heartbeat test\n- [Congress
- .Trade#2953] Peer-price catch-up: roll the run budget on the ET day so wee
- kend tails keep draining\n- [Congress.Trade#2954] Update non-major depende
- ncies\n- [ContactLogo#304] chore(deps): bump minimatch and @sentry/vite-pl
- ugin in /apps/web\n- [FleetLink#173] Add bounded retained own-share metada
- ta reads\n- [HogHunter#274] HH-219 Teach The Reclaim Engine Disk Upkeep\n-
-  [HogHunter#277] hh-agent: automatic root-disk cleanup (autoclean)\n- [Hog
- Hunter#279] hh-agent autoclean: Kody review fixes from #277 (re-land)\n- [
- HogHunter#327] Settings: say timing instead of lookback in the iPhone edit
-  description\n- [HogHunter#328] hh-agent autoclean: compute disk use on th
- e df basis so the trigger fires\n- [Personal-Site#268] chore(deps): bump g
- lob and @sentry/vite-plugin in /site\n- [Socratic-Trade#4997] Add Mobile C
- ontrol Brief Summary\n- [Socratic-Trade#5017] fix(deps): update observabil
- ity\n- [Socratic-Trade#5018] chore(deps): update observability\n- [Socrati
- c-Trade#5019] chore(deps): update dependency eslint-config-next to v16.4.5
- \n- [Socratic-Trade#5020] chore(deps): update dependency next to v16.4.5\n
- - [Socratic-Trade#5021] chore(deps): update observability to v6.1.1\n- [Us
- age-Monitor#1957] Store Per-Consumer Collector Tokens In The Mac Login Key
- chain\n- [codecaps#357] (muse-assist) Fix Quota Resets And Companion Data\
- ; Finish — Plugins And Alert Routing\n- [codecaps#364] Share Bounded HTT
- P Fetch Across Local Quota Readers\n- [codecaps#367] Name the absent Infis
- ical service token in the ASC key staging fallback\n- [codecaps#379] fix(p
- ip): draw a live period's last known reading like the dropdown does\n- [co
- decaps#382] hotfix: alert on mid-window restores that roll the window forw
- ard\n- [codecaps#384] test(alerts): guard unchecked events[0] so a failed 
- assertion reports instead of aborting xctest\n- [codecaps#385] Fix #382 du
- plicate test declarations breaking the main build\n- [codecaps#386] Silenc
- e rolling-window slides in the reset alarm\; repair the rolling-slide test
-  scenario\n- [codecaps#387] Widget: restore #369 wire-parse contract\, sin
- gle Argon detail\, honest pool headline + WidgetParseTests CI coverage\n  
- … +2 more
+SUMMARY:Fleet: 43 merged · 0 opened · 0 closed
+DESCRIPTION:43 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#1509] Retire the banned component name everyw
+ here: simple_tools and simple-tools-mcp\n- [BotFleet#1555] Verify Canonica
+ l Native Updates And Final Archive Signatures\n- [BotFleet#1594] Package T
+ he Native Headless Host With Verified Mach-O Identity\n- [BotFleet#1604] f
+ eat(engines): let local OpenAI-compatible servers wait longer for a reply\
+ n- [BotFleet#1610] Wire TV-Face One-File Packs And Ship Color Shells\n- [B
+ otFleet#1621] Update dependency undici to v8.12.2 [SECURITY]\n- [BotFleet#
+ 1622] Update non-major dependencies\n- [BotFleet#1623] Update dependency S
+ parkle to v2.10.1\n- [BotFleet#1624] Update non-major dependencies\n- [Bot
+ Fleet#1625] Update non-major dependencies\n- [BotFleet#1626] Update depend
+ ency next to v16.4.5\n- [BotFleet#1627] Update dependency electron to v45.
+ 2.2\n- [Congress.Trade#2936] Update non-major dependencies\n- [Congress.Tr
+ ade#2951] fix(senate-html): split eFD Company:/Description: detail out of 
+ assetName\n- [Congress.Trade#2952] test(admin): pin the clock in the Senat
+ e intake heartbeat test\n- [Congress.Trade#2953] Peer-price catch-up: roll
+  the run budget on the ET day so weekend tails keep draining\n- [Congress.
+ Trade#2954] Update non-major dependencies\n- [ContactLogo#304] chore(deps)
+ : bump minimatch and @sentry/vite-plugin in /apps/web\n- [FleetLink#173] A
+ dd bounded retained own-share metadata reads\n- [HogHunter#274] HH-219 Tea
+ ch The Reclaim Engine Disk Upkeep\n- [HogHunter#277] hh-agent: automatic r
+ oot-disk cleanup (autoclean)\n- [HogHunter#279] hh-agent autoclean: Kody r
+ eview fixes from #277 (re-land)\n- [HogHunter#327] Settings: say timing in
+ stead of lookback in the iPhone edit description\n- [HogHunter#328] hh-age
+ nt autoclean: compute disk use on the df basis so the trigger fires\n- [Pe
+ rsonal-Site#268] chore(deps): bump glob and @sentry/vite-plugin in /site\n
+ - [Socratic-Trade#4997] Add Mobile Control Brief Summary\n- [Socratic-Trad
+ e#5017] fix(deps): update observability\n- [Socratic-Trade#5018] chore(dep
+ s): update observability\n- [Socratic-Trade#5019] chore(deps): update depe
+ ndency eslint-config-next to v16.4.5\n- [Socratic-Trade#5020] chore(deps):
+  update dependency next to v16.4.5\n- [Socratic-Trade#5021] chore(deps): u
+ pdate observability to v6.1.1\n- [Usage-Monitor#1957] Store Per-Consumer C
+ ollector Tokens In The Mac Login Keychain\n- [codecaps#357] (muse-assist) 
+ Fix Quota Resets And Companion Data\; Finish — Plugins And Alert Routing
+ \n- [codecaps#364] Share Bounded HTTP Fetch Across Local Quota Readers\n- 
+ [codecaps#367] Name the absent Infisical service token in the ASC key stag
+ ing fallback\n- [codecaps#379] fix(pip): draw a live period's last known r
+ eading like the dropdown does\n- [codecaps#382] hotfix: alert on mid-windo
+ w restores that roll the window forward\n- [codecaps#384] test(alerts): gu
+ ard unchecked events[0] so a failed assertion reports instead of aborting 
+ xctest\n- [codecaps#385] Fix #382 duplicate test declarations breaking the
+  main build\n- [codecaps#386] Silence rolling-window slides in the reset a
+ larm\; repair the rolling-slide test scenario\n  … +3 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-08
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1221,7 +1257,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 55 merged · 0 opened · 0 closed
@@ -1274,54 +1310,55 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261127T094543Z
+DTSTAMP:20261127T220848Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
-SUMMARY:Fleet: 48 merged · 0 opened · 0 closed
-DESCRIPTION:48 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 49 merged · 0 opened · 0 closed
+DESCRIPTION:49 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#1330] Alert Ingress: Serialize Standing Statu
- s Refreshes\n- [BotFleet#1588] Make Startup Infisical Bootstrap An Explici
- t Local Opt-In\n- [BotFleet#1591] Default Busy Send To Queue And Ask On Ba
- cklog (BF-2442)\n- [BotFleet#1593] Show Trajectory Steps Newest First\n- [
- BotFleet#1595] Carry The ACP Context Window Into Token Usage Telemetry\n- 
- [BotFleet#1596] Add Stereo Call Recording Core For STS\n- [BotFleet#1600] 
- Align Dictation Cancel Path With Engine Refresh\n- [BotFleet#1601] (claude
- ) Retry — Exit 143 And Respawn After Stdin Failure\n- [BotFleet#1602] Ad
- d Updater Credential Fallback Reliability Test\n- [BotFleet#1612] ci: migr
- ate Infisical loads to scoped service tokens\n- [BotFleet#1613] Update dep
- endency wrangler to v4.156.1\n- [BotFleet#1614] Update dependency shiki to
-  v4.6.0\n- [Congress.Trade#2935] Update dependency unpdf to v2\n- [Congres
- s.Trade#2942] (sentry) Fix — Map Gate Second Review Round\n- [Congress.T
- rade#2945] fix(prices): decouple peer-price catch-up from the daily lane s
- tamp\, stop outage runs from parking the session (CT-2445)\n- [Congress.Tr
- ade#2946] CT-2462: Review queue failure sections\, Senate intake relay sta
- tus\, twice-a-day eFD canary\n- [Congress.Trade#2947] fix(gitleaks): Secre
- tary title FP + deepen shallow push scan\n- [Congress.Trade#2948] perf(pri
- ces): bounded-concurrency fetch stage for the peer-price catch-up walk (CT
- -2445)\n- [Congress.Trade#2949] fix(ops): stop probing an idle congress-ap
- p every 4 seconds\n- [ContactLogo#299] Add iOS Simulator Unit Test Target 
- And Release Gate Scheme\n- [ContactLogo#301] fix(deps): update dependency 
- @hookform/resolvers to v7\n- [ContactLogo#302] chore(deps): update non-maj
- or dependencies\n- [ContactLogo#303] ci: migrate Infisical loads to scoped
-  service tokens\n- [DealDex#561] fix(deps): update dependency @hookform/re
- solvers to v7\n- [FleetLink#167] (sentry) Send Scrubbed Stack Frames In 
- — Events\n- [FleetLink#168] Add Share Sheet UI Proof Tests\n- [FleetLink
- #169] Show the wordmark still when the intro video ends\n- [FleetLink#170]
-  Upgrade the dashboard share rows and head\n- [HogHunter#271] HH-212: iPho
- ne Overview First\, Storage Subtabs\, And Maintain Tab (Nav Parity)\n- [Ho
- gHunter#273] HH-219 Put The Mac On The Left And The Server On The Right In
-  The Glance View\n- [Simple-With-Us#99] Lint The Org-Owned Fleet-OPS Repo 
- And Fix Template Owner\n- [Socratic-Trade#4995] Add Public Asset Reference
-  Guard Test\n- [Socratic-Trade#5005] feat(quotes): account-scoped delayed_
- sip for connected Alpaca Paper\n- [Socratic-Trade#5006] fix(signal-health)
- : thread refresh now into 90-day observation window\n- [Socratic-Trade#500
- 7] Update dependency react-resizable-panels to v4.16.1\n- [Socratic-Trade#
- 5008] fix(congress-share): page CT price-needs and retry withheld EOD tail
- s the same evening\n- [Socratic-Trade#5009] feat(usage-monitor): roll RAG 
- and provider-dispatch usage into closed 10-minute windows\n- [Socratic-Tra
- de#5010] chore(deps): update dependency jose to v6.2.15\n- [Usage-Monitor#
- 1879] Inject Scoped Collector Credentials\n- [Usage-Monitor#1893] Move Usa
- ge Monitor CI To Scoped Infisical Service Tokens\n  … +8 more
+ s Refreshes\n- [AI-Fleet-Coordinator#1427] Recognize complete unquoted sou
+ rce assignments in secret scanning\n- [BotFleet#1588] Make Startup Infisic
+ al Bootstrap An Explicit Local Opt-In\n- [BotFleet#1591] Default Busy Send
+  To Queue And Ask On Backlog (BF-2442)\n- [BotFleet#1593] Show Trajectory 
+ Steps Newest First\n- [BotFleet#1595] Carry The ACP Context Window Into To
+ ken Usage Telemetry\n- [BotFleet#1596] Add Stereo Call Recording Core For 
+ STS\n- [BotFleet#1600] Align Dictation Cancel Path With Engine Refresh\n- 
+ [BotFleet#1601] (claude) Retry — Exit 143 And Respawn After Stdin Failur
+ e\n- [BotFleet#1602] Add Updater Credential Fallback Reliability Test\n- [
+ BotFleet#1612] ci: migrate Infisical loads to scoped service tokens\n- [Bo
+ tFleet#1613] Update dependency wrangler to v4.156.1\n- [BotFleet#1614] Upd
+ ate dependency shiki to v4.6.0\n- [Congress.Trade#2935] Update dependency 
+ unpdf to v2\n- [Congress.Trade#2942] (sentry) Fix — Map Gate Second Revi
+ ew Round\n- [Congress.Trade#2945] fix(prices): decouple peer-price catch-u
+ p from the daily lane stamp\, stop outage runs from parking the session (C
+ T-2445)\n- [Congress.Trade#2946] CT-2462: Review queue failure sections\, 
+ Senate intake relay status\, twice-a-day eFD canary\n- [Congress.Trade#294
+ 7] fix(gitleaks): Secretary title FP + deepen shallow push scan\n- [Congre
+ ss.Trade#2948] perf(prices): bounded-concurrency fetch stage for the peer-
+ price catch-up walk (CT-2445)\n- [Congress.Trade#2949] fix(ops): stop prob
+ ing an idle congress-app every 4 seconds\n- [ContactLogo#299] Add iOS Simu
+ lator Unit Test Target And Release Gate Scheme\n- [ContactLogo#301] fix(de
+ ps): update dependency @hookform/resolvers to v7\n- [ContactLogo#302] chor
+ e(deps): update non-major dependencies\n- [ContactLogo#303] ci: migrate In
+ fisical loads to scoped service tokens\n- [DealDex#561] fix(deps): update 
+ dependency @hookform/resolvers to v7\n- [FleetLink#167] (sentry) Send Scru
+ bbed Stack Frames In — Events\n- [FleetLink#168] Add Share Sheet UI Proo
+ f Tests\n- [FleetLink#169] Show the wordmark still when the intro video en
+ ds\n- [FleetLink#170] Upgrade the dashboard share rows and head\n- [HogHun
+ ter#271] HH-212: iPhone Overview First\, Storage Subtabs\, And Maintain Ta
+ b (Nav Parity)\n- [HogHunter#273] HH-219 Put The Mac On The Left And The S
+ erver On The Right In The Glance View\n- [Simple-With-Us#99] Lint The Org-
+ Owned Fleet-OPS Repo And Fix Template Owner\n- [Socratic-Trade#4995] Add P
+ ublic Asset Reference Guard Test\n- [Socratic-Trade#5005] feat(quotes): ac
+ count-scoped delayed_sip for connected Alpaca Paper\n- [Socratic-Trade#500
+ 6] fix(signal-health): thread refresh now into 90-day observation window\n
+ - [Socratic-Trade#5007] Update dependency react-resizable-panels to v4.16.
+ 1\n- [Socratic-Trade#5008] fix(congress-share): page CT price-needs and re
+ try withheld EOD tails the same evening\n- [Socratic-Trade#5009] feat(usag
+ e-monitor): roll RAG and provider-dispatch usage into closed 10-minute win
+ dows\n- [Socratic-Trade#5010] chore(deps): update dependency jose to v6.2.
+ 15\n- [Usage-Monitor#1879] Inject Scoped Collector Credentials\n  … +9 m
+ ore
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-06
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
