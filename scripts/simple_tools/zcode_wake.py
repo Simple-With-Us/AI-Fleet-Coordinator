@@ -870,7 +870,10 @@ def _deliver_prompt(
             # signature can be ordinary quoted text.  Nothing after launch is tried again:  the
             # end is refused (a typed code when the output named one), never failed.  Only a
             # try that never launched returned `failed` above.
-            return WR.Delivery("refused", "resume", code=code)
+            return WR.Delivery(
+                "refused", "resume", code=code,
+                note=_unmapped_exit_note(output) if not failure else "",
+            )
         finally:
             if legacy_lock is not None:
                 legacy_lock.close()
@@ -906,10 +909,36 @@ def _failure_signature(output: object, *, include_cli_errors: bool = False) -> s
         if len(output) > OUTPUT_SCAN_CAP or len(text) > OUTPUT_SCAN_CAP:
             boundary = re.search(r"[\r\n]", window)
             window = window[boundary.end() :] if boundary else ""
-        for pattern, code in CLI_EXIT_CATEGORIES:
-            if re.search(pattern, window, re.MULTILINE):
-                return code
+        # Installed CLI runPrompt adds only this UUID trace suffix, while its
+        # top-level handler prints the same known message without Error:. Match
+        # complete templates, never exception text or trace IDs into receipts.
+        lines = window.splitlines()
+        for line in lines:
+            normalized = re.sub(
+                r" \(traceId: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\)$",
+                "", line,
+            )
+            candidates = (normalized, "Error: " + normalized)
+            for pattern, code in CLI_EXIT_CATEGORIES:
+                if any(re.fullmatch(pattern, candidate) for candidate in candidates):
+                    return code
     return ""
+
+
+def _unmapped_exit_note(output: bytes) -> str:
+    """Content-free shape only. No text, IDs, paths, hashes or environment values."""
+    if not output:
+        return "cli-unmapped:empty"
+    suffix = output[-OUTPUT_SCAN_CAP:]
+    # Do not mistake a truncated partial line for an anchored error line.
+    truncated = len(output) > OUTPUT_SCAN_CAP
+    if truncated:
+        boundary = re.search(rb"[\r\n]", suffix)
+        suffix = suffix[boundary.end():] if boundary else b""
+    error_line = any(line.startswith(b"Error: ") for line in suffix.splitlines())
+    return "cli-unmapped:" + ("error-line" if error_line else "other-output") + (
+        ":truncated" if truncated else ""
+    )
 
 
 def make_deliver(
