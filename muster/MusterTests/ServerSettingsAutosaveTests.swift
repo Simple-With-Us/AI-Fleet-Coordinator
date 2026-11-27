@@ -380,8 +380,17 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         }
     }
 
+    /// The baseline omits both notes-queue lists (an older editor's skippedAllowlist shape);
+    /// this fixture carries both, so the typed seat-list controls are exercised.
+    private var settingsWithNotesLists: [String: ServerSettingValue] {
+        var fixture = settingsBaseline
+        fixture["notes_queue.worker_seats"] = .list([.text("CODEX"), .text("GROK-WEB")])
+        fixture["notes_queue.server_seats"] = .list([])
+        return fixture
+    }
+
     func test_plain_seat_names_round_trip_to_typed_drafts_without_hiding_incomplete_names() throws {
-        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: try settingsSchema(), editable: true)
+        let rows = ServerSettingsBuilder.groups(settings: settingsWithNotesLists, allowlist: try settingsSchema(), editable: true)
             .flatMap(\.rows)
         let row = try XCTUnwrap(rows.first { $0.id == "notes_queue.worker_seats" })
         let draft = ServerSeatNames.draft(from: "CODEX, GROK-WEB")
@@ -397,7 +406,7 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
     }
 
     func test_nontext_seat_entries_remain_visible_and_block_an_implicit_conversion() throws {
-        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: try settingsSchema(), editable: true)
+        let rows = ServerSettingsBuilder.groups(settings: settingsWithNotesLists, allowlist: try settingsSchema(), editable: true)
             .flatMap(\.rows)
         let row = try XCTUnwrap(rows.first { $0.id == "notes_queue.worker_seats" })
         let mixed = #"["CODEX",42,true,null,{"name":"JET"}]"#
@@ -412,7 +421,7 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
 
     func test_seat_list_controls_are_typed_bounded_and_preserve_read_only_mode() throws {
         let schema = try settingsSchema()
-        let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true)
+        let groups = ServerSettingsBuilder.groups(settings: settingsWithNotesLists, allowlist: schema, editable: true)
         let rows = groups.flatMap(\.rows)
         for key in ["notes_queue.worker_seats", "notes_queue.server_seats"] {
             let row = try XCTUnwrap(rows.first { $0.id == key })
@@ -493,7 +502,7 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
 
     func test_typed_controls_cover_all_exposed_config_and_preserve_presence_case() throws {
         let schema = try settingsSchema()
-        let groups = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true,
+        let groups = ServerSettingsBuilder.groups(settings: settingsWithNotesLists, allowlist: schema, editable: true,
                                                   channelNames: ["Work-In-Progress", "Builds", "Custom Team"])
         let rows = groups.flatMap(\.rows)
         XCTAssertTrue(rows.allSatisfy(\.isEditable))
@@ -533,6 +542,35 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         XCTAssertThrowsError(try ServerSettingsBuilder.value("OTHER_ROUTINE_KEY", for: reference).get())
         let request = try ServerSettingsBuilder.request(edits: ["seat.CODEX.routine.method": "PUT"], rows: rows, forAutosave: true).get()
         XCTAssertEqual(request.set["seat.CODEX.routine"]?.tableEntries?["auth"], .text("bearer"))
+    }
+
+    /// An older editor can return a successful read with a notes-queue list omitted under
+    /// `skippedAllowlist`.  The omitted list is not reported — never an empty list — and editing
+    /// it here is refused, because the read cannot see the seats an edit would overwrite.
+    func test_an_omitted_notes_queue_list_is_not_reported_and_stays_read_only() throws {
+        let schema = try settingsSchema()
+        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true)
+            .flatMap(\.rows)
+        let absent = ["notes_queue.worker_seats", "notes_queue.server_seats"]
+        for key in absent {
+            let row = try XCTUnwrap(rows.first { $0.id == key })
+            XCTAssertFalse(row.isEditable, key)
+            XCTAssertEqual(row.control, nil, key)
+            XCTAssertEqual(row.readOnlyReason, ServerSettingsCopy.listNotReported, key)
+            XCTAssertThrowsError(try ServerSettingsBuilder.request(
+                edits: [key: #"["CODEX"]"#], rows: rows, forAutosave: true).get(), key)
+        }
+        // One reported list does not stand in for the other:  the worker list keeps its editor,
+        // the omitted server list stays read only.
+        var one = settingsBaseline
+        one["notes_queue.worker_seats"] = .list([.text("CODEX")])
+        let mixedRows = ServerSettingsBuilder.groups(settings: one, allowlist: schema, editable: true).flatMap(\.rows)
+        let worker = try XCTUnwrap(mixedRows.first { $0.id == "notes_queue.worker_seats" })
+        XCTAssertTrue(worker.isEditable)
+        XCTAssertEqual(worker.control, .seats(maxItems: 64, maxLength: 32))
+        let server = try XCTUnwrap(mixedRows.first { $0.id == "notes_queue.server_seats" })
+        XCTAssertFalse(server.isEditable)
+        XCTAssertEqual(server.readOnlyReason, ServerSettingsCopy.listNotReported)
     }
 
     func test_partial_channel_metadata_keeps_verified_spellings_and_unknown_case() {

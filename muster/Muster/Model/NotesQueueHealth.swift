@@ -22,6 +22,10 @@ struct NotesQueueHealth: Equatable {
     /// Entries that are not seat names.  They are kept out of every seat check and counted here.
     var workerInvalid = 0
     var serverInvalid = 0
+    /// Whether the server's read carried the list at all.  An older editor can omit a list
+    /// (skippedAllowlist);  an omitted list is not reported, and is never read as empty.
+    var workerReported = true
+    var serverReported = true
     var configuredSeats: Set<String> = []
     var queue: DoctorRow?
     var runner: DoctorRow?
@@ -38,6 +42,8 @@ struct NotesQueueHealth: Equatable {
         health.serverSeats = ServerSeatNames.validNames(in: settings["notes_queue.server_seats"])
         health.workerInvalid = ServerSeatNames.invalidCount(in: settings["notes_queue.worker_seats"])
         health.serverInvalid = ServerSeatNames.invalidCount(in: settings["notes_queue.server_seats"])
+        health.workerReported = settings["notes_queue.worker_seats"] != nil
+        health.serverReported = settings["notes_queue.server_seats"] != nil
         health.configuredSeats = Set(settings.keys.compactMap { key -> String? in
             let parts = key.split(separator: ".").map(String.init)
             guard parts.count >= 3, parts[0] == "seat" else { return nil }
@@ -76,10 +82,12 @@ struct NotesQueueHealth: Equatable {
         lines.append("Listener API:  " + word(listenerAPI))
         let shared = Set(workerSeats).intersection(serverSeats).count
         let invalid = workerInvalid + serverInvalid
-        lines.append("Seats:  \(workerSeats.count) through the Worker key, "
-            + "\(serverSeats.count) through the Server key"
-            + (shared > 0 ? ", \(shared) in both" : "")
-            + (invalid > 0 ? ", \(invalid) invalid entr\(invalid == 1 ? "y" : "ies")" : "") + ".")
+        var seatParts: [String] = []
+        seatParts.append(workerReported ? "\(workerSeats.count) through the Worker key" : "not reported through the Worker key")
+        seatParts.append(serverReported ? "\(serverSeats.count) through the Server key" : "not reported through the Server key")
+        if workerReported, serverReported, shared > 0 { seatParts.append("\(shared) in both") }
+        if invalid > 0 { seatParts.append("\(invalid) invalid entr\(invalid == 1 ? "y" : "ies")") }
+        lines.append("Seats:  " + seatParts.joined(separator: ", ") + ".")
         if let detail = queue?.detail, !detail.isEmpty {
             lines.append("Server queue:  \(detail)")
         }
@@ -106,7 +114,10 @@ struct NotesQueueHealth: Equatable {
         if enabled == true, listenerAPI != true {
             warnings.append("The Listener API is off, so the queue cannot serve a request until it is on.")
         }
-        if enabled == true, workerSeats.isEmpty, serverSeats.isEmpty {
+        if enabled == true, !(workerReported && serverReported) {
+            warnings.append("A seat list was not reported, so the queue's coverage is not known;  read the settings with a current editor.")
+        }
+        if enabled == true, workerReported, serverReported, workerSeats.isEmpty, serverSeats.isEmpty {
             warnings.append("Both seat lists are empty, so no seat may enqueue a request.")
         }
         if let queue, queue.status == "WARN" || queue.status == "FAIL" {
