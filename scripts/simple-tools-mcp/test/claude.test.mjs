@@ -21,7 +21,8 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback", (
   assert.equal(SEAT_LABELS.CLAUDE, "Claude");
   assert.deepEqual([...prod.seats.CLAUDE.redirectUris], [REDIRECT]);
   assert.deepEqual([...prod.seats.CLAUDE.cimdClientIds], []);
-  assert.equal(prod.redirectOwner.get(REDIRECT), "CLAUDE");
+  // the Claude callback is shared by CLAUDE and DUET, so it has no single owner
+  assert.equal(prod.redirectOwner.has(REDIRECT), false);
   // The ChatGPT callback is shared by the JET / JET-CHAT / CODEX cohort, so
   // it has no single owner;  JET's CIMD document stays JET's alone.
   assert.equal(prod.redirectOwner.has(CHATGPT_REDIRECT), false);
@@ -96,4 +97,22 @@ test("CLAUDE canonical email is required; other seats keep their existing bindin
     CODEX: { key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX", infisical: { name: "CODEX_ZULIP_KEY", path: "/zulip" } },
     DUET: { key: "ZULIP_KEY_DUET", email: "ZULIP_EMAIL_DUET", infisical: { name: "DUET_ZULIP_KEY", path: "/zulip" } },
   });
+});
+
+test("DUET shares the Claude callback with CLAUDE through its own tagged manual client", () => {
+  const prod = loadConfig(wranglerConfig().vars);
+  assert.ok(prod.hostedSeats.includes("DUET"));
+  assert.equal(prod.botEmails.DUET, "duet-bot@simplewithus.zulipchat.com");
+  assert.deepEqual([...prod.redirectSeats.get(REDIRECT)], ["CLAUDE", "DUET"]);
+  assert.equal(prod.redirectOwner.has(REDIRECT), false);
+  assert.deepEqual([...prod.seats.DUET.cimdClientIds], []);
+  const duetCfg = loadConfig(testEnv({ HOSTED_SEATS: "CLAUDE,DUET", ZULIP_EMAIL_DUET: "duet-bot@simplewithus.zulipchat.com", SEATS: { CLAUDE: { redirect_uris: [REDIRECT], cimd_client_ids: [] }, DUET: { redirect_uris: [REDIRECT], cimd_client_ids: [] } } }));
+  const duet = { clientId: "DuEtCl1234567890", clientName: "Claude (manual form, DUET)" };
+  assert.equal(clientBoundToSeat(duet, "DUET", REDIRECT, duetCfg), true);
+  assert.equal(clientBoundToSeat(duet, "CLAUDE", REDIRECT, duetCfg), false);
+  assert.equal(clientBoundToSeat(client, "DUET", REDIRECT, duetCfg), false);
+  // an untagged hand client is refused on the shared callback
+  assert.equal(clientBoundToSeat({ clientId: "UnTaGgEd123456789", clientName: "Claude" }, "DUET", REDIRECT, duetCfg), false);
+  // no other seat may share the Claude callback
+  assert.throws(() => loadConfig(testEnv({ SEATS: { CLAUDE: { redirect_uris: [REDIRECT], cimd_client_ids: [] }, JET: { redirect_uris: [REDIRECT], cimd_client_ids: [] } } })), /two seats/);
 });

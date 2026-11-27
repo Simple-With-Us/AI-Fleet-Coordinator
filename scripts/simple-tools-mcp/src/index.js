@@ -39,7 +39,7 @@ import {
   GATE_LOG_NAME,
   PROPS_PHASE,
   SEAT_SECRETS,
-  OPERATOR_NOTES_SECRET,
+  OPERATOR_NOTES_SECRET_NAME,
   SEAT_LABELS,
   WAKE_SECRETS,
   LISTENER_KEY_SECRET_NAMES,
@@ -1405,7 +1405,7 @@ async function serveAdmin(request, env, config, oauth, email, scope = "owner") {
       fleetlinkBySeat = new Map(await Promise.all(config.hostedSeats.map(async (seat) => [seat, await settle(() => resolveFleetlinkSeatTokens(env, [seat]))])));
     }
     const listenerUrlOk = listenerBaseUrl(env?.LISTENER_API_URL) !== null;
-    const notesRaw = env?.[OPERATOR_NOTES_SECRET];
+    const notesRaw = env?.[OPERATOR_NOTES_SECRET_NAME];
     const rows = await Promise.all(config.hostedSeats.map(async (seat) => {
       const names = SEAT_SECRETS[seat];
       const tag = seatTagForSeat(seat);

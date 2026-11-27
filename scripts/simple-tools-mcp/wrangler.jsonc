@@ -112,7 +112,7 @@
     // openai-dot-bot under its own seat and email var.  CODEX (codex-bot)
     // joined with its captured ChatGPT pair.  Both were live in production
     // before this file said so;  the Nov 3, 2026 parity change records them.
-    "HOSTED_SEATS": "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE,CODEX",
+    "HOSTED_SEATS": "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE,CODEX,DUET",
     "EVENTS_ONLY_SEATS": "JET",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.
@@ -160,6 +160,12 @@
       // Hosted Claude apps only.  Use an independently tagged public manual
       // client; no native callback or guessed CIMD identity is added.
       "CLAUDE": {
+        "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+        "cimd_client_ids": []
+      },
+      // DUET is a Claude hosted app that cannot auto-register: it gets a manual
+      // client id made in /admin (tagged DUET), on the same Claude callback.
+      "DUET": {
         "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
         "cimd_client_ids": []
       },
