@@ -154,6 +154,18 @@ class WatchLoop(unittest.TestCase):
         code, _, n = self.run_loop([report([chk("a", "queued")])], timeout_s=5, interval=10)
         self.assertEqual((code, n), (git.WATCH_EXIT_PENDING, 2))
 
+    def test_failure_reason_hides_control_characters_in_check_names(self):
+        out = io.StringIO()
+        orig = git.collect_readiness
+        git.collect_readiness = lambda read, repo, number, head=None, **k: report([chk("bad\x1b]0;x\x07", "completed", "failure")])
+        try:
+            code = git.run_watch(lambda: None, "O/R", 1, 10, 100, False, False, None,
+                                 sleep=lambda s: None, clock=lambda: 0.0, out=out)
+        finally:
+            git.collect_readiness = orig
+        self.assertEqual(code, git.WATCH_EXIT_FAILED)
+        self.assertNotIn("\x1b", out.getvalue())
+
     def test_unchanged_lines_are_not_repeated(self):
         _, out, _ = self.run_loop([report([chk("a", "queued")])] * 3 + [report([chk("a")])])
         self.assertEqual(out.count("pending=1"), 1)

@@ -3664,7 +3664,7 @@ def watch_decision(report, fail_fast=False, require_ready=False):
         return WATCH_EXIT_FAILED, "PR closed without merge"
     pending, failed, _ = summarize_checks(report)
     if failed and (fail_fast or not pending):
-        return WATCH_EXIT_FAILED, "checks failed: " + ", ".join(failed)
+        return WATCH_EXIT_FAILED, _visible("checks failed: " + ", ".join(failed))
     if not report.get("checks") or pending:
         return None
     if require_ready:
@@ -3783,8 +3783,10 @@ def cmd_run_log(tools, a, bearer, server_seat, deadline):
                     log = read("gr_wf_job_log", args)
                     text += log.get("content") if isinstance(log.get("content"), str) else ""
                     nxt = log.get("next_offset")
-                    if log.get("complete") is not False or type(nxt) is not int or nxt <= offset:
+                    if log.get("complete") is not False:
                         break
+                    if type(nxt) is not int or nxt <= offset:
+                        raise ReadinessUnknown("job log cursor malformed or not advancing")
                     offset = nxt
                 else:
                     truncated = True
