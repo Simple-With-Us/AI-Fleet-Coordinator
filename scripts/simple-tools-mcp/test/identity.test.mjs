@@ -12,7 +12,7 @@ import {
   IdentityRouter, allowedIdentities, toolListFor, GB_IDENTITIES, RENAMED_TOOLS, SHARED_IDENTITY_SEATS, canonicalIdentity,
 } from "../src/delegated-identities.js";
 import { HOSTED_TOOL_LIST, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOLS, UnknownTool } from "../src/hosted-tools.js";
-import { EVENTS_ONLY_SEATS, KNOWN_SEATS, GATE_LOG_NAME } from "../src/config.js";
+import { EVENTS_ONLY_SEATS, KNOWN_SEATS, GATE_LOG_NAME, SHARED_CLAUDE_SEATS } from "../src/config.js";
 import { gate } from "../src/gate.js";
 import { okResult, ERROR_META_KEY } from "../src/contract.js";
 import { ROOT } from "./helpers.mjs";
@@ -69,7 +69,7 @@ function errorOf(result) {
   return obj;
 }
 
-const OTHER_SEATS = KNOWN_SEATS.filter((seat) => !SHARED_IDENTITY_SEATS.includes(seat));
+const OTHER_SEATS = KNOWN_SEATS.filter((seat) => !SHARED_IDENTITY_SEATS.includes(seat) && !SHARED_CLAUDE_SEATS.includes(seat));
 const sorted = (list) => [...list].sort();
 
 // ---------------------------------------------------------------- the sets (rows 1 to 4)
@@ -117,8 +117,32 @@ test("row 4:  a bot that GB_IDENTITIES leaves out is in no set", () => {
   assert.ok(GB_IDENTITIES.includes("GB-ENGINEER"));
   assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"));
   for (const seat of KNOWN_SEATS) {
-    const expected = [seat];
+    const expected = SHARED_CLAUDE_SEATS.includes(seat) ? [seat, ...SHARED_CLAUDE_SEATS.filter((peer) => peer !== seat)] : [seat];
     assert.deepEqual([...allowedIdentities(seat)], expected, seat);
+  }
+});
+
+test("row 4b:  CLAUDE and DUET share one connection and nothing else joins them", async () => {
+  assert.deepEqual([...SHARED_CLAUDE_SEATS].sort(), ["CLAUDE", "DUET"]);
+  for (const seat of SHARED_CLAUDE_SEATS) {
+    const peer = SHARED_CLAUDE_SEATS.find((other) => other !== seat);
+    assert.deepEqual([...allowedIdentities(seat)], [seat, peer]);
+    const { r, caller, created, built } = router(seat);
+    // A write names its identity, and the peer is built from its own credentials.
+    assert.equal(errorOf(await r.call("zulip_post", { topic: "t", text: "x" })).code, "identity_required");
+    await r.call("zulip_post", { topic: "t", text: "x", identity: peer.toLowerCase() });
+    assert.deepEqual(created, [peer]);
+    assert.deepEqual(built.get(peer).calls, [{ name: "zulip_post", args: { topic: "t", text: "x" } }]);
+    assert.deepEqual(caller.calls, []);
+    await r.call("zulip_post", { topic: "t", text: "x", identity: seat });
+    assert.deepEqual(caller.calls, [{ name: "zulip_post", args: { topic: "t", text: "x" } }]);
+    // No other seat and no bot is reachable from this grant.
+    for (const claimed of [GB_IDENTITIES[0], ...SHARED_IDENTITY_SEATS, "WISE", "ECHO"]) {
+      const error = errorOf(await r.call("zulip_post", { topic: "t", text: "x", identity: claimed }));
+      assert.equal(error.code, "identity_not_allowed", `${seat} as ${claimed}`);
+      assert.deepEqual(error.allowed, [seat, peer]);
+    }
+    assert.deepEqual(created, [peer], "only the peer was ever built");
   }
 });
 
