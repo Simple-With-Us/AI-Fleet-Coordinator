@@ -173,7 +173,7 @@ def _review_ref(value, field: str):
     if not isinstance(value, str) or not (
         _PRRT_RE.fullmatch(value) or _REVIEW_COMMENT_RE.fullmatch(value)
     ):
-        raise ValueError(f"{field} {RESOLVE_REF_HELP[RESOLVE_REF_HELP.index('thread_id is') :]}")
+        raise ValueError(f"{field} is not a review thread or review comment id. {RESOLVE_REF_HELP}")
     return value
 
 
