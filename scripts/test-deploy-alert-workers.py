@@ -2000,5 +2000,139 @@ jobs:
             m.reviewed("a" * 40)
 
 
+class ReviewThreadPagination(unittest.TestCase):
+    """Thread resolution is judged on every thread by cursor, bounded, and fails closed."""
+
+    ENV = {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}
+
+    @staticmethod
+    def page(nodes, has_next=False, cursor=None):
+        info = {"hasNextPage": has_next}
+        if cursor is not None:
+            info["endCursor"] = cursor
+        return {
+            "data": {
+                "repository": {"pullRequest": {"reviewThreads": {"pageInfo": info, "nodes": nodes}}}
+            }
+        }
+
+    def run_pages(self, pages):
+        sent = []
+        queue = list(pages)
+
+        def graphql(url, token, data=None, timeout=30):
+            sent.append(json.loads(data.decode()))
+            return queue.pop(0)
+
+        with (
+            patch.object(m, "request_json", side_effect=graphql),
+            patch.dict(m.os.environ, self.ENV),
+        ):
+            try:
+                m.require_threads_resolved(2617)
+                outcome = None
+            except RuntimeError as error:
+                outcome = str(error)
+        return outcome, sent
+
+    def test_two_pages_all_resolved_qualify_and_the_cursor_is_sent(self):
+        done = [{"isResolved": True}] * 100
+        outcome, sent = self.run_pages(
+            [self.page(done, True, "c1"), self.page([{"isResolved": True}])]
+        )
+        self.assertIsNone(outcome)
+        self.assertEqual([q["variables"]["after"] for q in sent], [None, "c1"])
+        self.assertEqual({q["variables"]["number"] for q in sent}, {2617})
+        self.assertIn("after:$after", sent[0]["query"])
+
+    def test_an_unresolved_thread_on_a_later_page_refuses(self):
+        done = [{"isResolved": True}] * 100
+        outcome, _ = self.run_pages(
+            [self.page(done, True, "c1"), self.page([{"isResolved": False}])]
+        )
+        self.assertEqual(outcome, "Unresolved or incomplete review thread evidence")
+
+    def test_an_unresolved_thread_on_the_first_page_refuses_without_more_reads(self):
+        outcome, sent = self.run_pages([self.page([{"isResolved": False}], True, "c1")])
+        self.assertEqual(outcome, "Unresolved or incomplete review thread evidence")
+        self.assertEqual(len(sent), 1)
+
+    def test_malformed_evidence_fails_closed(self):
+        done = [{"isResolved": True}]
+        bad = {
+            "graphql errors": {"errors": [{"message": "x"}]},
+            "no data": {"data": None},
+            "missing cursor": self.page(done, True),
+            "empty cursor": self.page(done, True, ""),
+            "non-bool next": {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"pageInfo": {"hasNextPage": "no"}, "nodes": done}
+                        }
+                    }
+                }
+            },
+            "non-list nodes": self.page({"isResolved": True}),
+            "non-bool resolved": self.page([{"isResolved": "yes"}]),
+            "oversized page": self.page([{"isResolved": True}] * 101),
+            "not an object": [],
+        }
+        for name, page in bad.items():
+            with self.subTest(name):
+                outcome, _ = self.run_pages([page])
+                self.assertEqual(outcome, "Incomplete review thread evidence")
+
+    def test_a_repeated_cursor_fails_closed(self):
+        done = [{"isResolved": True}]
+        outcome, sent = self.run_pages([self.page(done, True, "c1"), self.page(done, True, "c1")])
+        self.assertEqual(outcome, "Incomplete review thread evidence")
+        self.assertEqual(len(sent), 2)
+
+    def test_the_page_cap_bounds_the_walk(self):
+        done = [{"isResolved": True}]
+        pages = [self.page(done, True, "c" + str(i)) for i in range(m.THREAD_PAGE_CAP + 5)]
+        outcome, sent = self.run_pages(pages)
+        self.assertEqual(outcome, "Review thread evidence exceeds bounded page limit")
+        self.assertEqual(len(sent), m.THREAD_PAGE_CAP)
+
+    def test_the_deadline_bounds_the_walk(self):
+        done = [{"isResolved": True}]
+        ticks = iter([0.0, 1.0, 1000.0, 2000.0])
+        with (
+            patch.object(m.time, "monotonic", side_effect=lambda: next(ticks)),
+            patch.object(m, "request_json", return_value=self.page(done, True, "c1")) as call,
+            patch.dict(m.os.environ, self.ENV),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            m.require_threads_resolved(2617)
+        self.assertEqual(str(ctx.exception), "Review thread evidence exceeds bounded page limit")
+        self.assertEqual(call.call_count, 1)
+
+    def test_reviewed_uses_the_cursor_walk_for_a_merged_pr_with_two_pages(self):
+        head = "a" * 40
+        pr = {"number": 2617, "merged_at": "now", "merge_commit_sha": head, "head": {"sha": head}}
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:30:00Z",
+        }
+        pages = [
+            self.page([{"isResolved": True}] * 100, True, "c1"),
+            self.page([{"isResolved": True}]),
+        ]
+        with (
+            patch.object(m, "github", side_effect=[[pr], [review], [], {"check_runs": []}]),
+            patch.object(m, "request_json", side_effect=pages) as call,
+            patch.dict(m.os.environ, self.ENV),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            m.reviewed(head)
+        self.assertEqual(call.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

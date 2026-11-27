@@ -394,6 +394,72 @@ def outstanding_requests(reviews):
     return any(state == "CHANGES_REQUESTED" for state in decisions.values())
 
 
+# Thread resolution is read by cursor until the server says there is no next page, so a PR with more
+# than one page of threads is judged on every thread, not on the first 100.  The walk is bounded (page
+# cap and one absolute deadline) and fails closed: an error, a malformed page, a missing cursor, a
+# repeated cursor, a cap or deadline hit, or any unresolved thread refuses the gate.
+THREAD_PAGE_SIZE = 100
+THREAD_PAGE_CAP = 30
+THREAD_BUDGET_SECONDS = 90
+THREAD_QUERY = (
+    "query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo)"
+    "{pullRequest(number:$number){reviewThreads(first:" + str(THREAD_PAGE_SIZE) + ",after:$after)"
+    "{pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}"
+)
+
+
+def require_threads_resolved(number):
+    owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
+    deadline = time.monotonic() + THREAD_BUDGET_SECONDS
+    cursor = None
+    seen = set()
+    for _ in range(THREAD_PAGE_CAP):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        body = request_json(
+            "https://api.github.com/graphql",
+            os.environ["GH_TOKEN"],
+            json.dumps(
+                {
+                    "query": THREAD_QUERY,
+                    "variables": {
+                        "owner": owner,
+                        "repo": repo,
+                        "number": int(number),
+                        "after": cursor,
+                    },
+                }
+            ).encode(),
+            timeout=remaining,
+        )
+        if not isinstance(body, dict) or body.get("errors"):
+            raise RuntimeError("Incomplete review thread evidence")
+        try:
+            threads = body["data"]["repository"]["pullRequest"]["reviewThreads"]
+            info = threads["pageInfo"]
+            nodes = threads["nodes"]
+            has_next = info["hasNextPage"]
+        except (KeyError, TypeError):
+            raise RuntimeError("Incomplete review thread evidence") from None
+        if (
+            type(has_next) is not bool
+            or not isinstance(nodes, list)
+            or len(nodes) > THREAD_PAGE_SIZE
+            or any(not isinstance(t, dict) or type(t.get("isResolved")) is not bool for t in nodes)
+        ):
+            raise RuntimeError("Incomplete review thread evidence")
+        if any(not t["isResolved"] for t in nodes):
+            raise RuntimeError("Unresolved or incomplete review thread evidence")
+        if not has_next:
+            return
+        cursor = info.get("endCursor")
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise RuntimeError("Incomplete review thread evidence")
+        seen.add(cursor)
+    raise RuntimeError("Review thread evidence exceeds bounded page limit")
+
+
 def reviewed(sha):
     # A target-changing commit must be the merge of a real, non-draft PR.
     prs = github_paginated(
@@ -460,20 +526,7 @@ def reviewed(sha):
         if not kody_qualified:
             continue
         # GraphQL includes actual thread resolution, unlike review state.
-        owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
-        query = "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}"
-        body = request_json(
-            "https://api.github.com/graphql",
-            os.environ["GH_TOKEN"],
-            json.dumps(
-                {"query": query, "variables": {"owner": owner, "repo": repo, "number": int(number)}}
-            ).encode(),
-        )
-        if body.get("errors"):
-            raise RuntimeError("Incomplete review thread evidence")
-        threads = body["data"]["repository"]["pullRequest"]["reviewThreads"]
-        if threads["pageInfo"]["hasNextPage"] or any(not t["isResolved"] for t in threads["nodes"]):
-            raise RuntimeError("Unresolved or incomplete review thread evidence")
+        require_threads_resolved(number)
         return
     raise RuntimeError("Target commit lacks qualified merged Kody-reviewed PR: " + sha)
 
