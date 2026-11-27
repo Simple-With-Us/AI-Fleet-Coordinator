@@ -92,7 +92,7 @@ class OperatorVoiceKeysTests(unittest.TestCase):
         env.pop(MODULE.OPERATOR_VOICE_TOKEN)
         keys, note, calls = self.read({}, env)
         self.assertEqual((keys, calls), ({}, []))
-        self.assertIn("no dedicated token", note)
+        self.assertIn(MODULE.OPERATOR_VOICE_TOKEN + " is unbound", note)
 
     def test_a_bad_project_or_token_never_fetches_and_stops_startup(self) -> None:
         for label, env, words in (

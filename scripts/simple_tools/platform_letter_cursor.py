@@ -14,9 +14,9 @@ What Cursor gives a hook (read from the cursor-agent 2026.10.22 build, Nov 7, 20
   its `title`, and `title_writer` writes `XX: words` into the same file, atomically and with every other field kept.
   A chat whose directory does not exist yet is left pending and titled at its next prompt.
 - A Cloud agent (`is_background_agent` true) runs its hooks on Cursor's own workers, which drop `additional_context`
-  from sessionStart and cannot reach the Operator's registry.  Cloud agents take their letters from
-  `cursor_cloud_letters` instead, which reads them from the Cursor API and steers the agent to rename itself;  the hook
-  leaves them alone.
+  from sessionStart and cannot reach the Operator's registry.  Cloud agents take their letters from
+  the shared Operator platform feed instead, which reads them from the Cursor API and steers the agent to
+  rename itself;  the hook leaves them alone.
 
 Cursor's chats live in the `cursor` letter namespace, which the registry folds `cursor-local` and `cursor-cloud` into.
 Nothing is closed on an end.  The CLI sends `sessionEnd` when its process exits, and a chat resumed later with
@@ -62,7 +62,7 @@ def cloud_mark(env: Mapping[str, str], cid: str) -> str:
 
 
 def cursor_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
-    """ "headless" for a Cloud agent (its letter comes from `cursor_cloud_letters`), else "chat".
+    """ "headless" for a Cloud agent (its letter comes from the shared Operator feed), else "chat".
 
     Only sessionStart says `is_background_agent`, so its answer is kept in a mark file, and a later event of the same
     conversation (beforeSubmitPrompt has no such field) is judged by the mark.  A conversation with no mark and no

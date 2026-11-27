@@ -1,5 +1,5 @@
 """Cursor on `platform-letter`:  a local chat takes a letter as `additional_context`, a Cloud agent is left to
-`cursor_cloud_letters`, a chat's end closes its letter, and the installer writes Cursor's own hooks.json shape next to
+the shared Operator feed, a chat's end closes its letter, and the installer writes Cursor's own hooks.json shape next to
 the lane guard.  The registry side runs in process against a temporary registry, on the Mac's rules."""
 
 from __future__ import annotations
