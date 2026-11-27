@@ -50,21 +50,21 @@ final class SeatsRosterTests: XCTestCase {
     OLDBOT = "none"
     """
 
-    /// The Mac eavesdropper's state:  AMP is a Mac seat it publishes as connected (wake inbox).
-    private let listenerJSON = """
-    {
-      "updated": 1792821067.0,
-      "instance": "mac",
-      "disabled": [],
-      "skipped_seats": {},
-      "pause": {},
-      "seats": {
-        "CLAUDE": {"bot": "Claude", "connected": true, "jobs": 0, "leases": []},
-        "MM": {"bot": "MiniMax", "connected": true, "jobs": 0, "leases": []},
-        "AMP": {"bot": "Amp", "connected": true, "jobs": 0, "leases": []}
-      }
-    }
-    """
+    /// The server eavesdropper's reduced status,  current at `clock`:  since the one-listener
+    /// cutover it holds every seat on the roster,  AMP included (AFC-837).
+    private let serverJSON = #"""
+    {"schema": 1, "generated_at": "2026-10-24T05:50:37Z", "instance": "server",
+     "status_updated": "2026-10-24T05:51:00Z",
+     "seats": [{"seat": "CLAUDE", "connected": true}, {"seat": "MA", "connected": true},
+               {"seat": "MM", "connected": true}, {"seat": "AMP", "connected": true},
+               {"seat": "JET", "connected": true}, {"seat": "WISE", "connected": true},
+               {"seat": "GB-FIXER", "connected": true}, {"seat": "GB-DIRECTOR", "connected": true},
+               {"seat": "BF-COMPILER", "connected": true}, {"seat": "BF-ENGINEER", "connected": true}],
+     "skipped": [], "disabled": []}
+    """#
+
+    /// The moment the server reading above is current at.
+    private let clock: TimeInterval = 1792821067
 
     /// The grid's roster for the registry above:  the live seats,  in registry order.
     private let gridRoster = ["CLAUDE", "MA", "MM"]
@@ -81,8 +81,9 @@ final class SeatsRosterTests: XCTestCase {
         let roster = SeatActivityRoster.seats(gridRoster: gridRoster, registry: try registry(), partition: partition())
         var sources = SeatActivityBuilder.Sources()
         sources.roster = roster
-        sources.partition = partition()
-        sources.listener = try JSONDecoder().decode(ListenerStateDocument.self, from: Data(listenerJSON.utf8))
+        sources.readAt = Date(timeIntervalSince1970: clock)
+        let status = try JSONDecoder().decode(ReducedEavesdropperStatus.self, from: Data(serverJSON.utf8))
+        sources.server = ServerEavesdropperReading.reading(of: status)
         return SeatActivityBuilder.build(sources)
     }
 
@@ -160,13 +161,14 @@ final class SeatsRosterTests: XCTestCase {
 
     // MARK: The rows
 
-    /// AMP is a Mac seat the eavesdropper publishes as connected,  and it gets a row that
-    /// says so.
-    func test_amp_gets_a_mac_row() throws {
+    /// AMP has a row,  and where it is held comes from the server's reading,  not from the
+    /// stale Mac copy of the partition that still names the Mac (AFC-837).
+    func test_amp_gets_a_row_placed_by_the_server() throws {
         let row = try XCTUnwrap(try model().rows.first { $0.seat == "AMP" })
-        XCTAssertEqual(row.place, .mac)
-        XCTAssertEqual(row.listener, .known(.connected(jobs: 0)))
-        XCTAssertEqual(row.openSessions, .known(0))
+        XCTAssertEqual(row.place, .server)
+        XCTAssertNotNil(row.listener.notHereReason)
+        XCTAssertFalse(row.openSessions.isKnown)
+        XCTAssertNotEqual(row.openSessions, .known(0))
     }
 
     /// A Grok Bot and a BotFleet seat are held by the server,  and their rows say plainly
@@ -188,7 +190,7 @@ final class SeatsRosterTests: XCTestCase {
         let server = try XCTUnwrap(model.groups.first { $0.kind == .server })
         XCTAssertTrue(server.rows.contains { $0.seat == "GB-FIXER" })
         XCTAssertTrue(server.rows.contains { $0.seat == "BF-ENGINEER" })
-        // Every seat the partition gives the server has a row,  so none is left to a note.
+        // Every seat the server holds has a row,  so none is left to a note.
         XCTAssertTrue(model.otherServerSeats.isEmpty, "\(model.otherServerSeats)")
         XCTAssertNil(model.otherServerSeatsNote)
     }
