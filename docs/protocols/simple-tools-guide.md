@@ -450,6 +450,23 @@ review pages to a bounded end, rejects duplicate/missing pagination and incomple
 check censuses, and reads head/base/lifecycle again at the end. A changed head or
 base requires a new report. The same overall CLI time budget covers every read.
 
+`simple-git watch OWNER/REPO NUMBER [--interval SECONDS] [--timeout SECONDS] [--fail-fast]
+[--ready] [--expected-head FULL_SHA]` is the read-only wait, the counterpart of
+`gh pr checks --watch`. It polls the same readiness report (minimum 10 seconds
+between polls, each poll with its own time budget) and prints one line when the
+state changes: pending, failed and passed check counts, unresolved review threads,
+whether a review exists on this head, and the GitHub merge state. Exit 0 means every
+check passed (or the PR merged), 1 means a check failed (at once with `--fail-fast`,
+otherwise when the rest finish) or the PR closed unmerged, 8 means the timeout ended
+with checks pending, 2 means a relay refusal (printed as is) or three incomplete
+reports in a row. `--ready` also waits for the full report to be clean. It never
+merges and exit 0 is not merge authority.
+
+`simple-git run-log OWNER/REPO RUN_ID [--failed] [--lines N]` is the read-only
+counterpart of `gh run view --log-failed`. It lists the run's jobs, the failed steps
+of each failed job, and the error lines (with context) from that job's log, read page
+by page up to 16 pages, with colour codes and timestamps removed.
+
 Missing tools, refused reads, malformed coverage, missing current-head reviews,
 and unknown mergeability are not a clean result. The report retains known
 blockers even if another read is incomplete. All observed checks/statuses are
