@@ -14,6 +14,7 @@ autofix_route_for_base() {
   case "$base" in
     "" | https://api.minimax.io/anthropic) printf '%s' minimax ;;
     https://api.meta.ai) printf '%s' meta ;;
+    https://openrouter.ai/api) printf '%s' openrouter ;;
     *) printf '%s' invalid ;;
   esac
 }
@@ -44,6 +45,7 @@ autofix_resolve_model_for_route() {
 autofix_default_base_for_route() {
   case "$1" in
     meta) printf '%s' 'https://api.meta.ai' ;;
+    openrouter) printf '%s' 'https://openrouter.ai/api' ;;
     *) printf '%s' 'https://api.minimax.io/anthropic' ;;
   esac
 }

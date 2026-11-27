@@ -1,5 +1,5 @@
 name: Autofix Model Route
-description: Resolve SWU_AUTOFIX_* into Claude Code env for MiniMax or Meta Model API.
+description: Resolve SWU_AUTOFIX_* into Claude Code env for MiniMax, Meta Model API or OpenRouter.
 inputs:
   var_base:
     description: SWU_AUTOFIX_MODEL_BASE_URL
@@ -14,7 +14,7 @@ inputs:
     required: true
 outputs:
   route:
-    description: minimax or meta
+    description: minimax, meta or openrouter
     value: ${{ steps.route.outputs.route }}
   anthropic_api_key_mode:
     description: minimax when claude-code-action needs anthropic_api_key, else none

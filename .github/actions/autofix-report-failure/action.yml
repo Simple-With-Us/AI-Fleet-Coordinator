@@ -10,7 +10,7 @@ inputs:
     required: false
     default: ""
   route:
-    description: minimax or meta from autofix-model-route
+    description: minimax, meta or openrouter from autofix-model-route
     required: false
     default: unknown
   effective_model:
