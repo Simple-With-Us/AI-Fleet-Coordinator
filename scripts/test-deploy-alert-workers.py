@@ -2010,7 +2010,11 @@ class ReviewThreadPagination(unittest.TestCase):
         info = {"hasNextPage": has_next}
         if cursor is not None:
             info["endCursor"] = cursor
-        return {"data": {"repository": {"pullRequest": {"reviewThreads": {"pageInfo": info, "nodes": nodes}}}}}
+        return {
+            "data": {
+                "repository": {"pullRequest": {"reviewThreads": {"pageInfo": info, "nodes": nodes}}}
+            }
+        }
 
     def run_pages(self, pages):
         sent = []
@@ -2020,7 +2024,10 @@ class ReviewThreadPagination(unittest.TestCase):
             sent.append(json.loads(data.decode()))
             return queue.pop(0)
 
-        with patch.object(m, "request_json", side_effect=graphql), patch.dict(m.os.environ, self.ENV):
+        with (
+            patch.object(m, "request_json", side_effect=graphql),
+            patch.dict(m.os.environ, self.ENV),
+        ):
             try:
                 m.require_threads_resolved(2617)
                 outcome = None
@@ -2030,7 +2037,9 @@ class ReviewThreadPagination(unittest.TestCase):
 
     def test_two_pages_all_resolved_qualify_and_the_cursor_is_sent(self):
         done = [{"isResolved": True}] * 100
-        outcome, sent = self.run_pages([self.page(done, True, "c1"), self.page([{"isResolved": True}])])
+        outcome, sent = self.run_pages(
+            [self.page(done, True, "c1"), self.page([{"isResolved": True}])]
+        )
         self.assertIsNone(outcome)
         self.assertEqual([q["variables"]["after"] for q in sent], [None, "c1"])
         self.assertEqual({q["variables"]["number"] for q in sent}, {2617})
@@ -2038,7 +2047,9 @@ class ReviewThreadPagination(unittest.TestCase):
 
     def test_an_unresolved_thread_on_a_later_page_refuses(self):
         done = [{"isResolved": True}] * 100
-        outcome, _ = self.run_pages([self.page(done, True, "c1"), self.page([{"isResolved": False}])])
+        outcome, _ = self.run_pages(
+            [self.page(done, True, "c1"), self.page([{"isResolved": False}])]
+        )
         self.assertEqual(outcome, "Unresolved or incomplete review thread evidence")
 
     def test_an_unresolved_thread_on_the_first_page_refuses_without_more_reads(self):
@@ -2053,7 +2064,15 @@ class ReviewThreadPagination(unittest.TestCase):
             "no data": {"data": None},
             "missing cursor": self.page(done, True),
             "empty cursor": self.page(done, True, ""),
-            "non-bool next": {"data": {"repository": {"pullRequest": {"reviewThreads": {"pageInfo": {"hasNextPage": "no"}, "nodes": done}}}}},
+            "non-bool next": {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"pageInfo": {"hasNextPage": "no"}, "nodes": done}
+                        }
+                    }
+                }
+            },
             "non-list nodes": self.page({"isResolved": True}),
             "non-bool resolved": self.page([{"isResolved": "yes"}]),
             "oversized page": self.page([{"isResolved": True}] * 101),
@@ -2084,9 +2103,9 @@ class ReviewThreadPagination(unittest.TestCase):
             patch.object(m.time, "monotonic", side_effect=lambda: next(ticks)),
             patch.object(m, "request_json", return_value=self.page(done, True, "c1")) as call,
             patch.dict(m.os.environ, self.ENV),
+            self.assertRaises(RuntimeError) as ctx,
         ):
-            with self.assertRaises(RuntimeError) as ctx:
-                m.require_threads_resolved(2617)
+            m.require_threads_resolved(2617)
         self.assertEqual(str(ctx.exception), "Review thread evidence exceeds bounded page limit")
         self.assertEqual(call.call_count, 1)
 
@@ -2100,7 +2119,10 @@ class ReviewThreadPagination(unittest.TestCase):
             "commit_id": head,
             "submitted_at": "2026-11-15T19:30:00Z",
         }
-        pages = [self.page([{"isResolved": True}] * 100, True, "c1"), self.page([{"isResolved": True}])]
+        pages = [
+            self.page([{"isResolved": True}] * 100, True, "c1"),
+            self.page([{"isResolved": True}]),
+        ]
         with (
             patch.object(m, "github", side_effect=[[pr], [review], [], {"check_runs": []}]),
             patch.object(m, "request_json", side_effect=pages) as call,

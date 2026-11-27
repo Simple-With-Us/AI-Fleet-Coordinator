@@ -423,7 +423,12 @@ def require_threads_resolved(number):
             json.dumps(
                 {
                     "query": THREAD_QUERY,
-                    "variables": {"owner": owner, "repo": repo, "number": int(number), "after": cursor},
+                    "variables": {
+                        "owner": owner,
+                        "repo": repo,
+                        "number": int(number),
+                        "after": cursor,
+                    },
                 }
             ).encode(),
             timeout=remaining,
