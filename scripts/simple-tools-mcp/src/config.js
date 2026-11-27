@@ -158,6 +158,7 @@ export const WAKE_SECRETS = Object.freeze({
 export const LISTENER_READ_SECRETS = Object.freeze({
   MA: "WAKE_HMAC_KEY_MA",
   CLAUDE: "WAKE_HMAC_KEY_CLAUDE",
+  DUET: "WAKE_HMAC_KEY_DUET",
   CODEX: "WAKE_HMAC_KEY_CODEX",
   CURSOR: "WAKE_HMAC_KEY_CURSOR",
   // ZC's wake rides the server-side zcode delivery, not /internal/wake, so it is a read-key
