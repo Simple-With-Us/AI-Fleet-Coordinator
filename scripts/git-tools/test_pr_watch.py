@@ -16,14 +16,26 @@ loader.exec_module(git)
 
 
 def report(checks, **extra):
-    base = {"complete": True, "state": "open", "merged": False, "head": "a" * 40, "checks": checks,
-            "review_threads": {"unresolved": []}, "reviews": [], "verdict": "blocked"}
+    base = {
+        "complete": True,
+        "state": "open",
+        "merged": False,
+        "head": "a" * 40,
+        "checks": checks,
+        "review_threads": {"unresolved": []},
+        "reviews": [],
+        "verdict": "blocked",
+    }
     base.update(extra)
     return base
 
 
 def chk(name, status="completed", conclusion="success"):
-    return {"name": name, "status": status, "conclusion": conclusion if status == "completed" else None}
+    return {
+        "name": name,
+        "status": status,
+        "conclusion": conclusion if status == "completed" else None,
+    }
 
 
 class WatchDecision(unittest.TestCase):
@@ -34,7 +46,9 @@ class WatchDecision(unittest.TestCase):
         self.assertIsNone(git.watch_decision(report([])))
 
     def test_all_passed_exits_zero(self):
-        self.assertEqual(git.watch_decision(report([chk("a"), chk("b", conclusion="skipped")]))[0], 0)
+        self.assertEqual(
+            git.watch_decision(report([chk("a"), chk("b", conclusion="skipped")]))[0], 0
+        )
 
     def test_failure_waits_for_the_rest_unless_fail_fast(self):
         r = report([chk("a", conclusion="failure"), chk("b", "queued")])
@@ -46,11 +60,16 @@ class WatchDecision(unittest.TestCase):
         self.assertEqual(git.watch_decision(r)[0], git.WATCH_EXIT_FAILED)
 
     def test_cancelled_counts_as_failed(self):
-        self.assertEqual(git.watch_decision(report([chk("a", conclusion="cancelled")]))[0], git.WATCH_EXIT_FAILED)
+        self.assertEqual(
+            git.watch_decision(report([chk("a", conclusion="cancelled")]))[0], git.WATCH_EXIT_FAILED
+        )
 
     def test_merged_and_closed(self):
         self.assertEqual(git.watch_decision(report([chk("a", "queued")], merged=True))[0], 0)
-        self.assertEqual(git.watch_decision(report([chk("a", "queued")], state="closed"))[0], git.WATCH_EXIT_FAILED)
+        self.assertEqual(
+            git.watch_decision(report([chk("a", "queued")], state="closed"))[0],
+            git.WATCH_EXIT_FAILED,
+        )
 
     def test_refusal_is_unknown_and_verbatim(self):
         code, why = git.watch_decision(report([], relay_reason="relay_refused"))
@@ -61,7 +80,9 @@ class WatchDecision(unittest.TestCase):
         r = report([chk("a")])
         self.assertEqual(git.watch_decision(r)[0], 0)
         self.assertIsNone(git.watch_decision(r, require_ready=True))
-        self.assertEqual(git.watch_decision(dict(r, verdict="observed_checks_passed"), require_ready=True)[0], 0)
+        self.assertEqual(
+            git.watch_decision(dict(r, verdict="observed_checks_passed"), require_ready=True)[0], 0
+        )
 
 
 class WatchLoop(unittest.TestCase):
@@ -70,18 +91,33 @@ class WatchLoop(unittest.TestCase):
         now = [0.0]
         calls = []
         orig = git.collect_readiness
-        git.collect_readiness = lambda read, repo, number, head=None, **k: (calls.append(1), seq.pop(0) if len(seq) > 1 else seq[0])[1]
+        git.collect_readiness = lambda read, repo, number, head=None, **k: (
+            calls.append(1),
+            seq.pop(0) if len(seq) > 1 else seq[0],
+        )[1]
         try:
             out = io.StringIO()
-            code = git.run_watch(lambda: None, "O/R", 1, interval, timeout_s, kw.get("fail_fast", False),
-                                 kw.get("require_ready", False), None,
-                                 sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0], out=out)
+            code = git.run_watch(
+                lambda: None,
+                "O/R",
+                1,
+                interval,
+                timeout_s,
+                kw.get("fail_fast", False),
+                kw.get("require_ready", False),
+                None,
+                sleep=lambda s: now.__setitem__(0, now[0] + s),
+                clock=lambda: now[0],
+                out=out,
+            )
         finally:
             git.collect_readiness = orig
         return code, out.getvalue(), len(calls)
 
     def test_polls_until_passed(self):
-        code, out, n = self.run_loop([report([chk("a", "queued")]), report([chk("a", "in_progress")]), report([chk("a")])])
+        code, out, n = self.run_loop(
+            [report([chk("a", "queued")]), report([chk("a", "in_progress")]), report([chk("a")])]
+        )
         self.assertEqual((code, n), (0, 3))
         self.assertIn("all checks passed", out)
 
@@ -99,7 +135,9 @@ class WatchLoop(unittest.TestCase):
         self.assertEqual((code, n), (git.WATCH_EXIT_UNKNOWN, 3))
 
     def test_refusal_stops_at_once(self):
-        code, out, n = self.run_loop([{"complete": False, "unknowns": [], "relay_reason": "relay_refused", "checks": []}])
+        code, out, n = self.run_loop(
+            [{"complete": False, "unknowns": [], "relay_reason": "relay_refused", "checks": []}]
+        )
         self.assertEqual((code, n), (git.WATCH_EXIT_UNKNOWN, 1))
         self.assertIn("relay_refused", out)
 
@@ -110,7 +148,11 @@ class RunLog(unittest.TestCase):
         self.assertEqual(git.clean_log_lines(raw), ["FAIL tests/a.test.ts", "plain"])
 
     def test_excerpt_finds_errors_with_context(self):
-        lines = ["ok %d" % i for i in range(30)] + ["AssertionError: expected 1 to equal 2"] + ["after"] * 10
+        lines = (
+            ["ok %d" % i for i in range(30)]
+            + ["AssertionError: expected 1 to equal 2"]
+            + ["after"] * 10
+        )
         got = git.failure_excerpt(lines, context=1)
         self.assertEqual(got, ["ok 29", "AssertionError: expected 1 to equal 2", "after"])
 
