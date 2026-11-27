@@ -23,7 +23,6 @@
     ],
     "health": "https://agents.simplewithus.com/health",
     "ok": true,
-    "access": true,
     "canary": {
       "url": "https://agents.simplewithus.com/mcp",
       "bearer_env": "MCP_CANARY_BEARER",

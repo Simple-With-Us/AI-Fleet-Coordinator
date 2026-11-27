@@ -9,7 +9,7 @@ No seat bearer is stored in deployment CI.
 
 Renew before expiry. The credential maintenance follow-up is due May12. Create a replacement scoped read-only finite service token with the same project and exact folder, verify metadata and intended record access, seal it to the repository Actions public key and update only the named secret through Echo's relay identity. Run deployment qualification and verify the workflow can read it before retiring the old reader. Never replace it with an agent token or broaden its scope. Keep the new expiry and maintenance follow-up current.
 
-The canary bearer belongs only to the service. Infisical Fleet-OPS prod:/cloudflare/MCP_CANARY_BEARER is its source of truth. Its digest is in the Worker config; CI reads the bearer at runtime through the dedicated reader. It permits only a fixed read-only MCP tool and grants no seat, upstream, storage or delegation capability. Keep this distinct from production seat credential-resolution proof. Access health credentials use the existing AGENTS_JAYS_SERVICES Access service token, verified against the exact health URL before staging.
+The canary bearer belongs only to the service. Infisical Fleet-OPS prod:/cloudflare/MCP_CANARY_BEARER is its source of truth. Its digest is in the Worker config; CI reads the bearer at runtime through the dedicated reader. It permits only a fixed read-only MCP tool and grants no seat, upstream, storage or delegation capability. Keep this distinct from production seat credential-resolution proof. The exact /health route returned200/ok without Access credentials on2026-11-27. CI sends no unnecessary Access pair; authenticated MCP remains the functional proof.
 
 ## Cutover evidence still required
 
