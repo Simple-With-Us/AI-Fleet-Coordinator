@@ -50,7 +50,7 @@ jobs:
     secrets:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
       META_MODEL_API_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      SWU_AUTOFIX_OPENROUTER_API_KEY: ${{ secrets.SWU_AUTOFIX_OPENROUTER_API_KEY }}
       USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}
       AUTOFIX_GITHUB_APP_PRIVATE_KEY: ${{ secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
 ```
@@ -67,9 +67,9 @@ Three org/repo Actions variables retarget every autofix caller at once.  `SWU_AU
 |---|---|---|---|
 | unset or `https://api.minimax.io/anthropic` | MiniMax | `MINIMAX_API_KEY` | a `MiniMax-*` id |
 | `https://api.meta.ai` | Meta | `META_MODEL_API_TOKEN` | a `muse-*` id |
-| `https://openrouter.ai/api` | OpenRouter | `OPENROUTER_API_KEY` | an OpenRouter `vendor/model` slug, for example `deepseek/deepseek-chat` |
+| `https://openrouter.ai/api` | OpenRouter | `SWU_AUTOFIX_OPENROUTER_API_KEY` | an OpenRouter `vendor/model` slug, for example `deepseek/deepseek-chat` |
 
-The OpenRouter base is exactly `https://openrouter.ai/api`;  `/api/v1` doubles the path and returns 404.  The slug is checked against a closed character set before it reaches the runner environment.  Callers must pass `OPENROUTER_API_KEY` through `secrets:`;  the reusable declares it optional, so a caller that does not pass it still validates on the other routes.  A caller pinned to an older reusable SHA rejects the OpenRouter base until its pin is bumped.
+The OpenRouter base is exactly `https://openrouter.ai/api`;  `/api/v1` doubles the path and returns 404.  The slug is checked against a closed character set before it reaches the runner environment.  Callers must pass `SWU_AUTOFIX_OPENROUTER_API_KEY` through `secrets:`;  the reusable declares it optional, so a caller that does not pass it still validates on the other routes.  A caller pinned to an older reusable SHA rejects the OpenRouter base until its pin is bumped.
 
 ## Inputs
 
