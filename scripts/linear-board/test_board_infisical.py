@@ -14,10 +14,10 @@ nothing reaches the network.
 from __future__ import annotations
 
 import json
-from unittest.mock import Mock, patch
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_board as T
@@ -354,19 +354,28 @@ class ExpiryMetadataTests(unittest.TestCase):
 
                 def opened(request, **kwargs):
                     requests.append(request.full_url)
-                    payload = grant if len(requests) == 1 else {
-                        "secret": {"secretKey": self.cli.BEARER_VERIFY_KEY_NAME,
-                                   "secretValue": "fixture-key"}
-                    }
+                    payload = (
+                        grant
+                        if len(requests) == 1
+                        else {
+                            "secret": {
+                                "secretKey": self.cli.BEARER_VERIFY_KEY_NAME,
+                                "secretValue": "fixture-key",
+                            }
+                        }
+                    )
                     return T.io.BytesIO(json.dumps(payload).encode())
 
                 transport = Mock()
                 transport.open.side_effect = opened
+
                 def environment(key, *args):
                     return "proj-tools" if key == self.cli.BEARER_TOOLS_PROJECT_ENV else None
 
                 with (
-                    patch.object(self.cli, "_secret_from_file_or_env", return_value="fixture-token"),
+                    patch.object(
+                        self.cli, "_secret_from_file_or_env", return_value="fixture-token"
+                    ),
                     patch.object(self.cli, "env", side_effect=environment),
                     patch.object(self.cli, "opener", return_value=transport),
                 ):
