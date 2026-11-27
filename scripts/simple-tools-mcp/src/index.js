@@ -565,13 +565,14 @@ async function serveMcp(request, env, ctx) {
       throw new ToolError("not_configured", `This server cannot act as ${identity}.`);
     }
     const peerGate = gate(env, identity);
-    const peerKey = await seatKeyRead(SEAT_SECRETS[identity]);
-    const peerLinearPair = await resolveLinearPair(env, seatTagForSeat(identity));
-    const peerFleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
     const peerWakeName = listenerSecretName(identity);
-    const peerWakeKey = peerWakeName
-      ? await resolveSecret(env, { name: peerWakeName, path: "/wake", envName: peerWakeName, optional: true })
-      : "";
+    // Four independent secret reads, issued together.  The router builds a peer once per request.
+    const [peerKey, peerLinearPair, peerFleetlinkTokens, peerWakeKey] = await Promise.all([
+      seatKeyRead(SEAT_SECRETS[identity]),
+      resolveLinearPair(env, seatTagForSeat(identity)),
+      resolveFleetlinkSeatTokens(env, [identity]),
+      peerWakeName ? resolveSecret(env, { name: peerWakeName, path: "/wake", envName: peerWakeName, optional: true }) : "",
+    ]);
     const peerGr = wireGrFront({ grSecrets, env, grClient: null, relayAuthAvailable: false });
     return new HostedTools({
       seat: identity,
@@ -595,7 +596,8 @@ async function serveMcp(request, env, ctx) {
       grMissingEnv: peerGr.grMissingEnv,
       linear: linearClientFromPair(peerLinearPair, identity, { gate: peerGate, quota: linearQuotaFromEnv(env) }),
       linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
-      fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: peerFleetlinkTokens }),
+      // The shared FleetLink fallback secret is never lent to the peer (as for an additional bearer identity):  only its own seat token.
+      fleetlink: fleetlinkClientFromSecret("", env, { resolvedTokens: peerFleetlinkTokens }),
       listener: listenerClientFromEnv(env, identity, { wakeKey: peerWakeKey }),
       notes: operatorNotesClientFromEnv(env),
       diagnosticsGate: gate(env, GATE_LOG_NAME),

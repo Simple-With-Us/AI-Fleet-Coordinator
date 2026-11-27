@@ -39,7 +39,7 @@ export function allowedIdentities(seat) {
   // CLAUDE and DUET are two Claude.ai apps that must share ONE connector (Claude.ai refuses a
   // second connector with the same server URL), so a grant for either may act as either.  Nothing
   // else joins them:  no other seat and no GB bot.
-  if (SHARED_CLAUDE_SEATS.includes(seat)) return Object.freeze([seat, ...SHARED_CLAUDE_SEATS.filter((peer) => peer !== seat)]);
+  if (SHARED_CLAUDE_SEATS.includes(seat)) return Object.freeze([seat, ...SHARED_CLAUDE_SEATS.filter((peer) => peer !== seat && !EVENTS_ONLY_SEATS.includes(peer))]);
   return Object.freeze([seat]);
 }
 
