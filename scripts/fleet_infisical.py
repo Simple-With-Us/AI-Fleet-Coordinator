@@ -84,9 +84,7 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
 # intent ledger.  The /wake listener read keys are 64 lowercase hex (openssl rand -hex 32,
 # DEPLOY.md),  so a wrong or junk value from a writer bug can never land and silently break
 # another seat's reads.  A folder with no shape accepts any value the write token carries.
-VALUE_SHAPES: tuple[tuple[str, str], ...] = (
-    (r"/wake", r"[0-9a-f]{64}"),
-)
+VALUE_SHAPES: tuple[tuple[str, str], ...] = ((r"/wake", r"[0-9a-f]{64}"),)
 
 
 def value_shape_ok(path: str, value: str) -> bool:
@@ -96,6 +94,8 @@ def value_shape_ok(path: str, value: str) -> bool:
         if re.fullmatch(folder, path) and not re.fullmatch(shape, value):
             return False
     return True
+
+
 def value_shape_ok(path: str, value: str) -> bool:
     """Whether a value is in the stored shape the path's writer enforces before the ledger.
 
