@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { HostedTools, HOSTED_TOOLS_BY_NAME, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOLS } from "../src/hosted-tools.js";
 import * as S from "../src/seat-state.js";
-import { loadConfig, OPERATOR_NOTES_SECRET } from "../src/config.js";
+import { loadConfig, OPERATOR_NOTES_SECRET_NAME } from "../src/config.js";
 import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import {
   NOTES_TOOLS, NOTES_WRITE_TOOLS, NOTES_MARKER_BEGIN, NOTES_MARKER_END, NOTES_POLL_MS, NOTES_WAIT_MAX_S, OperatorNotesClient,
@@ -219,7 +219,7 @@ test("the relay is gone:  no NOTES_RELAY_CONSUMER or Operator Zulip identity in 
   const loaded = loadConfig(testEnv());
   for (const name of ["notesRelayConsumer", "operatorZulipUserId", "operatorZulipEmail"]) assert.equal(name in loaded, false, name);
   assert.ok(Number.isSafeInteger(loaded.operatorUserId), "the DM rule's pinned Operator id stays");
-  assert.equal(OPERATOR_NOTES_SECRET, "OPERATOR_NOTES_KEY");
+  assert.equal(OPERATOR_NOTES_SECRET_NAME, "OPERATOR_NOTES_KEY");
   const vars = wranglerConfig().vars;
   assert.equal(vars.NOTES_RELAY_CONSUMER, undefined);
   assert.equal(vars.OPERATOR_NOTES_KEY, undefined, "a Worker secret, never committed in wrangler.jsonc");

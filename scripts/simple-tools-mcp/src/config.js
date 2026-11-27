@@ -44,6 +44,10 @@ export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 // the others' access.  Any other seat or any other https callback listed twice is refused at load.
 export const SHARED_CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
 export const SHARED_CHATGPT_SEATS = Object.freeze(["JET", "JET-CHAT", "CODEX"]);
+// Claude.ai sends one hosted callback for every Claude app, so CLAUDE and DUET (a Claude
+// seat that cannot auto-register) share it, each through its own tagged manual client.
+export const SHARED_CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
+export const SHARED_CLAUDE_SEATS = Object.freeze(["CLAUDE", "DUET"]);
 
 export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA", "CODEX", "DUET"]);
 
@@ -107,7 +111,7 @@ export const SEAT_SECRETS = Object.freeze({
   CURSOR: Object.freeze({ key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR", infisical: Object.freeze({ name: "CURSOR_ZULIP_KEY", path: "/zulip" }) }),
   CLAUDE: Object.freeze({ key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL", infisical: Object.freeze({ name: "CLAUDE_ZULIP_KEY", path: "/zulip" }) }),
   // DUET (Claude's hosted-app seat, owner Nov 25 2026) is prepared the way CLAUDE was:  its bot key and
-  // the duet-bot user are created by the owner, so DUET is not in HOSTED_SEATS until they exist.
+  // the duet-bot user are created by the owner, so the key must exist before the Worker is deployed with DUET hosted.
   DUET: Object.freeze({ key: "ZULIP_KEY_DUET", email: "ZULIP_EMAIL_DUET", infisical: Object.freeze({ name: "DUET_ZULIP_KEY", path: "/zulip" }) }),
   // CODEX's key already lives in Fleet-OPS /zulip as CODEX_ZULIP_KEY
   // (install_seat_key.py, names verified live 2026-10-23).
@@ -154,6 +158,7 @@ export const WAKE_SECRETS = Object.freeze({
 export const LISTENER_READ_SECRETS = Object.freeze({
   MA: "WAKE_HMAC_KEY_MA",
   CLAUDE: "WAKE_HMAC_KEY_CLAUDE",
+  DUET: "WAKE_HMAC_KEY_DUET",
   CODEX: "WAKE_HMAC_KEY_CODEX",
   CURSOR: "WAKE_HMAC_KEY_CURSOR",
   // ZC's wake rides the server-side zcode delivery, not /internal/wake, so it is a read-key
@@ -204,7 +209,7 @@ export const LISTENER_KEY_SECRET_NAMES = Object.freeze([...Object.values(WAKE_SE
 // OPERATOR_NOTES_WORKER_KEY (AI Fleet Coordinator, prod, /operator).  One key for every seat:  the seat comes only
 // from the grant, and the Operator checks it against [notes_queue] worker_seats.  A Worker secret, never a var.
 // Unset (or shorter than 32 characters) means every notes tool answers not_configured (src/notes.js).
-export const OPERATOR_NOTES_SECRET = "OPERATOR_NOTES_KEY";
+export const OPERATOR_NOTES_SECRET_NAME = "OPERATOR_NOTES_KEY";
 
 // What /admin and a manual client's name call each seat's app.
 export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "JET-CHAT": "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise", MA: "Rob", CODEX: "Codex", DUET: "Duet" });
@@ -323,7 +328,9 @@ export function loadConfig(env) {
       // seat at consent GET and POST. No other HTTPS callback/seat is shared.
       const sharedChatGpt = uri === SHARED_CHATGPT_REDIRECT
         && [seat, ...listed].every((candidate) => SHARED_CHATGPT_SEATS.includes(candidate));
-      if (listed.length > 0 && !isLoopbackRedirect(uri) && !sharedChatGpt) throw new Error("config: a redirect URI is listed under two seats (only loopback or the pinned JET/JET-CHAT/CODEX ChatGPT callback may be shared)");
+      const sharedClaude = uri === SHARED_CLAUDE_REDIRECT
+        && [seat, ...listed].every((candidate) => SHARED_CLAUDE_SEATS.includes(candidate));
+      if (listed.length > 0 && !isLoopbackRedirect(uri) && !sharedChatGpt && !sharedClaude) throw new Error("config: a redirect URI is listed under two seats (only loopback or the pinned JET/JET-CHAT/CODEX ChatGPT callback may be shared)");
       redirectSeats.set(uri, [...listed, seat]);
     }
     for (const id of cimdClientIds) {

@@ -33,7 +33,7 @@ import { ToolError, okResult, clean, NAME_LIMIT, MESSAGE_LIMIT, newNonce, scanSe
 import { compactNotesListResult, effectiveLimit } from "./list-presentation.js";
 import { parseArgs } from "./args.js";
 import { listenerBaseUrl } from "./eavesdropper.js";
-import { OPERATOR_NOTES_SECRET } from "./config.js";
+import { OPERATOR_NOTES_SECRET_NAME } from "./config.js";
 import * as SESSION_IDS from "./session-ids.js";
 
 export const NOTES_CONTRACT_NAME = "simple-tools-notes/1";
@@ -488,7 +488,7 @@ export class OperatorNotesClient {
 /** An OperatorNotesClient, or null when LISTENER_API_URL or OPERATOR_NOTES_KEY is missing or unusable.  Never throws. */
 export function operatorNotesClientFromEnv(env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
   const baseUrl = listenerBaseUrl(env?.LISTENER_API_URL);
-  const raw = env?.[OPERATOR_NOTES_SECRET];
+  const raw = env?.[OPERATOR_NOTES_SECRET_NAME];
   const key = typeof raw === "string" ? raw.trim() : "";
   if (!baseUrl || key.length < NOTES_MIN_KEY_LEN || typeof fetchImpl !== "function") return null;
   return new OperatorNotesClient({ baseUrl, key, fetch: fetchImpl, now });

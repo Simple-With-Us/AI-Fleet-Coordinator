@@ -34,7 +34,7 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // ECHO and WISE (the Instinct app) were added on Fri, Oct 9.
   // JET-CHAT (the Jet wake split) and CODEX were live in production before
   // the committed config said so;  the Nov 3, 2026 parity change records them.
-  assert.deepEqual([...cfg.hostedSeats], ["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX"]);
+  assert.deepEqual([...cfg.hostedSeats], ["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX", "DUET"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
   // Channels:  any public channel the bot is subscribed to (owner, Sat, Oct 10, 2026), so no allowlist;  the denylist ships empty.
   assert.deepEqual([...cfg.channelsDeny], []);
