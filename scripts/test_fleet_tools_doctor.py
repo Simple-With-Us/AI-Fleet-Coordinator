@@ -428,7 +428,15 @@ class SeatAndMcpTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
         self.patch = mock.patch.multiple(
-            doctor, HOME=self.home, RUNTIME=self.home / "rt", STATE=self.home / "state.json"
+            doctor,
+            HOME=self.home,
+            RUNTIME=self.home / "rt",
+            STATE=self.home / "state.json",
+            # The published runtime and the host's hook wrappers live under the real HOME unless they
+            # are patched here.  The doctor's layout rule reads them, so a test must never see the
+            # machine it runs on.
+            MAC_RUNTIME=self.home / "published",
+            MAC_HOOKS_DIR=self.home / ".local/libexec/simple-tools-hooks",
         )
         self.patch.start()
 
@@ -2307,6 +2315,98 @@ class MacCopyRowsTests(ReportAndRunTests):
             # A Mac with no managed runtime has no revision at all.
             with mock.patch.object(doctor, "MAC_RUNTIME", Path(self.tmp.name) / "nothing"):
                 self.assertEqual(doctor.mac_copy_revision(tip=tip), {"tip": tip, "head": None})
+
+
+class MacLayoutTests(ReportAndRunTests):
+    """OPS-1095:  the Mac's runtime layout is what its own commands run.
+
+    A Mac that also carries a fleet-cli release checkout (the server's layout, retired on the Mac
+    since 2026-10-19) used to be judged server-style:  the runtime row asked for systemctl, the
+    Mac's own command-link rows never ran, and the catalogs were judged in the leftover checkout.
+    The layout now follows the host's own commands, and the leftover earns a row of its own.
+    """
+
+    def managed(self) -> None:
+        """A managed runtime on the disk:  the tree the Mac's commands run."""
+        self.rt_dir.mkdir(parents=True, exist_ok=True)
+        (self.rt_dir / ".git").write_text("gitdir: x\n")
+
+    def release_checkout(self) -> Path:
+        """A fleet-cli release checkout left on the Mac:  the server's layout."""
+        path = self.home / ".local/share/fleet-cli/repo/.git"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def command_link(self, command: str, script: str, target: Path) -> Path:
+        """A command on the Mac:  a symlink to the script that runs it."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("#!/bin/sh\nexit 0\n")
+        link = self.home / ".local/bin" / command
+        link.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, link)
+        return link
+
+    def rules(self) -> list:
+        return [(("rev-parse", "HEAD"), (0, TIP + "\n")), (("launchctl",), (113, ""))]
+
+    def test_a_mac_with_a_release_checkout_is_judged_by_its_own_commands(self):
+        self.managed()
+        self.release_checkout()
+        self.command_link("simple-chat", "simple-chat", self.rt_dir / "scripts/simple-chat")
+        text, _ = self.run_doctor(["--json", "--no-network"], self.rules(), host="mac")
+        rows = {r["check"]: r for r in json.loads(text)["checks"]}
+        runtime = rows["runtime"]
+        # The Mac's own runtime, never the server's systemctl instruction.
+        self.assertNotIn("systemctl", runtime["detail"])
+        self.assertEqual(runtime["installed"], TIP)
+        # The Mac's own command rows run.
+        self.assertIn("tool:simple-chat", rows)
+        # And the leftover earns a row of its own instead of hijacking the report.
+        leftover = rows["runtime-layout:release-checkout"]
+        self.assertEqual(leftover["status"], "WARN")
+        self.assertIn("unused", leftover["detail"])
+
+    def test_the_platform_letter_link_may_run_the_hosts_hook_wrapper(self):
+        # install.sh leaves the host's own wrapper alone (AFC-564):  it sets the registry settings
+        # every hook needs and then runs the runtime's script, so it runs the runtime too.
+        self.managed()
+        self.command_link("simple-chat", "simple-chat", self.rt_dir / "scripts/simple-chat")
+        wrapper = self.home / ".local/libexec/simple-tools-hooks/platform-letter"
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text(
+            "#!/bin/sh\nexec " + str(self.rt_dir / "scripts/platform-letter") + ' "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        os.symlink(wrapper, self.home / ".local/bin/platform-letter")
+        text, _ = self.run_doctor(["--json", "--no-network"], self.rules(), host="mac")
+        rows = {r["check"]: r for r in json.loads(text)["checks"]}
+        row = rows["tool:platform-letter"]
+        self.assertNotEqual(row["status"], "FAIL")
+        self.assertIn("hook wrapper", row["detail"])
+
+    def test_the_layout_follows_the_commands_and_not_the_disk(self):
+        self.managed()
+        self.release_checkout()
+        self.command_link("simple-chat", "simple-chat", self.rt_dir / "scripts/simple-chat")
+        self.assertEqual(doctor.mac_runtime_layout(), "managed")
+        # A command that runs the release checkout says the host runs the release.
+        (self.home / ".local/bin/simple-chat").unlink()
+        release = self.home / ".local/share/fleet-cli/current/scripts/simple-chat"
+        release.parent.mkdir(parents=True, exist_ok=True)
+        release.write_text("#!/bin/sh\nexit 0\n")
+        os.symlink(release, self.home / ".local/bin/simple-chat")
+        self.assertEqual(doctor.mac_runtime_layout(), "release")
+
+    def test_a_managed_runtime_without_a_git_directory_is_still_managed(self):
+        # A managed runtime published as a plain file copy has no .git, and its commands still point
+        # at it.  The commands are the evidence, so the copy is mac-style and not a release layout.
+        (self.rt_dir / "scripts").mkdir(parents=True, exist_ok=True)
+        self.command_link("simple-chat", "simple-chat", self.rt_dir / "scripts/simple-chat")
+        self.assertFalse((self.rt_dir / ".git").exists())
+        self.assertEqual(doctor.mac_runtime_layout(), "managed")
+        # With no command to answer and no managed runtime at all, the host runs the release layout.
+        (self.home / ".local/bin/simple-chat").unlink()
+        self.assertEqual(doctor.mac_runtime_layout(), "release")
 
 
 class ServerStatusTests(HomeCase):

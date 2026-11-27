@@ -403,6 +403,71 @@ class TestAntigravityDeliverLocal(BaseTest):
         self.assertEqual(delivery2.outcome, "sent")
         self.assertTrue(ran)
 
+    def test_conversation_data_missing_refuses_before_launch(self) -> None:
+        self._insert(SID_VALID)
+        # The store's layout is understood (it holds another conversation's
+        # data) but this conversation's data is gone:  the CLI would run the
+        # turn in a new chat, so the wake is refused before anything launches.
+        store = self.root / "implicit"
+        store.mkdir()
+        (store / "99999999-9999-4999-8999-999999999999.pb").write_bytes(b"x")
+        calls: list = []
+        with mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"):
+            delivery = AGW.deliver_local(
+                self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=agy(0, calls=calls)
+            )
+        self.assertEqual(
+            (delivery.outcome, delivery.code), ("refused", "conversation-data-missing")
+        )
+        self.assertEqual(calls, [])
+
+    def test_conversation_data_present_proceeds(self) -> None:
+        self._insert(SID_VALID)
+        store = self.root / "implicit"
+        store.mkdir()
+        (store / ("%s.pb" % SID_VALID)).write_bytes(b"x")
+        with mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"):
+            delivery = AGW.deliver_local(
+                self.env, AGW.DEFAULTS, SID_VALID, self.wake(), runner=agy(0)
+            )
+        self.assertEqual(delivery.outcome, "sent")
+
+    def test_data_probe_only_reads_the_matched_root(self) -> None:
+        # Another product root holding data says nothing about this
+        # conversation:  only the root whose database holds the row is probed.
+        self._insert(SID_VALID)
+        other = self.root / "other-product"
+        (other / "implicit").mkdir(parents=True)
+        (other / "implicit" / "99999999-9999-4999-8999-999999999999.pb").write_bytes(b"x")
+        root = self.root
+        self.assertFalse(AGW.conversation_data_missing(self.env, SID_VALID, root))
+        # And with the matched root itself populated for other ids, it refuses.
+        (root / "implicit").mkdir(exist_ok=True)
+        (root / "implicit" / "99999999-9999-4999-8999-999999999999.pb").write_bytes(b"x")
+        self.assertTrue(AGW.conversation_data_missing(self.env, SID_VALID, root))
+
+    def test_data_probe_brain_stray_file_is_not_data(self) -> None:
+        # A stray file under brain/ is not a conversation:  only directories
+        # (or the per-conversation files) make the root understood.
+        self._insert(SID_VALID)
+        brain = self.root / "brain"
+        brain.mkdir()
+        (brain / "lockfile").write_bytes(b"x")
+        self.assertFalse(
+            AGW.conversation_data_missing(self.env, SID_VALID, self.root)
+        )
+        (brain / "99999999-9999-4999-8999-999999999999").mkdir()
+        self.assertTrue(
+            AGW.conversation_data_missing(self.env, SID_VALID, self.root)
+        )
+
+    def test_data_probe_unreadable_root_fails_closed(self) -> None:
+        self._insert(SID_VALID)
+        with mock.patch("os.scandir", side_effect=PermissionError("denied")):
+            self.assertTrue(
+                AGW.conversation_data_missing(self.env, SID_VALID, self.root)
+            )
+
     def test_conversation_not_found(self) -> None:
         delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_ABSENT, self.wake())
         self.assertEqual((delivery.outcome, delivery.code), ("refused", "conversation-not-found"))
@@ -571,7 +636,9 @@ class TestAntigravityDeliverLocal(BaseTest):
 
     def test_deliver_local_db_error_fails_bounded_retry(self) -> None:
         with mock.patch.object(
-            AGW, "find_conversation_record", return_value=(None, "db-operational-error")
+            AGW,
+            "find_conversation_record_with_root",
+            return_value=(None, "db-operational-error", None),
         ):
             delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_VALID, self.wake())
             self.assertEqual(

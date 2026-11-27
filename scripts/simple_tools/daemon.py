@@ -647,6 +647,38 @@ SIDE_CHATS_CHANNEL = "Side-Chats"
 SIDE_CHATS_ESCALATION_TOPIC = "Operator escalation notes"
 
 
+# Every state the status document gives the Operator's Zulip -> Linear living comments
+# (_linear_comments_status).  scripts/reduced_status.py keeps its own closed list and
+# passes a state on only when it is on that list, so a word added here without one there would
+# read as "other" on every panel:  a test holds the two equal.
+LINEAR_COMMENT_STATES = (
+    "off",
+    "module_missing",
+    "token_file_unusable",
+    "no_service_token",
+    "credential_refused",
+    "ledger_refused",
+    "build_error",
+    "unconfigured",
+    "running",
+    "stopped",
+)
+
+
+def _snake(name: str) -> str:
+    """An exception's class name as a reason code (`ValueError` is `value_error`, `URLError` is
+    `urlerror`):  what failed, in a shape the reduced status passes on, and nothing about
+    the host.  An underscore goes where a lower-case letter or a digit meets a capital, so a
+    run of capitals stays one word.  The status document carries the code;  the log keeps
+    the message."""
+    out: list[str] = []
+    for at, char in enumerate(name):
+        if char.isupper() and at and not name[at - 1].isupper():
+            out.append("_")
+        out.append(char.lower())
+    return "".join(out)
+
+
 class Daemon:
     def __init__(
         self,
@@ -826,6 +858,19 @@ class Daemon:
         # Infisical service token for the Operator's Linear developer token resolves.
         self.linear_comments: Any | None = None
         self._linear_comments_spec: tuple[Any, ...] | None = None
+        # The living comments' health for the status document (AFC-833):  why there is no engine
+        # (a fixed word _configure_linear_comments sets, None once one is built), the time of the
+        # last tick that returned, the calls that raised (their count, and a code for the class
+        # of the last one), and when the engine was first seen stopped.  Never a message:  the
+        # log has those.  The lock covers the counters only, never a call into the engine.
+        self._linear_comments_state: str | None = "off"
+        self._linear_comments_lock = threading.Lock()
+        self._linear_comments_health: dict[str, Any] = {
+            "last_tick": None,
+            "errors": 0,
+            "last_error": None,
+            "stopped_at": None,
+        }
         # The Operator's session registry service (listener_registry.py), rebuilt on every
         # start and reload (_configure_listener_api calls _configure_registry first).  It
         # exists on the server instance only, whether or not the listener API is on;  the
@@ -1384,12 +1429,14 @@ class Daemon:
         self.linear_comments = None
         self._linear_comments_spec = None
         if not getattr(self.config, "linear_comments_enabled", False):
+            self._linear_comments_state = "off"
             return
         try:
             # Imported here, not at module load, so a missing module never stops the daemon.
             from . import operator_linear as OPL
         except ImportError as exc:
             self.log.write("linear-comments-error", error=type(exc).__name__)
+            self._linear_comments_state = "module_missing"
             return
         token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
         try:
@@ -1400,6 +1447,7 @@ class Daemon:
             # The token file itself is unusable (its permissions):  the message names
             # the file and the mode, never a value.
             self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            self._linear_comments_state = "token_file_unusable"
             return
         if not service:
             self.log.write(
@@ -1408,11 +1456,13 @@ class Daemon:
                 "infisical_token_file in the consumer's store)",
                 hint=ENV_RESTART_HINT,
             )
+            self._linear_comments_state = "no_service_token"
             return
         self.hide_values([service])
         if old is not None and old_spec == (service,) and getattr(old, "stopped", None) is None:
             self.linear_comments = old
             self._linear_comments_spec = old_spec
+            self._linear_comments_state = None
             return
         if old is not None:
             # The credential changed:  release the old engine's ledger lock before the
@@ -1434,14 +1484,17 @@ class Daemon:
             # The developer-token fetch was refused:  this feature fails
             # closed, the daemon does not.  The message names a stage and a status.
             self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            self._linear_comments_state = "credential_refused"
             return
         except SystemExit as exc:
             # The ledger refused to open (another holder, or unreadable state):  this
             # feature fails closed, the daemon does not.
             self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            self._linear_comments_state = "ledger_refused"
             return
         except Exception as exc:  # noqa: BLE001 - the engine must never stop the daemon
             self.log.write("linear-comments-error", error=type(exc).__name__)
+            self._linear_comments_state = "build_error"
             return
         if engine is None:
             self.log.write(
@@ -1449,7 +1502,12 @@ class Daemon:
                 reason="no Infisical service token",
                 hint=ENV_RESTART_HINT,
             )
+            self._linear_comments_state = "unconfigured"
             return
+        if old is not engine:
+            # A new engine (the first, or one built after a credential change) has not stopped.
+            self._linear_comments_health["stopped_at"] = None
+        self._linear_comments_state = None
         self.linear_comments = engine
         self._linear_comments_spec = (service,)
 
@@ -1464,11 +1522,7 @@ class Daemon:
         try:
             engine.feed_message(runner.client, message)
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _observe_linear_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
         """Feed one update_message event (a topic rename or a stream move) to the living
@@ -1480,11 +1534,7 @@ class Daemon:
         try:
             engine.feed_event(runner.client, event)
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _observe_linear_stream_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
         """A stream create, update or delete: the living comments forget the public-stream
@@ -1495,11 +1545,7 @@ class Daemon:
         try:
             engine.reload_streams(runner.client)
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _observe_linear_reconnect(self, runner: SeatRunner) -> None:
         """A seat's event queue registered again:  its backfill replays only part of what
@@ -1512,11 +1558,7 @@ class Daemon:
         try:
             engine.queue_registered()
         except Exception as exc:  # the comments must never break routing
-            self.log.write(
-                "linear-comments-error",
-                seat=runner.seat,
-                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-            )
+            self._linear_comments_failed(exc, seat=runner.seat)
 
     def _stop_review_alerts(self) -> None:
         stop = getattr(self, "_review_alert_stop", None)
@@ -1619,6 +1661,23 @@ class Daemon:
                     reason="invalid-or-reused-read-key",
                 )
                 review_origin_key = ""
+        from .review_origin_projection import ZC_KEY_ENV
+
+        review_origin_zc_key = Z._strip_quotes(self.env.get(ZC_KEY_ENV) or "")
+        if review_origin_zc_key:
+            self.hide_values([review_origin_zc_key])
+            if (
+                not re.fullmatch(r"[!-~]{32,512}", review_origin_zc_key)
+                or "${" in review_origin_zc_key
+                or review_origin_zc_key in keys.values()
+                or review_origin_zc_key == review_origin_key
+            ):
+                self.log.write(
+                    "review-origin-projection-held",
+                    key_env=ZC_KEY_ENV,
+                    reason="invalid-or-reused-read-key",
+                )
+                review_origin_zc_key = ""
         # The service is built on the server whether or not any principal has a usable key, and
         # whether or not the API is on or bound:  the note-link hook and the sweeper run in
         # process and need no key.  The keys decide only whether the API serves /registry/v1/.
@@ -1631,6 +1690,7 @@ class Daemon:
             window,
             tuple(sorted((name, key) for name, key in keys.items())),
             review_origin_key,
+            review_origin_zc_key,
         )
         if old is not None and old_spec == spec:
             service = old
@@ -1639,6 +1699,7 @@ class Daemon:
                 db_path,
                 keys,
                 review_origin_read_key=review_origin_key,
+                review_origin_zc_read_key=review_origin_zc_key,
                 clock=self.clock.time,
                 log=self.log.write,
                 gone_report_max_share=share,
@@ -6192,10 +6253,10 @@ class Daemon:
                 try:
                     engine.tick(client)
                 except Exception as exc:  # the comments must never stop the tick
-                    self.log.write(
-                        "linear-comments-error",
-                        error=self.scrub(type(exc).__name__ + ": " + str(exc)),
-                    )
+                    self._linear_comments_failed(exc)
+                else:
+                    with self._linear_comments_lock:
+                        self._linear_comments_health["last_tick"] = now
         if now - self.last_tick["prune"] >= W.DAY:
             self.last_tick["prune"] = now
             for runner in self.seats.values():
@@ -6378,6 +6439,23 @@ class Daemon:
                 if isinstance((v.get("times") or {}).get("started"), (int, float))
                 and now - v["times"]["started"] < W.DAY
             ]
+            # The router outcomes of the last day, and every wake still waiting on its router
+            # receipt however old (AFC-835), for the status document:  the same words and the same
+            # window rule `listener_records.wakes_view` gives the listener API's view (a wake is in
+            # the window while its newest row is), computed from the ledger this seat already holds
+            # in memory.
+            # One pass over the seat's merged views:  the windowed outcome counts and the
+            # awaiting count together (Kody, PR 2511), instead of scanning the ledger twice.
+            outcomes = {state: 0 for state in W.OUTCOME_STATES}
+            outcomes["awaiting"] = 0
+            for view in views.values():
+                state = view.get("state")
+                if state in W.OUTCOME_STATES:
+                    ts = view.get("ts")
+                    if isinstance(ts, (int, float)) and now - ts < W.DAY:
+                        outcomes[state] += 1
+                elif state == "done" and view.get("receipt_awaited") is True:
+                    outcomes["awaiting"] += 1
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -6465,6 +6543,9 @@ class Daemon:
                 "wake": runner.cfg.wake,
                 "routine": routine,
                 "wakes_24h": len(day),
+                # The outcomes of those wakes, for the Operator panel (AFC-835).  Additive:  a
+                # reader that predates it ignores it.
+                "wake_outcomes_24h": outcomes,
                 # Additive:  a reader that predates the switch ignores it (AFC-643-style decode).
                 "bracket_recipient_wakes": bool(runner.cfg.bracket_recipient_wakes),
                 # No dollar figures in the status at all (owner 2026-10-13):  the per-run cost of a wake was
@@ -6532,6 +6613,12 @@ class Daemon:
             # The one stale sweeper's last pass (AFC-721):  null where no sweeper runs (every
             # instance but the server) and before the first pass.
             "registry_sweep": self._registry_sweep_status(),
+            # The sweeper's schedule (AFC-833), beside its last pass:  a reader judges that pass
+            # against the real interval instead of guessing one.  None where no sweeper runs.
+            "registry_sweep_schedule": self._registry_sweep_schedule_status(),
+            # The Zulip -> Linear living comments' health (AFC-833):  what the daemon has seen of
+            # the engine it drives, in fixed words and numbers.
+            "linear_comments": self._linear_comments_status(),
             "drain": self._drain_status(),
             "seats": seats,
         }
@@ -6569,6 +6656,61 @@ class Daemon:
         if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
             return None
         return sweeper.last
+
+    def _registry_sweep_schedule_status(self) -> dict[str, Any] | None:
+        """The one stale sweeper's schedule (AFC-833, listener_registry.Sweeper.schedule), or
+        None where no sweeper runs:  every instance but the server, and before the service is
+        built."""
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return None
+        return sweeper.schedule()
+
+    def _linear_comments_failed(self, exc: BaseException, seat: str | None = None) -> None:
+        """One call into the living comments raised:  counted and classed for the status document
+        (AFC-833, the exception's class as a code, never its message), and logged as it always
+        was."""
+        with self._linear_comments_lock:
+            self._linear_comments_health["errors"] += 1
+            self._linear_comments_health["last_error"] = _snake(type(exc).__name__)
+        detail = {"error": self.scrub(type(exc).__name__ + ": " + str(exc))}
+        if seat is not None:
+            detail["seat"] = seat
+        self.log.write("linear-comments-error", **detail)
+
+    def _linear_comments_status(self) -> dict[str, Any]:
+        """The living comments' health for the status document (AFC-833), in fixed words.
+        `off` when [linear_comments] is switched off;  a word for an engine that could not be
+        built (module_missing, token_file_unusable, no_service_token, credential_refused,
+        ledger_refused, build_error, unconfigured);  `running` or `stopped` once one exists, with
+        when the last tick returned, how many calls raised since the daemon started, the code
+        for the class of the last one (_snake), and how many comments the worker has created
+        and updated since it was built.  The engine is read without its lock:  that lock
+        is held across Linear calls, and the status must never wait on one.  Nothing here is a
+        message from the engine;  the log has those."""
+        health = self._linear_comments_health
+        engine = getattr(self, "linear_comments", None)
+        if engine is None:
+            # A word the status does not know is not published as itself.
+            state = self._linear_comments_state or "unconfigured"
+            return {"state": state if state in LINEAR_COMMENT_STATES else "unconfigured"}
+        with self._linear_comments_lock:
+            row = dict(health)
+        worker = getattr(engine, "worker", None)
+        seen = {
+            "last_tick": row["last_tick"],
+            "errors": row["errors"],
+            "last_error": row["last_error"],
+            "created": getattr(worker, "comments_created", None),
+            "updated": getattr(worker, "comments_updated", None),
+        }
+        if getattr(engine, "stopped", None) is None:
+            return {"state": "running", **seen}
+        if row["stopped_at"] is None:
+            row["stopped_at"] = self.clock.time()
+            with self._linear_comments_lock:
+                health["stopped_at"] = row["stopped_at"]
+        return {"state": "stopped", "since": row["stopped_at"], **seen}
 
     # ---- the wake router's receipts (AFC-824) ---------------------------------------------------
     def _await_receipt(

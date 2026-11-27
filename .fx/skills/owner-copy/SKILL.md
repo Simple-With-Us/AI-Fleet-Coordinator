@@ -10,7 +10,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **Runtime (fx).**  Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
 
-Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Sentence Gap, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -101,5 +101,5 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 ## Canon
 
 - `~/apps/FLEET-UI-COPY.md`
-- `~/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `~/apps/FLEET-PROTOCOL.md` § Sentence Gap; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

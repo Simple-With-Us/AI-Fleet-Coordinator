@@ -57,14 +57,14 @@ final class ServiceReconcilerTests: XCTestCase {
 
     func testAFailedServiceIsStartedToo() async {
         let rig = Rig()
-        rig.states = ["seat-mcp": .failed]
+        rig.states = ["vision-worker": .failed, "seat-mcp": .failed]
         await rig.pass()
-        XCTAssertEqual(rig.starts, ["seat-mcp"])
+        XCTAssertEqual(rig.starts, ["vision-worker"])
     }
 
     func testRunningUnknownNotInstalledAndNotInPM2ServicesAreNeverStarted() async {
         let rig = Rig()
-        rig.states = ["shellular": .running, "seat-mcp": .unknown, "agy-acp": .notInstalled, "grok-acp": .notInPM2]
+        rig.states = ["shellular": .running, "vision-worker": .unknown, "agy-acp": .notInstalled, "grok-acp": .notInPM2]
         await rig.pass()
         XCTAssertEqual(rig.starts, [])
         XCTAssertEqual(rig.published, [:])
@@ -88,8 +88,8 @@ final class ServiceReconcilerTests: XCTestCase {
 
     func testAServiceTheOwnerStoppedIsNeverStarted() async {
         let rig = Rig()
-        rig.states = ["shellular": .stopped, "seat-mcp": .failed]
-        rig.stoppedInEntries = ["shellular", "seat-mcp"]
+        rig.states = ["shellular": .stopped, "vision-worker": .failed]
+        rig.stoppedInEntries = ["shellular", "vision-worker"]
         await rig.pass()
         XCTAssertEqual(rig.starts, [])
         XCTAssertEqual(rig.published, [:])

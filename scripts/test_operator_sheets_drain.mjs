@@ -722,6 +722,40 @@ function fakeSheet({ fail = {}, onWrite = () => {} } = {}) {
   return { adapter, appends };
 }
 
+test("drainOnce: one export trim runs after the passes and its counts are one log line", async () => {
+  const { bridge } = fakeRegistry(["r1"]);
+  const trims = [];
+  bridge.housekeeping = { trim: async () => { trims.push(1); return { attempts: 3, outbox: 2 }; } };
+  const logs = [];
+  const { adapter } = fakeSheet();
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(totals, { exported: 1, failed: 0 });
+  assert.equal(trims.length, 1, "the trim runs once, after the passes");
+  assert.deepEqual(
+    logs.filter((m) => m.includes("trimmed")),
+    [JSON.stringify({ trimmed: { attempts: 3, outbox: 2 } })],
+  );
+});
+
+test("drainOnce: a refused export trim is one fixed line and never fails the run", async () => {
+  const { bridge } = fakeRegistry(["r1"]);
+  bridge.housekeeping = { trim: async () => { throw new Error("registry unavailable"); } };
+  const logs = [];
+  const { adapter } = fakeSheet();
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(totals, { exported: 1, failed: 0 });
+  assert.ok(logs.some((m) => m.startsWith("export trim failed")), logs.filter((m) => m.includes("trim")));
+});
+
+test("drainOnce: a bridge without the trim verb skips it silently", async () => {
+  const { bridge } = fakeRegistry(["r1"]);
+  const logs = [];
+  const { adapter } = fakeSheet();
+  const totals = await drainOnce({ env: RUN_ENV, bridge, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(totals, { exported: 1, failed: 0 });
+  assert.equal(logs.filter((m) => m.includes("trim")).length, 0);
+});
+
 test("drainOnce: a failed row ends the run, so an uncertain write is never re-sent by the next pass", async () => {
   const { bridge, state } = fakeRegistry(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
   const uncertain = new OperatorSheetsError("transport_or_response_error", { uncertain: true });

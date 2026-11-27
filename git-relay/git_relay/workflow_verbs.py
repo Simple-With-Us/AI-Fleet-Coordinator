@@ -52,6 +52,18 @@ class CeilingDenied(Refused):
     """The seat's App ceiling does not cover the verb's permissions (a 403, not a bad request)."""
 
 
+class GraphQLRefused(RelayGitHubError):
+    """A GraphQL refusal with a fixed, classified reason.
+
+    The provider's own message is never kept on it:  only a fixed code, chosen from
+    the fixed set in this module, rides along so the caller can be told why.
+    """
+
+    def __init__(self, status, message, code=None, fixed_reason=None):
+        super().__init__(status, message, code=code)
+        self.fixed_reason = fixed_reason
+
+
 class WriteOutcomeUnknown(RuntimeError):
     """A write was sent but its result cannot be verified."""
 
@@ -70,6 +82,48 @@ LABEL_NOT_APPLIED = "additive label was not applied"
 AUTO_MERGE_NOT_ARMED = "auto-merge is not armed"
 AUTO_MERGE_REFUSED = "auto-merge enable was refused"
 AUTO_MERGE_OTHER_METHOD = "auto-merge is armed with a different method"
+# GitHub's own reason for refusing the enable, classified into a fixed set so the
+# caller can act on it.  The provider's prose never leaves this module:  only these
+# fixed strings do, and the hosted front maps each of them to its own reason.
+AUTO_MERGE_REFUSED_CHECKS = "auto-merge was refused: required checks are not passing"
+AUTO_MERGE_REFUSED_MERGEABLE = "auto-merge was refused: the pull request is not mergeable"
+AUTO_MERGE_REFUSED_REPO = "auto-merge was refused: the repository does not allow auto-merge"
+AUTO_MERGE_REFUSED_BASE = "auto-merge was refused: the base branch does not allow auto-merge"
+
+# The provider's own wording, matched only to classify it.  A message that matches
+# no known reason keeps the generic refusal.
+_AUTO_MERGE_REFUSAL_REASONS = (
+    ("status checks are not passing", AUTO_MERGE_REFUSED_CHECKS),
+    ("required status checks", AUTO_MERGE_REFUSED_CHECKS),
+    ("is not mergeable", AUTO_MERGE_REFUSED_MERGEABLE),
+    # The base-branch needles are anchored,  so a message that merely mentions a
+    # base branch is not read as an auto-merge refusal about that branch.
+    ("base branch does not allow", AUTO_MERGE_REFUSED_BASE),
+    ("base branch is not allowed", AUTO_MERGE_REFUSED_BASE),
+    # GitHub spells it both ways,  so both are classified.
+    ("does not allow auto-merge", AUTO_MERGE_REFUSED_REPO),
+    ("does not allow auto merge", AUTO_MERGE_REFUSED_REPO),
+    ("auto-merge is not allowed", AUTO_MERGE_REFUSED_REPO),
+    ("auto merge is not allowed", AUTO_MERGE_REFUSED_REPO),
+)
+
+
+def _auto_merge_refusal(message):
+    """The fixed reason for GitHub's refusal, classified from its own message.
+
+    The provider's prose never leaves this module:  the message is matched here and
+    only a fixed code is returned.  None means the message matched no known reason,
+    and the generic refusal stands.
+    """
+    if not isinstance(message, str):
+        return None
+    lowered = message.casefold()
+    for needle, reason in _AUTO_MERGE_REFUSAL_REASONS:
+        if needle in lowered:
+            return reason
+    return None
+
+
 _NODE_ID = re.compile(r"[A-Za-z0-9_/=+-]{1,200}")
 
 
@@ -314,6 +368,9 @@ SPECS = {
     "wf_repo_get": ({"metadata": "read"}, False),
     "wf_installation_metadata": ({"metadata": "read"}, False),
     "wf_repo_hooks": ({"repository_hooks": "read"}, False),
+    "wf_collaborator_permission": ({"metadata": "read"}, False),
+    "wf_repo_collaborators": ({"metadata": "read"}, False),
+    "wf_repo_teams": ({"administration": "read"}, False),
     "wf_deploy_keys": ({"administration": "read"}, False),
     "wf_org_installations": ({"organization_administration": "read"}, False),
     "wf_repo_list": ({"metadata": "read"}, False),
@@ -365,9 +422,11 @@ SPECS = {
     "wf_file_patch": ({"contents": "write"}, True),
     "wf_merge_guarded": ({"contents": "write", "pull_requests": "write"}, True),
 }
+from .hook_verbs import HOOK_SPECS, HookVerbsMixin
 from .secret_verbs import SECRET_SPECS, SecretVerbsMixin
 
 SPECS.update(SECRET_SPECS)
+SPECS.update(HOOK_SPECS)
 ACTIONS = tuple(SPECS)
 
 
@@ -653,6 +712,9 @@ _NEW_READS = frozenset(
         "wf_run_get",
         "wf_run_artifacts",
         "wf_repo_hooks",
+        "wf_collaborator_permission",
+        "wf_repo_collaborators",
+        "wf_repo_teams",
         "wf_deploy_keys",
         "wf_org_installations",
         "wf_repo_list",
@@ -812,6 +874,62 @@ def _validate_read(action, result):
             "complete": boolean,
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_collaborator_permission": {
+            "user": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "login": text,
+                    "type": lambda x: x in ("User", "Bot", "Organization"),
+                },
+            ),
+            "permission": lambda x: x in ("admin", "write", "read", "none"),
+            "role_name": text,
+        },
+        "wf_repo_collaborators": {
+            "collaborators": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "login": text,
+                        "type": lambda x: x in ("User", "Bot", "Organization"),
+                        "role_name": text,
+                        "permissions": lambda v: fields(
+                            v, {k: boolean for k in ("pull", "triage", "push", "maintain", "admin")}
+                        ),
+                    },
+                ),
+                50,
+            ),
+            "page": positive,
+            "has_more": boolean,
+            "affiliation": lambda x: x in ("all", "direct", "outside"),
+            "permission": lambda x: (
+                x is None or x in ("pull", "triage", "moderate", "push", "maintain", "admin")
+            ),
+        },
+        "wf_repo_teams": {
+            "teams": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "slug": text,
+                        "name": text,
+                        "permission": lambda x: (
+                            x in ("pull", "triage", "push", "maintain", "admin")
+                        ),
+                        "privacy": lambda x: x is None or x in ("closed", "secret"),
+                    },
+                ),
+                50,
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
         "wf_repo_hooks": {
             "hooks": lambda v: seq(
                 v,
@@ -1086,7 +1204,7 @@ def _hook_url_carries_secret(url):
     return any(_HOOK_TOKEN_SEGMENT.fullmatch(seg) for seg in parts.path.split("/") if seg)
 
 
-class WorkflowVerbs(SecretVerbsMixin):
+class WorkflowVerbs(HookVerbsMixin, SecretVerbsMixin):
     def __init__(self, client, policy, seat, bearer, app_slug, action, repo):
         expected, _ = policy.app_identity(seat)
         if not bearer or app_slug != expected or app_slug != seat:
@@ -1326,6 +1444,84 @@ class WorkflowVerbs(SecretVerbsMixin):
         if not touches and action != "wf_update_branch":
             return self.bearer
         required = dict(SPECS[action][0])
+        required["workflows"] = "write"
+        required.setdefault("metadata", "read")
+        if _perm_within_ceiling(required, ceiling):
+            raise CeilingDenied("seat permission ceiling insufficient")
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except RelayGitHubError as exc:
+            if exc.code == "repository_moved":
+                raise
+            raise Unknown("own App credential unavailable") from None
+        except AppTokenError:
+            raise
+        except Exception:
+            raise Unknown("own App credential unavailable") from None
+        return token
+
+    def _bearer_for_ref_move(self, repo, base_sha, head_sha):
+        """Bearer for a wf_branch_update ref move base_sha -> head_sha.
+
+        The default token is least permission. GitHub refuses a ref update that
+        changes .github/workflows/* unless the token also holds workflows:write, so
+        read what the move will change first and mint the extra scope only when that
+        touches the directory: the compare base...head, with a complete two-tree
+        diff when the compare itself is unverifiable. force=False makes the
+        provider accept only fast-forwards, so every tree the write can land lies
+        inside the audited base..head range. Fail closed: an unverifiable proof
+        writes nothing. Still bounded by the seat ceiling. A handle with no minter
+        keeps its own bearer.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+
+        def read(path):
+            try:
+                return self._get(path)
+            except RelayGitHubError as exc:
+                if exc.code == "response_too_large":
+                    # Size will not shrink on retry: a definite, non-retryable refusal,
+                    # unlike a transient pre-read failure. Fails closed, nothing written.
+                    raise Refused(TOO_LARGE_TO_VERIFY) from None
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise PreReadUnavailable(
+                        "ref move pre-read unavailable; no write attempted"
+                    ) from None
+                raise
+
+        # The compare files array is one response capped at 300 files, not
+        # paginated: one read, and a full-size array may be truncated so it is
+        # unverifiable. When the compare cannot prove the workflow-touch answer -
+        # too large to read, no files array, or a possibly-truncated full page
+        # without a touch - fall back to a complete two-tree diff.
+        try:
+            data = read(f"/repos/{repo}/compare/{base_sha}...{head_sha}")
+        except Refused as exc:
+            if str(exc) != TOO_LARGE_TO_VERIFY:
+                raise
+            data = None
+        files = data.get("files") if isinstance(data, dict) else None
+        touches = False
+        if not isinstance(files, list):
+            touches = self._base_changes_touch_workflows_via_trees(read, repo, head_sha, base_sha)
+        else:
+            for row in files:
+                if not isinstance(row, dict):
+                    raise RelayGitHubError(502, "compare files page unverifiable")
+                for key in ("filename", "previous_filename"):
+                    name = row.get(key)
+                    if isinstance(name, str) and name.startswith(".github/workflows/"):
+                        touches = True
+            if not touches and len(files) >= COMPARE_FILES_CAP:
+                touches = self._base_changes_touch_workflows_via_trees(
+                    read, repo, head_sha, base_sha
+                )
+        if not touches:
+            return self.bearer
+        required = dict(SPECS[self.action][0])
         required["workflows"] = "write"
         required.setdefault("metadata", "read")
         if _perm_within_ceiling(required, ceiling):
@@ -1874,6 +2070,139 @@ class WorkflowVerbs(SecretVerbsMixin):
         if find_secret(value) or cls._provider_token_text(value):
             raise Refused("credential-shaped outbound text")
         return value
+
+    def wf_collaborator_permission(self, repo, args):
+        """Highest effective role, not proof of the source of a grant."""
+        _only(args, ("repo", "username"))
+        username = args.get("username")
+        if not isinstance(username, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", username
+        ):
+            raise Refused("invalid username")
+        self._metadata_name(username, 105)
+        data = self._get(f"/repos/{repo}/collaborators/{quote(username, safe='')}/permission")
+        user = data.get("user") if isinstance(data, dict) else None
+        if (
+            not isinstance(user, dict)
+            or type(user.get("id")) is not int
+            or not 1 <= user["id"] <= 9007199254740991
+            or not isinstance(user.get("login"), str)
+            or user["login"].casefold() != username.casefold()
+            or user.get("type") not in ("User", "Bot", "Organization")
+            or data.get("permission") not in ("admin", "write", "read", "none")
+            or not isinstance(data.get("role_name"), str)
+            or not data["role_name"].strip()
+        ):
+            raise RelayGitHubError(502, "collaborator permission unverifiable")
+        self._metadata_name(data["role_name"], 100)
+        return {
+            "user": {k: user[k] for k in ("id", "login", "type")},
+            "permission": data["permission"],
+            "role_name": data["role_name"],
+        }
+
+    def wf_repo_collaborators(self, repo, args):
+        """One visible page. Grant sources and complete access are not inferred."""
+        _only(args, ("repo", "per_page", "page", "affiliation", "permission"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        affiliation = args.get("affiliation", "all")
+        if affiliation not in ("all", "direct", "outside"):
+            raise Refused("invalid affiliation")
+        permission = args.get("permission")
+        if "permission" in args and permission not in (
+            "pull",
+            "triage",
+            "moderate",
+            "push",
+            "maintain",
+            "admin",
+        ):
+            raise Refused("invalid permission")
+        path = f"/repos/{repo}/collaborators?per_page={limit}&page={page}&affiliation={affiliation}"
+        if permission is not None:
+            path += "&permission=" + permission
+        data = self._get(path)
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "collaborator page unverifiable")
+        collaborators, ids, logins = [], set(), set()
+        for item in data:
+            if not isinstance(item, dict):
+                raise RelayGitHubError(502, "collaborator metadata unverifiable")
+            ident, login = item.get("id"), item.get("login")
+            role, perms = item.get("role_name"), item.get("permissions")
+            keys = ("pull", "triage", "push", "maintain", "admin")
+            if (
+                type(ident) is not int
+                or not 1 <= ident <= 9007199254740991
+                or ident in ids
+                or not isinstance(login, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", login)
+                or login.casefold() in logins
+                or item.get("type") not in ("User", "Bot", "Organization")
+                or not isinstance(perms, dict)
+                or any(type(perms.get(k)) is not bool for k in keys)
+                or not isinstance(role, str)
+                or not role.strip()
+            ):
+                raise RelayGitHubError(502, "collaborator metadata unverifiable")
+            self._metadata_name(login, 105)
+            self._metadata_name(role, 100)
+            ids.add(ident)
+            logins.add(login.casefold())
+            collaborators.append(
+                {
+                    "id": ident,
+                    "login": login,
+                    "type": item["type"],
+                    "role_name": role,
+                    "permissions": {k: perms[k] for k in keys},
+                }
+            )
+        return {
+            "collaborators": collaborators,
+            "page": page,
+            "has_more": len(collaborators) == limit,
+            "affiliation": affiliation,
+            "permission": permission,
+        }
+
+    def wf_repo_teams(self, repo, args):
+        """One bounded visible-team page, never a full access inventory claim."""
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/teams?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "team page unverifiable")
+        teams = []
+        seen = set()
+        for item in data:
+            if not isinstance(item, dict):
+                raise RelayGitHubError(502, "team metadata unverifiable")
+            ident, slug, name = item.get("id"), item.get("slug"), item.get("name")
+            if (
+                type(ident) is not int
+                or not 1 <= ident <= 9007199254740991
+                or ident in seen
+                or not isinstance(slug, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", slug)
+                or not isinstance(name, str)
+                or not name.strip()
+                or len(name.encode("utf-8")) > 256
+                or any(ord(c) < 32 or ord(c) == 127 for c in name)
+                or item.get("permission") not in ("pull", "triage", "push", "maintain", "admin")
+                or (
+                    item.get("privacy") is not None
+                    and item.get("privacy") not in ("closed", "secret")
+                )
+            ):
+                raise RelayGitHubError(502, "team metadata unverifiable")
+            self._metadata_name(slug, 100)
+            self._metadata_name(name, 256)
+            seen.add(ident)
+            teams.append({k: item.get(k) for k in ("id", "slug", "name", "permission", "privacy")})
+        return {"teams": teams, "page": page, "has_more": len(teams) == limit}
 
     def wf_repo_hooks(self, repo, args):
         _only(args, ("repo", "per_page", "page"))
@@ -4319,7 +4648,8 @@ class WorkflowVerbs(SecretVerbsMixin):
             raise Refused("ref changed")
         if _sub(prior, "object").get("sha") != expected_sha:
             raise Refused("ref changed")
-        data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=self.bearer)
+        bearer = self._bearer_for_ref_move(repo, expected_sha, sha)
+        data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=bearer)
         result = _obj(data)
         got_sha = _sub(result, "object").get("sha")
         if (
@@ -4512,15 +4842,50 @@ class WorkflowVerbs(SecretVerbsMixin):
         number, sha = _int(args, "number"), _sha(args, "expected_sha")
         node = self._queue_pr_node(repo, number, sha)
         query = "mutation($id:ID!,$sha:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$sha,jump:false}){mergeQueueEntry{id pullRequest{id}}}}"
-        result = self._fixed_graph(query, {"id": node, "sha": sha}, "enqueuePullRequest")
+        try:
+            result = self._fixed_graph(query, {"id": node, "sha": sha}, "enqueuePullRequest")
+        except RelayGitHubError as exc:
+            entry = self._queue_readback_after_definite_error(repo, number, exc)
+            if entry is not None:
+                return {"entry": {"id": entry["id"], "pull_request_id": node}}
+            raise Refused("GitHub declined the enqueue and the PR is not queued") from None
         return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
+
+    # GraphQL error types GitHub uses for a definite refusal.  The error is kept only when every error in the
+    # answer has the same one of these types (see _fixed_graph), never as provider text.
+    _QUEUE_DEFINITE_CODES = frozenset(
+        {"graphql_forbidden", "graphql_not_found", "graphql_unprocessable"}
+    )
+
+    def _queue_readback_after_definite_error(self, repo, number, exc):
+        """The PR's queue entry (or None) read back after a typed GraphQL refusal of a queue mutation.
+
+        A queue entry is per PR, so a repeated enqueue or dequeue cannot duplicate anything, and a typed GitHub
+        refusal plus a read that shows the state is a settled outcome, not an unknown one.  Anything else (a 5xx,
+        a timeout, an untyped or mixed error, an unreadable read-back) re-raises the original error, which keeps
+        the idempotency key held as unknown."""
+        if getattr(exc, "code", None) not in self._QUEUE_DEFINITE_CODES:
+            raise exc
+        try:
+            return self.wf_merge_queue_entry(repo, {"repo": repo, "number": number})["entry"]
+        except (RelayGitHubError, PreReadUnavailable, Refused, ValueError):
+            raise exc from None
 
     def wf_merge_queue_dequeue(self, repo, args):
         _only(args, ("repo", "number", "expected_sha"))
         number, sha = _int(args, "number"), _sha(args, "expected_sha")
         node = self._queue_pr_node(repo, number, sha)
         query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){mergeQueueEntry{id pullRequest{id}}}}"
-        result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
+        try:
+            result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
+        except RelayGitHubError as exc:
+            entry = self._queue_readback_after_definite_error(repo, number, exc)
+            # Either way GitHub declined and the read-back settles it: the PR is still queued, or it was not queued.
+            raise Refused(
+                "GitHub declined the dequeue and the PR is still queued"
+                if entry is not None
+                else "GitHub declined the dequeue and the PR is not queued"
+            ) from None
         return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
 
     def _pr_read(self, repo, number):
@@ -4550,7 +4915,7 @@ class WorkflowVerbs(SecretVerbsMixin):
     def _pr_node(self, repo, number):
         return self._pr_read(repo, number)[1]
 
-    def _fixed_graph(self, query, variables, field, write=True):
+    def _fixed_graph(self, query, variables, field, write=True, reason_of=None):
         try:
             data = self.client._call(
                 "POST",
@@ -4566,18 +4931,29 @@ class WorkflowVerbs(SecretVerbsMixin):
         # Retain only a fixed error type, never provider messages, paths or extensions.
         errors = data.get("errors") if isinstance(data, dict) else None
         error_code = None
+        fixed_reason = None
         if isinstance(errors, list) and 1 <= len(errors) <= 20:
             kinds = [error.get("type") if isinstance(error, dict) else None for error in errors]
             allowed = {"FORBIDDEN", "NOT_FOUND", "UNPROCESSABLE", "RATE_LIMITED"}
             if all(isinstance(kind, str) and kind in allowed for kind in kinds):
                 if len(set(kinds)) == 1:
                     error_code = "graphql_" + kinds[0].lower()
+            if reason_of is not None:
+                # The provider's own reason, classified into a fixed string.  The
+                # message itself is never kept, logged or returned.
+                for error in errors:
+                    if isinstance(error, dict):
+                        fixed_reason = reason_of(error.get("message"))
+                        if fixed_reason is not None:
+                            break
         if (
             not isinstance(data, dict)
             or data.get("errors")
             or not isinstance(data.get("data"), dict)
         ):
-            raise RelayGitHubError(502, "GraphQL outcome unverifiable", code=error_code)
+            raise GraphQLRefused(
+                502, "GraphQL outcome unverifiable", code=error_code, fixed_reason=fixed_reason
+            )
         result = data["data"].get(field)
         if not isinstance(result, dict):
             raise RelayGitHubError(502, "GraphQL result unverifiable")
@@ -4703,7 +5079,10 @@ class WorkflowVerbs(SecretVerbsMixin):
         )
         try:
             result = self._fixed_graph(
-                query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
+                query,
+                {"id": node, "method": method},
+                "enablePullRequestAutoMerge",
+                reason_of=_auto_merge_refusal,
             )
             pull = _sub(result, "pullRequest")
             arm = pull.get("autoMergeRequest")
@@ -4728,7 +5107,10 @@ class WorkflowVerbs(SecretVerbsMixin):
                 # is permanent.  A lost response, or a rate limit, can be sent again.
                 code = exc.code if isinstance(exc.code, str) else ""
                 if code in ("graphql_forbidden", "graphql_not_found", "graphql_unprocessable"):
-                    raise Refused(AUTO_MERGE_REFUSED)
+                    # GitHub's own reason, classified into a fixed string, so the
+                    # caller knows whether to wait for checks, resolve a conflict
+                    # or stop.  The provider's prose is not part of the answer.
+                    raise Refused(getattr(exc, "fixed_reason", None) or AUTO_MERGE_REFUSED)
                 raise Refused(AUTO_MERGE_NOT_ARMED)
             return {"pull": settled}
 
@@ -8134,68 +8516,93 @@ class WorkflowVerbs(SecretVerbsMixin):
             or self._provider_token_text(message)
         ):
             raise Refused("invalid patch message")
-        repo_info = _obj(self._get(f"/repos/{repo}"))
-        default = repo_info.get("default_branch")
-        if _is_default_branch(branch, default):
-            raise Refused("default branch is not writable")
-        ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
-        prior_ref = _obj(self._get(ref_path))
-        provider_branch = _provider_ref_branch(prior_ref)
-        if provider_branch is None or _is_default_branch(provider_branch, default):
-            raise Refused("default branch is not writable")
-        if provider_branch != branch:
-            raise Refused("provider branch does not match the requested branch")
-        if _sub(prior_ref, "object").get("sha") != head:
-            raise Refused("branch head moved")
-        base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
-        tree = _sub(base_commit, "tree").get("sha")
-        if base_commit.get("sha") != head or not isinstance(tree, str) or not _SHA.fullmatch(tree):
-            raise Refused("base commit unverifiable")
-        # Contents receipt pins path AND commit; caller's blob id is only a check.
-        content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
-        if (
-            content.get("type") != "file"
-            or content.get("path") != path
-            or content.get("sha") != blob_sha
-            or content.get("encoding") != "base64"
-        ):
-            raise Refused("base file unverifiable")
-        finding = None
         try:
-            raw = base64.b64decode("".join(content["content"].split()), validate=True)
+            repo_info = _obj(self._get(f"/repos/{repo}"))
+            default = repo_info.get("default_branch")
+            if _is_default_branch(branch, default):
+                raise Refused("default branch is not writable")
+            ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+            prior_ref = _obj(self._get(ref_path))
+            provider_branch = _provider_ref_branch(prior_ref)
+            if provider_branch is None or _is_default_branch(provider_branch, default):
+                raise Refused("default branch is not writable")
+            if provider_branch != branch:
+                raise Refused("provider branch does not match the requested branch")
+            if _sub(prior_ref, "object").get("sha") != head:
+                raise Refused("branch head moved")
+            base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
+            tree = _sub(base_commit, "tree").get("sha")
             if (
-                len(raw) > MAX_FILE_RAW
-                or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
-                != blob_sha
+                base_commit.get("sha") != head
+                or not isinstance(tree, str)
+                or not _SHA.fullmatch(tree)
             ):
-                raise ValueError()
-            # Only immutable, reviewed source/output fixture pairs can preserve
-            # dedicated source lines. Records require owner policy approval.
-            preserve = reviewed_base(repo, path, raw)
-            # Scan every complete input, even an eligible reviewed fixture. A
-            # finding may be retained only after exact output/origin validation.
-            base_finding = find_secret(raw.decode("utf-8"))
-            if base_finding and not preserve:
-                finding = base_finding
-                raise ValueError()
-            if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode("utf-8"):
-                raise ValueError()
-            result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
-            result_finding = find_secret(result.decode("utf-8"))
-            if result_finding and not preserve:
-                finding = result_finding
-                raise ValueError()
-            if self._provider_token_text(result.decode("utf-8")) or (
-                self.bearer and self.bearer in result.decode("utf-8")
+                raise Refused("base commit unverifiable")
+            # Contents receipt pins path AND commit; caller's blob id is only a check.
+            content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
+            if (
+                content.get("type") != "file"
+                or content.get("path") != path
+                or content.get("sha") != blob_sha
             ):
-                raise ValueError()
-        except (ValueError, TypeError, KeyError, UnicodeError):
-            if finding:
-                raise Refused(scan_refusal(path, finding)) from None
-            raise Refused("credential-shaped or invalid patch content") from None
-        mode = self._entry_mode(repo, tree, path, {})
-        if mode not in ("100644", "100755"):
-            raise Refused("patch supports existing regular files only")
+                raise Refused("base file unverifiable")
+            encoded = content.get("content")
+            if content.get("encoding") != "base64" or not isinstance(encoded, str):
+                # The contents API withholds content over 1 MB (encoding "none"):
+                # fetch the same pinned blob through Git Data.  The path/commit pin
+                # above still binds it;  the bytes are re-hashed and re-scanned below.
+                blob = _obj(self._get(f"/repos/{repo}/git/blobs/{blob_sha}"))
+                if (
+                    blob.get("sha") != blob_sha
+                    or blob.get("encoding") != "base64"
+                    or not isinstance(blob.get("content"), str)
+                ):
+                    raise Refused("base file unverifiable")
+                encoded = blob["content"]
+            finding = None
+            try:
+                raw = base64.b64decode("".join(encoded.split()), validate=True)
+                if (
+                    len(raw) > MAX_FILE_RAW
+                    or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                    != blob_sha
+                ):
+                    raise ValueError()
+                # Only immutable, reviewed source/output fixture pairs can preserve
+                # dedicated source lines. Records require owner policy approval.
+                preserve = reviewed_base(repo, path, raw)
+                # Scan every complete input, even an eligible reviewed fixture. A
+                # finding may be retained only after exact output/origin validation.
+                base_finding = find_secret(raw.decode("utf-8"))
+                if base_finding and not preserve:
+                    finding = base_finding
+                    raise ValueError()
+                if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode(
+                    "utf-8"
+                ):
+                    raise ValueError()
+                result = apply_reviewed_patch(
+                    repo, path, raw, args.get("edits"), known=[self.bearer]
+                )
+                result_finding = find_secret(result.decode("utf-8"))
+                if result_finding and not preserve:
+                    finding = result_finding
+                    raise ValueError()
+                if self._provider_token_text(result.decode("utf-8")) or (
+                    self.bearer and self.bearer in result.decode("utf-8")
+                ):
+                    raise ValueError()
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                if finding:
+                    raise Refused(scan_refusal(path, finding)) from None
+                raise Refused("credential-shaped or invalid patch content") from None
+            mode = self._entry_mode(repo, tree, path, {})
+            if mode not in ("100644", "100755"):
+                raise Refused("patch supports existing regular files only")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("patch pre-read unavailable; no write attempted") from None
+            raise
         if mode == "100755":
             return self._patch_executable(
                 repo, branch, head, tree, path, result, message, repo_info

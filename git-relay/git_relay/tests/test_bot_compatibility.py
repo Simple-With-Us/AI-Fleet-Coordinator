@@ -15,6 +15,7 @@ BOT_IDENTITIES = (
     "CLAUDE",
     "MA",
     "CODEX",
+    "DUET",
     "KIMI",
     "ZC",
     "AG",

@@ -9,6 +9,7 @@ import json
 import unittest
 
 from git_relay.github_client import (
+    MAX_BLOB_BODY,
     MAX_BODY,
     MAX_PAGE_BODY,
     MAX_RECURSIVE_TREE_BODY,
@@ -16,7 +17,7 @@ from git_relay.github_client import (
     RelayGitHubError,
     response_limit,
 )
-from git_relay.workflow_verbs import WorkflowVerbs
+from git_relay.workflow_verbs import MAX_FILE_RAW, WorkflowVerbs
 
 from .test_workflow_verbs import REPO, SHA, Policy
 
@@ -61,7 +62,6 @@ class ResponseLimit(unittest.TestCase):
             self.assertEqual(response_limit("GET", path), MAX_PAGE_BODY, path)
         plain = [
             "/repos/o/r/pulls/5",
-            "/repos/o/r/git/blobs/" + "a" * 40,
             "/repos/o/r/contents/dir%2Fper_page=1?ref=main",
             "/repos/o/r/contents/per_page=1",
             "/repos/o/r/pulls?xper_page=1",
@@ -200,3 +200,17 @@ class PrListPageEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlobBodyBound(unittest.TestCase):
+    def test_pinned_git_blob_gets_the_blob_bound(self):
+        sha = "a" * 40
+        self.assertEqual(response_limit("GET", f"/repos/o/r/git/blobs/{sha}"), MAX_BLOB_BODY)
+        # Only an exact queryless 40-hex blob route:  lookalikes keep the plain bound.
+        self.assertEqual(response_limit("GET", f"/repos/o/r/git/blobs/{sha}?x=1"), MAX_BODY)
+        self.assertEqual(response_limit("GET", "/repos/o/r/git/blobs/not-a-sha"), MAX_BODY)
+        self.assertEqual(response_limit("POST", f"/repos/o/r/git/blobs/{sha}"), MAX_BODY)
+
+    def test_blob_bound_covers_max_file_raw_base64(self):
+        # MAX_BLOB_BODY exists so a MAX_FILE_RAW base survives base64 plus envelope.
+        self.assertGreaterEqual(MAX_BLOB_BODY, 4 * ((MAX_FILE_RAW + 2) // 3) + 4096)

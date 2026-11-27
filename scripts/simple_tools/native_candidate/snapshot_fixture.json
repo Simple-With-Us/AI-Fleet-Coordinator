@@ -1,0 +1,87 @@
+{
+  "runtimeInitialization": {
+    "status": "ready",
+    "attemptId": "attempt-fixture"
+  },
+  "protocolVersion": 1,
+  "sessionId": "sess-fixture",
+  "logEpoch": "epoch",
+  "seq": 0,
+  "revision": 0,
+  "control": {
+    "phase": "draft",
+    "sessionEnded": false,
+    "canStop": false,
+    "stopState": "idle",
+    "stopTargetKind": "assistant",
+    "activeWorks": [],
+    "lastError": null,
+    "apiRetry": null
+  },
+  "availability": {
+    "fork": {
+      "allowed": true
+    },
+    "compact": {
+      "allowed": true
+    },
+    "switchModelConfig": {
+      "allowed": true
+    },
+    "setFollowupMode": {
+      "allowed": true
+    },
+    "queueEdit": {
+      "allowed": true
+    },
+    "sendQueuedNow": {
+      "allowed": true
+    },
+    "pauseGoal": {
+      "allowed": true
+    },
+    "resumeGoal": {
+      "allowed": true
+    }
+  },
+  "inputRouting": {
+    "mode": "startNow"
+  },
+  "meta": {
+    "title": "",
+    "titleSource": "default"
+  },
+  "config": {
+    "provider": "",
+    "model": "",
+    "thought": "",
+    "thoughtLevels": [],
+    "followupMode": "queue",
+    "mode": "build"
+  },
+  "modelTransition": null,
+  "usage": {
+    "contextWindow": null,
+    "cumulative": {
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    }
+  },
+  "queue": {
+    "items": [],
+    "autoDrain": false
+  },
+  "pendingInteractions": [],
+  "pendingCommands": [],
+  "backgroundWorks": [],
+  "goal": null,
+  "plan": null,
+  "workspaceHookAdmission": null,
+  "rows": {
+    "window": [],
+    "totalCount": 0,
+    "firstRowId": null
+  }
+}

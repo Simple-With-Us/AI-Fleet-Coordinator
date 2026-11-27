@@ -1868,6 +1868,30 @@ class OneRegistryWriterTests(DaemonHarness):
         mac._configure_registry()
         self.assertIsNone(mac.status()["registry_sweep"])
 
+    def test_the_status_carries_the_sweepers_schedule_beside_its_last_pass(self):
+        # AFC-833:  a reader judges the last pass against the real interval.
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        interval = int(daemon.config.registry_sweep_interval_minutes)
+        schedule = {"interval_minutes": interval, "stale_after_minutes": 36 * 60, "next_at": None}
+        self.assertEqual(daemon.status()["registry_sweep_schedule"], schedule)
+        self.assertIsNone(daemon.status()["registry_sweep"], "no pass has run yet")
+        now = daemon.clock.time()
+        self.assertTrue(daemon.registry_sweeper.claim(now))
+        schedule["next_at"] = now + interval * 60
+        self.assertEqual(daemon.status()["registry_sweep_schedule"], schedule)
+        # The last pass stays its own row, as it was.
+        daemon.registry_sweeper.last = {"ok": True, "ended": 0}
+        self.assertEqual(daemon.status()["registry_sweep"], {"ok": True, "ended": 0})
+        self.assertEqual(daemon.status()["registry_sweep_schedule"], schedule)
+        # A dropped service takes the schedule with the last pass.
+        daemon.registry_service = None
+        self.assertIsNone(daemon.status()["registry_sweep_schedule"])
+        self.assertIsNone(daemon.status()["registry_sweep"])
+        mac = self._operator_daemon("mac")
+        mac._configure_registry()
+        self.assertIsNone(mac.status()["registry_sweep_schedule"])
+
     def test_the_tick_runs_the_sweeper_only_with_its_own_service(self):
         daemon = self._operator_daemon("server")
         daemon._configure_registry()
@@ -1905,3 +1929,159 @@ class OneRegistryWriterTests(DaemonHarness):
             daemon._registry_sweep_thread.join(5)
             self.assertEqual(run.call_count, 1)
 
+
+class WakeOutcomeStatusTests(DaemonHarness):
+    """AFC-835:  the status's seat row carries how many of the seat's wakes of the last day ended
+    at each router outcome, and how many still wait on their router's receipt."""
+
+    def seed(self, wake_id: str, rows: list[dict[str, Any]]) -> None:
+        runner = self.daemon().seats["CLAUDE"]
+        for row in rows:
+            runner.ledger.append({"ts": self.clock.time(), "wake_id": wake_id,
+                                  "seat": "CLAUDE", **row})
+        return runner
+
+    def test_the_seat_row_carries_the_outcome_counts(self) -> None:
+        import types
+
+        daemon = self.daemon()
+        runner = daemon.seats["CLAUDE"]
+        now = self.clock.time()
+        # Rows as the real paths write them:  a delivered and an undelivered wake each ran (a
+        # queued row, then a started row, then their outcome), w-a went to the router and waits,
+        # and w-n stopped before it ran without ever going to the router.
+        for wake_id, outcome in (("w-d", "delivered"), ("w-u", "undelivered")):
+            runner.ledger.append({"ts": now, "wake_id": wake_id, "seat": "CLAUDE",
+                                  "state": "queued", "trigger_ids": [1]})
+            runner.ledger.append({"ts": now, "wake_id": wake_id, "seat": "CLAUDE",
+                                  "state": "started"})
+            runner.ledger.append({"ts": now, "wake_id": wake_id, "seat": "CLAUDE",
+                                  "state": outcome})
+        runner.ledger.append({"ts": now, "wake_id": "w-a", "seat": "CLAUDE", "state": "done",
+                              "receipt_awaited": True})
+        runner.ledger.append({"ts": now, "wake_id": "w-n", "seat": "CLAUDE", "state": "done"})
+        outcomes = daemon.status()["seats"]["CLAUDE"]["wake_outcomes_24h"]
+        self.assertEqual(
+            outcomes,
+            {"delivered": 1, "undelivered": 1, "unknown": 0, "awaiting": 1},
+            "a done wake that never went to the router is neither awaiting nor an outcome",
+        )
+
+    def test_an_outcome_older_than_the_day_stays_in_awaiting_but_leaves_its_state(self) -> None:
+        daemon = self.daemon()
+        runner = daemon.seats["CLAUDE"]
+        now = self.clock.time()
+        old = now - 2 * 24 * 3600
+        runner.ledger.append({"ts": old, "wake_id": "w-old", "seat": "CLAUDE", "state": "done",
+                              "receipt_awaited": True})
+        outcomes = daemon.status()["seats"]["CLAUDE"]["wake_outcomes_24h"]
+        self.assertEqual(outcomes["awaiting"], 1, "awaiting counts every unsettled receipt")
+        self.assertEqual(outcomes["delivered"], 0)
+
+
+class LinearCommentsHealthTests(DaemonHarness):
+    """AFC-833:  the status document says how the Operator's Zulip -> Linear living comments are,
+    in fixed words and numbers, for a panel that has no other way to see them.  Nothing the engine
+    says about a failure reaches it:  that can name a path, and the log has it."""
+
+    class Engine:
+        """Enough of operator_linear.OperatorLinearComments for the daemon's side of it."""
+
+        def __init__(self) -> None:
+            self.stopped: str | None = None
+            self.ticks = 0
+            self.worker = type(
+                "Worker", (), {"comments_created": 2, "comments_updated": 3}
+            )()
+
+        def tick(self, client: Any = None) -> None:
+            self.ticks += 1
+
+        def feed_message(self, client: Any, message: Any) -> None:
+            raise RuntimeError("PRIVATE-MARKER-ONE the ledger /data/private/ledger.json")
+
+        def feed_event(self, client: Any, event: Any) -> None:
+            pass
+
+        def reload_streams(self, client: Any) -> None:
+            pass
+
+        def queue_registered(self) -> None:
+            pass
+
+    def armed(self) -> Any:
+        """A daemon with the feature on and an engine in place.  The engine is built by hand:
+        the real build reads a service token, and no test may reach the host's own store."""
+        daemon = self.daemon()
+        daemon.config.linear_comments_enabled = True
+        daemon.linear_comments = self.Engine()
+        return daemon
+
+    def written(self, daemon: Any) -> str:
+        """What the daemon writes for the reducer to read."""
+        daemon.write_status()
+        return (self.state_dir / "listener" / "status.json").read_text()
+
+    def test_the_row_says_off_while_the_feature_is_switched_off(self):
+        self.assertEqual(self.daemon().status()["linear_comments"], {"state": "off"})
+
+    def test_an_engine_that_could_not_be_built_is_named_by_a_fixed_word(self):
+        daemon = self.daemon()
+        daemon.config.linear_comments_enabled = True
+        # A token file that is not there, inside this test's own folder.
+        daemon.config.linear_comments_infisical_token_file = str(self.state_dir / "absent-token")
+        daemon._configure_linear_comments()
+        self.assertIsNone(daemon.linear_comments)
+        self.assertEqual(daemon.status()["linear_comments"], {"state": "no_service_token"})
+
+    def test_a_running_engine_reports_its_tick(self):
+        daemon = self.armed()
+        running = {"state": "running", "last_tick": None, "errors": 0, "last_error": None,
+                   "created": 2, "updated": 3}
+        self.assertEqual(daemon.status()["linear_comments"], running)
+        daemon.tick()
+        running["last_tick"] = daemon.clock.time()
+        self.assertEqual(daemon.status()["linear_comments"], running)
+        self.assertEqual(daemon.linear_comments.ticks, 1)
+
+    def test_a_failed_tick_is_counted_by_class_and_its_message_stays_in_the_log(self):
+        daemon = self.armed()
+
+        def broken(client: Any = None) -> None:
+            raise ValueError("PRIVATE-MARKER-TWO at /data/private/state.json")
+
+        daemon.linear_comments.tick = broken
+        daemon.tick()
+        self.assertEqual(
+            daemon.status()["linear_comments"],
+            {"state": "running", "last_tick": None, "errors": 1, "last_error": "value_error", "created": 2, "updated": 3},
+        )
+        (event,) = self.log_events("linear-comments-error")
+        self.assertIn("PRIVATE-MARKER-TWO", event["error"], "the log keeps the message")
+        written = self.written(daemon)
+        self.assertNotIn("PRIVATE-MARKER-TWO", written)
+        self.assertNotIn("/data/private", written)
+
+    def test_a_failure_on_a_seat_thread_counts_too_and_names_the_seat_in_the_log(self):
+        daemon = self.armed()
+        runner = SimpleNamespace(seat="CLAUDE", client=None)
+        daemon._observe_linear_message(runner, {"type": "stream", "id": 1})
+        self.assertEqual(daemon.status()["linear_comments"]["errors"], 1)
+        (event,) = self.log_events("linear-comments-error")
+        self.assertEqual(event["seat"], "CLAUDE")
+        self.assertNotIn("PRIVATE-MARKER-ONE", self.written(daemon))
+
+    def test_a_stopped_engine_is_reported_with_when_it_was_first_seen_stopped(self):
+        daemon = self.armed()
+        daemon.linear_comments.stopped = "another linear_relay already holds /data/private/x"
+        at = daemon.clock.time()
+        self.assertEqual(
+            daemon.status()["linear_comments"],
+            {"state": "stopped", "since": at, "last_tick": None, "errors": 0, "last_error": None, "created": 2, "updated": 3},
+        )
+        # Seen once:  a later read keeps the first time.
+        self.clock.advance(50)
+        self.assertEqual(daemon.status()["linear_comments"]["since"], at)
+        written = self.written(daemon)
+        self.assertNotIn("/data/private", written)
+        self.assertNotIn("another linear_relay", written)

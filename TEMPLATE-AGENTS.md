@@ -1,5 +1,8 @@
 # Agent Instructions
 
+
+PR titles from multithreaded platforms (November 25, 2026) start with the actual writing session's full identity: `[<SEAT>:   <LETTERS>.<GEN>.<HOST>] Title`, for example `[ZC:   RR.3.S] Title`.  Use exactly three U+200A HAIR SPACE characters after the colon, the Operator-assigned letters and positive generation, and `M` (Mac), `S` (Server) or `C` (Cloud), joined by periods.  This is fleet-wide for multithreaded platforms: `[MC]` or `[ZC]` alone is insufficient.  The PR-title bracket contains only that identity, no folder glyph, repository list or recipient/arrow.  Verified single-threaded, unlettered sessions keep their plain `[SEAT]` PR-title prefix, including `[ECHO]` for Echo; a session that holds an Operator assignment uses its full identity.  Do not invent an assignment, infer one from GitHub metadata, or treat a multithreaded session as single-threaded to bypass this rule.  A multithreaded session lacking a verified assignment must obtain it before opening a PR, not publish a bare-seat title.  Preserve the prepared changes on their branch and retry the existing assigner later; ordinary work and permitted chat posts continue, but PR opening waits for a verified assignment.  This title-only rule overrides older space-form or addressed-title examples; PR descriptions and comments keep their existing compact-header and recipient rules.
+
 Read this before making changes.  It exists to save you (and whichever other AI
 tool touches this repo next — Claude Code, Codex, Antigravity/Gemini, Cursor,
 etc.) the time/tokens of re-deriving things a previous session already learned
@@ -55,8 +58,7 @@ Always-on LaunchAgents, cron, login items, pm2 jobs, **and shared helper
 scripts** live in `/Users/jay/apps/MAC-LOCAL-PROCESSES.md`.  If you add,
 change, or retire one, update that list **and** the pinned Apple Note
 `⭐️ Background Jobs Master List` in the same change.
-Say whether it is always-on or on-demand.  Canonical: `FLEET-PROTOCOL.md` § Mac
-local processes.  Do not kill `com.jay.claude-remote-control` just because
+Say whether it is always-on or on-demand.  Canonical: `docs/MAC-LOCAL-PROCESSES.md` in this repository.  Do not kill `com.jay.claude-remote-control` just because
 you do not see an interactive Claude TTY (Monet / Renoir / Claude all
 appear as `claude`).
 
@@ -372,9 +374,10 @@ Source: Jay, Zulip #Policy, topic "Peer Requests (notify, act, log)", November 1
 
 ### Fleet post headers (owner ruling)
 
-GitHub PR titles, descriptions and comments use a compact header without the folder symbol or repository names: `[CODEX:   GG.1.S]` for the actual assigned session, or `[JET]` for an unlettered session.  These PR exceptions override general complete-header wording.  Keep the artifact's original seat and session identity consistent across its title and description, and when editing them together use the same actual writing session; each comment names its own actual writing session.  A held PR description begins with its concrete readiness criteria as bullets, followed by a blank line and the compact header.  Preserve addressed recipients and supported mention syntax; never infer a letter from GitHub metadata or reuse another session's letter.  Addressed compact form: `[<SEAT>:   <PAIR>.<GEN>.<HOST> → @<login>]`; use the destination's supported mention.  Kody requests retain `@kody start-review` on line 1, this compact header on line 2, and the full reviewed head SHA and context afterward.  Ordinary GitHub issue, Zulip and Linear headers retain their repository context and the exact full-header spacing rule.
+GitHub PR titles, descriptions and comments use a compact header without the folder symbol or repository names: `[CODEX:   GG.1.S]` for the actual assigned session, or `[JET]` for an unlettered session.  Every PR title begins with this compact lettered header, then one ASCII space, then the human title (for example `[CODEX:   GG.1.S] ST-123: fix the thing`); the title header is never omitted and never stacked.  These PR exceptions override general complete-header wording.  Keep the artifact's original seat and session identity consistent across its title and description, and when editing them together use the same actual writing session; each comment names its own actual writing session.  A held PR description begins with its concrete readiness criteria as bullets, followed by a blank line and the compact header.  Preserve addressed recipients and supported mention syntax; never infer a letter from GitHub metadata or reuse another session's letter.  Addressed compact form: `[<SEAT>:   <PAIR>.<GEN>.<HOST> → @<login>]`; use the destination's supported mention.  Kody requests retain `@kody start-review` on line 1, this compact header on line 2, and the full reviewed head SHA and context afterward.  Ordinary GitHub issue, Zulip and Linear headers retain their repository context and the exact full-header spacing rule.
 
-Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  Kody trigger comments use the compact PR-comment header on line 2, and PR titles, descriptions and comments use the compact header above.  A Codex chat-pane reply does not require a bracketed intro; external fleet posts keep the required header.
+
+Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  Kody trigger comments use the compact PR-comment header on line 2, and PR descriptions and comments use the compact header above; PR titles use the identity-only rule.  A Codex chat-pane reply does not require a bracketed intro; external fleet posts keep the required header.
 
 Every external fleet post on every platform, including Linear, Zulip and GitHub, begins with the required header.  Kody trigger comments use the two-line format above.  A Codex chat-pane reply need not include a bracketed intro; that exception applies only to chat-pane replies, while external fleet posts retain the required header.  The form turns on the session, not the seat (owner directive, November 10, 2026).  A session with no Operator session letter uses `[<seat-tag>  📁 <repo, repo…>]`, for example `[JET  📁 ST, CTS, CT]`;  Jet, Rob, Grok Bots (`GB-*`) and BotFleet bots (`BF-*`) normally hold no letters.
 
@@ -402,7 +405,7 @@ Legacy formatter tags such as `[SEAT·session8]` are not substitutes for this he
 - Tooling: the `simple-chat` CLI (`~/.local/bin/simple-chat`) for everything —
   `post`, `reply`, `read`, `listen`, `wait`, `inbox`, `topics`, `react`, `follow`, `mute`,
   `resolve`, `dm --owner` — and Fleet MCP (hosted/local MCP with its own tool names) where MCP is required.
-Details: `FLEET-PROTOCOL.md` (repo copy) and `~/apps/FLEET-PROTOCOL.md` (Mac live copy) § Chat: The Zulip Contract, § Posting, and § Linear and the Claim Lifecycle.
+Details: `FLEET-PROTOCOL.md` (repo copy) and `~/apps/FLEET-PROTOCOL.md` (Mac live copy) § Posting, the repository `AGENTS.md` coordination rules, and `docs/protocols/linear-fleet-guide.md` (The Claim Lifecycle).
 
 
 ## Apple Notes for owner-facing review docs (all apps, all agents)
@@ -444,7 +447,7 @@ Skip Notes on headless/cloud agents without Notes.app.  Full rule:
   3. **STRICT RULE — NO AGENT NAMES:** Public / TestFlight release notes **MUST NOT** include internal agent names (`Agent: Grok`, etc.).
   4. Change summary: Concise bulleted list of what changed/fixed in this build.
 
-Canonical: `~/apps/FLEET-PROTOCOL.md` § App Versioning & TestFlight Build Policy.
+Canonical: `~/apps/FLEET-PROTOCOL.md` § App Versions and Build Timestamps.
 
 ## iOS agent build loop (binding — all apps, all agents)
 
@@ -503,7 +506,7 @@ populated.  Before substantial work:
 list, then claim (or file + claim).  Branch `<seat>/<id>-<slug>`; the PR body says `Fixes <ID>`
 when it finishes the issue and `Refs <ID>` for partial work.  When done: real status +
 `--resolution`.  There is no effort log to land and no GitHub-issues mirror any more.
-Canonical: `~/apps/FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle.
+Canonical: `docs/protocols/linear-fleet-guide.md` (The Claim Lifecycle) and the repository `AGENTS.md` coordination rules.
 
 **Pass your session id.**  Every `simple-board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `simple-notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable: `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `CURSOR_CONVERSATION_ID` then `CURSOR_AGENT_CHAT_ID` (Cursor), `GROK_SESSION_ID` (Grok TUI), `OPENCODE_SESSION_ID` (OpenCode), `__MAVIS_RUNTIME_SESSION_ID` (MiniMax Code).  FX, Clutch, Antigravity, Muse Code and Grok Web have no variable that is known to be set, so they pass `--session <id>` or export `AGENT_SESSION`, using the id their app shows for the current chat.  A platform variable is not a promise: a Claude Code MCP server may not inherit its variable, so Claude Code passes `session` explicitly on `notes_create` / `notes_update` (the value of `CLAUDE_CODE_SESSION_ID` from its shell), and the MiniMax Code runtime registers `__MAVIS_RUNTIME_SESSION_ID` but does not export it into the MCP server's environment, so the MiniMax Code seat passes `session` explicitly too.  Cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner: every Grok bot (GROK-BOT and GB-*), MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.  For your seat the platform variable is `<SEAT-SESSION-VAR>` (delete this sentence if the platform has none).
 
@@ -522,13 +525,13 @@ replies to the owner**, PR titles and bodies, commit messages, Zulip posts to
 #Work-In-Progress, Apple Notes, Linear issues and comments, rollout notes, review reports, and design
 docs.  If it is prose a human reads, it gets two spaces.
 
-Canonical: `~/apps/FLEET-PROTOCOL.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
+Canonical: `~/apps/FLEET-PROTOCOL.md` § Sentence Gap and `~/apps/FLEET-UI-COPY.md`.
 Portable skill (verbatim protocol, do not weaken): `docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 and `docs/fleet-skills/sentence-gap/SKILL.md`.
 
 **HOW to emit it (owner ruling 2026-10-23, reaffirmed 2026-10-25):** between sentences, write a real U+00A0 (no-break space) followed by a normal space.  This covers Zulip, GitHub PR and issue text, Linear, commit messages, repo docs, UI copy, skills and agent instructions, and chat replies on every surface but the one exception below.
 
-- **The one exception: the chat panes of Claude Code (the Code tab), MiniMax Code (the MiniMax Code pane) and Z Code (the Z Code pane).**  Those panes normalize a raw U+00A0 away and collapse two ASCII spaces, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans: `End.&nbsp; Next.`  The MiniMax Code chat pane always takes the entity, never a raw U+00A0 and never two plain ASCII spaces.  An Apple Note body takes the same U+00A0 plus a normal space as every other surface:  Notes stores it as an ordinary space and still shows a wide gap.
+- **The one exception: the chat panes of Claude Code (the Code tab), MiniMax Code (the MiniMax Code pane), Z Code (the Z Code pane) and Antigravity (the Antigravity chat pane).**  Those panes normalize a raw U+00A0 away and collapse two ASCII spaces, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans: `End.&nbsp; Next.`  The MiniMax Code chat pane always takes the entity, never a raw U+00A0 and never two plain ASCII spaces.  An Apple Note body takes the same U+00A0 plus a normal space as every other surface:  Notes stores it as an ordinary space and still shows a wide gap.
 - Never write the `&nbsp;` entity anywhere else.  It shows up as literal text in squash-merge commits, plain-text email and many APIs.
 - Two plain ASCII spaces are not enough.  Rendered surfaces (Zulip, GitHub, Linear, HTML, Markdown chat panes) collapse them to one.
 - Generate the U+00A0 in the shell (`printf 'One.\302\240 Two.'`, or the converter in the canonical `sentence-gap` skill (`AI-Fleet-Coordinator/docs/fleet-skills/sentence-gap/SKILL.md`)) rather than typing it, because a model-typed U+00A0 can be normalized to a plain space.  Check the bytes before you post.
@@ -587,7 +590,7 @@ and platform.  Product UI stays the viewer's timezone.  A market bell stays as
 
 - **GitHub App credentials are the relay's, never yours.**  The fleet's GitHub relay (`git-relay`) is the only path that mints per-bot GitHub App tokens, and it keeps them server-side; a seat never handles an App id, a private key, or a token expiry, and never reads App keys out of Infisical itself.  A seat reaches the relay's tools with its own bearer token — never print it, and never ask the owner for an App key.  See "The fleet's GitHub tools" above.
 
-Canonical: `~/apps/FLEET-PROTOCOL.md` § Secret handoff / Infisical / Coolify tokens.
+Canonical: the repository `AGENTS.md` Infisical rules and the `secret-handoff` and `secret-safety` skills.
 
 `simple-chat` is for Zulip messaging tools, including message reads, not a required Operator session-letter route.  Reading messages does not imply event subscription.  Operator is separate; use only its separately verified entry point.  Ordinary Operator clarification DMs remain ordinary messages, not a tool integration or required letter route.
 
@@ -649,7 +652,7 @@ https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).
   owner's (owner 2026-11-11).
 - **Same bar at every tier:** full gates, receipts, and Linear discipline apply no matter
   which model did the work.
-- Canonical reference: `~/apps/FLEET-PROTOCOL.md` — "Delegation & model economics".
+- Canonical reference: this section; the Fleet-OPS handbook rewrite moved the old `FLEET-PROTOCOL.md` policy prose into the repository rules files.
 
 ## Cross-file consistency traps (cheap to check, expensive to miss)
 

@@ -22,13 +22,20 @@ function base64url(input) {
 }
 
 // AFC-359: the service account JSON comes from GOOGLE_SHEETS_SA in the environment, else
-// Infisical Fleet-OPS /google-sheets-sa through the shared direct CLI.  Never written to disk or printed.
+// Infisical Fleet-OPS prod /google-sheets-sa through the shared direct client.  Never written to disk or printed.
+// The read runs under this consumer's own scoped read-only service token, `sheet-read-ro`:
+// one grant on exactly that folder, held in this consumer's own store (the owner's login
+// keychain on the Mac, a private file on a server).  The shared client reads that grant
+// from the store and consults no ambient token, so the account is what this script needs.
+const TOKEN_ACCOUNT = "sheet-read-ro";
+const SECRET_FOLDER = "/google-sheets-sa";
+
 function loadServiceAccount() {
   let raw = process.env.GOOGLE_SHEETS_SA || "";
   if (!raw) {
     const cli = join(dirname(fileURLToPath(import.meta.url)), "fleet_infisical_cli.py");
     try {
-      raw = execFileSync("/usr/bin/python3", ["-I", cli, "get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa", "--project", "fleet-ops"], {
+      raw = execFileSync("/usr/bin/python3", ["-I", cli, "get", "GOOGLE_SHEETS_SA", "--path", SECRET_FOLDER, "--project", "fleet-ops", "--account", TOKEN_ACCOUNT], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
       }).replace(/\n$/, "");
@@ -36,7 +43,7 @@ function loadServiceAccount() {
       raw = "";
     }
   }
-  if (!raw) throw new Error("Google service account missing: set GOOGLE_SHEETS_SA or add it to Infisical /google-sheets-sa");
+  if (!raw) throw new Error("Google service account missing: set GOOGLE_SHEETS_SA, or provision the scoped token " + TOKEN_ACCOUNT + " for Infisical Fleet-OPS prod " + SECRET_FOLDER);
   return JSON.parse(raw);
 }
 

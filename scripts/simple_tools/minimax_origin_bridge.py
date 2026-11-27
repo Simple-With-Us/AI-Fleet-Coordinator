@@ -48,6 +48,30 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def catalog_composition(patched_bytes: bytes) -> bytes | None:
+    """The installed bytes when the catalog observation composes over this
+    bridge's exact patch, else None.  The composition is recomputed from the
+    verified patched bytes and the catalog module's own pinned base hash
+    refuses anything else, so unknown or drifted bytes are never accounted
+    for.  An unloadable catalog module means no composition can be known."""
+    try:
+        try:
+            from . import minimax_catalog_observation as catalog
+        except ImportError:
+            import sys
+
+            scripts = str(Path(__file__).resolve().parent.parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from simple_tools import minimax_catalog_observation as catalog
+    except ImportError:
+        return None
+    try:
+        return catalog.patched(patched_bytes)
+    except (ValueError, TypeError):
+        return None
+
+
 def patched(data: bytes, *, context: bool = False) -> bytes:
     if digest(data) != (CONTEXT_SHA256 if context else ORIGINAL_SHA256):
         raise ValueError("unsupported MiniMax chunk hash")
@@ -145,6 +169,12 @@ def run_chunk(
             return {"state": "restored" if apply else "rollback-ready", "sha256": original_hash}
         original, _ = private_read(backup)
         expected = patched(original, context=context)
+        if not context and current == catalog_composition(expected):
+            # Restoring ours would silently strip the composed observation patch.
+            raise ValueError(
+                "MiniMax catalog observation composes over the bridge; "
+                "roll back the catalog observation before the origin bridge"
+            )
         if current not in (original, expected):
             raise ValueError("MiniMax chunk drifted since bridge installation")
         if apply and current != original:
@@ -157,10 +187,16 @@ def run_chunk(
         original = current
     else:
         original, _ = private_read(backup)
-        if current != patched(original, context=context):
+        expected = patched(original, context=context)
+        if current != expected and (context or current != catalog_composition(expected)):
             raise ValueError("unsupported MiniMax chunk hash")
     result = patched(original, context=context)
-    if apply and current != result:
+    composition = (
+        "catalog-observation"
+        if not context and current != result and current == catalog_composition(result)
+        else None
+    )
+    if apply and current != result and composition is None:
         if backup.exists():
             saved, _ = private_read(backup)
             if saved != original:
@@ -199,7 +235,14 @@ def run_chunk(
         if latest != current:
             raise ValueError("MiniMax chunk changed during bridge installation")
         replace(path, result, mode)
-    return {"state": "installed" if apply else "compatible", "sha256": digest(result)}
+    status = {
+        "state": "installed" if apply else "compatible",
+        "sha256": digest(current if composition else result),
+    }
+    if composition:
+        # A later licensed patch composes over ours:  installed, never rewritten.
+        status["composition"] = composition
+    return status
 
 
 def run(root: Path, *, apply: bool = False, rollback: bool = False) -> dict:

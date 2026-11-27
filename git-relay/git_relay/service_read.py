@@ -17,6 +17,11 @@ CLAIMS = ("origin_session_claim", "origin_letter_claim", "origin_generation_clai
 SHA = re.compile(r"[0-9a-f]{40}")
 SESSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{3,127}")
 LOGIN = re.compile(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?")
+#: GitHub's documented mergeable_state values.  Anything else fails closed:
+#: an unverifiable merge signal is never projected as fact.
+MERGEABLE_STATES = frozenset(
+    ("behind", "blocked", "clean", "dirty", "draft", "has_hooks", "unknown", "unstable")
+)
 
 
 def origin_claims(args):
@@ -131,12 +136,29 @@ def dispatch(relay, seat, args):
             or value["number"] != args["number"]
             or value.get("state") not in ("open", "closed")
             or not isinstance(value.get("head"), dict)
+            or not isinstance(value.get("base"), dict)
+        ):
+            _bad()
+        # Absent or null merge signal stays null:  GitHub may still be
+        # computing, the consumer treats null as unknown (never a conflict),
+        # and the review/finding fields of this read remain available.  A
+        # PRESENT but unverifiable value refuses the whole read instead of
+        # being projected as invented merge state.
+        mergeable = value.get("mergeable")
+        if mergeable is not None and type(mergeable) is not bool:
+            _bad()
+        mergeable_state = value.get("mergeable_state")
+        if mergeable_state is not None and (
+            not isinstance(mergeable_state, str) or mergeable_state not in MERGEABLE_STATES
         ):
             _bad()
         result = {
             "number": value["number"],
             "state": value["state"],
             "head": {"sha": _sha(value["head"].get("sha"))},
+            "base": {"sha": _sha(value["base"].get("sha"))},
+            "mergeable": mergeable,
+            "mergeable_state": mergeable_state,
         }
         url = value.get("html_url")
         if url == "https://github.com/%s/pull/%d" % (repo, args["number"]):
@@ -239,6 +261,22 @@ LANE_MAX_PAGE = 20
 LANE_RECEIPT_LIMIT = 1000
 
 
+def configured_bearer(relay, token) -> bool:
+    """Constant-time match against the configured lane bearer.
+
+    A crafted bearer, including one carrying a lone surrogate, is simply
+    not the configured credential:  the comparison never escapes as an
+    exception, so routing and refusal stay audited either way.
+    """
+    expected = relay.service_read_token
+    if expected is None or not isinstance(token, str):
+        return False
+    return hmac.compare_digest(
+        token.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
+
+
 def lane(relay, token, args) -> tuple[int, dict]:
     """The alert service's fixed-shape read lane (no seat, no token export).
 
@@ -263,13 +301,7 @@ def lane(relay, token, args) -> tuple[int, dict]:
             outcome = "error"
             detail = {"cause": "not_configured"}
             return 503, {"error": "service reads are not configured"}
-        if not isinstance(token, str) or not hmac.compare_digest(
-            # A crafted bearer, including one carrying a lone surrogate, is
-            # an unauthenticated request:  it must not escape as an
-            # exception and skip the audit row.
-            token.encode("utf-8", "surrogatepass"),
-            expected.encode("utf-8", "surrogatepass"),
-        ):
+        if not configured_bearer(relay, token):
             # The bounded unauthenticated row is the auditor's:  it owns the
             # rate limit, so the lane writes no second row for this exit.
             relay._unauth_auditor.record(relay.audit, "service_read")
@@ -302,14 +334,23 @@ def lane(relay, token, args) -> tuple[int, dict]:
             # The store answers this query under the bound:  it stops at the
             # limit and reports the overflow, so the per-repo history is never
             # materialized in full and the refusal is decided first.
-            rows, overflow = relay.pr_owners.confirmed_for_repo(repo, LANE_RECEIPT_LIMIT)
+            # One locked snapshot:  the rows and the coverage marker are
+            # decided together, so a fence resolving between two reads can
+            # never stamp this answer's own row set as complete.
+            rows, overflow, partial = relay.pr_owners.confirmed_snapshot_for_repo(
+                repo, LANE_RECEIPT_LIMIT
+            )
             if overflow:
                 outcome = "error"
                 detail = {"cause": "census_exceeded", "limit": LANE_RECEIPT_LIMIT}
                 return 503, {"error": "creation receipt census exceeds bounded query"}
+            # Confirmed rows are a partial census whenever the protected
+            # index is degraded or a pending fence exists:  the lane answers
+            # with what is proven and says so, never with implied completeness.
+            coverage = "partial" if partial else "complete"
             outcome = "ok"
-            detail = {"verb": "creation_receipts", "count": len(rows)}
-            return 200, {"body": rows}
+            detail = {"verb": "creation_receipts", "count": len(rows), "coverage": coverage}
+            return 200, {"body": rows, "coverage": coverage}
         verb = args.get("verb")
         if verb not in LANE_VERBS:
             outcome = "bad_request"
@@ -344,9 +385,15 @@ def lane(relay, token, args) -> tuple[int, dict]:
             bearer, _expiry = relay.app_minter.token_for_service(
                 SERVICE_READ_APP_SLUG, repo, dict(SERVICE_READ_GRANTS)
             )
-        except Exception:
+        except Exception as exc:
             outcome = "error"
             detail = {**detail, "at": "mint"}
+            # The minter's typed secret-free flag:  a rejected mint whose
+            # revocation also failed may still be live upstream.  The generic
+            # 502 flattens the error text, so the durable classification
+            # rides as this boolean, never as exception prose.
+            if getattr(exc, "revoke_failed", False) is True:
+                detail = {**detail, "revoke_failed": True}
             return 502, {"error": "read grant unavailable"}
         path = LANE_VERBS[verb].format(repo=repo, number=number, page=page, sha=args.get("sha"))
         try:

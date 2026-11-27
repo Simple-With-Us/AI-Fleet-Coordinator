@@ -157,7 +157,7 @@ final class PanelSnapshotTests: XCTestCase {
             XCTFail("the Ops runner started ssh")
         } catch {}
         let tried = Process.takeAttempts().map { URL(fileURLWithPath: $0).lastPathComponent }
-        XCTAssertEqual(tried, ["infisical-scoped.py", "infisical-scoped.py", "ssh"])
+        XCTAssertEqual(tried, ["python3", "python3", "ssh"])
 
         do {
             _ = try await URLSession.shared.data(from: URL(string: "https://example.invalid/")!)

@@ -79,8 +79,7 @@ def claude_env(
     """`env -i` plus a fixed list:  every CLAUDE_CODE_* (the messaging socket and token), AGENT_*,
     ZULIP_* and ANTHROPIC_API_KEY are dropped, so the run uses the claude.ai login.
 
-    With `seat`, the listener acts as the reference launcher (FLEET-PROTOCOL § Identity Rules ›
-    Launcher Contract):  it sets AGENT_LAUNCHER=simple-tools-wake, AGENT_LAUNCH_SEAT and AGENT_SEAT
+    With `seat`, the listener acts as the reference launcher (FLEET-PROTOCOL § Seats and Identity):  it sets AGENT_LAUNCHER=simple-tools-wake, AGENT_LAUNCH_SEAT and AGENT_SEAT
     to the seat, and SIMPLE_TOOLS_ATTACH=0, fresh, after every inherited identity variable was
     dropped.  No production caller passes `seat` since the listener stopped starting models (owner
     ruling, Nov 10, 2026):  the lease-liveness probe passes none, and the branch stays with its

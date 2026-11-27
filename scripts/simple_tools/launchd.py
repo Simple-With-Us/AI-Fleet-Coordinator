@@ -1,11 +1,14 @@
-"""`simple-chat daemon install` and `uninstall`:  the LaunchAgent plist and the sample config.
+"""`simple-chat daemon install` and `uninstall` on the Mac:  the sample config, and removing
+the retired listener's LaunchAgent.
 
-They write files only.  They never run launchctl:  they print the bootstrap or bootout command
-for the person (or orchestrator) doing the install.  Every path is derived from HOME, so tests
-run against a temporary home.  The sample config holds no seat:  there is one listener, on the
-server, and it holds every seat (owner, Tue, Nov 10).  It names the bots whose credential is
-found by checking the known roster's file names one by one (a stat, never a glob and never a
-read).
+The Mac listener is retired (owner, Tue, Nov 10; AFC-836):  one listener, on the server, holds
+every seat, so `install` writes no LaunchAgent any more.  It writes the sample config only
+(the Mac CLI and hooks still read its [daemon] and [platform.*] tables) and names a stale
+retired agent when one is still present.  `uninstall` removes that agent's plist.  Neither
+runs launchctl:  they print the bootout command for the person (or orchestrator) doing the
+removal.  Every path is derived from HOME, so tests run against a temporary home.  The sample
+config holds no seat.  It names the bots whose credential is found by checking the known
+roster's file names one by one (a stat, never a glob and never a read).
 
 Python 3.11+, standard library only.
 """
@@ -13,7 +16,6 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import os
-import plistlib
 import sys
 from collections.abc import Mapping
 from typing import TextIO
@@ -76,32 +78,6 @@ def choose_python(explicit: str | None) -> str:
     if os.access(DEFAULT_PYTHON, os.X_OK):
         return DEFAULT_PYTHON
     return sys.executable
-
-
-def plist_dict(home: str, python: str, program: str, root: str) -> dict:
-    logs = L.logs_dir(root)
-    return {
-        "Label": LABEL,
-        "ProgramArguments": [python, program, "daemon", "run"],
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "ThrottleInterval": 30,
-        # Not "Background":  under a machine-wide CPU storm (load average over 300, Fri, Oct 9) launchd started
-        # the listener in the background band and it got 0.02 CPU seconds in six minutes, so it never came up.
-        # Standard starts at once under the same load.
-        "ProcessType": "Standard",
-        "WorkingDirectory": home,
-        # SIMPLE_TOOLS_INSTANCE pins this listener to the mac side of the seat partition:  a config
-        # that says daemon.instance = "server" is refused here.
-        "EnvironmentVariables": {
-            "HOME": home,
-            "LANG": "en_US.UTF-8",
-            "SIMPLE_TOOLS_INSTANCE": "mac",
-            "PATH": "%s/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" % home,
-        },
-        "StandardOutPath": os.path.join(logs, "launchd.out"),
-        "StandardErrorPath": os.path.join(logs, "launchd.err"),
-    }
 
 
 def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None) -> str:
@@ -184,36 +160,17 @@ def install(
     python: str | None = None,
     program: str | None = None,
 ) -> int:
-    root = os.path.join(
-        home, ".simple-tools"
-    )  # what the LaunchAgent's daemon uses (the plist sets no state dir)
+    """Write the sample config only:  the Mac listener is retired (AFC-836), so no
+    LaunchAgent is written.  `python` and `program` are accepted for the shared
+    install dispatch and are unused here."""
+    root = os.path.join(home, ".simple-tools")
     secrets_dir = Z.override_secrets_dir(env)  # no default:  seats read Infisical /zulip (AFC-359)
-    python = choose_python(python)
-    program = program or program_path(home)
-    target = plist_path(home)
-    data = plistlib.dumps(plist_dict(home, python, program, root), sort_keys=False)
     config_path = os.path.join(root, L.CONFIG_NAME)
     say = (
         (lambda text: out.write("would: " + text + "\n"))
         if dry_run
         else (lambda text: out.write(text + "\n"))
     )
-    if not os.path.exists(program):
-        out.write(
-            "note: %s does not exist yet; run scripts/simple_tools/install.sh first\n" % program
-        )
-    if not os.access(python, os.X_OK):
-        out.write("note: %s is not executable; pass --python PATH (3.11 or newer)\n" % python)
-    logs = L.logs_dir(root)
-    say("create %s (mode 700) with launchd.out and launchd.err (mode 600)" % logs)
-    if not dry_run:
-        L.private_dir(logs)
-        for name in ("launchd.out", "launchd.err"):
-            path = os.path.join(logs, name)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            os.close(fd)
-            os.chmod(path, 0o600)
-        L.private_dir(L.listener_dir(root))
     if os.path.exists(config_path):
         out.write("config already present, left as it is: %s\n" % config_path)
     else:
@@ -223,28 +180,17 @@ def install(
         )
         if not dry_run:
             write_private(config_path, sample_config(secrets_dir, env))
-    current = None
-    if os.path.exists(target):
-        with open(target, "rb") as fh:
-            current = fh.read()
-    if current == data:
-        out.write("LaunchAgent already current: %s\n" % target)
-    else:
-        say("%s %s" % ("replace" if current is not None else "write", target))
-        if not dry_run:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            tmp = target + ".tmp"
-            with open(tmp, "wb") as fh:
-                fh.write(data)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, target)
-    uid = os.getuid()
-    out.write("\nThis command does not run launchctl.  To load the listener:\n")
-    out.write("  launchctl bootstrap gui/%d %s\n" % (uid, target))
-    out.write("After an update to the checkout:  launchctl kickstart -k gui/%d/%s\n" % (uid, LABEL))
     out.write(
-        "One listener, on the server, holds every seat (owner, Tue, Nov 10);  this Mac config holds none.\n"
+        "The Mac listener is retired (owner, Tue, Nov 10):  one listener, on the server, "
+        "holds every seat, so no LaunchAgent was written and this command does not run launchctl.\n"
     )
+    target = plist_path(home)
+    if os.path.exists(target):
+        out.write(
+            "note: a retired Mac listener LaunchAgent is still present at %s; unload it with "
+            "launchctl bootout gui/%d/%s, then remove it with simple-chat daemon uninstall\n"
+            % (target, os.getuid(), LABEL)
+        )
     if dry_run:
         out.write("dry run: nothing was changed\n")
     return 0

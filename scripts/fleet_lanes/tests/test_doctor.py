@@ -1296,6 +1296,85 @@ class IgnoredStateTests(GitCase):
         self.assertEqual(local, ["my notes.env", "café.db", 'say "hi".db'])
         self.assertEqual(regenerable, 1)
 
+    def test_split_ignored_counts_the_skill_packs_and_a_generated_project_as_build_output(self) -> None:
+        """The two generated things a lane holds are build output, not local state.
+
+        The skill installer writes docs/fleet-skills/by-seat/<seat>/<skill>.zip and rewrites it
+        whenever the pack changes, and XcodeGen writes muster/Muster.xcodeproj from the tracked
+        muster/project.yml.  Both are ignored, both are put back by a tool, and both used to keep a
+        lane whose work was merged.  An ignored zip that is real local state is still local state.
+        """
+        text = "\n".join([
+            "!! docs/fleet-skills/by-seat/minimax/simple-tools-guide.zip",
+            "!! docs/fleet-skills/by-seat/minimax/session-start.zip",
+            "!! docs/fleet-skills/by-seat/minimax/local-notes.md",
+            "!! muster/Muster.xcodeproj/",
+            "!! data/corpus.zip",
+            "!! data/app.db",
+            "",
+        ])
+        local, regenerable = doctor.split_ignored(text)
+        # The archives are build output.  The file under the same tree is not:  the directory alone
+        # does not make everything under it regenerable, or a lane holding real local state would
+        # look prunable.
+        self.assertEqual(local, ["docs/fleet-skills/by-seat/minimax/local-notes.md",
+                                 "data/corpus.zip", "data/app.db"])
+        self.assertEqual(regenerable, 3)
+
+    def test_a_collapsed_tree_path_outside_the_checkout_stays_local_state(self) -> None:
+        """A path that climbs out of the checkout cannot be read as a tree under it.
+
+        The probe answers local state and does not crash:  the walk yields files whose path is
+        not relative to the checkout,  and relative_to refuses that.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "checkout"
+            root.mkdir()
+            outside = pathlib.Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("local state", encoding="utf-8")
+            local, regenerable = doctor.split_ignored("!! ../outside/\n", root=root)
+        self.assertEqual(local, ["../outside/"])
+        self.assertEqual(regenerable, 0)
+
+    def test_a_collapsed_skill_pack_tree_is_build_output_only_when_it_holds_only_archives(self) -> None:
+        """Git folds a wholly-ignored subtree into one trailing-slash entry.
+
+        The archives then arrive as the directory that holds them,  and the tree has to be read
+        to tell a pack of archives from a tree that also holds local state.  Without the checkout
+        there is no tree to read,  so the entry stays local state,  which is the safe answer.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            packs = root / "docs" / "fleet-skills" / "by-seat"
+            (packs / "seat").mkdir(parents=True)
+            (packs / "seat" / "simple-tools-guide.zip").write_text("x")
+            text = "!! docs/fleet-skills/by-seat/" + chr(10)
+
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, [])
+            self.assertEqual(regenerable, 1)
+
+            (packs / "seat" / "local-notes.md").write_text("x")
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, ["docs/fleet-skills/by-seat/"])
+            self.assertEqual(regenerable, 0)
+
+            local, regenerable = doctor.split_ignored(text)
+            self.assertEqual(local, ["docs/fleet-skills/by-seat/"])
+            self.assertEqual(regenerable, 0)
+
+            # Git folds the topmost wholly-ignored directory,  so the entry it writes is
+            # docs/ and not the directory that holds the archives.
+            text = "!! docs/" + chr(10)
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, ["docs/"])
+            self.assertEqual(regenerable, 0)
+            (packs / "seat" / "local-notes.md").unlink()
+            local, regenerable = doctor.split_ignored(text, root)
+            self.assertEqual(local, [])
+            self.assertEqual(regenerable, 1)
+
     def test_count_status_still_leaves_ignored_lines_out_of_the_dirty_counts(self) -> None:
         self.assertEqual(doctor.count_status("!! a\n M b\n?? c\n!! d/\n"), (1, 1))
 

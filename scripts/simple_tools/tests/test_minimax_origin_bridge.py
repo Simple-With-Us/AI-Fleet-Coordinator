@@ -501,5 +501,113 @@ console.log(JSON.stringify({np,p,main,results:[project({...np,toolCallId:"call-c
                 BR.patched(b"no anchors")
 
 
+
+
+class Composition(unittest.TestCase):
+    """A licensed later patch composing over the bridge is installed, never
+    rejected as unsupported and never silently stripped by an apply or
+    rollback.  Drifted bytes stay refused."""
+
+    def setUp(self):
+        import sys
+
+        scripts = str(ROOT)
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        from simple_tools import minimax_catalog_observation as catalog
+
+        self.catalog = catalog
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        (root / "chunks").mkdir()
+        package = root / "package.json"
+        package.write_text(json.dumps({"name": "@minimax-ai/code", "version": "0.7.4"}))
+        package.chmod(0o600)
+        self.original = (
+            BR.PLUGIN_OLD
+            + ";"
+            + BR.POOL_OLD
+            + ";"
+            + catalog.HELPER_ANCHOR
+            + "x;"
+            + catalog.CAPTURE_OLD
+            + ";"
+            + catalog.PUBLISH_OLD
+        ).encode()
+        self.root = root
+        self.path = root / BR.CHUNK
+
+    def install(self, data):
+        self.path.write_bytes(data)
+        self.path.chmod(0o600)
+        backup = self.path.with_name(self.path.name + BR.BACKUP_SUFFIX)
+        backup.write_bytes(self.original)
+        backup.chmod(0o600)
+
+    def composed(self):
+        return self.catalog.patched(BR.patched(self.original))
+
+    def test_composed_bytes_validate_apply_keeps_them_and_rollback_refuses(self):
+        with mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(self.original)):
+            with mock.patch.object(
+                self.catalog, "BASE_SHA256", BR.digest(BR.patched(self.original))
+            ):
+                composed = self.composed()
+                self.install(composed)
+                status = BR.run_chunk(self.root)
+                self.assertEqual(status["state"], "compatible")
+                self.assertEqual(status["sha256"], BR.digest(composed))
+                self.assertEqual(status["composition"], "catalog-observation")
+                status = BR.run_chunk(self.root, apply=True)
+                self.assertEqual(status["state"], "installed")
+                self.assertEqual(status["composition"], "catalog-observation")
+                self.assertEqual(self.path.read_bytes(), composed)
+                with self.assertRaisesRegex(ValueError, "catalog observation"):
+                    BR.run_chunk(self.root, apply=True, rollback=True)
+                self.assertEqual(self.path.read_bytes(), composed)
+
+    def test_drifted_bytes_stay_refused(self):
+        with mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(self.original)):
+            with mock.patch.object(
+                self.catalog, "BASE_SHA256", BR.digest(BR.patched(self.original))
+            ):
+                self.install(self.composed() + b"drift")
+                with self.assertRaisesRegex(ValueError, "unsupported MiniMax chunk hash"):
+                    BR.run_chunk(self.root)
+
+    def test_plain_patch_still_installs_and_rolls_back(self):
+        with mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(self.original)):
+            self.install(BR.patched(self.original))
+            status = BR.run_chunk(self.root)
+            self.assertNotIn("composition", status)
+            BR.run_chunk(self.root, apply=True, rollback=True)
+            self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_composed_pair_rollback_writes_neither_chunk(self):
+        # The composition refusal lands in the no-write preflight, before run()
+        # restores either chunk.
+        context_original = BR.CONTEXT_OLD.encode()
+        with (
+            mock.patch.object(BR, "ORIGINAL_SHA256", BR.digest(self.original)),
+            mock.patch.object(BR, "CONTEXT_SHA256", BR.digest(context_original)),
+            mock.patch.object(
+                self.catalog, "BASE_SHA256", BR.digest(BR.patched(self.original))
+            ),
+        ):
+            composed = self.composed()
+            self.install(composed)
+            context_path = self.root / BR.CONTEXT_CHUNK
+            context_installed = BR.patched(context_original, context=True)
+            context_path.write_bytes(context_installed)
+            context_path.chmod(0o600)
+            context_backup = context_path.with_name(context_path.name + BR.BACKUP_SUFFIX)
+            context_backup.write_bytes(context_original)
+            context_backup.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "catalog observation"):
+                BR.run(self.root, apply=True, rollback=True)
+            self.assertEqual(self.path.read_bytes(), composed)
+            self.assertEqual(context_path.read_bytes(), context_installed)
+
 if __name__ == "__main__":
     unittest.main()

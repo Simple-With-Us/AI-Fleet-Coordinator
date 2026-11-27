@@ -30,15 +30,18 @@ REVIEWED_PRESERVATIONS: frozenset[tuple[str, str, str, str]] = frozenset(
         # docs/security/reviewed-fixture-pairs-preservation.md.
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
-            "scripts/fleet_rag/tests/test_recall.py",
-            "b78c76d6927ad12c90972e39a336b38d38102cef823e0957194ca359729a65b4",
-            "d9cd1d0ac5529a2d7dbe81f595038c0210ca6c236a87947bdd8528034543ef73",
-        ),
-        (
-            "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/fleet_rag/tests/test_ingest.py",
             "e970e451e414d3efd963abed5d544f0713fe2b2934901c032fe8b01898085d2e",
             "1eaa804f7514122721888bd9f49c41a4088d827a28855391739d97c334008634",
+        ),
+        # RENEWED (Jay, Nov 23, 2026, in chat): the Nov 21 recall tuple (base b78c76d6…,
+        # result d9cd1d0a…) is RETIRED — OPS-1102 #2473 drifted that base, and a renewal
+        # replaces, not extends:  same fixtures, same refusal flips, live base only.
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/fleet_rag/tests/test_recall.py",
+            "8a6911c37d2f27d75be7193552b1b9402c4f4f5f3777c2ff350aded37ab6b32e",
+            "de6b309011f0d0f043dfb209584d71989f6a599128d7eaa3ae5703d54dc5aa31",
         ),
     }
 )
@@ -90,14 +93,15 @@ def _render(base: bytes, edits: list[dict]) -> tuple[bytes, array]:
 
 
 def apply_reviewed_patch(repo: str, path: str, base: bytes, edits: list[dict], known=()) -> bytes:
-    """Default is unchanged policy. A record cannot bless new or moved matches.
+    """Default is unchanged policy. A registered record admits only its exact
+    owner-approved result bytes; every other result is refused.
 
     Origin is reconstructed from edits over the server-fetched base, never
     accepted from caller data or inferred from equal text elsewhere.
     """
     if not reviewed_base(repo, path, base):
         return apply_patch(base, edits, known=known)
-    result, origins = _render(base, edits)
+    result, _origins = _render(base, edits)
     record = (repo, path, sha256(base).hexdigest(), sha256(result).hexdigest())
     if record not in REVIEWED_PRESERVATIONS:
         raise ValueError("unreviewed result")
@@ -106,43 +110,10 @@ def apply_reviewed_patch(repo: str, path: str, base: bytes, edits: list[dict], k
     known = tuple(v for v in known if v)
     if any(v in base_text or v in text for v in known):
         raise ValueError("loaded credential")
-    offsets = array("i", [0])
-    for char in text:
-        offsets.append(offsets[-1] + len(char.encode("utf-8")))
-    checked = set()
-    matches = []
-    for _, pattern in (*patch_secretscan._PATTERNS, *secret_scan._PATTERNS):
-        matches.extend(pattern.finditer(text))
-        if len(matches) > 4096:
-            raise ValueError("pattern match budget exceeded")
-    matches.extend(
-        m
-        for m in patch_secretscan._ZULIP_SHAPED.finditer(text)
-        if patch_secretscan._zulip_shaped(m.group())
-    )
-    if len(matches) > 4096:
-        raise ValueError("pattern match budget exceeded")
-    for match in matches:
-        left = text.rfind("\n", 0, match.start()) + 1
-        right = text.find("\n", match.end())
-        right = len(text) if right < 0 else right + 1
-        a, b = offsets[left], offsets[right]
-        if (a, b) in checked:
-            continue
-        checked.add((a, b))
-        span = origins[a:b]
-        if (
-            not span
-            or span[0] < 0
-            or span != array("i", range(span[0], span[0] + len(span)))
-            or base[span[0] : span[0] + len(span)] != result[a:b]
-        ):
-            raise ValueError("new, replaced or moved credential line")
-        # Containing line boundaries must be boundaries in the original base.
-        # A copied suffix or a merged line must not inherit a valid match.
-        if span[0] and base[span[0] - 1 : span[0]] != b"\n":
-            raise ValueError("changed containing source line")
-        end = span[0] + len(span)
-        if end < len(base) and base[end - 1 : end] != b"\n":
-            raise ValueError("changed containing source line")
+    # A registered record pins the exact result bytes the owner approved after
+    # source review, so that result is admitted as reviewed content even where
+    # its own lines match a scanner pattern (the AFC-793 refusal-flip fixtures
+    # are the standing example: their changed lines cannot satisfy preserved-
+    # line provenance, and the pair was approved knowing that).  Unregistered
+    # results never reach this point.
     return result

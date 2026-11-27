@@ -271,17 +271,16 @@ class ContributeTests(RecallBase):
         # literal token shape as a stored credential,  and the scrubber still sees the
         # same text at run time.
         leaky = ("Use GITHUB_TOKEN=ghp_" + "A" * 36 + " for the API call and keep "
-                 "SLACK_TOKEN=xoxb-" + "1234567890-abcdefghijk out of the transcript.")
-        res = recall_api.recall_contribute(leaky, "lesson", seat="CLAUDE")
-        self.assertIn("github-token", res["scrubbed"])
-        self.assertIn("slack-token", res["scrubbed"])
-        (point,), = FakeQdrant.upserts
-        text = point["payload"]["text"]
+                 "SLACK_TOKEN=xoxb-1234567890-abcdefghijk out of the transcript.")
+        with self.assertRaisesRegex(FleetRagError, '^refused_secret:text$'):
+            recall_api.recall_contribute(leaky, "lesson", seat="CLAUDE")
+        self.assertEqual(FakeQdrant.upserts, [])
+        text, kinds = recall_api.scrub(leaky)
+        self.assertIn("github-token", kinds)
+        self.assertIn("slack-token", kinds)
         self.assertNotIn("ghp_", text)
         self.assertNotIn("xoxb-", text)
         self.assertIn("[REDACTED:", text)
-        self.assertEqual(point["payload"]["scrubbed"], res["scrubbed"])
-        self.assertEqual(point["id"], point_id(content_hash(text)))  # id is over the SCRUBBED text
 
     def test_gitleaks_gate_refuses(self):
         recall_api.gitleaks_flagged = lambda path, timeout=300: {1}
@@ -343,12 +342,11 @@ class ContributeTests(RecallBase):
         self.assertNotIn("scrubbed", point["payload"])            # marker is not a redaction kind
 
         FakeQdrant.upserts.clear()
-        leaky = ("Keep SLACK_TOKEN=xoxb-" + "1234567890-abcdefghijk"
-                 " out of the transcript when you paste logs.")
-        res = recall_api.recall_contribute(leaky, "lesson", seat="CLAUDE")
-        self.assertEqual(res["scrubbed"], ["slack-token", "gitleaks-unavailable"])
-        (point,), = FakeQdrant.upserts
-        self.assertEqual(point["payload"]["scrubbed"], ["slack-token"])
+        leaky = "Keep SLACK_TOKEN=xoxb-1234567890-abcdefghijk out of the transcript when you paste logs."
+        with self.assertRaisesRegex(FleetRagError, '^refused_secret:text$'):
+            recall_api.recall_contribute(leaky, "lesson", seat="CLAUDE")
+        self.assertEqual(FakeQdrant.upserts, [])
+        self.assertEqual(calls, [])
 
     def test_contribute_needs_write_config(self):
         calls = []

@@ -589,6 +589,23 @@ export async function linearIdentityClear(store) {
   return { cleared: true };
 }
 
+// The Linear app id (viewer.id) this seat's credentials last proved to be its own app.  The id is stable across
+// renames of the app, so the viewer check can key on it instead of the display name.  Holds no secret.
+const LINEAR_APP_ID = /^[A-Za-z0-9_-]{8,64}$/;
+
+export async function linearAppIdGet(store) {
+  const row = await store.get("linear_app_id");
+  if (!row || typeof row.id !== "string" || !LINEAR_APP_ID.test(row.id)) return null;
+  return { id: row.id, set_at: Number(row.set_at) || 0 };
+}
+
+export async function linearAppIdSet(store, entry) {
+  const row = { id: String(entry?.id ?? ""), set_at: Number(entry?.set_at) || 0 };
+  if (!LINEAR_APP_ID.test(row.id)) throw new Error("invalid linear app id");
+  await store.put("linear_app_id", row);
+  return { ...row };
+}
+
 /** Forget the token, so the next call mints.  Only the owner needs this. */
 export async function linearTokenClear(store) {
   await store.delete("linear_token");
@@ -1488,6 +1505,17 @@ function mintFormTs(mintId) {
 }
 
 const GB_MINT_ID_RE = /^[0-9a-f]{32}$/;
+
+/** The stored outcome of a mint form that already completed (never the token), or null.  A pure read:  the owner
+ *  action API asks it first so a retry of a finished mint is acked instead of refused by the live-bearer check. */
+export async function gbBearerMintFormResult(store, mintId, now = Date.now()) {
+  if (typeof mintId !== "string" || !GB_MINT_ID_RE.test(mintId)) return null;
+  const forms = (await store.get(GB_MINT_FORMS_KEY)) ?? { consumed: [] };
+  const hit = (forms.consumed ?? []).find((c) => c.mint_id === mintId);
+  const ts = mintFormTs(mintId);
+  if (!hit || ts === null || now - ts > GB_MINT_FORM_TTL_MS) return null;
+  return hit.result ?? {};
+}
 
 export async function gbBearerMintChecked(store, { mintId, hash, by, expiresAt, mcpAccept }, now = Date.now()) {
   if (typeof store.transaction !== "function") throw new TypeError("transactional store required");

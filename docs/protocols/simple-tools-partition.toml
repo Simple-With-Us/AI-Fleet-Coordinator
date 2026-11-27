@@ -59,6 +59,7 @@ JET = "server"
 GROK-WEB = "server"
 WISE = "server"
 ECHO = "server"
+DUET = "server"
 
 # Grok bots.  GB-DIRECTOR is a realm member now (it was an admin earlier), and
 # the listener accepts moderator and member bots only (listener decision 7), so its key is

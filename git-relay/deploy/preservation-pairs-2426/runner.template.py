@@ -4,7 +4,7 @@ import stat
 import sys
 from pathlib import Path
 
-DIRECTORY = Path("/opt/git-relay/transactions/preservation-pairs-2426")
+DIRECTORY = Path("ROOT_PATH_PLACEHOLDER")
 MANIFEST_DIGEST = "MANIFEST_DIGEST_PLACEHOLDER"
 MODULE_HASHES = {}  # MODULE_HASHES_PLACEHOLDER
 

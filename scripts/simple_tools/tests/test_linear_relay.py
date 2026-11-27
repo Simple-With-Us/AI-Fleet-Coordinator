@@ -297,6 +297,14 @@ class RelayTests(unittest.TestCase):
         self.assertIn("by the relay.\u00a0 Edit in Zulip", body)
 
     # -- renames and moves ---------------------------------------------------------------
+    def test_created_and_updated_counts_follow_landed_writes(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.assertEqual((self.w.comments_created, self.w.comments_updated), (1, 0))
+        self.t[0] += 600
+        self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        self.w.tick()
+        self.assertEqual((self.w.comments_created, self.w.comments_updated), (1, 1))
+
     def test_a_rename_that_adds_an_issue_creates_that_issue_comment(self) -> None:
         self.w.handle_event(move(5, "plain", subject="OPS-9 plain", ids=[7]))
         self.assertEqual(len(self.lin.created), 1)

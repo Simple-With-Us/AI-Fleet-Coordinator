@@ -172,6 +172,13 @@ ${replaceLine}
   return htmlResponse(`Connect ${seat}`, body, { headers });
 }
 
+/** Names only: the Infisical records an identity is missing (the owner status API names the same ones). */
+function missingRecordsNote(r) {
+  const names = Array.isArray(r.missingRecords?.names) ? r.missingRecords.names : [];
+  if (names.length) return `Missing record${names.length === 1 ? "" : "s"}: ${names.map((n) => `<code>${escapeHtml(n)}</code>`).join(", ")}${r.missingRecords.note ? ` (${escapeHtml(r.missingRecords.note)})` : ""}.`;
+  return r.kind === "seat" ? "Missing the seat's Zulip key and bot email records." : "Missing the bot's Zulip or Linear credential records.";
+}
+
 function gbBearerSection(rows, csrf, mintId = "") {
   if (!rows.length) return "";
   const mintIdField = mintId ? `<input type="hidden" name="mint_id" value="${escapeHtml(mintId)}">` : "";
@@ -207,7 +214,7 @@ function gbBearerSection(rows, csrf, mintId = "") {
       const mint = r.credentialsUnavailable
         ? `<span class="warn">Credential readiness unknown (diagnostic read failed)</span>`
         : !r.credentials
-        ? `<span class="warn">No credentials loaded</span>`
+        ? `<button type="button" disabled title="Cannot mint until the credentials are loaded">${escapeHtml(mintLabel)}</button><br><span class="warn">No credentials loaded.  ${missingRecordsNote(r)}</span>`
         : r.kind === "seat"
           ? `${rotateDrops}<form class="inline bearer-form" method="post" action="/admin/action">${csrfField(csrf)}<input type="hidden" name="action" value="mint_gb_bearer"><input type="hidden" name="identity" value="${escapeHtml(r.identity)}">${mintIdField}<label class="bearer-accept"><input type="checkbox" name="mcp_accept" value="1"> Also accept this bearer on /mcp itself, in place of the consent flow</label><button type="submit">${escapeHtml(mintLabel)}</button></form>`
           : actionButton(csrf, "mint_gb_bearer", mintLabel, { identity: r.identity, ...(mintId ? { mint_id: mintId } : {}) });

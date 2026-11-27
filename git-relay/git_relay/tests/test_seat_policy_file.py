@@ -310,7 +310,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "9cc301f5a703eb72")
+        self.assertEqual(seat_policy.digest(SEATS), "a709d5f466e6e15a")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -328,6 +328,17 @@ class SeatPolicyFile(unittest.TestCase):
             mutate(doc)
             with self.assertRaisesRegex(seat_policy.PolicyFileError, message):
                 seat_policy.render(doc)
+
+    def test_render_refuses_a_seat_whose_fields_are_not_strings(self):
+        """A malformed row is refused on the documented error path, not a crash."""
+        for field in ("identity", "app_slug", "profile"):
+            with self.subTest(field=field):
+                doc = json.loads(json.dumps(DOC))
+                doc["seats"][0][field] = 7
+                with self.assertRaisesRegex(
+                    seat_policy.PolicyFileError, f"{field} must be a string"
+                ):
+                    seat_policy.render(doc)
 
     def test_root_refuses_a_copy_another_account_can_write(self):
         target = Path("/tmp/fixture/deploy/seat_policy.py")
@@ -490,7 +501,7 @@ class HostedOAuthReviewedPolicyTests(unittest.TestCase):
         )
         flagged = {row["identity"] for row in data["seats"] if row.get("oauth_assert")}
         self.assertEqual(
-            flagged, {"CLAUDE", "CODEX", "CURSOR", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"}
+            flagged, {"CLAUDE", "CODEX", "CURSOR", "DUET", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"}
         )
         self.assertNotIn("JET", flagged)
 

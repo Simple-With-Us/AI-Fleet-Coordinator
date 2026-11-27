@@ -311,3 +311,127 @@ class Prerequisite(unittest.TestCase):
                 operator_send=mock.Mock(),
                 destination_for_origin=mock.Mock(),
             )
+
+
+class HoldLabels(unittest.TestCase):
+    def test_allowlisted_reason_codes_are_recorded(self):
+        from review_alerts import operator_pr_origin
+
+        for code in sorted(operator_pr_origin.HOLD_REASONS):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    operator_pr_origin.hold_label(operator_pr_origin.Held(code)),
+                    "Held:" + code,
+                )
+
+    def test_unlisted_held_text_never_reaches_the_snapshot(self):
+        from review_alerts import operator_pr_origin
+
+        secret = "/private/path token=abc123"
+        self.assertEqual(operator_pr_origin.hold_label(operator_pr_origin.Held(secret)), "Held")
+        self.assertEqual(operator_pr_origin.hold_label(ValueError(secret)), "ValueError")
+
+    def test_cycle_records_reason_code_for_known_hold(self):
+        from review_alerts import operator_pr_origin
+
+        with tempfile.TemporaryDirectory() as d:
+            bind = mock.Mock(side_effect=operator_pr_origin.Held("no-native-origin"))
+            runner = service.AlertService(
+                events.EventStore(str(Path(d) / "events.jsonl")),
+                FakeRead(reviews=[kody_review(51)]),
+                FakeRouter(),
+                "",
+                {"claude": "CLAUDE"},
+                {REPO},
+                gate_seat="CLAUDE",
+                message_poster=lambda owner, event, link: 123,
+                owner_provider=lambda: [claimed_owner()],
+                origin_binder=bind,
+            )
+            self.assertEqual(runner.cycle()["held"], 1)
+            self.assertEqual(
+                runner.status_snapshot()["binding_holds"][REPO + "#7"],
+                "Held:no-native-origin",
+            )
+
+    def test_cycle_records_only_class_name_for_unknown_hold_text(self):
+        from review_alerts import operator_pr_origin
+
+        with tempfile.TemporaryDirectory() as d:
+            bind = mock.Mock(side_effect=operator_pr_origin.Held("private-context-must-not-appear"))
+            runner = service.AlertService(
+                events.EventStore(str(Path(d) / "events.jsonl")),
+                FakeRead(reviews=[kody_review(51)]),
+                FakeRouter(),
+                "",
+                {"claude": "CLAUDE"},
+                {REPO},
+                gate_seat="CLAUDE",
+                message_poster=lambda owner, event, link: 123,
+                owner_provider=lambda: [claimed_owner()],
+                origin_binder=bind,
+            )
+            self.assertEqual(runner.cycle()["held"], 1)
+            self.assertEqual(runner.status_snapshot()["binding_holds"][REPO + "#7"], "Held")
+
+
+class ProtectedReceiptHoldLabels(unittest.TestCase):
+    def test_actual_receipt_validation_errors_reach_binding_status(self):
+        # The first read enumerates owners. A later lookup may observe malformed
+        # protected data, including the final consistency read before bind-pr.
+        valid = dict(claimed_owner(), source="open_pr", corr="fixture-create")
+        for malformed, reason in (
+            ({"not": "a census"}, "receipt-census-invalid"),
+            ([dict(valid, source="audit_backfill")], "receipt-invalid"),
+        ):
+            for failed_read in (2, 4):
+                with self.subTest(reason=reason, failed_read=failed_read):
+                    with tempfile.TemporaryDirectory() as d:
+                        read = mock.Mock()
+                        read._read.side_effect = [[valid]] * (failed_read - 1) + [malformed]
+                        receipts = operator_loop.ProtectedReceipts(read, {REPO})
+                        owner = claimed_owner()
+                        registry = mock.Mock(
+                            return_value=dict(
+                                found=True,
+                                platform="claude",
+                                seat="CLAUDE",
+                                native_session_id=owner["origin_session_claim"],
+                                letter=owner["origin_letter_claim"],
+                                generation=owner["origin_generation_claim"],
+                                verified_host="server",
+                                profile_scope="fixture",
+                                state="active",
+                            )
+                        )
+                        binder = operator_loop.RegistryOriginBinder(
+                            receipts,
+                            registry,
+                            {"claude": "CLAUDE"},
+                            {"CLAUDE": "claude"},
+                        )
+                        router = FakeRouter()
+                        runner = service.AlertService(
+                            events.EventStore(str(Path(d) / "events.jsonl")),
+                            FakeRead(reviews=[kody_review(51)]),
+                            router,
+                            "",
+                            {"claude": "CLAUDE"},
+                            {REPO},
+                            gate_seat="CLAUDE",
+                            owner_provider=receipts.rows,
+                            origin_binder=binder.bind,
+                            message_poster=mock.Mock(),
+                        )
+                        self.assertEqual(runner.cycle()["held"], 1)
+                        self.assertEqual(
+                            runner.status_snapshot()["binding_holds"][REPO + "#7"],
+                            "Held:" + reason,
+                        )
+                        self.assertEqual(read._read.call_count, failed_read)
+                        self.assertFalse(runner.store.has_seed(REPO, 7))
+                        self.assertEqual(router.submitted, [])
+                        runner.message_poster.assert_not_called()
+                        self.assertFalse(
+                            any(call.args[0] == "bind-pr" for call in registry.call_args_list)
+                        )

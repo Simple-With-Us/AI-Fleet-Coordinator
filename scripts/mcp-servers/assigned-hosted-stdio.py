@@ -112,6 +112,201 @@ def native_origin_claims(env, identity, meta=None):
             os.close(fd)
 
 
+#: Per-call metadata keys a native client can authenticate.  Only these names
+#: are ever reported by the capability probe; unknown keys are counted, never
+#: named, and no value of any key is emitted.
+KNOWN_META_KEYS = (
+    "com.simplewithus/native-origin/1",
+    "com.zcode/request-context",
+    "threadId",
+    "x-codex-turn-metadata",
+)
+
+#: The only tool names the probe may emit.  A caller-controlled name can carry
+#: secret text or an unbounded body, so anything else reports as "other".
+PROBE_TOOL_LABELS = ("identities", "gr_open_pr", "open_pr")
+
+
+def call_shape_once(env, identity, params):
+    """Default-off, host-armed one-shot capability probe for any identity.
+
+    An empty private <identity>/origin-call-shape.once marker is consumed
+    atomically, then one JSON line reports the next tool call's metadata
+    SHAPE:  the tool label (allowlisted names only), the _meta type, the type
+    of each known context key, and the count of other keys.  Never a value,
+    never an unknown key name, never a request or response body.
+
+    Arm at most one marker per identity at a time and never rearm while a
+    consumption may still be in flight:  open/fstat/unlink is not
+    inode-bound, so a racing rearm could be consumed by an earlier reader.
+    One armed generation emits at most one line, even across processes.
+
+    When the identity directory also carries a private empty 0600
+    origin-call-shape.sink flag file, the same line is also published once
+    to origin-call-shape.json next to the marker (complete-write temp file
+    plus atomic no-overwrite link, 4096-byte cap) for clients whose stderr
+    is not retained.  A sink failure never affects the tool call and never
+    leaves a partial sink, and an existing sink file is never overwritten:
+    one armed generation, at most one sink file."""
+    if (
+        not isinstance(identity, str)
+        or not re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{0,31}", identity)
+        or not isinstance(params, dict)
+    ):
+        return
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        return
+    directory = None
+    marker = None
+    try:
+        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in (".simple-tools", identity):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+            info = os.fstat(directory)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                return
+        name = "origin-call-shape.once"
+        marker = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        info = os.fstat(marker)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or info.st_size != 0
+        ):
+            return
+        # Only the unlink winner emits, even across adapter processes.
+        os.unlink(name, dir_fd=directory)
+        meta = params.get("_meta")
+
+        def kind(value):
+            if value is None:
+                return "missing-or-null"
+            if type(value) is bool:
+                return "boolean"
+            if type(value) is int:
+                return "integer"
+            if isinstance(value, str):
+                return "string"
+            if isinstance(value, dict):
+                return "object"
+            if isinstance(value, list):
+                return "array"
+            return "other"
+
+        keys = meta.keys() if isinstance(meta, dict) else ()
+        tool = params.get("name")
+        shape = {
+            "diagnostic": "origin-call-shape/1",
+            "tool": tool
+            if tool in PROBE_TOOL_LABELS
+            else ("other" if isinstance(tool, str) else None),
+            "meta_type": kind(meta),
+            "known_keys": {
+                key: kind(meta.get(key)) if isinstance(meta, dict) else "missing-or-null"
+                for key in KNOWN_META_KEYS
+            },
+            "other_key_count": sum(1 for key in keys if key not in KNOWN_META_KEYS),
+        }
+        line = json.dumps(shape, sort_keys=True)
+        if _sink_armed(directory):
+            _write_shape_sink(directory, line)
+        print(line, file=sys.stderr)
+    except (OSError, ValueError, TypeError):
+        return
+    finally:
+        if marker is not None:
+            os.close(marker)
+        if directory is not None:
+            os.close(directory)
+
+
+def _sink_armed(directory):
+    """True only for the owner's planted private empty flag file.
+
+    The flag must be a regular file owned by this user, exactly 0600,
+    single-link and empty;  a directory, FIFO, symlink, wrong-mode or
+    hardlinked name is never honored.  Content is never read."""
+    flag = None
+    try:
+        flag = os.open(
+            "origin-call-shape.sink",
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory,
+        )
+        info = os.fstat(flag)
+        return (
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and stat.S_IMODE(info.st_mode) == 0o600
+            and info.st_nlink == 1
+            and info.st_size == 0
+        )
+    except OSError:
+        return False
+    finally:
+        if flag is not None:
+            os.close(flag)
+
+
+def _write_shape_sink(directory, line):
+    """Publish one bounded shape line to origin-call-shape.json, at most once.
+
+    The line is written completely to a private temp file and published with
+    an atomic no-overwrite link, so a reader never sees a partial sink and a
+    prior generation's sink is never replaced.  Any failure removes the temp
+    and is swallowed:  this diagnostic must never change a tool call's
+    outcome.  An absent or invalid sink is a failed capture, never a result."""
+    data = (line + "\n").encode("utf-8")
+    if len(data) > 4096:
+        return
+    fd = None
+    created = False
+    try:
+        temp = "origin-call-shape.json.tmp-%d-%s" % (os.getpid(), os.urandom(4).hex())
+        fd = os.open(
+            temp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory,
+        )
+        created = True
+        written = 0
+        while written < len(data):
+            count = os.write(fd, data[written:])
+            if count <= 0:
+                raise OSError("short write")
+            written += count
+        closing, fd = fd, None
+        os.close(closing)
+        os.link(
+            temp,
+            "origin-call-shape.json",
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        # Only remove a temp this invocation actually created:  after a
+        # failed exclusive open the name may belong to someone else.
+        if created:
+            try:
+                os.unlink(temp, dir_fd=directory)
+            except OSError:
+                pass
+
+
 def origin_shape_once(env, identity, params):
     """Default-off, host-armed one-shot for identities only. Never emits values.
 
@@ -564,6 +759,7 @@ class Adapter:
                     )
         if method == "tools/call":
             origin_shape_once(self.env, self.identity, message.get("params"))
+            call_shape_once(self.env, self.identity, message.get("params"))
         headers = {
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",

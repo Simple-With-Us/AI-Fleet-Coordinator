@@ -36,6 +36,13 @@ WF_V1_READ_ACTIONS = [
     "wf_secret_key_env_actions",
     "wf_org_variables",
     "wf_org_variable_repos",
+    "wf_hook_get",
+    "wf_hook_deliveries",
+    "wf_org_hooks",
+    "wf_org_hook_get",
+    "wf_deploy_key_get",
+    "wf_env_branch_policies",
+    "wf_env_variables",
     "wf_installation_metadata",
     "wf_pr_commits_page",
     "wf_pr_review_get",
@@ -124,6 +131,9 @@ WF_V1_READ_ACTIONS = [
     "wf_repo_list",
     "wf_pr_search",
     "wf_repo_hooks",
+    "wf_collaborator_permission",
+    "wf_repo_collaborators",
+    "wf_repo_teams",
     "wf_deploy_keys",
     "wf_org_installations",
     "wf_branch_rules",
@@ -197,7 +207,7 @@ def main(argv):
         return 1
     json.dump(
         {
-            "provenance": "hosted simple-tools MCP tools/list, captured by the host's own seat 2026-10-31; "
+            "provenance": "hosted simple-tools MCP tools/list, captured by the host's own seat 2026-11-23 (P1 and P2 git tools); "
             "identity enum neutralized (caller-relative); list presence is not execution proof",
             "tools": catalog,
         },

@@ -138,7 +138,7 @@ class SheetRuleSentenceGapTests(unittest.TestCase):
         refusing = [s for s in _sentences(detail) if "entity" in s and "Never" in s]
         self.assertTrue(refusing, "the entity refusal is gone; update this gate")
         for sentence in refusing:
-            self.assertIn("outside the three chat panes", sentence)
+            self.assertIn("outside the four chat panes", sentence)
 
 
 if __name__ == "__main__":

@@ -257,8 +257,30 @@ final class KnobControlsTests: XCTestCase {
         let first = try XCTUnwrap(registry.freshnessLines().first)
         XCTAssertTrue(first.isWarning)
         XCTAssertTrue(first.text.hasPrefix("Infisical was not read at "), first.text)
-        XCTAssertTrue(first.text.contains("without the knob reader's Infisical token"), first.text)
+        XCTAssertTrue(first.text.contains("no Infisical service-token binding"), first.text)
         XCTAssertFalse(first.text.contains("UTC"))
+    }
+
+    func test_partial_live_read_preserves_healthy_folders() throws {
+        let json = """
+        {"schema": 1, "fetch": "failed", "fetch_reason": "muster-binding-refused",
+         "folders": {"/": {"fetch": "ok"}, "/wake-router": {
+             "fetch": "failed", "fetch_reason": "muster-binding-refused"}},
+         "write_token": "missing", "knobs": [
+          {"name": "CONSULT_ENABLED", "set": false, "source": "default", "stale": false, "value": "false"},
+          {"name": "FLEET_FACTS_SIGNING_KEY", "set": true, "source": "infisical", "stale": false}
+        ]}
+        """
+        let status = try XCTUnwrap(KnobLiveStatus.parse(Data(json.utf8)))
+        let registry = try realRegistry().applying(status)
+        XCTAssertEqual(try knob(registry, "CONSULT_ENABLED").source, .infisical)
+        XCTAssertEqual(try knob(registry, "FLEET_FACTS_SIGNING_KEY").nowText, "set (secret)")
+        XCTAssertTrue(registry.freshnessLines().contains {
+            !$0.isWarning && $0.text.hasPrefix("Read from Infisical at ")
+        })
+        XCTAssertTrue(registry.freshnessLines().contains {
+            $0.isWarning && $0.text.hasPrefix("Could not read /wake-router:")
+        })
     }
 
     func test_a_good_live_read_names_infisical_and_a_secret_only_as_set() throws {
@@ -487,7 +509,7 @@ final class SecretsDoctorPanelTests: XCTestCase {
         let report = try FleetSecrets.parseDoctor(json)
         XCTAssertEqual(report["names_count"], "1")
         XCTAssertEqual(report["fetch_names_ok"], "true")
-        XCTAssertEqual(report["failure_reason"], "Infisical login failed (exit 1)")
+        XCTAssertNil(report["failure_reason"], "arbitrary provider prose is not displayed")
         XCTAssertNil(report["unlisted_check"], "a key the panel does not name is dropped")
         XCTAssertNil(report["unresolved_reference_count"], "this reader reports no unresolved references")
         XCTAssertNil(report["ai_fleet_coordinator_fetch_ok"], "this reader reports no per-project rows")

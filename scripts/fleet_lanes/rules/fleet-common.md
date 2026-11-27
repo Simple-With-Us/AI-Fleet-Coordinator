@@ -1,5 +1,8 @@
 ### Coordination
 
+
+PR titles: fleet-coordination skill requires full assigned identity for multithreaded sessions.
+
 Claim substantial Linear work first; branch `<seat>/<id>-<slug>`; PR `Fixes <ID>` (finished)/`Refs <ID>` (partial).  Zulip topic `<ID> <subject>`, status starts `repo:`.  Effort logs archived.
 
 Use a verified seat/approved route.  Never borrow identities/credentials, expose/persist tokens or use chat tags/letters as native IDs.
@@ -34,6 +37,6 @@ Use a names-only scoped Infisical read; capture a read of NAME for its consumer,
 
 ### Writing Anything a Human Reads
 
-Use U+00A0 + space in prose/Notes (readback may show 2 spaces).  One exception: Claude Code, MiniMax Code and Z Code chat replies use `&nbsp;` + space.  Never use that entity elsewhere or prose gaps in code/IDs/config; see `sentence-gap`.
+Use U+00A0 + space in prose/Notes (readback may show 2 spaces).  One exception: Claude Code, MiniMax Code, Z Code and Antigravity chat replies use `&nbsp;` + space.  Never use that entity elsewhere or prose gaps in code/IDs/config; see `sentence-gap`.
 
 Owner-facing times: America/Chicago 12-hour AM/PM, no zone or adjacent UTC.  Titles/headings/buttons: Title Case; default light theme; no agents in release copy.

@@ -81,10 +81,10 @@ public enum ServicePolicyTable {
             "It only serves BotFleet Server, which Muster leaves alone, so Muster leaves it alone too."),
         row("com.jay.operator", .leaveAlone,
             "The Mac's eavesdropper was retired at the Nov 10 one-listener cutover, and the server listener holds every seat, so Muster never starts or stops it."),
+        row("com.jay.code-main-keeper", .leaveAlone,
+            "launchd keeps it alive itself, so Muster never starts it and a deliberate stop stays."),
         row("shellular", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
-        row("code-main-keeper", .keepRunning,
-            "A long-running job in the pm2 ecosystem file that keeps the Mac's copy of main current, and starting it again is safe."),
         row("vision-worker", .keepRunning,
             "A long-running worker in the pm2 ecosystem file, and starting it again is safe."),
         row("xcode-health", .keepRunning,
@@ -97,8 +97,6 @@ public enum ServicePolicyTable {
             "A long-running bridge in the pm2 ecosystem file, and starting it again is safe."),
         row("clutch-web", .startAtLoginOnly,
             "It exits on purpose when something else holds its port, so Muster starts it once when Muster starts and never fights the port."),
-        row("seat-mcp", .keepRunning,
-            "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
     ]
 
     /// The reason every LaunchAgent that is only on the allowlist is left alone.
@@ -116,6 +114,7 @@ public enum ServicePolicyTable {
     private static let agents: [(String, String)] = [
         ("com.jay.botfleet-server", handReason),
         ("com.jay.fleet-api-health", scheduledReason),
+        ("com.jay.fleet-bearer-status", scheduledReason),
         ("com.jay.fleet-gdrive-backup", scheduledReason),
         ("com.jay.fleet-mac-services", scheduledReason),
         ("com.jay.fleet-rag-mirror", scheduledReason),

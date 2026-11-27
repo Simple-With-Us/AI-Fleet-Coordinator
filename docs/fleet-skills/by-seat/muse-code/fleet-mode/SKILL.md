@@ -84,6 +84,6 @@ Use one whenever the sub-tasks actually require it — two or more agents writin
 
 ## Where the policy lives
 
-The full policy is `FLEET-PROTOCOL.md` § Delegation & model economics, and the fleet-level statement with the pasteable block is `docs/FLEET-MODE.md`.  This skill is the operational form of that policy.  Where your platform enforces it with a hook, the hook is an enforcement of this policy and not a separate rule.
+The full policy is `TEMPLATE-AGENTS.md` § Delegation & model economics, and the fleet-level statement with the pasteable block is `docs/FLEET-MODE.md`.  This skill is the operational form of that policy.  Where your platform enforces it with a hook, the hook is an enforcement of this policy and not a separate rule.
 
 The pasteable block also lives at `~/apps/FLEET-MODE.md`, and `~/apps/fleet-mode` prints it.

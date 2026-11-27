@@ -81,7 +81,10 @@ because an agent that delegates only when certain delegates almost never.
 
 ## Canonical sources
 
-- Full policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Delegation & model economics
+- Full policy: this document; the Fleet-OPS handbook rewrite (Fleet-OPS #203)
+  turned `FLEET-PROTOCOL.md` into the Fleet Tools Manual and moved policy prose
+  to each repository's `AGENTS.md`, so the old `§ Delegation & model economics`
+  section there is gone
 - Skill source: `docs/fleet-skills/fleet-mode/SKILL.md`, installed into every seat's skill home
 - Claude Code enforcement hook: `~/.claude/hooks/subagent-economy-pretooluse.py`
 - Printer: `~/apps/fleet-mode` (on-demand helper script)
@@ -91,7 +94,7 @@ because an agent that delegates only when certain delegates almost never.
 - **`~/Code/` is for integration trees only** — no new top-level folder may be
   added to `~/Code/` unless it is the integration tree for a brand-new fleet
   app being onboarded.  Per-seat worktrees, lane checkouts, scratch clones,
-  and `*-wt-*` directories all belong in `~/apps/`.  See `FLEET-PROTOCOL.md` §
-  *"Hard rule: `~/Code/` is for integration trees only"* and the
-  `code-main-keeper.sh` `STRAY-WORKTREE` enforcement scan.  Owner ruling
+  and `*-wt-*` directories all belong in `~/apps/`.  The lane guard hook
+  (`scripts/fleet_lanes/lane_guard_hook.py`) denies new fleet-repo task
+  worktrees and scratch clones under `~/Code/`.  Owner ruling
   2026-09-25, all agents, all apps, forever.

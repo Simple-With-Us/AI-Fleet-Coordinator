@@ -35,13 +35,13 @@ printf '%s\n' '[{"name":"vision-worker","pm2_env":{"name":"vision-worker","statu
   >"${tmp}/poisoned.json"
 assert_no "${tmp}/poisoned.json" \
   shellular scout senate-relay senate-tunnel \
-  code-main-keeper vision-worker xcode-health agy-acp \
+  vision-worker xcode-health agy-acp \
   grok-leader grok-acp
 
 # same poisoned dump still fails the original job list
 assert_no "${tmp}/poisoned.json" \
   shellular scout senate-relay senate-tunnel \
-  code-main-keeper vision-worker xcode-health agy-acp
+  vision-worker xcode-health agy-acp
 
 # complete dump with top-level name
 python3 - "${tmp}/complete.json" <<'PY'
@@ -49,14 +49,14 @@ import json, sys
 path = sys.argv[1]
 names = [
     "shellular", "scout", "senate-relay", "senate-tunnel",
-    "code-main-keeper", "vision-worker", "xcode-health", "agy-acp",
+    "vision-worker", "xcode-health", "agy-acp",
     "grok-leader", "grok-acp",
 ]
 json.dump([{"name": n} for n in names], open(path, "w"))
 PY
 assert_ok "${tmp}/complete.json" \
   shellular scout senate-relay senate-tunnel \
-  code-main-keeper vision-worker xcode-health agy-acp \
+  vision-worker xcode-health agy-acp \
   grok-leader grok-acp
 
 # pm2_env.name only

@@ -23,7 +23,8 @@ final class FleetAdminTests: XCTestCase {
 
         XCTAssertNotNil(admin.services, "The admin never read the fleet services.")
         XCTAssertEqual(admin.entries.count, FleetServiceRegistry.all.count, "The admin did not read every fleet service.")
-        XCTAssertEqual(admin.entries.count, 13, "The admin did not read every fleet service.")
+        XCTAssertEqual(admin.entries.count, 12, "The admin did not read every supported fleet service.")
+        XCTAssertFalse(admin.entries.contains { $0.id == "seat-mcp" })
     }
 
     /// The read shells out to launchctl and opens a socket,  so it cannot run on the

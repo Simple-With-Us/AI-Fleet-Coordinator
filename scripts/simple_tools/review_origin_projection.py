@@ -13,17 +13,26 @@ from . import operator_registry as OR
 PATH = "/registry/v1/review-origin"
 CONTRACT = "simple-tools-review-origin/1"
 KEY_ENV = "REVIEW_ORIGIN_CODEX_READ_KEY"
+ZC_KEY_ENV = "REVIEW_ORIGIN_ZC_READ_KEY"
+ZC_PATH = "/registry/v1/review-origin-zcode"
+ZC_SESSION = re.compile(r"sess_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SESSION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
-def signature(key, query, timestamp):
+def signature(key, query, timestamp, *, path=PATH):
     # Purpose, method, path, exact query and timestamp are all authenticated.
-    message = f"{CONTRACT}\nGET\n{PATH}\n{query}\n{timestamp}".encode()
+    message = f"{CONTRACT}\nGET\n{path}\n{query}\n{timestamp}".encode()
     return hmac.new(key.encode(), message, hashlib.sha256).hexdigest()
 
 
 class ReviewOriginProjection:
-    def __init__(self, db_path, key="", *, clock=time.time):
+    def __init__(self, db_path, key="", *, clock=time.time, platform="codex"):
+        if platform not in {"codex", "zcode"}:
+            raise ValueError("unsupported origin platform")
+        self.platform = platform
+        self.seat = "ZC" if platform == "zcode" else "CODEX"
+        self.path = ZC_PATH if platform == "zcode" else PATH
+        self.session_pattern = ZC_SESSION if platform == "zcode" else SESSION
         self.db_path, self.key, self.clock = db_path, key, clock
 
     def handle(self, method, raw_path, headers, body):
@@ -31,7 +40,7 @@ class ReviewOriginProjection:
         if not isinstance(self.key, str) or len(self.key) < 32:
             return hidden
         parts = urlsplit(raw_path)
-        if parts.path != PATH or parts.fragment:
+        if parts.path != self.path or parts.fragment:
             return hidden
         if method != "GET":
             return 405, {"code": "method_not_allowed"}
@@ -46,19 +55,21 @@ class ReviewOriginProjection:
             or abs(self.clock() - int(stamp)) > 300
             or not isinstance(given, str)
             or not re.fullmatch(r"[0-9a-f]{64}", given)
-            or not hmac.compare_digest(signature(self.key, parts.query, stamp), given)
+            or not hmac.compare_digest(
+                signature(self.key, parts.query, stamp, path=self.path), given
+            )
         ):
             return 401, {"code": "unauthorized"}
         fields = parse_qsl(parts.query, keep_blank_values=True)
         if (
             len(fields) != 1
             or fields[0][0] != "native_session_id"
-            or not SESSION.fullmatch(fields[0][1])
+            or not self.session_pattern.fullmatch(fields[0][1])
         ):
             return 400, {"code": "invalid_request"}
         session = fields[0][1]
         try:
-            rows = OR.registrations_for_native_id(self.db_path, "codex", session)
+            rows = OR.registrations_for_native_id(self.db_path, self.platform, session)
         except Exception:
             return 503, {"code": "origin_unavailable"}
         # Never choose one location, a pair or another seat when custody conflicts.
@@ -67,7 +78,7 @@ class ReviewOriginProjection:
         row = rows[0]
         if (
             not isinstance(row, dict)
-            or row.get("seat") != "CODEX"
+            or row.get("seat") != self.seat
             or row.get("state") != "active"
             or not isinstance(row.get("label"), str)
             or not re.fullmatch(r"[A-Z]{2}", row["label"])

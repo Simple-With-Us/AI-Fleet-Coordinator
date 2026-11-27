@@ -113,6 +113,7 @@ These never address a chat:  a silent mention in the body (`@_**Claude** AA`, th
   persisted (it can quote private prompt/session content), an unmatched failure records
   `unknown`, and classification never activates a retry by itself.
 - Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
+- Delivery reserve (decided for AFC-655, recorded by AFC-836):  the server router keeps the durable reserve and the in-flight mark, and a wake is delivered at most once after that mark.  The Mac last mile holds no cursor and no dedupe state of its own: it delivers what the router hands it and answers with the wake's own receipt, so a retry is answered from the server's record, never re-decided on the Mac.
 - Determinism first:  the rules above, in order.  ONE headless decider for every platform
   (the Operator's preset, via OpenRouter - the owner's words:  not "a bunch of different
   headless models on a per platform basis"), optional and off by default, consulted only

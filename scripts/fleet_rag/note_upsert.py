@@ -181,16 +181,23 @@ def deliver_queued_note(record, root=None, lock_timeout_s=0, read_current=None):
 
     root = note_outbox.default_root() if root is None else root
     reader = read_current_coding_note if read_current is None else read_current
+    def validated_snapshot(doc_id):
+        snapshot = reader(doc_id)
+        if (not isinstance(snapshot, dict)
+            or not all(isinstance(snapshot.get(field), str) for field in ("id", "name", "text", "revision"))
+            or not snapshot["revision"]):
+            raise note_outbox.DeliveryError("permanent", "provider-contract-invalid")
+        try:
+            identity = note_doc_id(snapshot["id"])
+        except (ValueError, TypeError, FleetRagError):
+            raise note_outbox.DeliveryError("permanent", "provider-contract-invalid") from None
+        if identity != doc_id:
+            raise note_outbox.DeliveryError("permanent", "provider-contract-invalid")
+        return snapshot
     try:
         if record.get("schema") != 2 or record.get("cancelled"):
             return False
-        snapshot = reader(record["doc_id"])
-        if not isinstance(snapshot, dict) or not all(
-            isinstance(snapshot.get(k), str) for k in ("id", "name", "text", "revision")
-        ):
-            return False
-        if not snapshot["id"].strip() or not snapshot["revision"].strip():
-            return False
+        snapshot = validated_snapshot(record["doc_id"])
         text = snapshot["text"].strip()
         text_kind = "body" if text else "title-only"
         text = text or snapshot["name"].strip()
@@ -225,7 +232,7 @@ def deliver_queued_note(record, root=None, lock_timeout_s=0, read_current=None):
             if previous.get("doc_hash") == digest and receiver_verified(
                 doc, qd, previous.get("chunk_ids", [])
             ):
-                return reader(doc.doc_id)["revision"] == snapshot["revision"]
+                return validated_snapshot(doc.doc_id)["revision"] == snapshot["revision"]
             writer = ingest.Writer(cfg, qd, dry_run=False, log=lambda *_args: None)
             stats = ingest._empty_stats()
             process_group(
@@ -239,10 +246,10 @@ def deliver_queued_note(record, root=None, lock_timeout_s=0, read_current=None):
             )
             return (
                 receiver_verified(doc, qd, state.get(doc.doc_id, {}).get("chunk_ids", []))
-                and reader(doc.doc_id)["revision"] == snapshot["revision"]
+                and validated_snapshot(doc.doc_id)["revision"] == snapshot["revision"]
             )
-    except Exception:
-        return False
+    except Exception as error:
+        raise note_outbox.delivery_failure(error) from None
 
 
 def main(argv: list[str] | None = None) -> int:

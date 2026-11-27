@@ -247,6 +247,7 @@ class RegistryService:
         keys: Mapping[str, str],
         *,
         review_origin_read_key: str = "",
+        review_origin_zc_read_key: str = "",
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
         gone_report_max_share: float = DEFAULT_GONE_REPORT_MAX_SHARE,
@@ -257,9 +258,17 @@ class RegistryService:
         self.review_origin = ReviewOriginProjection(
             str(db_path), review_origin_read_key, clock=clock
         )
-        self.has_review_origin_key = (
-            isinstance(review_origin_read_key, str) and len(review_origin_read_key) >= 32
+        self.review_origin_zc = ReviewOriginProjection(
+            str(db_path), review_origin_zc_read_key, clock=clock, platform="zcode"
         )
+        if review_origin_zc_read_key and (
+            review_origin_zc_read_key == review_origin_read_key
+            or review_origin_zc_read_key in keys.values()
+        ):
+            raise ValueError("ZC review origin key must be dedicated")
+        self.has_review_origin_key = (
+            isinstance(review_origin_zc_read_key, str) and len(review_origin_zc_read_key) >= 32
+        ) or (isinstance(review_origin_read_key, str) and len(review_origin_read_key) >= 32)
         self.db_path = str(db_path)
         self.gone_report_max_share = float(gone_report_max_share)
         self.gone_report_window_minutes = int(gone_report_window_minutes)
@@ -311,6 +320,8 @@ class RegistryService:
             return _error(404, "not_found", "not found")
         if path == PREFIX + "review-origin":
             return self.review_origin.handle(method, raw_path, headers, body)
+        if path == PREFIX + "review-origin-zcode":
+            return self.review_origin_zc.handle(method, raw_path, headers, body)
         op = path[len(PREFIX) :]
         if op not in _METHODS or "/" in op:
             return _error(404, "not_found", "not found")
@@ -1117,6 +1128,19 @@ class Sweeper:
             return False
         self.next_at = now + self.interval_s
         return True
+
+    def schedule(self) -> dict[str, Any]:
+        """When this sweeper runs, for the status document (AFC-833):  how often a pass is due
+        (`interval_minutes`), after how long an unreplaced chat's letter ends
+        (`stale_after_minutes`), and when the next pass is due (`next_at`, epoch seconds, or None
+        before the tick has booked one).  A reader judges the last pass against the real interval
+        instead of guessing one.  No lock:  the tick books a pass and the status is written on the
+        same thread."""
+        return {
+            "interval_minutes": int(self.interval_s // 60),
+            "stale_after_minutes": self.stale_after_minutes,
+            "next_at": self.next_at or None,
+        }
 
     def maybe_run(self, now: float) -> dict[str, Any] | None:
         if not self.claim(now):

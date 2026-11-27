@@ -9,6 +9,9 @@ from pathlib import Path
 
 from .operator_pr_origin import Held
 
+#: The two credential values may arrive as loader-delivered environment values (the
+#: sanctioned Infisical transport) instead of file paths;  the environment value wins
+#: when both are present.
 NAMES = frozenset(
     (
         "RA_ENABLED",
@@ -18,12 +21,19 @@ NAMES = frozenset(
         "RA_STATE_DIR",
         "RA_SERVICE_TOKEN_FILE",
         "RA_WAKE_KEY_FILE",
+        "RA_SERVICE_TOKEN",
+        "RA_WAKE_KEY",
         "RA_SELFTEST_SEAT",
         "RA_INTERVAL_S",
         "RA_RELAY_URL",
         "RA_ROUTER_URL",
     )
 )
+#: The local narrowing file never carries a secret:  the two credential VALUES may arrive only
+#: through the loader-delivered environment (the sanctioned Infisical transport), never through
+#: config.json, which a hand on the host could otherwise read.  FILE paths stay allowed there.
+#: The two credential VALUES:  loader-delivered environment only, never the local file.
+SECRET_VALUE_NAMES = frozenset({"RA_SERVICE_TOKEN", "RA_WAKE_KEY"})
 
 
 def configured(env):
@@ -65,6 +75,9 @@ def configured(env):
             or any(not isinstance(v, str) for v in values.values())
         ):
             raise ValueError()
+        # A credential value never comes from the host-writable narrowing file.
+        if set(values) & SECRET_VALUE_NAMES:
+            raise Held("review-config-secret-name")
     except (ValueError, UnicodeError):
         raise Held("review-config-invalid") from None
     # Explicit runtime environment remains authoritative, including disabling.

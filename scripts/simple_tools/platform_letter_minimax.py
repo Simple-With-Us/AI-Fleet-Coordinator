@@ -41,9 +41,9 @@ import json
 import os
 import re
 import sqlite3
-from datetime import UTC, datetime
 import time
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -132,8 +132,10 @@ def _row(env: Mapping[str, str], sid: str) -> dict[str, Any]:
         conn = _read_only(path)
         try:
             conn.row_factory = sqlite3.Row
+            names = ["title", "session_kind", "parent_session_id"]
+            names.extend(_machine_names(_columns(conn)))
             row = conn.execute(
-                "SELECT title, session_kind, parent_session_id FROM local_runtime_sessions WHERE session_id = ?",
+                "SELECT %s FROM local_runtime_sessions WHERE session_id = ?" % ", ".join(names),
                 (sid,),
             ).fetchone()
         finally:
@@ -207,9 +209,17 @@ def _sid(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 
 def minimax_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    """The kind of session this is:  a chat,  a sub-thread,  a headless run,  or the app's own run.
+
+    A BotFleet bot run is headless (AFC-894),  so it never takes a letter:  the fleet's rule is that
+    only interactive chats do,  and a bot run is not a chat anyone addresses.  The store is asked what
+    the session is,  because a launcher that started it does not say so in the environment.  A store
+    that cannot be read says nothing,  and the session is a chat as it always was."""
+    row = _row(env, _sid(payload, env))
+    if row and _machine_run(row):
+        return "headless"
     if _is_subagent_event(payload):
         return "subagent"
-    row = _row(env, _sid(payload, env))
     if not row:
         return "chat"
     if row.get("parent_session_id"):
@@ -278,6 +288,113 @@ def _extra(raw: object) -> dict[str, Any]:
 GONE_BATCH = 200
 
 
+# --------------------------------------------------------------------------------------------
+# The chats the store does not know (AFC-894)
+# --------------------------------------------------------------------------------------------
+#
+# A chat that was deleted or pruned has no row in the store at all,  and the row the assigner holds for it
+# stays live forever,  so its letter is never freed.  The store is asked about every id,  and the note of
+# the chat says when the fleet last addressed it:  a chat the store does not know and that nobody has
+# addressed for an hour is gone for good.
+
+#: How many chunks of ids the known-check reads.  The client offers at most GONE_REPORT_IDS (500) chats,  so
+#: the cap never bites in practice,  and it bounds the work on the hook path whatever a caller hands over.
+KNOWN_CHUNKS = 4
+#: How many chats the gone path asks about for the note probes.  The client offers the longest quiet chats
+#: first,  so the bound keeps the ones most likely to be gone,  and the rest wait for the next report.
+#: One probe is one file read,  and the gone path runs on a chat's start,  where every millisecond is the
+#: hook's own budget.
+ABSENT_PROBE_LIMIT = 64
+#: How long a chat the store does not know must have been quiet before its row is closed.  The client
+#: writes the note of a chat on every event of that chat,  so a note that has not been touched for this long
+#: is a chat the fleet has not addressed for this long,  and a chat the store has not written yet is not a
+#: chat that is gone.
+ABSENT_QUIET_SECONDS = 3600
+
+
+def _read_note(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
+    """The note the client keeps for a chat,  or None when there is none that can be read."""
+    try:
+        with open(PL.note_path(env, SEAT, sid), encoding="utf-8") as fh:
+            note = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return note if isinstance(note, dict) else None
+
+
+def absent_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
+    """The chats of these ids the store does not know at all,  and that nobody has addressed for an hour:  a
+    chat that was deleted or pruned is gone for good,  and the row the assigner holds for it must be closed
+    so its letter can be freed (AFC-894).
+
+    Two facts,  and both are needed.  The store does not know the chat at all,  and the note of the chat has
+    not been touched for an hour:  the client writes that note on every event of the chat,  so a note that
+    has not been touched is a chat nobody has addressed for an hour,  and a chat the store has not written
+    yet is not a chat that is gone.  A note that cannot be read names nothing,  and any doubt keeps the chat.
+
+    The ids are the ones the caller asked about,  so no chat is ever named that is not one of this host's
+    own chats,  and the assigner closes a row of the reporting host only:  a chat that runs on another host
+    is left open there,  and the note of a chat the assigner did not close is not retired.
+
+    The probes are bounded (ABSENT_PROBE_LIMIT),  and the order of the ids is kept:  the client offers the
+    longest quiet chats first,  so the bound keeps the ones most likely to be gone,  and the rest wait for
+    the next report.  The store is asked about the ids first,  so a chat it knows does not spend the budget:
+    a first run of chats the store knows must not starve the chats it does not.  The check itself is
+    bounded (KNOWN_CHUNKS),  and it stops as soon as the budget is full,  so the hook path pays for a few
+    queries and not for the length of the list."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return set()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for sid in session_ids or ():
+        if isinstance(sid, str) and sid and sid not in seen:
+            seen.add(sid)
+            ordered.append(sid)
+    if not ordered:
+        return set()
+    scanned = ordered[: KNOWN_CHUNKS * GONE_BATCH]
+    known: set[str] = set()
+    queried = 0
+    try:
+        conn = _read_only(path)
+        try:
+            for start in range(0, len(scanned), GONE_BATCH):
+                chunk = scanned[start : start + GONE_BATCH]
+                rows = conn.execute(
+                    "SELECT session_id FROM local_runtime_sessions WHERE session_id IN (%s)"
+                    % ",".join("?" * len(chunk)),
+                    chunk,
+                ).fetchall()
+                known.update(str(row[0]) for row in rows)
+                queried = start + len(chunk)
+                # The budget is spent on the chats the store does not know,  so the scan stops as soon as it
+                # has them:  a first run of chats the store knows must not starve the chats it does not,  and
+                # a long list must not cost a query per chunk of it.  Only the ids the store has been asked
+                # about count:  an id it has not been asked about is not known to be absent,  and naming it
+                # would free the letter of a chat the store holds.
+                if len([sid for sid in scanned[:queried] if sid not in known]) >= ABSENT_PROBE_LIMIT:
+                    break
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+    unknown = [sid for sid in scanned[:queried] if sid not in known][:ABSENT_PROBE_LIMIT]
+    now = time.time()
+    gone: set[str] = set()
+    for sid in unknown:
+        note = _read_note(env, sid)
+        if note is None:
+            continue
+        try:
+            moment = float(note.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if moment and now - moment >= ABSENT_QUIET_SECONDS:
+            gone.add(sid)
+    return gone
+
+
 def archived_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
     """The chats of these ids the session store knows are archived, by the store's own `archived` column.
 
@@ -309,6 +426,118 @@ def archived_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set
     except sqlite3.Error:
         return set()
     return gone
+
+
+# --------------------------------------------------------------------------------------------
+# The app's own runs (AFC-894)
+# --------------------------------------------------------------------------------------------
+#
+# A letter is one of the seat's twenty-six main pairs,  and a pair held by a chat nobody addresses
+# is a pair the owner's own chats cannot have.
+#
+# The fleet's rule is already there:  a session a launcher started never takes a letter,  because
+# the launcher says so in the environment.  A BotFleet bot run does not say so:  the app starts a
+# chat for the bot,  in a BotFleet workspace.  It is the app's own run and not a chat anyone
+# addresses,  and on Nov 25, 2026 such runs held twenty-one of this seat's twenty-six main pairs on
+# the Mac,  so a new chat of the owner's was refused into a "??: " title.
+#
+# So the store is asked what a session is:  a workspace under the BotFleet folder is a machine run.
+# A machine run never takes a letter,  and a machine run that is over frees the pair it held.
+
+#: A workspace under this path is a BotFleet bot run.
+BOTFLEET_WORKSPACE = ".botfleet"
+#: The statuses the runtime reports a session as over.
+DEAD_STATUSES = ("aborted", "error", "interrupted")
+#: The statuses that mean the session is still at work.
+LIVE_STATUSES = ("started", "running")
+#: How long a machine run may rest before it counts as over.  Two weeks is long enough that a run
+#: the owner comes back to is never taken away from him,  and short enough that a run the app
+#: abandoned a month ago is gone.
+DEAD_QUIET_SECONDS = 14 * 86400
+#: The store's own columns that say what a session is.
+MACHINE_COLUMNS = ("workspace_dir", "project_workspace_dir")
+
+
+def _machine_run(row: Mapping[str, Any]) -> bool:
+    """True for a store row that is one of the app's own runs,  and not one of the owner's chats.
+
+    A BotFleet bot run works in a BotFleet workspace,  and that is the whole test.  The runtime's own
+    purposes are not one:  a row whose purpose names a background task or a turn of a task is a chat of
+    its own,  and the ones that carry a letter today (AW, CI, CL  and the rest) must keep taking one.
+    A cron row is headless already,  because its own session kind is not a chat kind.
+
+    The workspace is read as the path it is:  the BotFleet folder is a segment of the path,  and a path of
+    the owner's that merely carries the same letters inside another name (a project folder called
+    "my.botfleet-notes")  is the owner's own and not a bot run."""
+    for key in ("workspace_dir", "project_workspace_dir"):
+        segments = str(row.get(key) or "").replace("\\", "/").split("/")
+        if BOTFLEET_WORKSPACE in segments:
+            return True
+    return False
+
+
+def _machine_names(columns: set[str]) -> list[str]:
+    """The store's own machine-run columns that this store carries."""
+    return [name for name in MACHINE_COLUMNS if name in columns]
+
+
+def over_sessions(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
+    """The machine runs of these ids that are over.
+
+    A run the runtime reports as ended (`aborted`, `error`, `interrupted`) is over,  and a run that
+    has rested untouched for two weeks is over as well:  the app started it,  nobody addresses it,
+    and the pair it holds is a pair the owner's own chats cannot have.  A run that is still at work
+    is never named,  and a store that cannot be read,  or one that does not say what a session is,
+    names none.  A chat of the owner is never named here:  he archives it,  and the archive releases
+    the pair (AFC-855).  Ids only."""
+    path = store_file(env)
+    if not path or not os.path.isfile(path):
+        return set()
+    wanted = sorted({sid for sid in session_ids if isinstance(sid, str) and sid})
+    if not wanted:
+        return set()
+    cutoff_ms = int((time.time() - DEAD_QUIET_SECONDS) * 1000)
+    gone: set[str] = set()
+    try:
+        conn = _read_only(path)
+        try:
+            columns = _columns(conn)
+            if not {"status", "updated_at_ms"} <= columns:
+                return set()
+            names = [
+                name
+                for name in ("session_id", "status", "updated_at_ms", *MACHINE_COLUMNS)
+                if name in columns
+            ]
+            select = ", ".join(names)
+            for start in range(0, len(wanted), GONE_BATCH):
+                chunk = wanted[start : start + GONE_BATCH]
+                rows = conn.execute(
+                    "SELECT %s FROM local_runtime_sessions WHERE session_id IN (%s)"
+                    % (select, ",".join("?" * len(chunk))),
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    record = dict(zip(names, row))
+                    if not _machine_run(record):
+                        continue
+                    status = str(record.get("status") or "").strip().lower()
+                    if status in DEAD_STATUSES:
+                        gone.add(str(record.get("session_id") or ""))
+                        continue
+                    if status in LIVE_STATUSES:
+                        continue
+                    try:
+                        updated = int(record.get("updated_at_ms") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if updated and updated < cutoff_ms:
+                        gone.add(str(record.get("session_id") or ""))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+    return {sid for sid in gone if sid}
 
 
 #: The most chats one report may name.  It is the registry's own limit
@@ -374,12 +603,34 @@ def minimax_live(env: Mapping[str, str]) -> dict[str, str] | None:
 
 
 def minimax_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
-    """The spec's `gone_sessions`:  which of these chats MiniMax Code has archived.
+    """The spec's `gone_sessions`:  which of these chats are gone for good.
 
-    The archive flag is the session store's own `archived` column, the same one `minimax_wake.py`
-    reads before it wakes a chat.  The library asks this adapter on a chat's start, and a report
-    that names an archived chat has the assigner close its row and free the letter.  Ids only."""
-    return archived_sessions(env, session_ids)
+    Two kinds,  and both free a pair the owner's own chats cannot have (AFC-894).
+
+    A chat the app has archived:  the archive flag is the session store's own `archived` column,
+    the same one `minimax_wake.py` reads before it wakes a chat (AFC-855).
+
+    A machine run that is over (`over_sessions`):  a BotFleet bot run is the app's own run,  nobody
+    addresses it,  and a pair it holds is a pair the owner's own chats cannot have.  Measured on
+    Nov 25, 2026:  twenty-one of this seat's twenty-six main pairs were held by such runs,  and a
+    new chat was refused into a "??: " title because of it.
+
+    A chat the store does not know at all,  and that nobody has addressed for an hour
+    (`absent_sessions`):  a chat that was deleted or pruned is gone for good,  and the row the
+    assigner holds for it must be closed so its letter can be freed (AFC-894).  The assigner closes
+    a row of the reporting host only,  so a chat that runs on another host is never retired by this
+    one.
+
+    The library asks this adapter on a chat's start,  and a report that names a gone chat has the
+    assigner close its row and free the letter.  Ids only."""
+    # The ids are read once:  a caller may hand over an iterator,  and a second pass over it would find it
+    # empty.
+    ordered = list(session_ids or ())
+    ids = frozenset(ordered)
+    gone = archived_sessions(env, ids) | over_sessions(env, ids)
+    # The absent probes are bounded and keep the order of the ids,  so the longest quiet chats are the ones
+    # the bound keeps.
+    return gone | absent_sessions(env, ordered)
 
 
 def minimax_rename(request: PL.TitleRequest) -> bool:
@@ -599,8 +850,9 @@ def _unlettered_children(conn: sqlite3.Connection, now: float, skipped: set[str]
             "?" * len(skipped)
         )
         params.extend(sorted(skipped))
-    rows = conn.execute(
-        "SELECT session_id FROM local_runtime_sessions"
+    names = ["session_id", *_machine_names(_columns(conn))]
+    query = (
+        "SELECT %s FROM local_runtime_sessions"
         " WHERE session_kind = ?"
         " AND parent_session_id IS NOT NULL AND parent_session_id != ''"
         " AND (session_id IS NULL OR parent_session_id != session_id)"
@@ -609,7 +861,10 @@ def _unlettered_children(conn: sqlite3.Connection, now: float, skipped: set[str]
         " AND title IS NOT NULL AND title != ''"
         " AND title NOT LIKE ?"
         " AND title NOT GLOB ?"
-        " AND title NOT GLOB ?" + clause + " ORDER BY updated_at_ms DESC LIMIT ?",
+        " AND title NOT GLOB ?" + clause + " ORDER BY updated_at_ms DESC LIMIT ?"
+    ) % ", ".join(names)
+    rows = conn.execute(
+        query,
         [
             "task",
             (now - UNLETTERED_MAX_AGE_SECONDS) * 1000,
@@ -622,12 +877,16 @@ def _unlettered_children(conn: sqlite3.Connection, now: float, skipped: set[str]
         ],
     ).fetchall()
     found: list[str] = []
-    for (sid,) in rows:
+    for row in rows:
+        record = dict(zip(names, row))
+        sid = record["session_id"]
         if not isinstance(sid, str) or not sid:
             raise ValueError("session_id must be a non-empty string, got %s" % type(sid).__name__)
         checked = PL.SI.check(sid, "a listed session id")
         if checked in skipped:
             continue  # a chat the pass skips, whose id the store writes with spaces around it
+        if _machine_run(record):
+            continue  # the app's own run never takes a letter (AFC-894)
         found.append(checked)
     return found
 
@@ -761,8 +1020,9 @@ def _unlettered_noteless_chats(env: Mapping[str, str], deadline: float) -> list[
     try:
         if hasattr(conn, "set_progress_handler"):
             conn.set_progress_handler(_expired(deadline), 1000)
-        rows = conn.execute(
-            "SELECT session_id FROM local_runtime_sessions"
+        names = ["session_id", *_machine_names(_columns(conn))]
+        query = (
+            "SELECT %s FROM local_runtime_sessions"
             " WHERE session_kind IN (?, ?)"
             " AND (parent_session_id IS NULL OR parent_session_id = '')"
             " AND (archived IS NULL OR archived = 0)"
@@ -770,7 +1030,10 @@ def _unlettered_noteless_chats(env: Mapping[str, str], deadline: float) -> list[
             " OR (created_at_ms >= ? AND created_at_ms <= ?))"
             " AND (title IS NULL OR (title NOT LIKE ? AND title NOT GLOB ? AND title NOT GLOB ?))"
             " ORDER BY created_at_ms IS NULL DESC, created_at_ms DESC"
-            " LIMIT ?",
+            " LIMIT ?"
+        ) % ", ".join(names)
+        rows = conn.execute(
+            query,
             (
                 *CHAT_KINDS,
                 (now - CHAT_UNLETTERED_MAX_AGE_SECONDS) * 1000,
@@ -782,9 +1045,11 @@ def _unlettered_noteless_chats(env: Mapping[str, str], deadline: float) -> list[
             ),
         ).fetchall()
         found: list[str] = []
-        for (sid,) in rows:
+        for row in rows:
             if time.monotonic() >= deadline:
                 return None
+            record = dict(zip(names, row))
+            sid = record["session_id"]
             if not isinstance(sid, str) or not sid:
                 raise ValueError(
                     "session_id must be a non-empty string, got %s" % type(sid).__name__
@@ -792,6 +1057,8 @@ def _unlettered_noteless_chats(env: Mapping[str, str], deadline: float) -> list[
             ident = PL.SI.check(sid, "a listed session id")
             if os.path.isfile(PL.note_path(env, SEAT, ident)):
                 continue  # lettered already:  the pass has nothing to do for it
+            if _machine_run(record):
+                continue  # the app's own run never takes a letter (AFC-894)
             found.append(ident)
             if len(found) >= UNLETTERED_SCAN:
                 break
@@ -837,13 +1104,17 @@ def _letter_lost_chats(
     try:
         if hasattr(conn, "set_progress_handler"):
             conn.set_progress_handler(_expired(deadline), 1000)
-        rows = conn.execute(
-            "SELECT session_id, title FROM local_runtime_sessions"
+        names = ["session_id", "title", *_machine_names(_columns(conn))]
+        query = (
+            "SELECT %s FROM local_runtime_sessions"
             " WHERE session_kind IN (?, ?)"
             " AND (archived IS NULL OR archived = 0)"
             " AND (created_at_ms IS NULL"
             " OR (created_at_ms >= ? AND created_at_ms <= ?))"
-            " AND TRIM(session_id) IN (%s)" % ",".join("?" * len(lettered)),
+            " AND TRIM(session_id) IN (%s)"
+        ) % (", ".join(names), ",".join("?" * len(lettered)))
+        rows = conn.execute(
+            query,
             (
                 *CHAT_KINDS,
                 (now - CHAT_UNLETTERED_MAX_AGE_SECONDS) * 1000,
@@ -852,9 +1123,12 @@ def _letter_lost_chats(
             ),
         ).fetchall()
         found: list[str] = []
-        for sid, title in rows:
+        for row in rows:
             if time.monotonic() >= deadline:
                 return None
+            record = dict(zip(names, row))
+            sid = record["session_id"]
+            title = record["title"]
             if not isinstance(sid, str) or not sid:
                 raise ValueError(
                     "session_id must be a non-empty string, got %s" % type(sid).__name__
@@ -865,6 +1139,8 @@ def _letter_lost_chats(
                 continue  # the store writes the id with spaces around it
             if not PL.letter_lost({"state": "open", "label": label}, title):
                 continue  # the title carries the letter this chat holds, or the no-letter mark
+            if _machine_run(record):
+                continue  # the app's own run never takes a letter (AFC-894)
             found.append(ident)
             if len(found) >= UNLETTERED_SCAN:
                 break

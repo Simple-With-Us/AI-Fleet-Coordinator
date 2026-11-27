@@ -133,14 +133,14 @@ class TurnBase(Base):
     def target_a(self) -> WR.Target:
         return WR.target_from_row(row(SID_A, "AA", "letters"), "CLAUDE", CW.SESSION_RE)
 
-    def deliver_one(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver_one(self, target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         self.calls.append(("D", wake.wake_id))
         self.sources.append(wake.message_id)
         if self.results:
             return self.results.pop(0)
         return WR.Delivery("completed", "fake", ack="confirmed")
 
-    def deliver_turn(self, target, head, riders, turn_id):
+    def deliver_turn(self, target, head, riders, turn_id, host=""):
         self.calls.append(("T", head.wake_id, tuple(r.wake_id for r in riders)))
         self.sources.extend([head.message_id, *(r.message_id for r in riders)])
         self.turn_args.append((target, head, tuple(riders), turn_id))
@@ -261,7 +261,7 @@ class Defaults(TurnBase):
     def test_a_platform_without_deliver_turn_delivers_one_wake_per_try(self) -> None:
         files: list[dict] = []
 
-        def deliver(target, wake):
+        def deliver(target, wake, host=""):
             folder = self.state / "pending"
             files.extend(json.loads(p.read_text(encoding="utf-8")) for p in folder.glob("*.json"))
             return self.deliver_one(target, wake)
@@ -352,7 +352,7 @@ class Defaults(TurnBase):
         self.assertEqual(self.turn_args, [])
 
     def test_an_interrupt_outside_a_turn_is_still_dead(self) -> None:
-        def killed(target, wake):
+        def killed(target, wake, host=""):
             raise Killed()
 
         router = self.plain(deliver=killed)
@@ -512,25 +512,75 @@ class Gather(TurnBase):
                 self.drain(router)
                 self.assertEqual(self.calls, [("D", "w-1"), ("D", "x-2")])
 
-    def test_required_session_pr_wakes_cannot_be_turn_heads_or_riders(self):
+    def _contract_pair(self, **review_over):
+        """A plain head and a required-session review wake for the same chat, both picked."""
         router = self.turns()
         self.letters(router, "head", "review")
         self.prime(router)
         review = router._entries["review"]
-        review["wake"].update(required_session=SID_A,
-                              require_pr="Simple-With-Us/HogHunter#7")
+        pr = "Simple-With-Us/HogHunter#7"
+        review["wake"].update({"required_session": SID_A, "require_pr": pr, **review_over})
+        review["pick"] = asdict(WR.Pick(
+            target=self.target_a, picked="required-session", reason="required-session",
+            link_note=WR.LINK_NOTES["required-session"]))
         router._save(review)
         head = router._entries["head"]
+        return router, head, review, pr
+
+    def _answer(self, pr_stamp, generation=None):
+        gen = self.target_a.generation if generation is None else generation
+        repo, _, number = "Simple-With-Us/HogHunter#7".partition("#")
+        return {"found": True, **row(SID_A, "AA", "letters", generation=gen,
+                bound_prs=[{"repo": repo, "number": int(number), "generation": pr_stamp}])}
+
+    def test_required_session_pr_rider_rides_only_with_a_live_binding(self):
+        router, head, review, pr = self._contract_pair()
+        key, now = WR.turn_key(self.target_a), self.clock.now
         pick = WR._pick_from(head["pick"])
-        self.assertEqual(router._gather(head, pick, "test-turn"), [])
-        self.assertFalse(router._may_ride(review, WR.turn_key(self.target_a), self.clock.now))
-        self.assertEqual(router._gather(review, WR._pick_from(review["pick"]), "test-turn"), [])
-        self.assertFalse(WR.certain(WR.Pick(target=self.target_a,
+        gen = self.target_a.generation
+        bound = self._answer(gen)
+        self.assertTrue(router._may_ride(review, key, now, bound))
+        # No registry read, a binding stamped at another generation, or none at all: no ride.
+        self.assertFalse(router._may_ride(review, key, now, None))
+        self.assertFalse(router._may_ride(review, key, now, self._answer(gen + 1)))
+        self.assertFalse(router._may_ride(review, key, now, {"found": True, **row(SID_A, "AA", "letters")}))
+        riders = router._gather(head, pick, "t-0123456789abcdef", bound)
+        self.assertEqual([r["wake"]["wake_id"] for r in riders], ["review"])
+        for rider in riders:
+            rider["running"] = False
+        self.assertEqual(router._gather(head, pick, "t-0123456789abcdef", self._answer(gen + 1)), [])
+
+    def test_required_session_rider_with_moved_letter_or_generation_does_not_ride(self):
+        gen = self.target_a.generation
+        for label, over in {
+            "other session": {"required_session": SID_B},
+            "other letter": {"require_letter": "ZZ"},
+            "other generation": {"require_generation": gen + 1},
+        }.items():
+            with self.subTest(label):
+                router, head, review, pr = self._contract_pair(**over)
+                self.assertFalse(router._may_ride(
+                    review, WR.turn_key(self.target_a), self.clock.now, self._answer(gen)))
+
+    def test_required_session_head_is_certain_and_may_gather(self):
+        router, head, review, pr = self._contract_pair()
+        self.assertTrue(WR.certain(WR.Pick(target=self.target_a,
             picked="required-session", reason="required-session",
             link_note=WR.LINK_NOTES["required-session"])))
+        pick = WR._pick_from(review["pick"])
+        self.assertEqual(router._gather(review, pick, "t-0123456789abcdef", self._answer(self.target_a.generation)), [])
+
+    def test_unbound_rider_cuts_the_run_and_keeps_order(self):
+        router, head, review, pr = self._contract_pair()
+        router.accept(self.wake("tail", letter="AA", message_id=2000))
+        self.clock.now += 1
+        self.prime(router, only={"tail"})
+        pick = WR._pick_from(head["pick"])
+        riders = router._gather(head, pick, "t-0123456789abcdef", self._answer(self.target_a.generation + 1))
+        self.assertEqual(riders, [])
 
     def test_certain_reasons_are_exact_addresses_disjoint_from_unsure_notes(self) -> None:
-        self.assertEqual(WR.CERTAIN_REASONS, frozenset({"letter", "reply", "session-id"}))
+        self.assertEqual(WR.CERTAIN_REASONS, frozenset({"letter", "reply", "session-id", "required-session"}))
         unsure = {reason for reason, note in WR.LINK_NOTES.items() if WR.UNSURE in note}
         self.assertEqual(unsure, {"consultant-pick", "sole-live-chat", "most-recent"})
         self.assertFalse(unsure & WR.CERTAIN_REASONS)

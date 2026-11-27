@@ -1601,10 +1601,18 @@ class PartitionTests(ServerHarness):
                 + list(CLOUD_SEATS)
                 + [s for s, v in bf.items() if v == "server"]
                 + [s for s in MAC_CLI_SEATS if s not in MAC_CLI_DISABLED]
+                + ["DUET"]  # hosted-app seat, inbox capture only (owner, Nov 25 2026)
             ),
             "the enabled seats are every GB bot, the five cloud seats, every live BF seat and "
             "the Mac CLI seats with a loadable pair",
         )
+        duet = server.seats["DUET"]
+        self.assertEqual(
+            (duet.wake, duet.creds, duet.instance, getattr(duet, "routine", None)),
+            ("inbox", "env", "server", None),
+            "DUET is capture-only on the server until it has a wake route",
+        )
+        self.assertEqual(C.env_code("DUET"), "DUET")
         for seat in MAC_CLI_SEATS:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)

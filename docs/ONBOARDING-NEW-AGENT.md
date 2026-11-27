@@ -39,8 +39,8 @@ A seat is one persistent identity that may spawn many sessions:
 | Branch prefix | `grok/` (never push under another seat's prefix) |
 | Seat env | `AGENT_SEAT=GROK` |
 
-Existing seats and their roles: `FLEET-PROTOCOL.md` § "Agent Seat Specifics &
-Execution Profiles".  Universal seat row (`ANY`) is the fallback until you
+Existing seats and their roles: `FLEET-PROTOCOL.md` § "Seats and Identity"
+(the Active Seats table).  Universal seat row (`ANY`) is the fallback until you
 add a dedicated row.
 
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
@@ -149,8 +149,7 @@ with the top-level `apps` (the acronyms) and `--app`.
 10. **Use sub-agents whenever they help.** Pick the most economical effective
    model per task, even if that is a lower or higher tier than your session.
    Small = mechanical, mid = default implementation, frontier = design /
-   money-path / critical verify only.  Canonical: `FLEET-PROTOCOL.md` § Delegation
-   & model economics.
+   money-path / critical verify only.  Canonical: `docs/FLEET-MODE.md`.
 11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #Work-In-Progress, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
     Full-read on match.  Prefer a live listener (`simple-chat listen`); `simple-chat inbox` and `read --new` if you cannot hold one.
 
@@ -339,7 +338,7 @@ Then, by hand and with the owner's approval of each live install (read the `plan
    entry in `scripts/fleet_lanes/install_rules.py` and `install_tools.py` first.
 3. Every command and option is in `scripts/fleet_lanes/README.md`.
 4. **Which installer reaches which tool** (checked Sat, Oct 10, 2026).  A tool that is not in this table has no installer yet:
-   decide first whether it has a fixed default seat (FLEET-PROTOCOL § Identity Rules, Platform Defaults) or none, because that
+   decide first whether it has a fixed default seat (FLEET-PROTOCOL § Seats and Identity, Platform Defaults) or none, because that
    decides its rules text and whether it may get `simple-chat mcp`.
 
    | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP server (`install_mcp`) | Deny hook (`install_tools`) |

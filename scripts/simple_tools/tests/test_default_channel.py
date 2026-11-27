@@ -62,7 +62,8 @@ SIMPLE_TOOLS_DIR = pathlib.Path(__file__).resolve().parents[1]
 
 class DefaultChannelTests(unittest.TestCase):
     def test_the_default_channel_is_the_realm_s_live_coordination_channel(self) -> None:
-        self.assertEqual(Z.DEFAULT_CHANNEL, "work-in-progress")
+        # Spelled the way the realm shows it (owner, AFC-482:  the capitals matter).
+        self.assertEqual(Z.DEFAULT_CHANNEL, "Work-In-Progress")
 
     def test_the_fleet_wake_lives_where_the_default_channel_points(self) -> None:
         # `--fleet` without `--channel` posts to the default channel, and the listener
@@ -163,7 +164,18 @@ class DefaultChannelTests(unittest.TestCase):
         # seat learns that.
         # The channel's display name is title-cased and its slug is not, so the check folds case.
         help_text = (SIMPLE_TOOLS_DIR / "cli.py").read_text()
-        self.assertIn("#%s" % Z.DEFAULT_CHANNEL, help_text.casefold())
+        self.assertIn(("#%s" % Z.DEFAULT_CHANNEL).casefold(), help_text.casefold())
+
+    def test_the_fleet_wake_check_accepts_the_channel_in_any_case(self) -> None:
+        # Zulip matches a channel name without regard to case, and the default is now spelled the
+        # way the realm shows it (AFC-482), so `post --fleet` has to take the channel whether a seat
+        # types it like that, in lower case or in capitals, and still refuse every other channel.
+        from simple_tools import cli as C
+
+        for spelling in (Z.DEFAULT_CHANNEL, Z.DEFAULT_CHANNEL.lower(), Z.DEFAULT_CHANNEL.upper()):
+            C._check_fleet_target(spelling, "fleet")
+        with self.assertRaises(C.UsageError):
+            C._check_fleet_target("sandbox", "fleet")
 
     def test_every_generated_pack_matches_the_channel_of_its_canonical(self) -> None:
         # A generator that drops the live label, or a generated copy that has drifted from its

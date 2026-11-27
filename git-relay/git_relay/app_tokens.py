@@ -43,20 +43,20 @@ MINT_PERMISSION_CEILING = (
     "codespaces_secrets",
     "organization_codespaces_secrets",
     "organization_actions_variables",
+    "organization_hooks",
+    "environments",
+    "repository_hooks",
+    "administration",
     "statuses",
     "deployments",
     "metadata",
 )
 
-# Permission keys mintable only at read level.  These widen what the relay can
-# READ (repository webhooks, deploy keys, organization installations); the
-# level check below makes a write mint for any of them a hard error, so no
-# verb or seat can ever receive a write-scoped token for them.
-MINT_READ_ONLY_PERMISSIONS = (
-    "administration",
-    "repository_hooks",
-    "organization_administration",
-)
+# Permission keys mintable only at read level (organization administration).
+# Repository hooks, organization hooks and administration moved into the ceiling
+# for the wave 2 hook, deploy key and environment verbs (owner instruction: every
+# GitHub feature for every seat); each verb still requests its exact level.
+MINT_READ_ONLY_PERMISSIONS = ("organization_administration",)
 
 
 # Exact permission objects for create_repo.  Equality-checked.  These writes are
@@ -790,10 +790,18 @@ class AppTokenMinter:
             # refusal must carry secret-free operational evidence of that
             # ("+revocation-failed" in the error:  the reason only, never the
             # token itself).  A missing token has nothing to revoke.
+            revoke_failed = False
             if isinstance(token, str) and token:
                 if not self.revoke_installation_token(token):
+                    revoke_failed = True
                     why = why + "+revocation-failed"
-            raise AppTokenError(f"minted-token answer failed service validation ({why})")
+            error = AppTokenError(f"minted-token answer failed service validation ({why})")
+            # Typed secret-free flag for the caller's audit row:  a rejected
+            # over-grant whose revocation also failed may still be live
+            # upstream, and that fact must survive even where the error text
+            # is flattened into a generic refusal.
+            error.revoke_failed = revoke_failed
+            raise error
 
         if not isinstance(token, str) or not token or not expires_at:
             # Every post-mint validation failure goes through refuse, so a

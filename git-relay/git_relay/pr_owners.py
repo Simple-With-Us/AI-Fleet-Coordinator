@@ -346,6 +346,44 @@ class PROwnerStore:
                 rows.append(dict(row))
         return rows, overflow
 
+    def confirmed_snapshot_for_repo(self, repo: str, limit: int) -> tuple[list[dict], bool, bool]:
+        """One locked snapshot:  (rows, overflow, partial) for the service lane.
+
+        Rows are the confirmed open_pr rows for one repo, at most `limit`,
+        under the same single lock acquisition that decides coverage:  a
+        fence resolving or a row landing between a separate row read and a
+        separate coverage read can never label this answer's own snapshot
+        complete while part of it was still pending.  `partial` is monotone
+        conservative:  integrity degradation (load error, skipped lines,
+        torn tail, any pending creation fence) or any stored row for this
+        repo that is not a confirmed open_pr binding forces it True, and it
+        never unblocks a protected read or touches a fence.  The scan stops
+        at the same bound as the row query:  it never walks more of the
+        index than the old unbounded marker pass, and overflow is decided
+        before the answer is built.
+        """
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        folded = repo.casefold()
+        rows: list[dict] = []
+        overflow = False
+        with self._lock:
+            partial = bool(
+                self.load_error or self.skipped_lines or self._torn_tail or self._pending_creations
+            )
+            for key in self._by_repo.get(folded, ()):
+                row = self._by_pr.get(key)
+                if row is None:
+                    continue
+                if row.get("confirmed") is not True or row.get("source") != CONFIRMED:
+                    partial = True
+                    continue
+                if len(rows) >= limit:
+                    overflow = True
+                    break
+                rows.append(dict(row))
+        return rows, overflow, partial
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._by_pr)

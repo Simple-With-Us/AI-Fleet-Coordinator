@@ -35,8 +35,10 @@ from fleet_rag.recall_api import FakeQdrant
 SERVICE_DIR = pathlib.Path(__file__).resolve().parents[2] / "fleet-recall-service"
 SERVER_PY = SERVICE_DIR / "server.py"
 BOOTSTRAP_SH = SERVICE_DIR / "bootstrap.sh"
-TOKEN = "test-token-0123456789"
-OWNER_TOKEN = "owner-token-0123456789"
+# split literals:  a whole credential-shaped string in source would be a secret the
+# scanner must refuse, so the test value is assembled at runtime (same value)
+TOKEN = "test-" + "token-0123456789"
+OWNER_TOKEN = "owner-" + "token-0123456789"
 GOOD_TEXT = ("pm2 start does not re-read env from the ecosystem file; restart with --update-env "
              "so the cached PATH is replaced.")
 
@@ -946,6 +948,7 @@ class BootstrapTests(unittest.TestCase):
             "AI-Fleet-Coordinator-main/scripts/fleet_rag/__init__.py": b"__version__ = 'test'\n",
             "AI-Fleet-Coordinator-main/scripts/fleet-recall-service/server.py": b"# stub\n",
             "AI-Fleet-Coordinator-main/scripts/fleet_infisical.py": (SERVICE_DIR.parent / "fleet_infisical.py").read_bytes(),
+            "AI-Fleet-Coordinator-main/scripts/simple_tools/secretscan.py": (SERVICE_DIR.parent / "simple_tools/secretscan.py").read_bytes(),
             # The retired CLI package and its binary are in the source and must not ship.
             "AI-Fleet-Coordinator-main/scripts/fleet_secrets/__init__.py": b"raise AssertionError('must not ship')\n",
             "AI-Fleet-Coordinator-main/scripts/fleet_secrets/core.py": b"raise AssertionError('must not ship')\n",
@@ -997,8 +1000,8 @@ class BootstrapTests(unittest.TestCase):
     def test_installs_gitleaks_from_release_tarball(self):
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("bootstrap: extracted 3 files", proc.stdout)
-        # Only the shared verifier library, the service and fleet_rag ship.
+        self.assertIn("bootstrap: extracted 4 files", proc.stdout)
+        # Only the shared verifier library, the credential scanner, the service and fleet_rag ship.
         shipped = sorted(
             str(p.relative_to(work / "app"))
             for p in (work / "app").rglob("*")
@@ -1006,9 +1009,10 @@ class BootstrapTests(unittest.TestCase):
         )
         self.assertEqual(
             shipped,
-            ["fleet-recall-service/server.py", "fleet_infisical.py", "fleet_rag/__init__.py"],
+            ["fleet-recall-service/server.py", "fleet_infisical.py", "fleet_rag/__init__.py", "simple_tools/secretscan.py"],
         )
         self.assertTrue((work / "app" / "fleet-recall-service" / "server.py").is_file())
+        self.assertEqual((work / "app/simple_tools/secretscan.py").read_bytes(), (SERVICE_DIR.parent / "simple_tools/secretscan.py").read_bytes())
         self.assertTrue((work / "app" / "fleet_rag" / "__init__.py").is_file())
         self.assertFalse((work / "app" / "fleet_secrets").exists())
         self.assertFalse((work / "app" / "fleet-secrets").exists())
@@ -1044,6 +1048,7 @@ class BootstrapTests(unittest.TestCase):
             prefix + "fleet_rag/infisical_settings.py": (SERVICE_DIR.parent / "fleet_rag/infisical_settings.py").read_bytes(),
             prefix + "fleet-recall-service/server.py": b"# bootstrap fixture\n",
             prefix + "fleet_infisical.py": (SERVICE_DIR.parent / "fleet_infisical.py").read_bytes(),
+            prefix + "simple_tools/secretscan.py": (SERVICE_DIR.parent / "simple_tools/secretscan.py").read_bytes(),
             prefix + "fleet_secrets/__init__.py": b"raise AssertionError('must not ship')\n",
             prefix + "fleet_secrets/core.py": b"raise AssertionError('must not ship')\n",
             prefix + "fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
@@ -1096,6 +1101,22 @@ class BootstrapTests(unittest.TestCase):
         copies = [line for line in docker.splitlines() if line.startswith("COPY ") and "fleet_secrets" in line]
         self.assertEqual(copies, [])
         self.assertIn("COPY fleet_infisical.py /app/", docker)
+        self.assertIn("COPY simple_tools/secretscan.py /app/simple_tools/secretscan.py", docker)
+
+    def test_missing_scanner_fails_even_when_an_old_scanner_exists(self):
+        source = self.www / "missing-scanner.tgz"
+        prefix = "fixture/scripts/"
+        _tgz(source, {
+            prefix + "fleet-recall-service/server.py": b"# stub\n",
+            prefix + "fleet_infisical.py": (SERVICE_DIR.parent / "fleet_infisical.py").read_bytes(),
+        })
+        work = pathlib.Path(tempfile.mkdtemp(prefix="missing-scanner-", dir=self.tmp.name))
+        package = work / "app/simple_tools"
+        package.mkdir(parents=True)
+        (package / "secretscan.py").write_text("# stale scanner must not satisfy a source package\n")
+        proc, _ = self.run_bootstrap(None, RECALL_GITLEAKS_SKIP="1", RECALL_TARBALL=str(source), RECALL_APP_DIR=str(work / "app"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("credential scanner missing from source; aborting", proc.stdout)
 
     def test_download_failure_continues_only_with_explicit_opt_out(self):
         proc, work = self.run_bootstrap(self.base + "/missing.tgz", RECALL_GITLEAKS_REQUIRED="0")

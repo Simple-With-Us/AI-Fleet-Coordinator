@@ -67,6 +67,10 @@ label = "com.jay.botfleet-server"
 plist_template = "scripts/launchd/com.jay.botfleet-server.plist"
 
 [[launch_agent]]
+label = "com.jay.code-main-keeper"
+plist_template = "scripts/launchd/com.jay.code-main-keeper.plist"
+
+[[launch_agent]]
 label = "com.jay.fleet-gdrive-backup"
 plist_template = "scripts/launchd/com.jay.fleet-gdrive-backup.plist"
 
@@ -131,9 +135,6 @@ ecosystem_installed = "apps/pm2-ecosystem.config.cjs"
 
 [[pm2.app]]
 name = "shellular"
-
-[[pm2.app]]
-name = "code-main-keeper"
 
 [[pm2.app]]
 name = "vision-worker"

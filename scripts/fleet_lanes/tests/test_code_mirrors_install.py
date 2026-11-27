@@ -110,6 +110,49 @@ class InstalledRuntimeTests(unittest.TestCase):
                 self.assertFalse(list(Path(tmp).glob("installed.backup-*")))
                 self.assertFalse(list(Path(tmp).glob(".code-mirrors-stage-*")))
 
+    def _bundle_with_the_retired_readers_files(self, dest):
+        """The bundle a host holds when it installed the shared runtime before the reader was retired."""
+        installer.install(SCRIPTS.parent, dest, "0" * 40)
+        retired_dir = dest / "scripts" / "fleet_secrets"
+        retired_dir.mkdir(mode=0o700)
+        retired_dir.chmod(0o700)
+        manifest_path = dest / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        for name in installer.RETIRED_READER_FILES:
+            path = dest / "scripts" / name
+            path.write_bytes(b"# retired reader fixture\n")
+            path.chmod(0o600)
+            manifest["files"][name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        return manifest_path
+
+    def test_bundle_holding_the_retired_readers_two_files_is_replaced_not_refused(self):
+        """The first shared runtime shipped the retired reader; such a bundle must be replaceable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "installed"
+            self._bundle_with_the_retired_readers_files(dest)
+            result = installer.install(SCRIPTS.parent, dest, "1" * 40)
+            self.assertEqual(set(json.loads((dest / "manifest.json").read_text())["files"]), set(installer.FILES))
+            self.assertFalse((dest / "scripts" / "fleet_secrets").exists())
+            backup = Path(result["backup"])
+            self.assertTrue((backup / "scripts" / "fleet_secrets" / "core.py").is_file())
+
+    def test_unknown_file_beside_the_retired_readers_files_is_still_refused(self):
+        """The allowance is those two names, not their directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "installed"
+            manifest_path = self._bundle_with_the_retired_readers_files(dest)
+            manifest = json.loads(manifest_path.read_text())
+            stranger = dest / "scripts" / "fleet_secrets" / "other.py"
+            stranger.write_bytes(b"# unrelated content\n")
+            stranger.chmod(0o600)
+            manifest["files"]["fleet_secrets/other.py"] = hashlib.sha256(stranger.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            before = {p.relative_to(dest).as_posix(): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+            with self.assertRaisesRegex(ValueError, "Unknown existing bundle entry"):
+                installer.install(SCRIPTS.parent, dest, "1" * 40)
+            self.assertEqual({p.relative_to(dest).as_posix(): p.read_bytes() for p in dest.rglob("*") if p.is_file()}, before)
+
     def test_installed_help_and_local_ref_sweep_need_no_other_packages(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

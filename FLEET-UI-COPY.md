@@ -167,7 +167,7 @@ sight.
 
 ## Sentence Gaps: U+00A0 Plus a Normal Space (Current Owner Rule — All Agents, All Contexts)
 
-Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included, except the three chat panes named below, which take the `&nbsp;` entity plus a space), including App Store
+Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included, except the four chat panes named below, which take the `&nbsp;` entity plus a space), including App Store
 submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 **Every single agent, every app, every surface, forever.**
 
@@ -186,9 +186,9 @@ the gap BETWEEN sentences.)
 
 **Shared converter:** use the code-aware `scripts/sentence_gap_convert.pl` in AI-Fleet-Coordinator, documented in `docs/fleet-skills/sentence-gap/SKILL.md`, for tool-written bodies that carry code.  Preserve code regions byte for byte, run the converter again and compare the outputs to prove idempotence, and inspect both the gap count and remaining ungapped prose.  The one-line example below documents the canonical pattern for prose-only bodies; it is not a second implementation for a host or seat.
 
-**HOW to emit it (owner ruling 2026-10-23, the same on every surface but three chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity outside the chat panes named below, because everywhere else it shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
+**HOW to emit it (owner ruling 2026-10-23, the same on every surface but four chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity outside the chat panes named below, because everywhere else it shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
 
-- **Claude Code Code tab, MiniMax Code and Z Code chat panes (the one exception, owner ruling 2026-10-23):**
+- **Claude Code Code tab, MiniMax Code, Z Code and Antigravity chat panes (the one exception, owner ruling 2026-10-23;  Antigravity added by the owner on 2026-11-21, AFC-877):**
   the `&nbsp;` entity plus a normal space, outside code spans.  These panes normalize a raw U+00A0 away and collapse two ASCII spaces, so the entity is the form that renders a real gap there
   (owner-verified 2026-10-08 with a screenshot for the Code tab and 2026-10-18 for the MiniMax Code pane, and confirmed by the owner for both on 2026-10-24;  the Z Code chat pane was added by the owner on 2026-11-11, verified at byte level on 2026-11-10).
 - **Apple Note bodies (no exception):**  a note in the Coding folder, written by `scripts/apple-notes-coding.sh`, takes the same real U+00A0 plus a normal space as every other surface.  Notes turns the no-break space into an ordinary space on import and still shows the pair as a wide gap (measured Oct 29, 2026).
@@ -223,7 +223,7 @@ the gap BETWEEN sentences.)
   `&nbsp; `.
 - **Any surface not listed above:**  the same U+00A0 plus a space.
 
-**MiniMax provenance retained from the prior Mac copy (2026-10-18, reaffirmed 2026-10-20):** the owner had already confirmed that this pane needs the entity plus a normal space.  A 2026-10-20 note briefly substituted raw U+00A0 on an inference; the owner reversed it.  Never override an owner-verified mechanism on an inference.  Treat a collapsed reply as a defect in the emitting step and diagnose the rendering/transport layer.  The current three-pane exception above governs; this history does not extend that exception to any other pane.
+**MiniMax provenance retained from the prior Mac copy (2026-10-18, reaffirmed 2026-10-20):** the owner had already confirmed that this pane needs the entity plus a normal space.  A 2026-10-20 note briefly substituted raw U+00A0 on an inference; the owner reversed it.  Never override an owner-verified mechanism on an inference.  Treat a collapsed reply as a defect in the emitting step and diagnose the rendering/transport layer.  The current four-pane exception above governs; this history does not extend that exception to any other pane.
 
 **Rendering trap — history (chat advice reversed twice; the 2026-10-23 ruling above supersedes all of it except in the chat panes it names as its exception):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
@@ -280,7 +280,7 @@ not.
 - Marketing, screenshot captions, TestFlight “What to Test”
 
 **How:**
-- Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.`  `!`  `?` (owner ruling 2026-10-23).  Never `&nbsp;` except in the Claude Code Code tab, MiniMax Code and Z Code chat panes, never two plain ASCII spaces.
+- Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.`  `!`  `?` (owner ruling 2026-10-23).  Never `&nbsp;` except in the Claude Code Code tab, MiniMax Code, Z Code and Antigravity chat panes, never two plain ASCII spaces.
 - HTML/JSX/SwiftUI source:  Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant (ST: `SENTENCE_GAP`)
 - Code, identifiers and config never get a U+00A0.
 - Prefer ONE paragraph for short related sentences over stacked one-liners when
@@ -292,7 +292,7 @@ sentence terminator.
 
 **Agent failure mode:** shipping App Store description, review notes, or UI
 paragraphs with single spaces after periods, or stale trial/corpus copy.
-Fix on sight.  Protocol: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces.
+Fix on sight.  Protocol: `/Users/jay/apps/FLEET-PROTOCOL.md` § Sentence Gap.
 
 ## Run-once glyph = emoji bolt (owner preference 2026-08-08, Socratic.Trade)
 The Run-once affordance uses the colored emoji ⚡ (U+26A1), not a line-icon Zap —

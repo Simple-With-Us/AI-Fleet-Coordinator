@@ -434,6 +434,24 @@ def native_transport(env: Mapping[str, str], local_host: str) -> Any:
     return CST.CodexServerChatTransport(env=env)
 
 
+def _local_host(settings: object = None) -> str:
+    """The host this router runs on, as the settings name it now."""
+    return str(_config(settings).get("local_host") or "server")
+
+
+def _exclusion(env: Mapping[str, str], settings: object = None):
+    """The exclusion for the host this router runs on, read when the rows are judged.
+
+    The host is resolved at that moment, exactly as the delivery resolves it, so a
+    refreshed setting moves the exclusion and the delivery together.
+    """
+
+    def exclude(targets: list[WR.Target], host: str = "") -> set[str]:
+        return exclude_non_interactive(env, host or _local_host(settings))(targets)
+
+    return exclude
+
+
 def make_platform(
     env: Mapping[str, str],
     settings: object = None,
@@ -445,7 +463,7 @@ def make_platform(
     """This platform for a host that runs the Codex Desktop app itself (the Mac)."""
     native = transport or CT.CodexChatTransport(home=env.get("HOME") or None)
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         # The settings are read when the delivery happens:  the router keeps them current, and
         # a refresh takes effect without a restart.
         config = _config(settings)
@@ -453,7 +471,7 @@ def make_platform(
             native,
             env,
             metadata_lookup,
-            local_host=str(config.get("local_host") or "server"),
+            local_host=host or str(config.get("local_host") or "server"),
             hostname=hostname,
         )(target, wake)
 
@@ -463,9 +481,11 @@ def make_platform(
         mention=MENTION,
         target_re=SESSION_RE,
         deliver=deliver,
-        # The same resolved host the delivery uses, so this host's own engine rows are the
-        # ones excluded and not another host's.
-        exclude=exclude_non_interactive(env, str(_config(settings).get("local_host") or "server")),
+        # The same resolved host the delivery uses, and resolved when the rows are
+        # judged, so this host's own engine rows are the ones excluded and not another
+        # host's.
+        exclude=_exclusion(env, settings),
+        resolve_host=lambda: _local_host(settings),
     )
 
 
@@ -502,11 +522,11 @@ def router_platform(
             native_by_host[local_host] = built
         return built
 
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+    def deliver(target: WR.Target, wake: WR.Wake, host: str = "") -> WR.Delivery:
         # The settings are read when the delivery happens:  the router keeps them current, and
         # a refresh takes effect without a restart.
         config = _config(settings)
-        local_host = str(config.get("local_host") or "server")
+        local_host = host or str(config.get("local_host") or "server")
         if target.host == "mac" and local_host != "mac":
             from . import claude_wake as CW
 
@@ -529,7 +549,8 @@ def router_platform(
         mention=MENTION,
         target_re=SESSION_RE,
         deliver=deliver,
-        exclude=exclude_non_interactive(here, str(_config(settings).get("local_host") or "server")),
+        exclude=_exclusion(here, settings),
+        resolve_host=lambda: _local_host(settings),
     )
 
 

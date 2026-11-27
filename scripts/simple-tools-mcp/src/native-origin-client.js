@@ -2,24 +2,27 @@ import { z } from "zod";
 import { resolveSecret } from "./infisical.js";
 
 const OriginClaims = z.object({
-  origin_session_claim: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  origin_session_claim: z.string().regex(/^(?:sess_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
   origin_letter_claim: z.string().regex(/^[A-Z]{2}$/),
   origin_generation_claim: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
 }).strict();
 
 // A service-owned dedicated read credential. Never accept endpoint/key from tool args.
-export function nativeOriginResolver(env, { fetcher = fetch, now = Date.now } = {}) {
-  const endpoint = env?.REVIEW_ORIGIN_READ_URL;
-  const key = env?.REVIEW_ORIGIN_CODEX_READ_KEY;
+export function nativeOriginResolver(env, { fetcher = fetch, now = Date.now, seat = "CODEX" } = {}) {
+  if (!["CODEX", "ZC"].includes(seat)) return null;
+  const zc = seat === "ZC";
+  const expectedPath = zc ? "/registry/v1/review-origin-zcode" : "/registry/v1/review-origin";
+  const endpoint = env?.[zc ? "REVIEW_ORIGIN_ZC_READ_URL" : "REVIEW_ORIGIN_READ_URL"];
+  const key = env?.[zc ? "REVIEW_ORIGIN_ZC_READ_KEY" : "REVIEW_ORIGIN_CODEX_READ_KEY"];
   if (!endpoint || typeof key !== "string" || key.length < 32) return null;
   let base;
   try {
     base = new URL(endpoint);
     if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash
-      || base.pathname !== "/registry/v1/review-origin") return null;
+      || base.pathname !== expectedPath) return null;
   } catch { return null; }
-  return async ({ seat, session }) => {
-    if (seat !== "CODEX") throw new Error("unsupported-seat");
+  return async ({ seat: requestedSeat, session }) => {
+    if (requestedSeat !== seat) throw new Error("unsupported-seat");
     const url = new URL(base);
     url.searchParams.set("native_session_id", session);
     const stamp = String(Math.floor(now() / 1000));
@@ -57,13 +60,14 @@ export function nativeOriginResolver(env, { fetcher = fetch, now = Date.now } = 
 // its normal bounded cache; neither value has a persistent Worker copy.
 export function nativeOriginResolverFromSecrets(env) {
   return async (context) => {
-    if (context?.seat !== "CODEX") throw new Error("unsupported-seat");
-    const names = ["REVIEW_ORIGIN_READ_URL", "REVIEW_ORIGIN_CODEX_READ_KEY"];
+    if (!["CODEX", "ZC"].includes(context?.seat)) throw new Error("unsupported-seat");
+    const names = context.seat === "ZC" ? ["REVIEW_ORIGIN_ZC_READ_URL", "REVIEW_ORIGIN_ZC_READ_KEY"]
+      : ["REVIEW_ORIGIN_READ_URL", "REVIEW_ORIGIN_CODEX_READ_KEY"];
     const values = await Promise.all(names.map((name) => resolveSecret(env, {
       name, path: "/zulip", envName: name, optional: true, legacy: "",
     })));
-    const resolver = nativeOriginResolver(Object.fromEntries(names.map((name, i) => [name, values[i]])));
-    if (!resolver) throw new Error("lookup-unconfigured: check REVIEW_ORIGIN_READ_URL and REVIEW_ORIGIN_CODEX_READ_KEY");
+    const resolver = nativeOriginResolver(Object.fromEntries(names.map((name, i) => [name, values[i]])), {seat: context.seat});
+    if (!resolver) throw new Error(`lookup-unconfigured: check ${names.join(" and ")}`);
     return resolver(context);
   };
 }

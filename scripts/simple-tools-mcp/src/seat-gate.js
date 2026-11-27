@@ -208,6 +208,10 @@ export class SeatGate extends DurableObject {
     return state.gbBearerCheck(this.store, hash);
   }
 
+  gbBearerMintFormResult(mintId) {
+    return state.gbBearerMintFormResult(this.store, mintId);
+  }
+
   gbBearerMintChecked(entry) {
     return state.gbBearerMintChecked(this.store, entry);
   }
@@ -260,6 +264,14 @@ export class SeatGate extends DurableObject {
 
   linearIdentityClear() {
     return state.linearIdentityClear(this.store);
+  }
+
+  linearAppIdGet() {
+    return state.linearAppIdGet(this.store);
+  }
+
+  linearAppIdSet(entry) {
+    return state.linearAppIdSet(this.store, entry);
   }
 
   linearTokenClear() {

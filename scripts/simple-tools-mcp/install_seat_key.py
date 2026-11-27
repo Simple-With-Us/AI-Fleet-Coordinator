@@ -57,13 +57,19 @@ INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
 AFC_TOKEN_ENV = "SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN"
 FLEET_OPS_TOKEN_ENV = "SIMPLE_TOOLS_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN"
-# This consumer's own scoped read-only service token for the one folder it reads:  Fleet-OPS prod
-# "/"  the root that holds the handoff names.  The token lives in the consumer's own store (the
-# owner's login keychain on the Mac, a private file on a server);  the store is the authority and is
-# read first,  and an environment binding is used only when the token's own grant metadata proves
-# the narrow grant.
+# The folder the handoff names live in:  Fleet-OPS prod /global-api-keys.  The Fleet-OPS
+# project root is an alias layer:  a name at the root is a reference to a name in a subfolder,
+# and the raw route returns that reference rather than the value,  so a root read of
+# CLOUDFLARE_JAY_API_KEY comes back as an unexpanded reference and the shared client refuses
+# it (verified against the provider on Nov 25 2026).  The read names the folder where the
+# literal is.
+HANDOFF_FOLDER = "/global-api-keys"
+# This consumer's own scoped read-only service token for the one folder it reads.  The token
+# lives in the consumer's own store (the owner's login keychain on the Mac, a private file on a
+# server);  the store is the authority and is read first,  and an environment binding is used
+# only when the token's own grant metadata proves the narrow grant.
 TOKEN_ACCOUNTS = {
-    "/": "install-seat-key-ro",
+    HANDOFF_FOLDER: "install-seat-key-ro",
     "/zulip": "install-seat-key-zulip-ro",
 }
 
@@ -323,7 +329,7 @@ def handoff(name: str) -> str:
     ):
         fail("unsupported generic handoff name")
     try:
-        value = _read_infisical_names((name,), "/").get(name, "").strip()
+        value = _read_infisical_names((name,), HANDOFF_FOLDER).get(name, "").strip()
     except BindingRefused as exc:
         fail(str(exc))
     if value:

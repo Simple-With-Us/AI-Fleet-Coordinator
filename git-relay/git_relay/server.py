@@ -76,7 +76,9 @@ LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_creat
 # Sealed secret values (up to 48 KiB, base64 plus envelope) exceed the default 64 KiB cap; the verb owns the exact bound.
 MAX_SECRET_PUT_REQUEST_BYTES = 128 * 1024
 SECRET_PUT_REQUEST_ACTIONS = frozenset(
-    a for a in SeatPolicy.WORKFLOW_ACTIONS if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
+    a
+    for a in SeatPolicy.WORKFLOW_ACTIONS
+    if a.startswith("wf_secret_put_") or a == "wf_org_variable_set"
 )
 
 
@@ -145,6 +147,33 @@ def _clean_text(value, field: str, required: bool = True) -> str:
 def _number(value, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+RESOLVE_REF_HELP = (
+    "resolve_thread needs exactly one of thread_id or comment_id. thread_id is the PRRT_ "
+    "review-thread id; comment_id is a review comment's numeric id or PRRC_ node id, and "
+    "the thread that holds it is resolved. An issue-comment id, a review id or a commit id "
+    "is not accepted."
+)
+_PRRT_RE = re.compile(r"PRRT_[A-Za-z0-9_-]{6,128}")
+_REVIEW_COMMENT_RE = re.compile(r"PRRC_[A-Za-z0-9_-]{6,128}|[0-9]{1,18}")
+
+
+def _review_ref(value, field: str):
+    """A review-thread (PRRT_) or review-comment (PRRC_ or numeric) id, as text.
+
+    A comment id is accepted under either field name, because seats see comment ids
+    far more often than thread ids; the relay finds the thread that holds it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        value = str(value)
+    if not isinstance(value, str) or not (
+        _PRRT_RE.fullmatch(value) or _REVIEW_COMMENT_RE.fullmatch(value)
+    ):
+        raise ValueError(f"{field} is not a review thread or review comment id. {RESOLVE_REF_HELP}")
     return value
 
 
@@ -225,10 +254,15 @@ def _validate_args(action: str, args: dict) -> dict:
             }
         )
     elif action == "resolve_thread":
-        specs["thread_id"] = ("thread_id", True)
+        specs["thread_id"] = ("thread_id", False)
+        specs["comment_id"] = ("comment_id", False)
     extra = sorted(set(args) - set(specs))
     if extra:
         raise ValueError(f"{action}: unexpected fields ({len(extra)})")
+    if action == "resolve_thread":
+        refs = [name for name in ("thread_id", "comment_id") if args.get(name) is not None]
+        if len(refs) != 1:
+            raise ValueError(RESOLVE_REF_HELP)
     if action == "open_pr":
         # The three creation-time native claims are all-or-none:  a caller
         # that offers one claim offers all three, so a partial set can never
@@ -244,10 +278,8 @@ def _validate_args(action: str, args: dict) -> dict:
             value = _text(value, field, required=required)
         elif kind == "clean":
             value = _clean_text(value, field, required=required)
-        elif kind == "thread_id":
-            value = _text(value, field, required=required)
-            if not re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}", value):
-                raise ValueError("thread_id must be a pull request review thread id")
+        elif kind == "thread_id" or kind == "comment_id":
+            value = _review_ref(value, field)
         elif kind == "generation_claim":
             if value is None and not required:
                 pass
@@ -420,17 +452,18 @@ class Relay:
         *,
         operator_bootstrap: bool = False,
     ) -> tuple[int, dict]:
-        if action == "service_read" and self.service_read_token is not None:
+        if action == "service_read" and service_read.configured_bearer(self, token):
             # The alert service's read lane:  its own bearer, no seat policy,
             # fixed verbs and an explicit repo allowlist.  It never mints for
             # a caller-chosen scope and never returns a token.
             #
-            # A configured lane owns the action outright:  the lane's own
-            # credential is the only one it accepts, and it answers every
-            # other bearer with its ordinary unauthenticated refusal.  A
-            # relay with no lane configured leaves the action to the normal
-            # policy path, where the seat's own grant, repository scope and
-            # quota apply.
+            # Only the configured bearer takes the lane.  Every other
+            # bearer, seat or stranger, falls through to the normal policy
+            # path below, where the seat's own grant, repository scope and
+            # quota apply:  an ordinary seat reader keeps its authenticated
+            # dispatch (and its own refusals) while the lane is configured.
+            # A relay with no lane configured leaves every bearer on that
+            # same path.
             return service_read.lane(self, token, args)
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.
@@ -1069,6 +1102,24 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_secret_delete_repo_codespaces",
         "wf_secret_put_env_actions",
         "wf_secret_delete_env_actions",
+        "wf_hook_create",
+        "wf_hook_update",
+        "wf_hook_delete",
+        "wf_hook_ping",
+        "wf_hook_test",
+        "wf_hook_redeliver",
+        "wf_org_hook_create",
+        "wf_org_hook_update",
+        "wf_org_hook_delete",
+        "wf_org_hook_ping",
+        "wf_deploy_key_add",
+        "wf_deploy_key_delete",
+        "wf_environment_put",
+        "wf_environment_delete",
+        "wf_env_branch_policy_create",
+        "wf_env_branch_policy_delete",
+        "wf_env_variable_set",
+        "wf_env_variable_delete",
         "wf_org_variable_set",
         "wf_org_variable_delete",
         "wf_org_variable_repos_set",
@@ -1374,7 +1425,17 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
                 else {}
             ),
         )
-    return self.client.resolve_thread(_text(args.get("thread_id"), "thread_id"), bearer=token)
+    ref = args.get("thread_id") or args.get("comment_id")
+    if not _PRRT_RE.fullmatch(ref):
+        try:
+            ref = self.client.thread_for_comment(repo, ref, bearer=token)
+        except RelayGitHubError as exc:
+            # The lookup only reads, so a transient failure proves no write was
+            # attempted: release the idempotency key as refused and answer retryable.
+            if exc.status in (0, 408, 429) or exc.status >= 500:
+                raise PreReadUnavailable() from None
+            raise
+    return self.client.resolve_thread(ref, bearer=token)
 
 
 Relay._dispatch_app = _app_dispatch

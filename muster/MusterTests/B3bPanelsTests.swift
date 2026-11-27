@@ -41,7 +41,7 @@ private final class B3bCommands: CommandRunning {
     func run(_ executable: String, _ arguments: [String]) throws -> String {
         calls.append((executable, arguments))
         if let failure { throw failure }
-        return replies[arguments.first ?? ""] ?? ""
+        return replies[arguments.count > 2 ? arguments[2] : ""] ?? ""
     }
 }
 
@@ -72,7 +72,7 @@ final class SecretNamesTests: XCTestCase {
         let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
         let secrets = FleetSecrets(commands: fake, home: b3bHome)
         XCTAssertEqual(try secrets.secretNames(path: "/"), ["A_KEY"])
-        XCTAssertEqual(fake.calls.first?.1.first, "names")
+        XCTAssertEqual(fake.calls.first?.1.prefix(3), ["-I", b3bHome.appendingPathComponent(FleetSecrets.readerRelativePath).path, "names"])
         XCTAssertFalse(fake.calls.flatMap(\.1).contains("get"))
     }
     func test_names_exit_failure_is_refused_not_a_timeout() {
@@ -118,17 +118,20 @@ final class SecretNamesTests: XCTestCase {
         let fake = B3bCommands(); fake.replies["get"] = "A_VALUE"
         let secrets = FleetSecrets(commands: fake, home: b3bHome)
         XCTAssertEqual(try secrets.secret(named: "A_KEY"), "A_VALUE")
-        XCTAssertEqual(fake.calls.first?.0, "/Users/example/apps/infisical-scoped/infisical-scoped.py")
+        XCTAssertEqual(fake.calls.first?.0, "/usr/bin/python3")
         XCTAssertEqual(fake.calls.first?.1,
-                       ["get", "A_KEY", "--folder", "/", "--project", "ai-fleet-coordinator",
-                        "--account", "muster-afc-ro"])
+                       ["-I", b3bHome.appendingPathComponent(FleetSecrets.readerRelativePath).path,
+                        "get", "A_KEY", "--folder", "/", "--project", "ai-fleet-coordinator",
+                        "--consumer-binding", b3bHome.appendingPathComponent(".config/infisical/muster/muster-afc-ro.json").path,
+                        "--consumer", "muster-data-reader", "--consumer-account", "muster-afc-ro"])
     }
     func test_the_reader_path_can_be_pointed_elsewhere() throws {
         let fake = B3bCommands(); fake.replies["get"] = "A_VALUE"
         let elsewhere = URL(fileURLWithPath: "/Users/example/other/reader.py")
         let secrets = FleetSecrets(commands: fake, home: b3bHome, reader: elsewhere)
         XCTAssertEqual(try secrets.secret(named: "A_KEY"), "A_VALUE")
-        XCTAssertEqual(fake.calls.first?.0, "/Users/example/other/reader.py")
+        XCTAssertEqual(fake.calls.first?.0, "/usr/bin/python3")
+        XCTAssertEqual(fake.calls.first?.1.prefix(2), ["-I", elsewhere.path])
     }
     func test_doctor_parse_keeps_only_booleans_counts_and_short_tokens() throws {
         // The reader's report names no CLI:  the old CLI keys are dropped like any
@@ -178,5 +181,43 @@ final class RecallSettingsTests: XCTestCase {
         XCTAssertEqual(rows.map(\.name), ["EMPTY_KEY", "PLAIN_KEY", "RECALL_ADMIN_TOKEN"])
         XCTAssertTrue(rows.allSatisfy { $0.display == "set" || $0.display == "empty" })
         XCTAssertFalse(rows.map(\.display).joined().contains("raw-value"))
+    }
+}
+
+final class OperationDeclaredBindingTests: XCTestCase {
+    func test_all_existing_routes_require_their_exact_account() throws {
+        let routes = [("fleet-ops", "/", "muster-fleetops-ro"),
+                      ("ai-fleet-coordinator", "/", "muster-afc-ro"),
+                      ("ai-fleet-coordinator", "/code-mirrors", "muster-afc-code-mirrors-ro"),
+                      ("ai-fleet-coordinator", "/wake-router", "muster-afc-wake-router-ro")]
+        for (project, folder, account) in routes {
+            let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
+            let reader = FleetSecrets(commands: fake, home: b3bHome)
+            XCTAssertEqual(try reader.secretNamesGrouped(paths: [folder], project: project),
+                           [SecretNameGroup(path: folder, names: ["A_KEY"])])
+            let args = try XCTUnwrap(fake.calls.first?.1)
+            XCTAssertEqual(Array(args.suffix(4)), ["--consumer", "muster-data-reader", "--consumer-account", account])
+            XCTAssertTrue(args.contains(b3bHome.appendingPathComponent(".config/infisical/muster/" + account + ".json").path))
+        }
+        let fake = B3bCommands()
+        XCTAssertThrowsError(try FleetSecrets(commands: fake, home: b3bHome)
+            .secretNamesGrouped(paths: ["/unknown"], project: "ai-fleet-coordinator"))
+        XCTAssertTrue(fake.calls.isEmpty)
+    }
+    func test_timeout_and_cancellation_are_not_refusals() {
+        for verb in ["get", "names", "doctor"] {
+            let fake = B3bCommands(); fake.failure = CommandExitError(output: "{}", status: 124)
+            let reader = FleetSecrets(commands: fake, home: b3bHome)
+            func perform() throws -> String {
+                if verb == "get" { return try reader.secret(named: "A_KEY") }
+                if verb == "names" { return try reader.secretNames(path: "/").joined() }
+                return try reader.doctorReport().description
+            }
+            XCTAssertThrowsError(try perform()) {
+                XCTAssertEqual($0 as? FleetSecretError, .unavailable(verb == "get" ? "A_KEY" : verb == "names" ? "/" : "doctor"))
+            }
+            fake.failure = CancellationError()
+            XCTAssertThrowsError(try reader.secretNames(path: "/")) { XCTAssertTrue($0 is CancellationError) }
+        }
     }
 }

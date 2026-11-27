@@ -72,12 +72,12 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
     if not callable(operator_send) or not callable(destination_for_origin):
         raise Held("review-service-message-callbacks-required")
     messenger = messages.OperatorMessages(operator_send, destination_for_origin)
-    token_file = env.get("RA_SERVICE_TOKEN_FILE", "")
-    wake_file = env.get("RA_WAKE_KEY_FILE", "")
-    if not service._credential_from_file(token_file) or not service._credential_from_file(
-        wake_file
-    ):
-        raise Held("review-service-credential-missing")
+    # The environment value is a fixed transport binding (it only changes with a reload),
+    # while the file fallback is re-read on every call so file rotation needs no restart.
+    if not service.credential(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"):
+        raise Held("review-service-credential-missing: RA_SERVICE_TOKEN")
+    if not service.credential(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"):
+        raise Held("review-service-credential-missing: RA_WAKE_KEY")
 
     class StopAwareRead(github_read.ServiceReadClient):
         def _read(self, payload):
@@ -87,7 +87,7 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
 
     reader = StopAwareRead(
         env.get("RA_RELAY_URL", "http://127.0.0.1:8471"),
-        lambda: service._credential_from_file(token_file),
+        service.credential_loader(env, "RA_SERVICE_TOKEN", "RA_SERVICE_TOKEN_FILE"),
     )
     receipts = ProtectedReceipts(reader, repos)
 
@@ -110,7 +110,7 @@ def start(env, registry, stop, log, *, operator_send=None, destination_for_origi
 
     router = StopAwareRouter(
         env.get("RA_ROUTER_URL", "http://127.0.0.1:8794"),
-        lambda: service._credential_from_file(wake_file),
+        service.credential_loader(env, "RA_WAKE_KEY", "RA_WAKE_KEY_FILE"),
     )
     gate = str(env.get("RA_SELFTEST_SEAT") or "")
     if gate not in platforms:

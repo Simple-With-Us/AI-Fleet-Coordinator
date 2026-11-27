@@ -128,6 +128,8 @@ targets:
       - path: Muster/Model/VmStatusReport.swift
       - path: Muster/Model/AppProcessesReport.swift
       - path: Muster/Model/WorkerHealthReport.swift
+      - path: Muster/Model/BearerStatusReport.swift
+      - path: Muster/Model/BearerActions.swift
       - path: Muster/Model/ApiHealthReport.swift
       - path: Muster/Model/MacServicesReport.swift
       - path: Muster/Model/HogHunterMacReport.swift
@@ -135,6 +137,8 @@ targets:
       - path: Muster/Model/OpsControl.swift
       - path: Muster/Model/ServerListenerSettings.swift
       - path: Muster/Model/ServerSettingsAutosave.swift
+      # The Notes queue's configured state and the doctor's rows for it (NotesQueueHealthTests).
+      - path: Muster/Model/NotesQueueHealth.swift
       - path: Muster/Model/OwnerCheck.swift
       - path: Muster/Model/ServerUnitStatus.swift
       - path: Muster/Model/KnobRegistry.swift

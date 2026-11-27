@@ -1,0 +1,9 @@
+'use strict';
+const fs=require('fs'),vm=require('vm'),crypto=require('crypto');
+const ROOT='/home/jay/.zcode/server/releases/3.19.0-linux-x64-60f71efd6a01/runtime';
+const HASH='ab42d8c5fb2085a1539876a5c40da54e67e2abd71a222ed5bd31b622898984c0';
+class B{constructor(b){this.buffer=b;this.byteLength=b.length}slice(a,b){return new B(this.buffer.subarray(a,b))}toString(){return this.buffer.toString('utf8')}readUInt8(n){return this.buffer.readUInt8(n)}writeUInt8(v,n){this.buffer.writeUInt8(v,n)}}
+function codec(){const src=fs.readFileSync(ROOT+'/server-core.js');if(crypto.createHash('sha256').update(src).digest('hex')!==HASH)throw Error('source-mismatch');const s=src.toString(),a=s.indexOf('var BufferReader ='),b=s.indexOf('// ../rpc/src/protocol.ts',a);if(a<0||b<a)throw Error('source-shape');const VSBuffer=Object.assign(B,{alloc:n=>new B(Buffer.alloc(n)),wrap:b=>new B(Buffer.from(b)),fromString:s=>new B(Buffer.from(s)),concat:bs=>new B(Buffer.concat(bs.map(b=>b.buffer)))});const c={Buffer,VSBuffer};vm.createContext(c);vm.runInContext(s.slice(a,b)+'\nglobalThis.encode=(h,b)=>{const w=new BufferWriter();serialize(w,h);serialize(w,b);return w.buffer.buffer};globalThis.decode=b=>{const r=new BufferReader(VSBuffer.wrap(b));return [deserialize(r),deserialize(r)]};',c);return c;}
+function frame(c,h,b){const body=c.encode(h,b),out=Buffer.alloc(13+body.length);out[0]=1;out.writeUInt32BE(body.length,9);body.copy(out,13);return out;}
+function parser(c,callback){let buf=Buffer.alloc(0),total=0;return chunk=>{total+=chunk.length;if(total>64*1024*1024||buf.length+chunk.length>2*1024*1024)throw Error('frame-budget');buf=Buffer.concat([buf,chunk]);while(buf.length>=13){const n=buf.readUInt32BE(9);if(n>1024*1024)throw Error('frame-size');if(buf[0]!==1)throw Error('frame-type');if(buf.length<13+n)return;const body=buf.subarray(13,13+n);buf=buf.subarray(13+n);if(body.length)callback(...c.decode(body));}};}
+module.exports={codec,frame,parser,ROOT};

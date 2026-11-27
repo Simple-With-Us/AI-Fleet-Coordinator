@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +17,15 @@ SCHEMA_VERSION = 1
 
 DEFAULT_ORG = "Simple-With-Us"
 DEFAULT_MAX_RUNS = 15
+
+# Trigger keys that cannot produce a workflow run recorded on the default
+# branch.  A workflow file whose triggers all sit in this denylist
+# (workflow_call-only and pull_request-only files pushed to main) still
+# registers a phantom red run per push with zero jobs behind it, which is
+# report noise, not a red streak on the default branch.  A denylist, not an
+# allowlist: a trigger this file does not know about (merge_group, a future
+# event) must keep its red row visible, never hide behind "unknown".
+PHANTOM_ONLY_TRIGGERS = frozenset({"workflow_call", "pull_request", "pull_request_target"})
 
 
 def _repo_access_error(owner: str, repo: str, exc: github.GitHubError, *, context: str) -> str:
@@ -84,6 +94,88 @@ def streak_from_runs(runs: Sequence[dict[str, Any]]) -> tuple[int, list[dict[str
     return len(streak), streak
 
 
+def parse_on_triggers(content: str) -> set[str]:
+    """Return the top-level trigger keys of a workflow file's `on:` block.
+
+    Deliberately a narrow subset of YAML: workflows are hand-maintained with
+    the house style (block or inline-list `on:` at column 0, trigger keys at
+    exactly two spaces), and any file this parser cannot read yields an empty
+    set, which callers treat as "unknown" and keep scanning.
+    """
+    triggers: set[str] = set()
+    in_on = False
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not in_on:
+            if re.match(r'^(?:on|"on"):\s*$', line):
+                in_on = True
+                continue
+            inline = re.match(r'^(?:on|"on"):\s*\[(.*)\]\s*$', line)
+            if inline:
+                triggers |= _split_trigger_list(inline.group(1))
+                continue
+            # Bare-scalar form: `on: workflow_call` (no block, no list).
+            bare = re.match(r"""^(?:on|"on"):\s*['"]?([A-Za-z][A-Za-z0-9_-]*)['"]?\s*$""", line)
+            if bare:
+                triggers.add(bare.group(1))
+            continue
+        if not line[0].isspace():
+            # A new column-0 key ends the `on:` block.
+            in_on = False
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 2:
+            # Optional quotes: YAML allows `"push":` beside `push:`.
+            key = re.match(r"""(['"]?)([A-Za-z][A-Za-z0-9_-]*)\1:""", stripped)
+            if key:
+                triggers.add(key.group(2))
+                continue
+            item = re.match(r"-\s+('|\")?([A-Za-z][A-Za-z0-9_-]*)\1?\s*:?\s*$", stripped)
+            if item:
+                triggers.add(item.group(2))
+    return triggers
+
+
+def _split_trigger_list(blob: str) -> set[str]:
+    return {part.strip().strip("'\"") for part in blob.split(",") if part.strip()}
+
+
+def _workflow_skipped_as_phantom(
+    client: github.GitHubClient,
+    repo_path: str,
+    wf_path: str,
+    default_branch: str,
+    wf_name: str,
+    errors: list[str],
+) -> bool:
+    """True when the workflow file cannot produce default-branch runs at all.
+
+    Fails open: a file that cannot be read or parsed keeps its red row, so
+    the filter can only remove noise, never hide a real failure.
+    """
+    if not wf_path.startswith(".github/workflows/"):
+        return False
+    try:
+        content = client.get_text_file(repo_path, wf_path, ref=default_branch)
+    except github.GitHubError as exc:
+        errors.append(
+            f"{repo_path.lstrip('/')} workflow {wf_name}: cannot read file for the "
+            f"phantom-trigger check ({type(exc).__name__})"
+        )
+        return False
+    triggers = parse_on_triggers(content)
+    if not triggers:
+        # Unknown shape: keep the row rather than guess.
+        return False
+    # Denylist semantics: only the known phantom-only trigger sets are
+    # filtered; anything else (including triggers this file does not know)
+    # stays visible.
+    return triggers.issubset(PHANTOM_ONLY_TRIGGERS)
+
+
 def scan_repo(
     client: github.GitHubClient,
     owner: str,
@@ -150,6 +242,14 @@ def scan_repo(
         trimmed = runs[:max_runs_per_workflow]
         length, streak_runs = streak_from_runs(trimmed)
         if length == 0:
+            continue
+        # A workflow_call-only or pull_request-only file pushed to the default
+        # branch registers a phantom red run per push with zero jobs behind it
+        # (the Oct 2025 reusable-workflow class).  It cannot run on this
+        # branch, so it is report noise rather than a red streak.
+        if _workflow_skipped_as_phantom(
+            client, repo_path, wf_path, default_branch, wf_name, errors
+        ):
             continue
         latest = streak_runs[0]
         oldest = streak_runs[-1]

@@ -94,6 +94,7 @@ EXPLICIT_RULES = (
     ("BF", "pm2", "botfleet-mcp", True),
     # AI-Fleet-Coordinator's own LaunchAgents and units.
     ("AFC", "launchd", "com.jay.simple-tools-runtime-sync", True),
+    ("AFC", "launchd", "com.jay.fleet-bearer-status", True),
     ("AFC", "launchd", "com.jay.fleet-api-health", True),
     ("AFC", "launchd", "com.jay.fleet-gdrive-backup", True),
     ("AFC", "launchd", "com.jay.fleet-mac-services", True),
@@ -117,7 +118,7 @@ EXPLICIT_RULES = (
     ("AFC", "launchd", "com.jay.sim-idle-reaper", True),
     ("AFC", "launchd", "com.jays.weekly-fleet-mode-digest", True),
     ("AFC", "pm2", "seat-mcp", True),
-    ("AFC", "pm2", "code-main-keeper", True),
+    ("AFC", "launchd", "com.jay.code-main-keeper", True),
     ("AFC", "systemd", "cf-usage-watchdog.service", True),
     ("AFC", "systemd", "fleet-cli-git-update.service", True),
     ("AFC", "systemd", "fleet-coding-memory.service", True),

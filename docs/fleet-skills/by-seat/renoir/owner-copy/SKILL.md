@@ -8,7 +8,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **Retired seat.**  Owner directive 2026-10-07: the seat never opened, and the Renoir Claude account and app are no longer used.  `CLAUDE` is the only Claude seat.  Do not install to `~/.renoir/skills`.  Do not take fleet work as RENOIR.  This catalog copy is inactive.
 
 
-Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Sentence Gap, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -99,5 +99,5 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 ## Canon
 
 - `~/apps/FLEET-UI-COPY.md`
-- `~/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `~/apps/FLEET-PROTOCOL.md` § Sentence Gap; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

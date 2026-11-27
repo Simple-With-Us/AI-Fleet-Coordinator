@@ -1396,8 +1396,9 @@ def iter_docs(
                 try:
                     text = docs_library.text_from_bytes(raw, p.suffix)
                 except (ValueError, UnicodeError):
-                    warn(f"doc: unreadable-or-excluded tracked file {relative}")
-                    continue
+                    DOC_HELD_IDS.add("doc/" + repository.name + "/" + relative)
+                    warn("doc: unreadable-or-excluded repository document; held from prune")
+                    break
                 document = Doc(
                     doc_id="doc/" + repository.name + "/" + relative,
                     title=first_heading(text, p.name),

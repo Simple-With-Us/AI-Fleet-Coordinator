@@ -1,0 +1,42 @@
+{
+  "review": "AI-Fleet-Coordinator wake router installer match-pinned generic-assignment admission",
+  "reviewed_at": "2026-11-26",
+  "reviewer": "MiniMax (MM) seat: the source owner of the file read it whole, and a separate verifier pass read the same bytes and re-enumerated every hit;  this record is not an owner approval",
+  "reviewed_file": {
+    "repository": "Simple-With-Us/AI-Fleet-Coordinator",
+    "path": "scripts/simple_tools/server/install-wake-router.sh",
+    "sha256": "80c5933a23534b5b9ed0030dafcfcb90b0e21a6fd25f94c72b16734edae6bad6",
+    "bytes": 48068,
+    "lines": 975,
+    "effective_matches": [
+      [
+        "assigned secret",
+        6118,
+        6154,
+        6127,
+        6154
+      ],
+      [
+        "assigned secret",
+        7067,
+        7093,
+        7075,
+        7093
+      ]
+    ]
+  },
+  "provenance_source": {
+    "path": "scripts/simple_tools/server/install-wake-router.sh",
+    "sha256": "80c5933a23534b5b9ed0030dafcfcb90b0e21a6fd25f94c72b16734edae6bad6",
+    "commit": "1b8d1ca008443c59c75e577968e5bda046582469",
+    "admission": "the version of the file on main at that commit;  the full-file digest, not the commit, binds admission"
+  },
+  "findings": {
+    "two_matches": "exactly two effective generic assignments.  Line 109 binds the module-level constant TOKEN to the 27-character uppercase-underscore name of the Infisical environment variable the installer reads, so it names a credential slot instead of holding one.  Line 130 binds the local name token to the result of a call that reads one line from standard input inside the embedded knob-check program, so it receives a computed value instead of a stored one.",
+    "enumeration": "exactly two effective generic assignments;  no assigned-credential hits, no dedicated-provider hits, no bearer-header hits and no Zulip-shaped key hits.  The other credential-noun bindings in the file receive None or a call result.",
+    "full_content": "the complete 975-line file was read consecutively, including the 900-line embedded Python program and the embedded knob-check program inside it.  No stored credential literal, no encoded payload, no exfiltration destination and no embedded instruction content was found.",
+    "runtime_handling": "the credential itself is read at run time from a 0600 file, passed to a child process on standard input and written to a 0600 environment file;  no value is stored in this file."
+  },
+  "admission_scope": "admits only this repository, full path and exact full-file digest for the generic-assignment categories, with the exact match census pinned;  a changed byte, another match or a removed match refuses.  Loaded-credential and dedicated-shape enforcement remain absolute.",
+  "candidate_state": "the admitted bytes are the version of the file on main at commit 1b8d1ca008443c59c75e577968e5bda046582469;  any further edit re-spins the digest and voids this admission.  The record does not authorize publication, installation or deployment by itself."
+}

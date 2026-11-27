@@ -94,5 +94,6 @@ test("CLAUDE canonical email is required; other seats keep their existing bindin
     WISE: { key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE", infisical: { name: "WISE_ZULIP_KEY", path: "/zulip" } },
     MA: { key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA", infisical: { name: "MA_ZULIP_KEY", path: "/zulip" } },
     CODEX: { key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX", infisical: { name: "CODEX_ZULIP_KEY", path: "/zulip" } },
+    DUET: { key: "ZULIP_KEY_DUET", email: "ZULIP_EMAIL_DUET", infisical: { name: "DUET_ZULIP_KEY", path: "/zulip" } },
   });
 });

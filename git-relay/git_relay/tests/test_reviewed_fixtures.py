@@ -23,13 +23,26 @@ class ReviewedFixturesTests(TestCase):
     def test_registry_is_bounded_exact_and_cannot_be_supplied_by_caller(self):
         self.assertIsInstance(_REVIEWED_FIXTURES, frozenset)
         self.assertEqual(
-            len(_REVIEWED_FIXTURES), 13
-        )  # pin moves only with a reviewed attestation (2026-11-05, PR #1399)
+            len(_REVIEWED_FIXTURES), 14
+        )  # 13 existing AFC rows plus the exact CT #3197 fixture row.
         for repo, path, digest in _REVIEWED_FIXTURES:
-            self.assertEqual(repo, REPO)
-            self.assertTrue(path.startswith("scripts/"))
+            if repo == REPO:
+                self.assertTrue(path.startswith("scripts/"))
+            else:
+                self.assertEqual(
+                    (repo, path, digest),
+                    (
+                        "Simple-With-Us/Congress.Trade",
+                        "app/src/admin/__tests__/reviewQueueFailures.test.ts",
+                        "ef488ddc69bec439d19097ac231e04bf0016a9d6330906d544da04a258f51d48",
+                    ),
+                )
             self.assertEqual(len(digest), 64)
             self.assertEqual(digest, digest.lower())
+        self.assertEqual(sum(repo == REPO for repo, _, _ in _REVIEWED_FIXTURES), 13)
+        self.assertEqual(
+            sum(repo == "Simple-With-Us/Congress.Trade" for repo, _, _ in _REVIEWED_FIXTURES), 1
+        )
         args = self.args()
         args["reviewed_fixture"] = True
         with self.assertRaises(Refused):
@@ -223,6 +236,8 @@ class RepoTreeConsistencyTests(TestCase):
 
     def test_existing_attested_paths_carry_exactly_the_attested_bytes(self):
         for _repo, path, digest in sorted(_REVIEWED_FIXTURES):
+            if _repo != REPO:
+                continue  # A different repository is not represented by this local tree.
             target = self.repo_root / path
             if not target.is_file():
                 continue  # future rename target: absent on main is expected
@@ -268,6 +283,8 @@ class RepoTreeConsistencyTests(TestCase):
 
     def test_absent_future_targets_still_refuse_changed_bytes(self):
         for _repo, path, _digest in sorted(_REVIEWED_FIXTURES):
+            if _repo != REPO:
+                continue  # Cross-repo exact binding is checked by the registry test.
             if (self.repo_root / path).is_file():
                 continue  # live-path acceptance is covered above
             self.assertIsNotNone(
@@ -293,7 +310,7 @@ class CurrentManifestScopeTests(unittest.TestCase):
         self.assertEqual(row["path"], "scripts/simple_tools/tests/test_infisical_api_route.py")
         self.assertEqual(len(row["edits"]), 5)
         self.assertIn((row["repo"], row["path"], row["result_sha256"]), _REVIEWED_FIXTURES)
-        self.assertEqual(len(_REVIEWED_FIXTURES), 13)
+        self.assertEqual(len(_REVIEWED_FIXTURES), 14)
 
 
 class GrWorkflowV1AttestationRowTests(TestCase):

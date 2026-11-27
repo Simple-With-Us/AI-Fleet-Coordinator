@@ -439,6 +439,7 @@ enum FleetRegistryReader {
         "instinct": CodingAppMetadata(
             title: "Instinct", cli: nil, runsOn: "Its own computer, through the hosted bridge"
         ),
+        "claude-web": CodingAppMetadata(title: "Claude Web", cli: nil, runsOn: "Hosted, no local tool"),
         "chatgpt": CodingAppMetadata(title: "ChatGPT", cli: nil, runsOn: "Hosted, no local tool"),
         "amp": CodingAppMetadata(title: "Amp", cli: nil, runsOn: "Hosted or owner-run, not tracked here"),
         // The Operator is a listener service, not a command line tool:  the simple-chat CLI's

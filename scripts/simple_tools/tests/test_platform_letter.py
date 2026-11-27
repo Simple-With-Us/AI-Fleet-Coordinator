@@ -3298,38 +3298,48 @@ class GoneReportTests(Base):
                 seen.append(timeout)
             return real(request, timeout)
 
-        self.start("s-0001", self.t0, spec=spec)  # the chat the adapter will name
+        with mock.patch.object(registry_api, "_open", capture):
+            self.start("s-0001", self.t0, spec=spec)  # the chat the adapter will name:  the report is due now
+        # The adapter names an archived chat, so the report is made at the first start:  the quiet hour does not
+        # hold an archived chat back, and the call carries the platform's own deadline.
+        self.assertEqual(seen, [2])
         self.start("s-0003", self.t0, spec=spec)
         with mock.patch.object(registry_api, "_open", capture):
-            self.start("s-0004", self.t0 + self.window + 1, spec=spec)  # the report is due
-        self.assertEqual(seen, [2])
+            self.start("s-0004", self.t0 + self.window + 1, spec=spec)  # the report is due again
+        self.assertEqual(seen, [2])  # the chat the adapter named is retired, so there is nothing left to report
 
     def test_a_start_reports_this_hosts_gone_chats_in_one_call(self) -> None:
         with self.reports() as sent:
             for sid in ("s-0001", "s-0002", "s-0003"):
                 self.start(sid, self.t0)
-            self.assertEqual((sent, self.asked), ([], []))  # no chat here has been quiet:  nobody is asked
+            self.assertEqual(sent, [])
+            # The adapter is asked about every lettered chat of this host, not only the quiet ones:  it has named
+            # nothing yet, so nothing was reported.
+            self.assertEqual(self.asked, [frozenset({"s-0001"})])
             self.gone = {"s-0001", "s-0002"}
             out = self.start("s-0004", self.t0 + self.window + 1)
-        # One call, in the assigner's own request shape:  the platform, this host, the scope and the ids.  No title.
+        # One call, in the assigner's own request shape:  the platform, this host, the scope and the ids.  No title.
         self.assertEqual(sent, [{"platform": "faux", "verified_host": "mac", "profile_scope": "default",
                                  "native_session_ids": ["s-0001", "s-0002"]}])
-        self.assertEqual(self.asked, [frozenset({"s-0001", "s-0002", "s-0003"})])
+        # The adapter was asked about every lettered chat of this host, the chat that just started among them.
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003", "s-0004"}))
         self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003", "s-0004")],
                          ["closed", "closed", "active", "active"])
         # The chat that started is answered as ever.
         self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.note("s-0004")["label"])
-        # A chat the report named is marked, so it is not named again, and its next touch is due.
+        # A chat the report named is retired:  it holds no letter any more, and it is not named again.
         for sid in ("s-0001", "s-0002"):
             note = self.note(sid)
             self.assertEqual((note["state"], note["gone_at"], note["touched_at"]),
-                             ("open", self.t0 + self.window + 1, 0))
+                             ("closed", self.t0 + self.window + 1, 0))
+            self.assertEqual(note["label"], "")
         self.assertNotIn("gone_at", self.note("s-0003"))
         self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1})
         with self.reports() as sent:
             self.start("s-0005", self.t0 + 2 * self.window + 5)
         self.assertEqual(sent, [])  # the adapter still calls them gone, and they are not reported every window
-        self.assertEqual(self.asked[-1], frozenset({"s-0003", "s-0004"}))
+        # The retired chats are not offered again:  the adapter is asked about the lettered chats that are left.
+        self.assertEqual(self.asked[-1], frozenset({"s-0003", "s-0004", "s-0005"}))
 
     def test_a_second_start_inside_the_window_sends_nothing(self) -> None:
         self.start("s-0001", self.t0)
@@ -3337,13 +3347,15 @@ class GoneReportTests(Base):
         self.gone = {"s-0001", "s-0002"}
         with self.reports() as sent:
             self.start("s-0003", self.t0 + self.window - 5)  # the stamp of the first start still holds
-            self.assertEqual((sent, self.asked), ([], []))
-            self.start("s-0004", self.t0 + self.window + 1)  # due:  s-0001 and s-0002 have been quiet an hour
+            self.assertEqual(sent, [])  # inside the window:  nothing is sent
+            self.assertEqual(len(self.asked), 1)  # and the adapter was asked once, at the first start
+            self.start("s-0004", self.t0 + self.window + 1)  # due:  the window has passed
             self.assertEqual(len(sent), 1)
             self.gone = {"s-0003"}
+            asked = len(self.asked)
             self.start("s-0005", self.t0 + 2 * self.window)  # inside the window of that report
             self.assertEqual(len(sent), 1)
-            self.assertEqual(len(self.asked), 1)  # the adapter is not even asked
+            self.assertEqual(len(self.asked), asked)  # the adapter is not even asked
             self.start("s-0006", self.t0 + 2 * self.window + 2)
             self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"], ["s-0003"]])
 
@@ -3353,10 +3365,11 @@ class GoneReportTests(Base):
             self.start("s-0002", self.t0 + self.window + 1)
             self.start("s-0003", self.t0 + self.window + 2)
         self.assertEqual(sent, [])
-        self.assertEqual(self.asked, [frozenset({"s-0001"})])
+        # The adapter is asked about every lettered chat of this host and names none of them:  nothing is reported.
+        self.assertEqual(self.asked, [frozenset({"s-0001"}), frozenset({"s-0001", "s-0002"})])
         self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1})
 
-    def test_only_this_hosts_own_quiet_lettered_chats_of_the_platform_are_candidates(self) -> None:
+    def test_only_this_hosts_own_lettered_chats_of_the_platform_are_candidates(self) -> None:
         self.start("s-0001", self.t0)
         self.start("c-0001", self.t0, spec=make_spec())  # another platform's chat, in the same seat's notes
         self.start("s-0002", self.t0, platform="linux", location_flag="server")  # registered at another location
@@ -3369,13 +3382,19 @@ class GoneReportTests(Base):
         self.assertEqual(self.note("s-0004")["state"], "closed")
         self.start("s-0005", self.t0)
         self.prompt("s-0005", self.t0 + self.window - 600)  # its hook ran ten minutes before the hour was up
-        # The adapter names everything it is asked about, and more:  only what was asked counts.
-        self.gone = {"s-0001", "s-0002", "s-0003", "s-0004", "s-0005", "c-0001", "s-9999"}
+        # The adapter names one of the chats it was asked about, and more:  only what was asked counts.
+        self.gone = {"s-0001", "s-0002", "s-0003", "s-0004", "c-0001", "s-9999"}
         with self.reports() as sent:
             self.start("s-0009", self.t0 + self.window + 1)
-        self.assertEqual(self.asked[-1], frozenset({"s-0001"}))
+        # The adapter is asked about every lettered chat of this host and platform:  s-0003 holds no letter,
+        # s-0004 ended, s-0002 is at another location and c-0001 belongs to another platform.
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0005", "s-0009"}))
+        # Only the chats the adapter names are gone for good, and the assigner closes their rows.
         self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001"]])
-        self.assertEqual(self.row_state("s-0005"), "active")
+        self.assertEqual(self.row_state("s-0001"), "closed")
+        self.assertEqual(self.note("s-0001")["label"], "")  # and the retired chat holds no letter
+        self.assertEqual(self.row_state("s-0005"), "active")  # a candidate the adapter did not name is left alone
+        self.assertNotEqual(self.note("s-0005")["label"], "")
         self.assertEqual(self.row_state("s-0002", "server"), "active")
         self.assertEqual(self.lookup("c-0001", "mac")["state"], "active")
 
@@ -3387,7 +3406,8 @@ class GoneReportTests(Base):
         self.gone = {"s-0001", "s-0002"}
         with self.reports() as sent:
             self.start("s-0004", self.t0 + self.window + 1)
-        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003"}))
+        # The adapter is asked about every lettered chat of this host, the chat that just started among them.
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003", "s-0004"}))
         self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"]])  # longest quiet first
         self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003")],
                          ["closed", "closed", "active"])
@@ -3486,7 +3506,10 @@ class GoneReportTests(Base):
         with self.reports() as sent:
             self.start("s-0001", self.t0 + self.window + 1, source="compact")
             self.start("c-0001", self.t0 + self.window + 2, spec=make_spec())
-        self.assertEqual((sent, self.asked), ([], []))
+        self.assertEqual(sent, [])
+        # The adapter was asked about the lettered chats of this host, but a compact start reports nothing and a
+        # platform with no accessor names no gone chats at all.
+        self.assertEqual(self.asked, [frozenset({"s-0001"})])
         self.assertFalse(os.path.exists(PL.gone_stamp_path(self.env(), "CODEX", "codex", "mac")))
         self.assertIsNone(make_spec().gone_sessions)  # no platform reports gone chats unless its adapter says how
 
@@ -3586,10 +3609,13 @@ class GoneReportTests(Base):
         code, answer = self.registry("close", "--platform", "faux", "--location", "mac", "--session-id", "s-0001")
         self.assertEqual(code, 0, answer)
         self.gone = {"s-0001"}
+        label = self.note("s-0001")["label"]  # the letter the chat held, read before the report retires it
         code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 5)
         self.assertEqual(code, 0, out)
-        self.assertIn("not open Faux %s (s-0001, mac)" % self.note("s-0001")["label"], out)
+        self.assertIn("not open Faux %s (s-0001, mac)" % label, out)
         self.assertIn("1 gone, 0 closed now", out)
+        # The report retires the chat locally:  its note holds no letter any more.
+        self.assertEqual(self.note("s-0001")["label"], "")
         self.assertEqual(self.verb("--platform", "faux", at=self.t0 + self.window + 9)[1].splitlines()[0],
                          "Faux gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)")
 

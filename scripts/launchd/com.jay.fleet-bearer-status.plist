@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.fleet-bearer-status (Muster bearer alarms):  every 5 minutes, read the owner bearer status API
+  (GET /admin/api/bearers) with the owner's own Cloudflare Access login, write
+  ~/.local/state/fleet-tools/bearer-status.json (0600, atomic) for Muster's Bearers panel, and raise a macOS
+  notification for a problem, a growth in /mcp 401 or relay refusals, or a missing Access login (de-duplicated,
+  again every 6 hours, with a recovery notice).  Credential: the Access service token "muster-admin-api" from
+  ~/.config/fleet-tools/muster-admin-api.json (user-only), else the owner's Access login, one-time owner step:
+            cloudflared access login https://agents.simplewithus.com/admin
+  Install:  cp scripts/fleet-bearer-status.py to ~/.local/share/fleet-tools/ (a stable copy outside any lane),
+            cp this file to ~/Library/LaunchAgents/ and
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.fleet-bearer-status.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.fleet-bearer-status
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.fleet-bearer-status</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>/Users/jay/.local/share/fleet-tools/fleet-bearer-status.py</string>
+    <string>--write</string>
+    <string>/Users/jay/.local/state/fleet-tools/bearer-status.json</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/apps/logs/fleet-bearer-status.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/apps/logs/fleet-bearer-status.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+  </dict>
+</dict>
+</plist>

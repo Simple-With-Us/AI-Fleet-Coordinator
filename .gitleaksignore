@@ -195,3 +195,9 @@ e80ee810190a03ff7f1b139b3f1295d31f102799:scripts/build-push-client-release.py:ge
 # rest in 85634a8c, so the history scan read it as a token.  The fixture is assembled at run
 # time from the next commit on, so this fingerprint silences that one historical commit only.
 85634a8ca9f55ca38946f0b0b782b8a01a61ef6c:git-relay/git_relay/tests/test_scan_refusal_category.py:jwt:26
+# AFC-793 PR #2564, commit c6ca0452:  the recall gate's refusal-flip fixtures name the placeholder
+# [REDACTED] as a Slack token value, which generic-api-key reads as a key.  The bytes are the
+# owner-approved registered fixture result (reviewed_preservation pair 8a6911c3 to de6b3090), so
+# these fingerprints silence that one publication commit only.
+c6ca04525a7e7966b75023c9a5a7002dd5abebdc:scripts/fleet_rag/tests/test_recall.py:generic-api-key:274
+c6ca04525a7e7966b75023c9a5a7002dd5abebdc:scripts/fleet_rag/tests/test_recall.py:generic-api-key:345

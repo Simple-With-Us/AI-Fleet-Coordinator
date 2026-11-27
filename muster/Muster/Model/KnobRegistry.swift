@@ -259,8 +259,9 @@ struct KnobRegistry {
         copy.knobs = knobs.map { knob in
             var fresh = knob
             guard let row = live.rows[knob.name] else { return fresh }
+            let folderFetchOK = live.folderFetch[knob.folder].map { $0 == "ok" } ?? live.fetchOK
             if knob.isSecret {
-                if live.fetchOK {
+                if folderFetchOK {
                     fresh.current = row.isSet ? .secretSet : .secretMissing(row.reason ?? "unset")
                     fresh.source = .infisical
                 } else {
@@ -285,7 +286,7 @@ struct KnobRegistry {
                         "not valid:  Infisical holds a value this knob refuses, so jobs use the default"
                     )
                     fresh.source = .infisical
-                } else if live.fetchOK {
+                } else if folderFetchOK {
                     fresh.current = .defaultValue(knob.defaultValue)
                     fresh.source = .infisical
                 } else if (row.reason ?? "").contains(",lkg-") {
@@ -376,6 +377,15 @@ struct KnobRegistry {
             if live.fetchOK {
                 lines.append(KnobFreshnessLine(
                     text: "Values read from Infisical at \(time).", isWarning: false))
+            } else if live.folderFetch.values.contains("ok") {
+                let liveFolders = live.folderFetch.keys.filter { live.folderFetch[$0] == "ok" }.sorted()
+                let list = liveFolders.joined(separator: ", ")
+                lines.append(KnobFreshnessLine(
+                    text: "Read from Infisical at \(time): \(list).", isWarning: false))
+                for folder in live.folderFetch.keys.sorted() where live.folderFetch[folder] != "ok" {
+                    let why = KnobRegistry.describeFetchReason(live.folderReasons[folder])
+                    lines.append(KnobFreshnessLine(text: "Could not read \(folder): \(why).", isWarning: true))
+                }
             } else {
                 let why = KnobRegistry.describeFetchReason(live.fetchReason)
                 lines.append(KnobFreshnessLine(
@@ -383,13 +393,15 @@ struct KnobRegistry {
             }
         }
         if live?.fetchOK != true {
-            lines.append(KnobFreshnessLine(text: copyHeadline, isWarning: copyIsStale || !copyIsReadable))
-            if copyIsReadable && copyIsStale {
+            if live?.folderFetch["/"] != "ok" {
+                lines.append(KnobFreshnessLine(text: copyHeadline, isWarning: copyIsStale || !copyIsReadable))
+            }
+            if live?.folderFetch["/"] != "ok" && copyIsReadable && copyIsStale {
                 lines.append(KnobFreshnessLine(text: "It may not be current.", isWarning: true))
             }
             // Another folder's copy says its own age,  in one line,  so its warning cannot
             // repeat the root's text (the panel keys the lines by their text).
-            for other in folderCopies {
+            for other in folderCopies where live?.folderFetch[other.folder] != "ok" {
                 if other.isReadable && other.isStale {
                     lines.append(KnobFreshnessLine(
                         text: "\(other.headline)\(ApplyCopy.sentenceGap)It may not be current.",
@@ -414,7 +426,11 @@ struct KnobRegistry {
         }
         switch token {
         case "service-token-required":
-            return "Muster runs the knob engine without the knob reader's Infisical token, so it cannot read Infisical"
+            return "the knob engine has no Infisical service-token binding"
+        case "muster-binding-refused":
+            return "Muster's scoped Infisical declaration for a knob folder is missing or was refused"
+        case "muster-binding-store-unavailable":
+            return "Muster could not read the scoped service token from the Mac's login Keychain"
         case "scoped-reader-unavailable":
             return "the scoped Infisical reader the engine needs is not installed on this Mac"
         case "timeout":
@@ -639,6 +655,8 @@ struct KnobLiveStatus: Equatable {
     let checkedAt: Date
     let writeToken: WriteToken
     let rows: [String: Row]
+    var folderFetch: [String: String] = [:]
+    var folderReasons: [String: String] = [:]
 
     /// The answer,  or nil when it is not one this app reads.
     static func parse(_ data: Data, fallbackTime: Date = Date()) -> KnobLiveStatus? {
@@ -668,12 +686,15 @@ struct KnobLiveStatus: Equatable {
         case "missing": token = .missing
         default: token = .unknown
         }
+        let folders = object["folders"] as? [String: [String: Any]] ?? [:]
         return KnobLiveStatus(
             fetchOK: fetch == "ok",
             fetchReason: object["fetch_reason"] as? String,
             checkedAt: checked,
             writeToken: token,
-            rows: rows
+            rows: rows,
+            folderFetch: folders.compactMapValues { $0["fetch"] as? String },
+            folderReasons: folders.compactMapValues { $0["fetch_reason"] as? String }
         )
     }
 }
@@ -684,12 +705,12 @@ enum KnobLiveReading: Equatable {
     case failed(String)
 }
 
-/// Runs `python3 -m fleet_knobs status --json --values` and reads its answer.
+/// Runs Muster's declared-service-token status mode and reads its answer.
 ///
 /// The engine runs with the same child environment as every other engine run,  which
 /// carries no credential:  Muster holds none.  The answer never carries a secret's value.
 enum KnobStatusReader {
-    static let arguments = ["-s", "-m", "fleet_knobs", "status", "--json", "--values"]
+    static let arguments = ["-s", "-m", "fleet_knobs", "status", "--json", "--values", "--muster"]
 
     static func read(
         location: EngineLocation,

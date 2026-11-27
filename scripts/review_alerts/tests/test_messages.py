@@ -272,6 +272,8 @@ class MessageDelivery(unittest.TestCase):
         for kind, status in (
             ("findings_added", "new review findings"),
             ("review_completed", "review check completed"),
+            ("ci_failed", "CI checks failed on the current head"),
+            ("merge_blocked", "the PR is blocked from merging"),
         ):
             origin, client, resolve = self.destination_fixture()
             send = mock.Mock(return_value={"id": 321})

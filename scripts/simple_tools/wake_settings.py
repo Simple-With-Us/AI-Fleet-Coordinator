@@ -33,7 +33,8 @@ works as a brake during an outage too, and taking it away restores them.  A file
 read at a refresh keeps the last narrowing that worked in force (none, if there never was one) and
 is logged, and the fetch still runs and is applied through that narrowing:  a broken file never
 widens anything and never freezes the settings.  `local_host` and `claude_bin`, and a
-platform's own `workspace`, `mcode_bin` and `mcode_model`, are not settings but facts about one
+platform's own `workspace`, `mcode_bin` and `mcode_model`, and ZC's `tasks_index`, are not
+settings but facts about one
 host or one platform, which one Infisical value cannot hold, so they are still read from the file,
 by the seats that have them.  `seat_host_facts` maps canonical seat tags to host-fact
 overrides.  A seat takes its named facts after the top-level fallback; no other seat changes.
@@ -136,6 +137,7 @@ HOST_FACTS = (
     "muse_bin",
     "opencode_bin",
     "zcode_bin",
+    "tasks_index",
     "pinned_profile",
     "pinned_owner_account",
 )

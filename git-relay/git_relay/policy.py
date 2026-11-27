@@ -29,23 +29,66 @@ _GRANT_PATH = re.compile(
 )
 _MAX_DEFAULT_BRANCH_PATHS = 8
 
-# A seat's bracketed title tag:  Jay's 2026-11-20 convention is that every
-# relay-created PR title starts with the creating seat's bracketed heading
-# (Echo's PRs begin [ECHO];  a multithreaded seat's begin with its
-# session-qualified tag in the space form, e.g. [MM SS.2.M]).  A colon after
-# the tag ([MM: SS.2.M]) appears on pre-existing PRs and is still accepted
-# as legacy input;  it is not the current convention.  The tag is 1-32 chars
-# of uppercase letters, digits, space, dash or underscore;  per-seat config
-# may pin one with "title_tag", otherwise it derives from the seat name.
+# PR-title attribution: Echo uses [ECHO]. Multithreaded sessions supply
+# [SEAT:<three U+200A>LETTERS.GEN.HOST], without folder, repo or recipient.
+# The colon form is current (November 25, 2026); older space forms remain
+# accepted for compatibility. This function authenticates only the seat tag,
+# never session ownership. Missing session text is still a caller-side gap.
+# A tag is 1-32 uppercase letters, digits, spaces, dashes or underscores;
+# per-seat title_tag may pin it, otherwise it derives from the seat name.
 _TITLE_TAG = re.compile(r"[A-Z0-9][A-Z0-9 _-]{0,31}")
 # The bracket a title already opens with, if any:  [TAG], [TAG: ...], [TAG ...].
 _LEADING_BRACKET = re.compile(r"^\[([^\[\]]{1,64})\]")
 
 
 def _derived_title_tag(seat: str) -> str:
-    """The default bracket tag for a seat:  swu-echo -> ECHO."""
+    """The default bracket tag for a seat:  swu-echo -> ECHO.
+
+    A seat name that is not a string (a number in the policy file, say) is refused
+    with this module's own PolicyError, never an AttributeError from removeprefix.
+    """
+    if not isinstance(seat, str):
+        raise PolicyError(f"seat {seat!r}: the seat name must be a string")
     name = seat.removeprefix("swu-")
     return name.upper()[:32]
+
+
+def effective_title_tag(seat: str, pinned: str | None = None) -> str:
+    """The bracket tag a seat's titles carry:  the pinned one, else the derived one.
+
+    The deploy renderer and the runtime must agree on this, so both call it here
+    rather than each deciding on its own what a seat's tag is.
+    """
+    return pinned if pinned is not None else _derived_title_tag(seat)
+
+
+def check_title_tags(seat_tags: dict[str, str]) -> None:
+    """Refuse title tags that collide across seats, or one that extends another.
+
+    A conforming bracket is the tag followed by end-of-bracket, space or colon,
+    so if one seat's tag equals another's ("MM" vs "MM") or is another's tag
+    plus a space/colon suffix ("MM" vs "MM SS"), the shorter seat's check would
+    accept the longer seat's brackets as its own and the visible creator would
+    be ambiguous.  The deploy renderer calls this too, so a policy file the
+    runtime would refuse never renders.
+    """
+    tag_owners: dict[str, str] = {}
+    for seat, tag in seat_tags.items():
+        other = tag_owners.get(tag)
+        if other is not None:
+            raise PolicyError(f"seats {other!r} and {seat!r} share title tag {tag!r}")
+        tag_owners[tag] = seat
+    ordered = sorted(tag_owners)
+    for i, shorter in enumerate(ordered):
+        for longer in ordered[i + 1 :]:
+            if not longer.startswith(shorter):
+                break
+            if longer[len(shorter)] in " :":
+                raise PolicyError(
+                    f"title tag {longer!r} of seat {tag_owners[longer]!r} extends "
+                    f"{shorter!r} of seat {tag_owners[shorter]!r}: a {shorter!r} "
+                    "bracket would read as either seat's"
+                )
 
 
 def _repo_pattern_allows(patterns, repo: str) -> bool:
@@ -169,7 +212,13 @@ _CREATE_REPO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 
 
 class SeatPolicy:
-    """Per-seat allowlists parsed from GIT_RELAY_SEATS_JSON.
+    """Per-seat repo scopes and rate limits parsed from GIT_RELAY_SEATS_JSON.
+
+    The per-seat action allowlist was retired 2026-11-25:  every implemented
+    action works for every seat through its own bearer.  A seat row's legacy
+    "actions" list is informational only, with one exception:  create_repo
+    mints a namespace-level token outside the seat mint ceiling, so it still
+    requires an explicit per-seat listing (see authorize()).
 
     Shape:
         {
@@ -288,6 +337,31 @@ class SeatPolicy:
         "wf_secret_key_env_actions",
         "wf_secret_put_env_actions",
         "wf_secret_delete_env_actions",
+        "wf_hook_get",
+        "wf_hook_create",
+        "wf_hook_update",
+        "wf_hook_delete",
+        "wf_hook_ping",
+        "wf_hook_test",
+        "wf_hook_deliveries",
+        "wf_hook_redeliver",
+        "wf_org_hooks",
+        "wf_org_hook_get",
+        "wf_org_hook_create",
+        "wf_org_hook_update",
+        "wf_org_hook_delete",
+        "wf_org_hook_ping",
+        "wf_deploy_key_get",
+        "wf_deploy_key_add",
+        "wf_deploy_key_delete",
+        "wf_environment_put",
+        "wf_environment_delete",
+        "wf_env_branch_policies",
+        "wf_env_branch_policy_create",
+        "wf_env_branch_policy_delete",
+        "wf_env_variables",
+        "wf_env_variable_set",
+        "wf_env_variable_delete",
         "wf_org_variables",
         "wf_org_variable_set",
         "wf_org_variable_delete",
@@ -402,6 +476,9 @@ class SeatPolicy:
         "wf_review_thread_comments",
         "wf_review_threads",
         "wf_repo_hooks",
+        "wf_collaborator_permission",
+        "wf_repo_collaborators",
+        "wf_repo_teams",
         "wf_deploy_keys",
         "wf_org_installations",
         "wf_repo_list",
@@ -511,13 +588,17 @@ class SeatPolicy:
             create_repo_public = cfg.get("create_repo_public", False)
             if not isinstance(create_repo_public, bool):
                 raise PolicyError(f"seat {seat!r}: create_repo_public must be true or absent")
+            # Legacy informational field:  the per-seat action allowlist was
+            # retired 2026-11-25 - every implemented action works for every seat
+            # through its own bearer, so the list no longer gates anything.
+            # Still validated when present so a typo'd name fails at load.
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
             unknown = [a for a in actions if a not in self.ALL_ACTIONS]
             if unknown:
                 raise PolicyError(f"seat {seat!r}: unknown actions {unknown}")
-            if not actions or not repos:
-                raise PolicyError(f"seat {seat!r}: actions and repos must both be non-empty")
+            if not repos:
+                raise PolicyError(f"seat {seat!r}: repos must be non-empty")
             app_slug = cfg.get("app_slug")
             mint_perms = cfg.get("mint_permissions") or {}
             if not isinstance(mint_perms, dict):
@@ -525,7 +606,7 @@ class SeatPolicy:
             title_tag = cfg.get("title_tag")
             if title_tag is not None and not isinstance(title_tag, str):
                 raise PolicyError(f"seat {seat!r}: title_tag must be a string")
-            final_tag = title_tag if title_tag is not None else _derived_title_tag(seat)
+            final_tag = effective_title_tag(seat, title_tag)
             if not _TITLE_TAG.fullmatch(final_tag):
                 raise PolicyError(
                     f"seat {seat!r}: title tag {final_tag!r} must be 1-32 chars of "
@@ -535,7 +616,8 @@ class SeatPolicy:
             # Inactive typed actions require the same own-App startup
             # contract, without adding them to live APP dispatch.
             typed_app_actions = ("pr_state", "pr_hold_state", "pr_automerge_disable")
-            wants_app = any(
+            # An actions-less seat may run any action, so it needs its own App.
+            wants_app = not actions or any(
                 a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS or a in typed_app_actions
                 for a in actions
             )
@@ -611,24 +693,7 @@ class SeatPolicy:
         # plus a space/colon suffix ("MM" vs "MM SS"), the shorter seat's
         # check would accept the longer seat's brackets as its own and the
         # visible creator would be ambiguous.  Refuse at config load.
-        tag_owners: dict[str, str] = {}
-        for seat, cfg in self._seats.items():
-            tag = cfg["title_tag"]
-            other = tag_owners.get(tag)
-            if other is not None:
-                raise PolicyError(f"seats {other!r} and {seat!r} share title tag {tag!r}")
-            tag_owners[tag] = seat
-        ordered = sorted(tag_owners)
-        for i, shorter in enumerate(ordered):
-            for longer in ordered[i + 1 :]:
-                if not longer.startswith(shorter):
-                    break
-                if longer[len(shorter)] in " :":
-                    raise PolicyError(
-                        f"title tag {longer!r} of seat {tag_owners[longer]!r} extends "
-                        f"{shorter!r} of seat {tag_owners[shorter]!r}: a {shorter!r} "
-                        "bracket would read as either seat's"
-                    )
+        check_title_tags({seat: cfg["title_tag"] for seat, cfg in self._seats.items()})
         if rate_per_hour < 1:
             raise PolicyError("rate_per_hour must be at least 1")
         if write_rate_per_hour < 1:
@@ -862,7 +927,12 @@ class SeatPolicy:
             return "unknown seat"
         if action == "wf_pr_create":
             return "PR creation requires owner-only open_pr"
-        if action not in self._seats[seat]["actions"]:
+        # create_repo is the one action still entitled per seat:  it mints a
+        # namespace-level token (organization_administration/administration
+        # writes) OUTSIDE the seat mint ceiling, so it is not an action the
+        # seat's own bearer can perform, and the retired allowlist stays in
+        # force for it alone.
+        if action == "create_repo" and action not in self._seats[seat]["actions"]:
             return f"action {action!r} not allowed for this seat"
         if not self._repo_allowed(seat, repo):
             return f"repo {repo!r} not allowed for this seat"
@@ -909,9 +979,8 @@ class SeatPolicy:
 
         A title whose leading bracket opens with the seat's own tag followed
         by a boundary (end of bracket, space or colon) conforms:  "[ECHO] ...",
-        "[MM SS.2.M] ...", "[MM SS] ...".  The colon form ("[MM: SS.2.M]") is
-        accepted as legacy from pre-existing PRs;  the current convention is
-        the space form.  Only the tag's own spelling is canonicalized (case
+        "[MM SS.2.M] ...", "[MM SS] ...".  The current convention is colon plus three U+200A hair spaces,
+        then the assigned LETTERS.GEN.HOST. Older space forms remain accepted.  Only the tag's own spelling is canonicalized (case
         and bracket whitespace:  "[echo] x" -> "[ECHO] x");  session text
         after the tag is caller-supplied, is never rewritten or validated,
         and must never be trusted as authenticated session ownership.

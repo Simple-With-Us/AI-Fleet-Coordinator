@@ -958,11 +958,41 @@ class Wiring(Settings):
         status, health = served.seats.health()
         self.assertEqual(status, 200)
         self.assertEqual(health["seats"]["MC"], {"healthy": False, "reason": "not-installed"})
-        self.assertEqual(health["seats"][CW.SEAT], {"healthy": True, "delivery": True})
-        self.assertEqual(health["seats"]["AG"], {"healthy": True, "delivery": False})
-        self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False})
+        # AFC-836:  a served seat also says whether the Mac route is configured (no destination
+        # is named in this test's Infisical, so it is not).
+        self.assertEqual(
+            health["seats"][CW.SEAT],
+            {"healthy": True, "delivery": True, "mac_route": WR.MAC_ROUTE_NONE},
+        )
+        # The Mac route is named by each of these platforms' settings, and by no destination.
+        self.assertEqual(health["seats"]["AG"], {"healthy": True, "delivery": False, "mac_route": WR.MAC_ROUTE_NONE})
+        self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False, "mac_route": WR.MAC_ROUTE_NONE})
         self.assertEqual(served.seats.seat_health("MC"), (503, {
             "seat": "MC", "healthy": False, "reason": "not-installed"}))
+
+    def test_a_served_seat_says_whether_the_mac_route_is_configured_and_never_names_the_mac(self) -> None:
+        # AFC-836:  through the real service, from the setting Infisical holds.
+        dest = "owner-mac-tailnet-alias"
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, **REGISTRY, WS.MAC_SSH: dest})
+        with mock.patch.object(CW, "state_dir", return_value=self.state):
+            served = SVC.build({"HOME": str(self.home)})
+        status, health = served.seats.health()
+        self.assertEqual(status, 200)
+        # Every platform whose settings name the Mac route says it is configured.
+        routed = [seat for seat, r in served.seats.routers.items() if "mac_ssh" in r.config]
+        self.assertIn(CW.SEAT, routed)
+        for seat in routed:
+            self.assertEqual(health["seats"][seat]["mac_route"], WR.MAC_ROUTE_CONFIGURED, seat)
+        self.assertEqual(
+            health["seats"][CW.SEAT],
+            {"healthy": True, "delivery": True, "mac_route": WR.MAC_ROUTE_CONFIGURED},
+        )
+        # Never the destination:  health needs no key, and the destination names a host.
+        self.assertNotIn(dest, json.dumps(health))
+        # A platform whose settings do not name the route (one that never uses it) says nothing.
+        for seat, r in served.seats.routers.items():
+            if "mac_ssh" not in r.config:
+                self.assertNotIn("mac_route", health["seats"][seat], seat)
 
     def test_muse_code_present_but_broken_disables_only_mc_and_fails_health(self) -> None:
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, **REGISTRY})
@@ -1001,8 +1031,8 @@ class Wiring(Settings):
                     health["seats"]["MC"],
                     {"healthy": False, "reason": "seat-not-served:" + reason},
                 )
-                self.assertEqual(health["seats"][CW.SEAT], {"healthy": True, "delivery": True})
-                self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False})
+                self.assertEqual(health["seats"][CW.SEAT], {"healthy": True, "delivery": True, "mac_route": WR.MAC_ROUTE_NONE})
+                self.assertEqual(health["seats"]["GROK"], {"healthy": True, "delivery": False, "mac_route": WR.MAC_ROUTE_NONE})
                 claude = served.seats.routers[CW.SEAT]
                 wake = WR.Wake(wake_id="w-%s" % reason, seat=CW.SEAT)
                 self.assertEqual(claude.accept(wake)[0], 202)

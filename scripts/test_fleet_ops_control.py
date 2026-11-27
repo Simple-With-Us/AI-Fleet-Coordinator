@@ -437,10 +437,18 @@ class AllowlistNotesTests(Base):
     # and the RAG mirror have no role: neither word the allowlist uses (`reporting`, `updater`)
     # describes them.
     MAC_NOTES = {
+        "com.jay.code-main-keeper": (
+            "updater",
+            "Stopping this stops the Mac keeping ~/Code caught up with origin/main, so the Code clones fall behind until it starts again.",
+        ),
         "com.jay.fleet-rag-mirror": (
             None,
             "Stopping this stops the Mac push of skill and memory files, so the server nightly "
             "keeps the last mirror.",
+        ),
+        "com.jay.fleet-bearer-status": (
+            "reporting",
+            "Stopping this stops the bearer status report and its alarms, so Muster's Bearers panel goes out of date and then reads as not known.",
         ),
         "com.jay.fleet-api-health": (
             "reporting",
@@ -4481,6 +4489,9 @@ class OperatorReadTests(Base):
                                     "dm": False,
                                     "owner": True,
                                     "catch_up": False,
+                                    "delivered": None,
+                                    "receipt_status": None,
+                                    "receipt_at": None,
                                     "message_ids": [639558944],
                                 }
                             ],
@@ -4526,6 +4537,7 @@ class OperatorReadTests(Base):
             "schema", "generated_at", "instance", "window_hours", "totals", "recent",
             "held_back", "held_back_lost", "owner_queue", "truncated", "seats", "seat", "total",
             "by_state", "rows", "wake_id", "state", "at", "reason", "dm", "owner", "catch_up",
+            "delivered", "receipt_status", "receipt_at",
             "message_ids", "count", "lost", "reasons", "message_id", "pending", "seq", "kind",
             "risk", "unreadable",
         },
@@ -4627,6 +4639,17 @@ class OperatorReadTests(Base):
         _, answer = self.plan("operator-wakes", StatusReader(out=json.dumps(document).encode()))
         (kept,) = answer["wakes"]["seats"][0]["recent"]["rows"]
         self.assertEqual((kept["state"], kept["reason"]), ("failed", None))
+
+    def test_a_wakes_outcome_fields_are_passed_through(self):
+        document = self.wakes_document()
+        row = document["seats"][0]["recent"]["rows"][0]
+        row.update(delivered=False, receipt_status="unconfirmed", receipt_at=1700000000)
+        _, answer = self.plan("operator-wakes", StatusReader(out=json.dumps(document).encode()))
+        (kept,) = answer["wakes"]["seats"][0]["recent"]["rows"]
+        self.assertEqual(
+            (kept["delivered"], kept["receipt_status"], kept["receipt_at"]),
+            (False, "unconfirmed", stamp(1700000000)),
+        )
 
     def test_the_lists_are_capped(self):
         document = self.sessions_document()
@@ -5057,11 +5080,15 @@ class OperatorFixtureStoreTests(Base):
                 "by_state": {"done": 1, "failed": 1, "held_back": 1},
                 "rows": [
                     {"wake_id": "w-1", "state": "done", "at": stamp(now - 590), "reason": None,
-                     "dm": False, "owner": False, "catch_up": False, "message_ids": [101, 102]},
+                     "dm": False, "owner": False, "catch_up": False, "delivered": None,
+                     "receipt_status": None, "receipt_at": None,
+                     "message_ids": [101, 102]},
                     {"wake_id": "w-2", "state": "failed", "at": stamp(now - 300), "reason": None,
-                     "dm": False, "owner": True, "catch_up": False, "message_ids": [103]},
+                     "dm": False, "owner": True, "catch_up": False, "delivered": None,
+                     "receipt_status": None, "receipt_at": None, "message_ids": [103]},
                     {"wake_id": "w-3", "state": "held_back", "at": stamp(now - 120),
                      "reason": "wakes_per_hour", "dm": True, "owner": False, "catch_up": True,
+                     "delivered": None, "receipt_status": None, "receipt_at": None,
                      "message_ids": [104]},
                 ],
             },
@@ -5980,7 +6007,7 @@ class RouterHealthTests(Base):
         return {
             "healthy": False,
             "seats": {
-                "CLAUDE": {"healthy": True, "delivery": True},
+                "CLAUDE": {"healthy": True, "delivery": True, "mac_route": "configured"},
                 "AG": {"healthy": True, "delivery": False},
                 "CODEX": {
                     "healthy": False,
@@ -6039,6 +6066,7 @@ class RouterHealthTests(Base):
                         "healthy": True,
                         "delivery": False,
                         "registry_configured": True,
+                        "mac_route": None,
                         "reason": None,
                     },
                     {
@@ -6047,6 +6075,7 @@ class RouterHealthTests(Base):
                         "healthy": True,
                         "delivery": True,
                         "registry_configured": True,
+                        "mac_route": "configured",
                         "reason": None,
                     },
                     {
@@ -6055,6 +6084,7 @@ class RouterHealthTests(Base):
                         "healthy": False,
                         "delivery": True,
                         "registry_configured": False,
+                        "mac_route": None,
                         "reason": "registry_not_configured",
                     },
                     {
@@ -6063,6 +6093,7 @@ class RouterHealthTests(Base):
                         "healthy": False,
                         "delivery": False,
                         "registry_configured": None,
+                        "mac_route": None,
                         "reason": "routine_key_unavailable",
                     },
                     {
@@ -6071,6 +6102,7 @@ class RouterHealthTests(Base):
                         "healthy": False,
                         "delivery": None,
                         "registry_configured": None,
+                        "mac_route": None,
                         "reason": "not_installed",
                     },
                     {
@@ -6079,6 +6111,7 @@ class RouterHealthTests(Base):
                         "healthy": False,
                         "delivery": None,
                         "registry_configured": None,
+                        "mac_route": None,
                         "reason": "seat_not_served",
                     },
                 ],
@@ -6111,6 +6144,7 @@ class RouterHealthTests(Base):
                 "healthy": False,
                 "delivery": False,
                 "registry_configured": None,
+                "mac_route": None,
                 "reason": "other",
             },
         )

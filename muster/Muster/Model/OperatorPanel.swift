@@ -925,11 +925,13 @@ enum OperatorPanelPresentation {
                     lines.append("Paused since \(EavesdropperStatusText.time(since, now: now)).")
                 }
             } else {
-                state = "Listening"
                 if status.pause?.paused == nil {
-                    // The colour must not claim a state the server did not report.
+                    // The colour and the headline must not claim a state the server did not report.
+                    state = "Listening, Pause Not Reported"
                     tone = .neutral
                     lines.append("Whether it is paused is not reported.")
+                } else {
+                    state = "Listening"
                 }
             }
             if status.pauseFileError != nil {
@@ -941,7 +943,7 @@ enum OperatorPanelPresentation {
             } else {
                 lines.append("No Zulip event reported.")
             }
-            if !status.seats.isEmpty, state == "Listening" {
+            if !status.seats.isEmpty, state.hasPrefix("Listening") {
                 let connected = status.seats.filter { $0.connected == true }.count
                 if connected == 0 {
                     tone = .warning
@@ -1057,6 +1059,32 @@ enum OperatorPanelPresentation {
         return warnings
     }
 
+    /// What the registry read could not cover.  These are not warnings of their own, but they
+    /// stop "No warnings" from being read as proof that there are none:  a list cut short, or a
+    /// sweep whose health was not read, leaves the count a floor.
+    static func registryCaveats(
+        sessions: OperatorReading<OperatorSessionsDocument>?,
+        status: ServerEavesdropperReading?,
+        now: Date
+    ) -> [String] {
+        var caveats: [String] = []
+        if let document = sessions?.value {
+            if document.truncated == true {
+                caveats.append("The registry lists only its first chats, so the live count and the warnings are a floor.")
+            }
+            if let dropped = document.dropped, dropped > 0 {
+                caveats.append("The registry dropped \(dropped) chats from its list, so the live count and the warnings are a floor.")
+            }
+        }
+        if sessions?.value != nil {
+            let sweep = status?.currentStatus(now: now)?.registrySweep
+            if sweep?.isReported != true {
+                caveats.append("The registry's sweep health was not reported, so a warning about it may be missing.")
+            }
+        }
+        return caveats
+    }
+
     static func registry(
         sessions: OperatorReading<OperatorSessionsDocument>?,
         status: ServerEavesdropperReading?,
@@ -1071,15 +1099,25 @@ enum OperatorPanelPresentation {
                                       lines: [shortFailure(sessions, fallback: "The server did not report its registry.")])
         }
         let warnings = registryWarnings(sessions: sessions, status: status, now: now)
+        let caveats = registryCaveats(sessions: sessions, status: status, now: now)
         var lines: [String] = []
         let state = document.activeCount.map { "\($0) live" } ?? "Not reported"
         lines.append(document.closedCount.map { "\($0) gone" } ?? "Gone chats not reported")
         if warnings.isEmpty {
-            lines.append("No warnings")
+            lines.append(caveats.isEmpty ? "No warnings" : "No warnings in what was read")
         } else {
-            lines.append(OperatorPanelText.counted(warnings.count, "warning", "warnings"))
+            let counted = OperatorPanelText.counted(warnings.count, "warning", "warnings")
+            lines.append(caveats.isEmpty ? counted : "At least \(counted).")
         }
-        let tone: OperatorTone = document.activeCount == nil ? .neutral : (warnings.isEmpty ? .good : .warning)
+        lines.append(contentsOf: caveats)
+        let tone: OperatorTone
+        if document.activeCount == nil {
+            tone = .neutral
+        } else if !warnings.isEmpty {
+            tone = .warning
+        } else {
+            tone = caveats.isEmpty ? .good : .neutral
+        }
         return OperatorStatusCard(title: title, state: state, tone: tone, lines: lines)
     }
 

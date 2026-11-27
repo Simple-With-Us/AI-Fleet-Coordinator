@@ -20,6 +20,8 @@ import SwiftUI
 /// The report is the one the menu reads,  held by `PlaceWatch`,  and the state at the top
 /// is the menu's own words for the server,  so the panel and the menu cannot disagree.
 struct ServerStatusPanel: View {
+    var openServerOperator: (() -> Void)? = nil
+
     @EnvironmentObject private var watch: PlaceWatch
     @EnvironmentObject private var admin: FleetAdmin
     @EnvironmentObject private var monitor: DriftMonitor
@@ -38,6 +40,14 @@ struct ServerStatusPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                if let openServerOperator {
+                    HStack {
+                        Text("The Eavesdropper runs in Coolify, not as a systemd unit. Read its live status in Operator.")
+                            .foregroundStyle(.secondary)
+                        Button("Open Operator On The Server", action: openServerOperator)
+                    }
+                    .font(.callout)
+                }
                 stateLine(menu.serverCard)
                 if let reading = watch.status {
                     pathLine(reading)

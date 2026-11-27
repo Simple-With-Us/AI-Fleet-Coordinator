@@ -1737,8 +1737,8 @@ export class HostedTools {
   async tool_gr_open_pr(args, _extra, invocation) {
     // Missing context retains explicit-claim compatibility, not verified per-call custody.
     // Claims still require the protected creation receipt and independent canonical binder.
-    if (this.seat === "CODEX" && invocation && invocation.state !== "missing") {
-      const origin = await resolveNativeOriginClaims("CODEX", invocation, nativeOriginResolverFromSecrets(this.workerEnv));
+    if (this.seat === "ZC" || (this.seat === "CODEX" && invocation && invocation.state !== "missing")) {
+      const origin = await resolveNativeOriginClaims(this.seat, invocation, nativeOriginResolverFromSecrets(this.workerEnv));
       if (origin.state !== "resolved") throw new ToolError("origin_held", "Native PR origin could not be verified. Nothing was created.");
       if (Object.entries(origin.claims).some(([name, value]) => Object.hasOwn(args, name) && args[name] !== value)) {
         throw new ToolError("origin_held", "Native PR origin conflicts with the current thread. Nothing was created.");

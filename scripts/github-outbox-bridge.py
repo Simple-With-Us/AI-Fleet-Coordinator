@@ -31,8 +31,7 @@ or one seat from the CLI (--seat --repo --issue).  --once for a launchd
 StartInterval job (the default); --loop for a foreground loop.  --dry-run reads
 everything and writes nothing.
 
-Protocol: ~/apps/FLEET-PROTOCOL.md § Message Shape.  Skim rules follow § Skim, Then
-Full-Read Only on a Match.  Tracked in AI-Fleet-Coordinator as
+Protocol: ~/apps/FLEET-PROTOCOL.md § Message Shape.  Tracked in AI-Fleet-Coordinator as
 scripts/github-outbox-bridge.py; live copy ~/apps/github-outbox-bridge.py.
 Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 """
@@ -261,7 +260,7 @@ def _arrow_recipient_re(token: str):
 
 
 def skim_match(text: str, seat: str) -> bool:
-    """Skim rule (FLEET-PROTOCOL.md § Skim, Then Full-Read Only on a Match): the seat, a FLEET wake, or an alarm word."""
+    """Skim rule: the seat, a FLEET wake, or an alarm word."""
     head = text[:240]
     # Fleet wake: ->FLEET / →FLEET, including mid-list (→ MC, FLEET). Envelope treats → and -> the same.
     if _arrow_recipient_re("FLEET").search(head):

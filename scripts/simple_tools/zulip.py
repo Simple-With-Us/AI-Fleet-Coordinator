@@ -143,8 +143,10 @@ ENV_CHANNEL = "SIMPLE_TOOLS_CHANNEL"
 # The fleet's live coordination channel.  The realm renamed it on Oct 22, 2026, and a
 # hardcoded name that no longer exists makes every seat's post fail with
 # STREAM_DOES_NOT_EXIST, so the built-in default follows the realm and the name is
-# settable for a deployment that puts the fleet somewhere else.
-DEFAULT_CHANNEL = "work-in-progress"
+# settable for a deployment that puts the fleet somewhere else.  It is spelled the way the
+# realm shows it, Work-In-Progress (owner, AFC-482:  the capitals matter).  Zulip matches a
+# channel name without regard to case, so every comparison of a channel name folds case.
+DEFAULT_CHANNEL = "Work-In-Progress"
 # The Operator seat:  the admin [Operator] Zulip bot (role 200) and the GitHub identity
 # `swu-operator` (owner decision, Oct 22 2026).  It is the only seat whose key may be an
 # administrator's;  every other seat, and the owner for every seat, stays moderator/member only.

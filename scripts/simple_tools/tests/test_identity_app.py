@@ -437,6 +437,7 @@ class SeatAppTests(RealRegistryCase):
             dict(self.reg.extra),
             {
                 "AMP": "amp",
+                "DUET": "claude-web",
                 "JET": "chatgpt",
                 "JET-CHAT": "chatgpt",
                 "OPERATOR": "operator",

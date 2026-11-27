@@ -84,7 +84,10 @@ UNIT_ENV = ("PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_ENVIRONMENT")
 ENV_FILE = re.compile(r"(\S+) \(ignore_errors=(?:yes|no)\)")
 TOP_KEYS = {"//", "profiles", "seats"}
 PROFILE_KEYS = {"//", "actions", "mint_permissions", "repos"}
-SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert", "default_branch_paths"}
+SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert", "default_branch_paths", "title_tag"}
+# The bracket tag a seat's titles carry:  the same shape the relay accepts at runtime
+# (git_relay/policy.py: _TITLE_TAG), so a policy file cannot pin a tag the relay refuses.
+TITLE_TAG = re.compile(r"[A-Z0-9][A-Z0-9 _-]{0,31}")
 
 
 class PolicyFileError(ValueError):
@@ -133,6 +136,38 @@ def _default_branch_paths(identity: str, raw, repos):
         raise PolicyFileError(str(exc)) from None
 
 
+def _title_tags(seats: dict) -> dict:
+    """The runtime's own title-tag rules, so a bad tag never renders.
+
+    The relay loads the rendered policy and refuses a colliding tag at startup,
+    so the deploy side must refuse it first:  a policy that renders is a policy
+    the running relay accepts.
+    """
+    relay_dir = str(HERE.parent)
+    if relay_dir not in sys.path:
+        sys.path.insert(0, relay_dir)
+    from git_relay.policy import PolicyError, check_title_tags, effective_title_tag
+
+    seat_tags: dict[str, str] = {}
+    for slug, seat in seats.items():
+        try:
+            tag = effective_title_tag(slug, seat.get("title_tag"))
+        except PolicyError as exc:
+            raise PolicyFileError(str(exc)) from None
+        if not TITLE_TAG.fullmatch(tag):
+            raise PolicyFileError(
+                f"seat {seat.get('identity')!r}: title tag {tag!r} must be 1-32 chars of "
+                "A-Z 0-9 space dash underscore; set title_tag when the App slug "
+                "does not derive one"
+            )
+        seat_tags[slug] = tag
+    try:
+        check_title_tags(seat_tags)
+    except PolicyError as exc:
+        raise PolicyFileError(str(exc)) from None
+    return seat_tags
+
+
 def render(doc: dict) -> dict:
     """The GIT_RELAY_SEATS_JSON object:  one shared-auth entry per seat, keyed by its App slug.
 
@@ -150,6 +185,11 @@ def render(doc: dict) -> dict:
         identity, slug, profile = row.get("identity"), row.get("app_slug"), row.get("profile")
         if not identity or not slug or not profile:
             raise PolicyFileError("every seat needs identity, app_slug and profile")
+        # A malformed row is refused here, on this module's own error path:  a
+        # non-string field would reach the title-tag derivation and crash it.
+        for field, value in (("identity", identity), ("app_slug", slug), ("profile", profile)):
+            if not isinstance(value, str):
+                raise PolicyFileError(f"seat {identity!r}: {field} must be a string")
         if slug in seats:
             raise PolicyFileError(f"App {slug!r} is listed twice")
         if identity in identities:
@@ -177,8 +217,18 @@ def render(doc: dict) -> dict:
             seats[slug]["default_branch_paths"] = {
                 repo: list(paths) for repo, paths in grants.items()
             }
+        # The seat's own bracketed title tag, when the App slug does not derive one:  a
+        # seat called MM runs as swu-minimax, so its derived tag would be MINIMAX.
+        if "title_tag" in row:
+            tag = row["title_tag"]
+            if not isinstance(tag, str) or not TITLE_TAG.fullmatch(tag):
+                raise PolicyFileError(
+                    f"seat {identity!r}: title_tag must be 1-32 chars of A-Z 0-9 space dash underscore"
+                )
+            seats[slug]["title_tag"] = tag
     if not seats:
         raise PolicyFileError("the policy names no seat")
+    _title_tags(seats)
     return seats
 
 

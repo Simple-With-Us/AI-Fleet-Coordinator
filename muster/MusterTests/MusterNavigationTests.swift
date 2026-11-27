@@ -29,9 +29,9 @@ final class MusterNavigationTests: XCTestCase {
     func test_sidebar_names_every_place_once() {
         let named = [MusterDestination.overview]
             + MusterDestination.sidebarPlaces.flatMap { MusterDestination.listed(under: $0) }
-        XCTAssertEqual(named.count, 17)
+        XCTAssertEqual(named.count, 18)
         XCTAssertEqual(Set(named), Set(MusterDestination.allCases))
-        XCTAssertEqual(MusterDestination.allCases.count, 17)
+        XCTAssertEqual(MusterDestination.allCases.count, 18)
     }
 
     /// The rule, stated per panel:  where each panel's data and actions live.  The sidebar
@@ -54,6 +54,7 @@ final class MusterNavigationTests: XCTestCase {
             .hosts: .acrossFleet,
             .appProcesses: .acrossFleet,
             .virtualMachines: .acrossFleet,
+            .bearers: .acrossFleet,
             .actionHistory: .acrossFleet,
         ]
         XCTAssertEqual(expected.count, MusterDestination.allCases.count)
@@ -71,7 +72,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.listed(under: .machine(.server)),
                        [.serverStatus, .operator, .serverResourceLimits, .serverUpdates])
         XCTAssertEqual(MusterDestination.listed(under: .acrossFleet),
-                       [.appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory])
+                       [.appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .bearers, .actionHistory])
     }
 
     /// One name per panel:  no two panels share a title.

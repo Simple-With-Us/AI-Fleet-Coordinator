@@ -338,6 +338,16 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
 # CT offsets come from the source owner's whole-file location-only review.
 _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, int, int, int]]] = {
     (
+        "Simple-With-Us/Usage-Monitor",
+        "scripts/muse-code-usage-collector.mjs",
+        "92618a94e0b5efd9dfcc2ed97b9f39797e1d90773cc5816bfcb25843991ce920",
+    ): frozenset([("assigned secret", 8103, 8130, 8111, 8130)]),
+    (
+        "Simple-With-Us/Usage-Monitor",
+        "scripts/__tests__/muse-code-usage-collector.test.mjs",
+        "aeb48889d7147e35f0059a7448be7c58916a075f6153b78303b20947ca7a6fe0",
+    ): frozenset([("assigned secret", 8630, 8656, 8640, 8656)]),
+    (
         "Simple-With-Us/AI-Fleet-Coordinator",
         "docs/security/reviewed-generic-fixtures.md",
         "825f87972a207b3ad52a99250f230db13ef55777be78eb566208d674d24419c6",
@@ -369,6 +379,21 @@ _REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, 
         "upgrade-reviewed-hub.py",
         "b29e5a664f289d6bf11710d8130cfabf45f514d971f05b97fc5f7e641617c71e",
     ): frozenset({("assigned secret", 8115, 8143, 8123, 8143)}),
+    (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "scripts/mcp-servers/test_native_origin_capture.py",
+        "a9c9dbb7f15cc0bb160a4bbb78c906bfd7ec70f2d84c2ab9b2e92645f22242b6",
+    ): frozenset({("assigned secret", 9436, 9471, 9446, 9471)}),
+    (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "scripts/simple_tools/server/install-wake-router.sh",
+        "80c5933a23534b5b9ed0030dafcfcb90b0e21a6fd25f94c72b16734edae6bad6",
+    ): frozenset(
+        {
+            ("assigned secret", 6118, 6154, 6127, 6154),
+            ("assigned secret", 7067, 7093, 7075, 7093),
+        }
+    ),
 }
 
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})

@@ -55,6 +55,8 @@ extend-exclude = [
 "scripts/fleet_rag/**" = "py310"
 
 [lint.per-file-ignores]
+# Exact digest/census fixture also keeps reviewed import spacing.
+"scripts/mcp-servers/test_native_origin_capture.py" = ["I001"]
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
 
 # The fleet_config package has the same 3.9 contract:  it runs on the fleet's Macs
@@ -80,4 +82,9 @@ extend-exclude = [
 
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
-exclude = ["scripts/fleet_lanes/**", "scripts/fleet_config/**"]
+# Exact reviewed digest/census fixture. Keep lint enabled; formatting changes invalidate admission.
+exclude = [
+    "scripts/fleet_lanes/**",
+    "scripts/fleet_config/**",
+    "scripts/mcp-servers/test_native_origin_capture.py",
+]

@@ -45,11 +45,20 @@ export function clearCertCache() {
 }
 
 /**
+ * The owner's list of Access service-token client ids for /admin/api/*, from the non-secret
+ * `ADMIN_API_SERVICE_CLIENT_IDS` var (comma separated).  Empty or absent means the route is off;  a malformed
+ * entry is dropped, never widened.
+ */
+export function parseServiceClientIds(raw) {
+  return String(raw ?? "").split(",").map((id) => id.trim()).filter((id) => id.length >= 8 && id.length <= 100 && !/[^\w.-]/.test(id));
+}
+
+/**
  * Verify `token` (the `Cf-Access-Jwt-Assertion` header).  Returns
  * `{ ok: true, email }` or `{ ok: false, reason }`.  Never throws for a bad
  * token;  a certificate fetch failure is `{ ok: false, reason: "certs_unavailable" }`.
  */
-export async function verifyAccessJwt(token, access, { fetchCerts = defaultFetchCerts, now = Date.now() } = {}) {
+export async function verifyAccessJwt(token, access, { fetchCerts = defaultFetchCerts, now = Date.now(), allowService = false, serviceClientIds = [] } = {}) {
   if (!access?.configured) return { ok: false, reason: "access_not_configured" };
   if (typeof token !== "string" || token.length === 0 || token.length > 8192) return { ok: false, reason: "no_token" };
   const parts = token.split(".");
@@ -99,7 +108,14 @@ export async function verifyAccessJwt(token, access, { fetchCerts = defaultFetch
   if (!Number.isFinite(claims.exp) || claims.exp <= nowS) return { ok: false, reason: "expired" };
   if (Number.isFinite(claims.nbf) && claims.nbf > nowS + CLOCK_SKEW_S) return { ok: false, reason: "not_yet_valid" };
   if (Number.isFinite(claims.iat) && claims.iat > nowS + CLOCK_SKEW_S) return { ok: false, reason: "issued_in_future" };
-  // A service token carries no email:  agents never pass this gate.
+  // A service token carries no email.  It passes only where the caller says a service principal is allowed
+  // (`allowService`, the /admin/api/* routes) and only for a client id the owner listed;  its `common_name`
+  // claim is that client id.  Everywhere else a service token fails as before:  agents never pass this gate.
+  if (allowService && !claims.email && typeof claims.common_name === "string") {
+    const ids = serviceClientIds ?? [];
+    if (ids.includes(claims.common_name)) return { ok: true, email: "", service: true, serviceTokenId: claims.common_name };
+    return { ok: false, reason: "not_owner" };
+  }
   const email = typeof claims.email === "string" ? claims.email.toLowerCase() : "";
   if (!email || !access.ownerEmails.includes(email)) return { ok: false, reason: "not_owner" };
   return { ok: true, email };

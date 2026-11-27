@@ -194,10 +194,19 @@ test("install_seat_key requires its scoped token and refuses malformed Infisical
     "    except SystemExit: grant_results.append(['refused', list(calls)])",
     "print(json.dumps({'results': results, 'secret_calls': secret_calls, 'grant_results': grant_results}))",
   ].join("\n");
-  const observed = JSON.parse(execFileSync("python3", ["-c", program, ROOT], {
-    env: { ...process.env },
-    encoding: "utf8",
-  }));
+  // An empty HOME,  so the host's own store cannot stand in for the test fixture:
+  // the store is the authority at runtime,  and a host that carries this consumer's
+  // account would answer from it instead of from the fixture's own grant.
+  const home = mkdtempSync(path.join(tmpdir(), "codex-seat-home-"));
+  let observed;
+  try {
+    observed = JSON.parse(execFileSync("python3", ["-c", program, ROOT], {
+      env: { ...process.env, HOME: home },
+      encoding: "utf8",
+    }));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
   const out = observed.results;
   const refused = (reason) => ["refused", `install_seat_key: Infisical scoped read failed (${reason})`];
   // A missing or malformed token is refused by the account the operator has to

@@ -303,7 +303,10 @@ final class KnobFolderTests: XCTestCase {
         let secrets = FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example", isDirectory: true))
         let groups = try secrets.secretNamesGrouped(paths: ["/wake-router"], project: FleetSecrets.knobProject)
         XCTAssertEqual(groups, [SecretNameGroup(path: "/wake-router", names: ["WAKE_ROUTER_CLAUDE_KEY"])])
-        XCTAssertEqual(fake.calls.map(\.1), [["names", "--folder", "/wake-router", "--project", "ai-fleet-coordinator"]])
+        XCTAssertEqual(fake.calls.map(\.1), [["-I", "/Users/example/apps/infisical-scoped/infisical-scoped.py",
+            "names", "--folder", "/wake-router", "--project", "ai-fleet-coordinator",
+            "--consumer-binding", "/Users/example/.config/infisical/muster/muster-afc-wake-router-ro.json",
+            "--consumer", "muster-data-reader", "--consumer-account", "muster-afc-wake-router-ro"]])
     }
 }
 

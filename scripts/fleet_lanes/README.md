@@ -553,7 +553,7 @@ Every network fetch now requires the job's configured own-seat relay route (`FLE
 
 `mirror_write.py` answers one question for the git shim:  is this `commit` or `stash` (anything but `stash list` and `stash show`, and not `commit --dry-run`) writing into a primary clone that sits directly under the Code root?  If so, `git_shim.decide` logs a `mirror-warn` event and, by the `mirror` line of the mode file, warns or blocks.  The mode file now takes `mirror off|detect|block`, with `detect` the default.  It is a line of its own like `isolation`, and a bare `block` never turns it on.  The shim sends `commit` and `stash` to Python only when the folder is under the Code root (or an alias might lead to either), so a commit anywhere else never starts an interpreter.  A warning is exit 78 from Python, which the shell prints and then runs the real git, where a block is exit 77.  The placement watcher counts only `detect` and `block` actions, so `mirror-warn` and `mirror-block` never read as a misplaced checkout.  Gaps, by design:  a git not found through PATH, a `!` alias, `--git-dir` with no `--work-tree`, and `GIT_DIR` are not judged.  Tests:  `tests/test_mirror_write.py`.
 
-`scripts/code-main-keeper.sh` preserves the Mac's existing invocation and log while delegating to `fleet_lanes/code_main_sync.py` beside the entrypoint or in the installed Code mirror bundle.  It maps legacy `CODE_ROOT` and `-n` arguments, preserves host relay configuration, and propagates the shared synchronizer's exit status.  There is no separate allowlist or synchronization algorithm.  Deploy the entrypoint and shared source together after review using `scripts/install-code-mirrors-runtime.py`; the installed bundle has an explicit dependency closure and does not replace the global fleet CLI authentication code.
+`scripts/code-main-keeper.sh` preserves the Mac's existing invocation and log while delegating to `fleet_lanes/code_main_sync.py` beside the entrypoint or in the installed Code mirror bundle.  The Mac runs that shared file under `launchd` (`scripts/launchd/com.jay.code-main-keeper.plist`, the `com.jay.code-main-keeper` job) with `--loop --sweep-command`, so the loop reads the shared interval from Infisical and each sweep runs the host's own authorization bootstrap;  the server runs the same file from a systemd timer.  It maps legacy `CODE_ROOT` and `-n` arguments, preserves host relay configuration, and propagates the shared synchronizer's exit status.  There is no separate allowlist or synchronization algorithm.  Deploy the entrypoint and shared source together after review using `scripts/install-code-mirrors-runtime.py`; the installed bundle has an explicit dependency closure and does not replace the global fleet CLI authentication code.
 
 `--loop` is the common scheduler for supervisors that invoke `code_main_sync.py --loop` (the Mac's `code-main-keeper.sh` forwards `"$@"`, while the existing `pm2` `~/apps/code-main-keeper-daemon.sh` wrapper keeps its 60-second schedule until switched to `--loop`).  It reads `CODE_MIRROR_INTERVAL_SECONDS` from the exact Infisical prod `/code-mirrors` folder before each sweep, then sleeps for the accepted interval after that sweep.  Defaults cannot bootstrap the first run.  A trusted last-known-good copy is allowed, and an outage after startup keeps the last accepted interval in memory.  The lifetime scheduler lock is separate from the existing per-sweep Git lock, so a duplicate loop exits before fetching settings or repositories.
 
@@ -585,6 +585,14 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.lane-placement-w
 mkdir -p ~/.config/fleet && printf 'detect\nisolation off\n' > ~/.config/fleet/lane-guard-mode
 ln -s ~/apps/lane-tools/shims/git ~/bin/git
 # Rollback:  rm ~/bin/git, or put `off` in the mode file;  launchctl bootout gui/$(id -u)/com.jay.lane-placement-watch
+# 4. Code mirror keeper (OPS-1087).  One shared implementation, two supervisors.
+python3 scripts/install-code-mirrors-runtime.py --source-commit "$(git rev-parse HEAD)"
+cp scripts/launchd/com.jay.code-main-keeper.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.code-main-keeper.plist
+# The sweep command is the host bootstrap ~/apps/code-main-keeper.sh, which carries the relay route and the
+# seat bearer file path;  the tracked plist holds neither.  The installer replaces a bundle that still holds
+# the retired reader's two files, so a host that installed the first shared runtime can be refreshed.
+# Rollback:  launchctl bootout gui/$(id -u)/com.jay.code-main-keeper
 ```
 
 ### Install, Server

@@ -12,7 +12,7 @@ through an MCP fan-out overload):  `fleet-recall` only, which is the stdio serve
 `simple-chat mcp --default-seat <SEAT>` for the targets that have a FIXED seat (opencode OPENCODE, muse MC,
 minimax MM, fx FX, clutch CLUTCH).  A tool with no default seat (Kimi, Copilot CLI) never gets it: the
 registration has to name a seat, and these tools have none.  Never a pinned AGENT_SEAT in env (a launcher's seat must still win,
-FLEET-PROTOCOL § Identity Rules), and never a token anywhere.
+FLEET-PROTOCOL § Seats and Identity), and never a token anywhere.
 
 TARGET is opencode, kimi, copilot, muse, minimax, fx or clutch.  `install-fleet-rag.sh` already registers
 fleet-recall in Claude, Cursor, Antigravity, Codex and Grok and calls this tool for the rest.

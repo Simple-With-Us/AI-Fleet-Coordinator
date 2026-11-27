@@ -247,7 +247,7 @@ class PostTests(Harness):
                 before = len(self.fake.requests)
                 result = self.run_cli("post", *argv, "--fleet", "--to", "Codex", "wake up")
                 self.assertEqual(result.code, 2)
-                self.assertIn("only works in #work-in-progress \u203a fleet", result.err)
+                self.assertIn("only works in #Work-In-Progress \u203a fleet", result.err)
                 self.assertIn("--to", result.err)
                 self.assertEqual(len(self.fake.requests), before, "refused before any request, even the --to lookup")
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])

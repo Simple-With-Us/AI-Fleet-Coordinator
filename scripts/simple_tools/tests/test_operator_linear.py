@@ -27,6 +27,7 @@ from __future__ import annotations
 import inspect
 import pathlib
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -1147,6 +1148,10 @@ class DaemonConfigureTests(unittest.TestCase):
         stub.scrub = lambda text: text
         stub.linear_comments = None
         stub._linear_comments_spec = None
+        # What a real daemon keeps for the status document (AFC-833).
+        stub._linear_comments_state = "off"
+        stub._linear_comments_health = {"last_tick": None, "errors": 0, "last_error": None,
+                                        "stopped_at": None}
         stub.configure = lambda: D.Daemon._configure_linear_comments(stub)
         return stub
 
@@ -1155,6 +1160,8 @@ class DaemonConfigureTests(unittest.TestCase):
         stub.configure()
         self.assertIsNone(stub.linear_comments)
         self.assertIn("linear-comments-off", stub.log.kinds())
+        # The status names why, in a fixed word (AFC-833).
+        self.assertEqual(stub._linear_comments_state, "no_service_token")
 
     def test_engine_builds_from_the_service_token_and_survives_a_reload(self) -> None:
         http = FakeHttp()
@@ -1165,6 +1172,8 @@ class DaemonConfigureTests(unittest.TestCase):
             self.assertIsNotNone(engine)
             self.assertEqual(stub._linear_comments_spec, ("st-test",))
             self.assertIn("st-test", stub.hidden)  # the log scrubber knows the value
+            # A built engine leaves no "why there is none" word for the status (AFC-833).
+            self.assertIsNone(stub._linear_comments_state)
             self.assertIn("dev-key", stub.hidden)  # and the fetched developer token
             stub.configure()  # a reload with the same token keeps the engine
             self.assertIs(stub.linear_comments, engine)
@@ -1184,6 +1193,8 @@ class DaemonConfigureTests(unittest.TestCase):
             self.assertIsNotNone(rebuilt)  # the old ledger lock was released first
             self.assertIsNot(rebuilt, engine)
             self.assertIsNone(rebuilt.stopped)
+            # A rebuilt engine has not stopped, for the status too (AFC-833).
+            self.assertIsNone(stub._linear_comments_health["stopped_at"])
         rebuilt.close()
 
     def test_a_group_readable_token_file_fails_closed_in_the_log(self) -> None:
@@ -1195,6 +1206,8 @@ class DaemonConfigureTests(unittest.TestCase):
         self.assertIsNone(stub.linear_comments)
         self.assertIn("linear-comments-error", stub.log.kinds())
         self.assertNotIn("linear-comments-off", stub.log.kinds())
+        # The status names why, in a fixed word (AFC-833).
+        self.assertEqual(stub._linear_comments_state, "token_file_unusable")
 
 
 class DaemonReconnectTests(unittest.TestCase):
@@ -1209,9 +1222,19 @@ class DaemonReconnectTests(unittest.TestCase):
 
         calls: list = []
         engine = types.SimpleNamespace(queue_registered=lambda: calls.append("registered"))
-        stub = types.SimpleNamespace(linear_comments=engine, log=_StubLog(), scrub=lambda t: t)
+        stub = types.SimpleNamespace(
+            linear_comments=engine, log=_StubLog(), scrub=lambda t: t,
+            # What a real daemon keeps for the status document (AFC-833):  the failure the
+            # next lines provoke is counted there before it is logged.
+            _linear_comments_lock=threading.Lock(),
+            _linear_comments_health={"last_tick": None, "errors": 0, "last_error": None,
+                                     "stopped_at": None},
+        )
         stub._observe_linear_reconnect = lambda runner: D.Daemon._observe_linear_reconnect(
             stub, runner
+        )
+        stub._linear_comments_failed = lambda exc, seat=None: D.Daemon._linear_comments_failed(
+            stub, exc, seat
         )
         stub.route_message = lambda runner, message: calls.append(message["id"])
         runner = types.SimpleNamespace(

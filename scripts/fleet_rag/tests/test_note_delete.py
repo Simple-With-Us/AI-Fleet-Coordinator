@@ -42,6 +42,8 @@ class NoteDeleteTests(unittest.TestCase):
 
     def test_delete_is_idempotent_without_state_row(self) -> None:
         with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(note_delete, "STATE_PATH", pathlib.Path(tmp) / "ingest-state.json"),
             mock.patch.object(note_delete.core, "load_config", return_value={"x": "y"}),
             mock.patch.object(note_delete.core, "Qdrant", return_value=FakeQdrant()),
         ):
