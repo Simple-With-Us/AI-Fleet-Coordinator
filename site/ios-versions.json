@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-27T18:37:52Z",
+  "updatedAt": "2026-11-27T21:18:18Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -93,7 +93,7 @@
     },
     "app.botfleet.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202611271003",
+      "build": "202611271505",
       "appleId": 6820175685,
       "displayName": "BotFleet"
     },
