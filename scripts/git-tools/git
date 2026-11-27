@@ -799,6 +799,26 @@ def _scan_category(hit) -> str:
     return hit if isinstance(hit, str) and hit in _SCAN_CATEGORIES else "unclassified"
 
 
+_SEALED_BOX_OVERHEAD = 48  # libsodium crypto_box_seal: 32-byte ephemeral public key plus a 16-byte MAC
+
+
+def _is_sealed_box(tool: str | None, value: str) -> bool:
+    """True only for the encrypted_value of a gr_wf_secret_put_* call that is binary sealed-box ciphertext."""
+    if not isinstance(tool, str) or not tool.startswith("gr_wf_secret_put_"):
+        return False
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    if len(raw) <= _SEALED_BOX_OVERHEAD or len(raw) > 48 * 1024 + _SEALED_BOX_OVERHEAD:
+        return False
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
 def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | None:
     """The first flagged argument field and a fixed category label, never matched text.
 
@@ -819,6 +839,11 @@ def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | No
     while stack:
         path, value = stack.pop()
         if isinstance(value, str):
+            if path == "encrypted_value" and _is_sealed_box(tool, value):
+                # The sealed-box ciphertext of a GitHub secret is random bytes by construction, so the scanner reads
+                # it as a token.  Exempt only that field of the secret-put verbs, and only when it is valid base64 of
+                # at least a sealed box's overhead that is not text.  Text hides a real value, so it is scanned.
+                continue
             if path.endswith("content_b64"):
                 # Base64 of ordinary bytes looks like a token, and it hides a real one, so the decoded text is what is
                 # scanned.  Anything that does not decode is scanned as it came.
