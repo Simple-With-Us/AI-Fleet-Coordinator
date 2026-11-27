@@ -39,7 +39,7 @@ _ENUMS = {
     "merge_commit_title": ("PR_TITLE", "MERGE_MESSAGE"),
     "merge_commit_message": ("PR_BODY", "PR_TITLE", "BLANK"),
 }
-_SECURITY = ("secret_scanning", "secret_scanning_push_protection", "dependabot_security_updates")
+_SECURITY = ("secret_scanning", "secret_scanning_push_protection")
 _TEXT_LIMIT = 1024
 
 
@@ -155,8 +155,9 @@ class RepoAdminVerbsMixin:
             body["security_and_analysis"] = _security_body(args, wv.Refused)
         if not body:
             raise wv.Refused("nothing to update")
-        data = self.client._call("PATCH", f"/repos/{repo}", body, bearer=self.bearer)
-        view = _settings_view(data)
+        self.client._call("PATCH", f"/repos/{repo}", body, bearer=self.bearer)
+        # The answer is checked against a fresh read, not the PATCH echo alone.
+        view = _settings_view(self._get(f"/repos/{repo}"))
         for key, want in body.items():
             if key == "security_and_analysis":
                 got = view["security_and_analysis"] or {}
@@ -178,8 +179,8 @@ class RepoAdminVerbsMixin:
         if (
             not isinstance(topics, list)
             or len(topics) > 20
-            or len(set(topics)) != len(topics)
             or not all(isinstance(t, str) and _TOPIC.fullmatch(t) for t in topics)
+            or len(set(topics)) != len(topics)
         ):
             raise wv.Refused("invalid topics: up to 20 unique lowercase names")
         data = self.client._call(

@@ -7,7 +7,7 @@ const BOOL = { type: 'boolean' };
 const SEC = { type: 'string', enum: ['enabled', 'disabled'] };
 export const REPO_ADMIN_SPECS = {
   wf_repo_settings: ['Read one repository settings view: description, homepage, topics, features, merge options, security_and_analysis. Administration read.', obj(['repo'], { repo: REPO })],
-  wf_repo_update: ['Update named repository settings only: description, homepage (http(s) URL or empty), feature toggles, merge-method toggles, delete_branch_on_merge, allow_auto_merge, allow_update_branch, merge commit title/message formats, and security_and_analysis (secret_scanning, secret_scanning_push_protection, dependabot_security_updates). Every sent field is checked in the answer. No rename, privacy, archive or delete. Administration write.', obj(['repo'], {
+  wf_repo_update: ['Update named repository settings only: description, homepage (http(s) URL or empty), feature toggles, merge-method toggles, delete_branch_on_merge, allow_auto_merge, allow_update_branch, merge commit title/message formats, and security_and_analysis (secret_scanning, secret_scanning_push_protection). Every sent field is checked in the answer. No rename, privacy, archive or delete. Administration write.', obj(['repo'], {
     repo: REPO,
     description: { type: 'string', maxLength: 1024 },
     homepage: { type: 'string', maxLength: 1024 },
@@ -18,7 +18,7 @@ export const REPO_ADMIN_SPECS = {
     squash_merge_commit_message: { type: 'string', enum: ['PR_BODY', 'COMMIT_MESSAGES', 'BLANK'] },
     merge_commit_title: { type: 'string', enum: ['PR_TITLE', 'MERGE_MESSAGE'] },
     merge_commit_message: { type: 'string', enum: ['PR_BODY', 'PR_TITLE', 'BLANK'] },
-    security_and_analysis: obj([], { secret_scanning: SEC, secret_scanning_push_protection: SEC, dependabot_security_updates: SEC }),
+    security_and_analysis: obj([], { secret_scanning: SEC, secret_scanning_push_protection: SEC }),
   })],
   wf_repo_topics_set: ['Replace the repository topics (up to 20 unique lowercase names). Administration write.', obj(['repo', 'topics'], { repo: REPO, topics: { type: 'array', minItems: 0, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 50 } } })],
 };

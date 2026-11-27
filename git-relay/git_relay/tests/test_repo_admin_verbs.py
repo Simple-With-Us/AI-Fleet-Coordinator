@@ -53,9 +53,11 @@ class RepoAdminVerbs(unittest.TestCase):
                 "allow_auto_merge": True,
                 "security_and_analysis": {"secret_scanning": "enabled"},
             },
+            {},
             repo_obj(),
         )
         self.assertEqual(c.calls[0][0:2], ("PATCH", f"/repos/{REPO}"))
+        self.assertEqual(c.calls[1][0:2], ("GET", f"/repos/{REPO}"))
         self.assertEqual(
             set(c.calls[0][2]), {"has_wiki", "allow_auto_merge", "security_and_analysis"}
         )
@@ -66,16 +68,17 @@ class RepoAdminVerbs(unittest.TestCase):
 
     def test_update_unverified_echo_is_an_error(self):
         with self.assertRaises(RelayGitHubError):
-            run("wf_repo_update", {"repo": REPO, "has_wiki": True}, repo_obj(has_wiki=False))
+            run("wf_repo_update", {"repo": REPO, "has_wiki": True}, {}, repo_obj(has_wiki=False))
         with self.assertRaises(RelayGitHubError):
             run(
                 "wf_repo_update",
                 {"repo": REPO, "security_and_analysis": {"secret_scanning": "disabled"}},
+                {},
                 repo_obj(),
             )
 
     def test_cleared_homepage_accepts_null(self):
-        _c, out = run("wf_repo_update", {"repo": REPO, "homepage": ""}, repo_obj(homepage=None))
+        _c, out = run("wf_repo_update", {"repo": REPO, "homepage": ""}, {}, repo_obj(homepage=None))
         self.assertIsNone(out["settings"]["homepage"])
 
     def test_refusals(self):
@@ -91,6 +94,7 @@ class RepoAdminVerbs(unittest.TestCase):
             {"squash_merge_commit_title": "NOPE"},
             {"security_and_analysis": {}},
             {"security_and_analysis": {"advanced_security": "enabled"}},
+            {"security_and_analysis": {"dependabot_security_updates": "enabled"}},
             {"security_and_analysis": {"secret_scanning": "on"}},
         ):
             with self.assertRaises(Refused, msg=str(bad)):
@@ -111,7 +115,7 @@ class RepoAdminVerbs(unittest.TestCase):
         self.assertEqual(
             c.calls[0][0:3], ("PUT", f"/repos/{REPO}/topics", {"names": ["ios", "swift"]})
         )
-        for bad in (["Bad"], ["a", "a"], ["x" * 51], [1], "ios", ["-a"], ["a"] * 21):
+        for bad in (["Bad"], ["a", "a"], ["x" * 51], [1], "ios", ["-a"], ["a"] * 21, [[]], [{}]):
             with self.assertRaises(Refused):
                 run("wf_repo_topics_set", {"repo": REPO, "topics": bad})
         with self.assertRaises(RelayGitHubError):
