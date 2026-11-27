@@ -10,58 +10,90 @@ X-WR-TIMEZONE:America/Chicago
 REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
+UID:fleet-daily-2026-11-27@AI-Fleet-Coordinator
+DTSTAMP:20261127T094543Z
+DTSTART;VALUE=DATE:20261127
+DTEND;VALUE=DATE:20261128
+SUMMARY:Fleet: 13 merged · 0 opened · 0 closed
+DESCRIPTION:13 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#2399] (codex) AFC-859 shared cloud feed conso
+ lidation (DO NOT MERGE)\n- [AI-Fleet-Coordinator#2608] (zcode) Muster: An 
+ Omitted Notes-Queue List Is Not Reported\, Never Empty\n- [AI-Fleet-Coordi
+ nator#2609] chore: record com.socratictrade.ios 0.1.0 in the fleet iOS man
+ ifest\n- [BotFleet#2241] (zcode) BF-2707: Bind The Infisical Bootstrap On 
+ The iOS Ship Job\n- [Clutch#348] (instinct) Make the host switcher in a Ma
+ c thread window switch that window\n- [Clutch#354] (instinct) Reload the t
+ hread list when the host changes\n- [Clutch#355] (instinct) Steer a runnin
+ g turn from a thread preview\n- [Clutch#357] (muse) Badge Sidebar Context 
+ And Preview Attachments\n- [Clutch#358] (muse) Keep Mac Thumbnail Aspect F
+ rom Its Pixels\n- [HogHunter#404] (muse) Unify the dashboard Overview into
+  one scroll region\n- [HogHunter#405] (instinct) Fix disk pressure reclaim
+  gates and preserve Xcode simulators\n- [HogHunter#406] (instinct) Overvie
+ w: compact summary\, Activity takes the rest\, Swap meter on Mac\n- [Socra
+ tic-Trade#5495] (zcode) ST-4687: iOS batch 3 — price alerts\, @Observabl
+ e TabPreferences\, coach drafts\, charts\, scan search
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-27
+CATEGORIES:fleet-daily,agent-activity
+STATUS:CONFIRMED
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VEVENT
 UID:fleet-daily-2026-11-26@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261126
 DTEND;VALUE=DATE:20261127
-SUMMARY:Fleet: 37 merged · 0 opened · 0 closed
-DESCRIPTION:37 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#2596] (zcode) wide: PR titles begin with the 
- compact lettered header\n- [AI-Fleet-Coordinator#2597] (instinct\, zcode) 
- ZC Linear app: accept the ZCode and ZCode spellings\n- [AI-Fleet-Coordinat
- or#2598] (instinct) Linear viewer check: remember the app id so renames ne
- ver break a seat\n- [AI-Fleet-Coordinator#2599] (zcode) Muster: Make The O
- perator Panel Say What It Means\n- [AI-Fleet-Coordinator#2600] (zcode) Put
-  Every Platform's Letter On Its Own Title At Issue\n- [AI-Fleet-Coordinato
- r#2601] (minimax) Admit The Wake Router Installer Through A Match-Pinned R
- eview\n- [AI-Fleet-Coordinator#2602] (instinct) Keep empty issue constrain
- ts off legacy Mac wake wire\n- [AI-Fleet-Coordinator#2603] (minimax) The l
- ive-chat report carries the lettered chats only\n- [AI-Fleet-Coordinator#2
- 604] chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest\n
- - [AI-Fleet-Coordinator#2605] (instinct) Resolve review threads by thread 
- id or comment id\, with an error that says what is expected\n- [AI-Fleet-C
- oordinator#2606] (instinct) Inline canonical title identity in Copilot per
- sonal rules\n- [BotFleet#2229] (minimax\, claude) Give The — Turn An Adv
- isor Model\n- [BotFleet#2230] (minimax) Give the native and iOS release pl
- anners their store bootstrap binding (OPS-1108)\n- [BotFleet#2232] (claude
- ) Give The Replay Probe A Coverage Mode (Refs BF-2647)\n- [BotFleet#2233] 
- (claude) Run A Desktop Chat Message As A Native Engine Turn (Refs BF-2705)
- \n- [Clutch#328] (minimax) C-144 Push Live Activity state from the host ov
- er APNs\n- [Clutch#333] (zcode) PR titles begin with the compact lettered 
- header\n- [Clutch#337] (minimax) Key The Phone's Activity And Thread Links
-  By Engine\n- [Clutch#339] (muse) Give Every Thread A Context Panel And A 
- Compact Button (C-88)\n- [Clutch#340] (muse) Keep The Draft And Attachment
- s Out Of The Compact Turn\n- [Clutch#341] (chatgpt\, muse) C-151: Show Act
- ual Times In — Previews\n- [Congress.Trade#3206] (zcode) PR titles begin
-  with the compact lettered header\n- [ContactLogo#351] (zcode) PR titles b
- egin with the compact lettered header\n- [DealDex#612] (zcode) PR titles b
- egin with the compact lettered header\n- [FleetLink#224] (zcode) PR titles
-  begin with the compact lettered header\n- [HogHunter#400] (zcode) PR titl
- es begin with the compact lettered header\n- [HogHunter#401] (zcode) Serve
- r maintenance parity: gate\, reclaimable bytes and run history in the snap
- shot\n- [HogHunter#402] (zcode) iOS storage parity: 40 app rows with runni
- ng state and All/Running filter\n- [Personal-Site#305] (zcode) PR titles b
- egin with the compact lettered header\n- [Simple-With-Us#118] (zcode) PR t
- itles begin with the compact lettered header\n- [Socratic-Trade#5481] (zco
- de) ST-4670: iOS Proposals safety and triage\n- [Socratic-Trade#5492] (zco
- de) PR titles begin with the compact lettered header\n- [Socratic-Trade#54
- 94] (zcode) ST-4689: OD web batch 2 — dashboard fields slice\, consent p
- ayload\, single-tree rows\, decision link\n- [Usage-Monitor#2086] (muse-as
- sist) [ROB] Do Not Merge Yet: UM-1676 ios-ship Producer Service-Token Tran
- sition\n- [Usage-Monitor#2093] (zcode) PR titles begin with the compact le
- ttered header\n- [codecaps#558] (zcode) PR titles begin with the compact l
- ettered header\n- [congress-trading-shared#427] (zcode) PR titles begin wi
- th the compact lettered header
+SUMMARY:Fleet: 54 merged · 0 opened · 0 closed
+DESCRIPTION:54 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#2535] (claude) Muster: Seats Panel Places Sea
+ ts From The Server\, Not The Mac (AFC-837)\n- [AI-Fleet-Coordinator#2596] 
+ (zcode) wide: PR titles begin with the compact lettered header\n- [AI-Flee
+ t-Coordinator#2597] (instinct\, zcode) ZC Linear app: accept the ZCode and
+  ZCode spellings\n- [AI-Fleet-Coordinator#2598] (instinct) Linear viewer c
+ heck: remember the app id so renames never break a seat\n- [AI-Fleet-Coord
+ inator#2599] (zcode) Muster: Make The Operator Panel Say What It Means\n- 
+ [AI-Fleet-Coordinator#2600] (zcode) Put Every Platform's Letter On Its Own
+  Title At Issue\n- [AI-Fleet-Coordinator#2601] (minimax) Admit The Wake Ro
+ uter Installer Through A Match-Pinned Review\n- [AI-Fleet-Coordinator#2602
+ ] (instinct) Keep empty issue constraints off legacy Mac wake wire\n- [AI-
+ Fleet-Coordinator#2603] (minimax) The live-chat report carries the lettere
+ d chats only\n- [AI-Fleet-Coordinator#2604] chore: record com.socratictrad
+ e.ios 0.1.0 in the fleet iOS manifest\n- [AI-Fleet-Coordinator#2605] (inst
+ inct) Resolve review threads by thread id or comment id\, with an error th
+ at says what is expected\n- [AI-Fleet-Coordinator#2606] (instinct) Inline 
+ canonical title identity in Copilot personal rules\n- [AI-Fleet-Coordinato
+ r#2607] (instinct) Fix doubled word in the resolve_thread refusal text\n- 
+ [BotFleet#2229] (minimax\, claude) Give The — Turn An Advisor Model\n- [
+ BotFleet#2230] (minimax) Give the native and iOS release planners their st
+ ore bootstrap binding (OPS-1108)\n- [BotFleet#2232] (claude) Give The Repl
+ ay Probe A Coverage Mode (Refs BF-2647)\n- [BotFleet#2233] (claude) Run A 
+ Desktop Chat Message As A Native Engine Turn (Refs BF-2705)\n- [BotFleet#2
+ 234] (claude) BF-2705: NativeMacCompanionRuntime.makeDesktopChatService() 
+ (slice 2a)\n- [BotFleet#2235] (ag) Wire Linux Companion Bridge APNs Sender
+ \, Push Routes\, And Live SSE Revocation (Refs BF-2652)\n- [BotFleet#2236]
+  (claude) BF-2705: native chat TurnEvents as window frames (slice 3 core)\
+ n- [BotFleet#2237] (claude) BF-2705: the window's fleet from the native st
+ ore (slice 2b core)\n- [BotFleet#2238] (claude) BF-2705: This Mac's chat w
+ indow on the native engine (slice 2b app)\n- [BotFleet#2239] (ag) Support 
+ Native Bot Creation On Clean Standalone Installs (Refs BF-2689)\n- [BotFle
+ et#2240] (muse-assist\, cursor\, minimax) [ROB] — Default To Composer 2.
+ 5\, Companion — To M3.1 Flash Thinking\n- [Clutch#328] (minimax) C-144 P
+ ush Live Activity state from the host over APNs\n- [Clutch#333] (zcode) PR
+  titles begin with the compact lettered header\n- [Clutch#337] (minimax) K
+ ey The Phone's Activity And Thread Links By Engine\n- [Clutch#338] (minima
+ x) C-147: App Group validation before profile reuse\n- [Clutch#339] (muse)
+  Give Every Thread A Context Panel And A Compact Button (C-88)\n- [Clutch#
+ 340] (muse) Keep The Draft And Attachments Out Of The Compact Turn\n- [Clu
+ tch#341] (chatgpt\, muse) C-151: Show Actual Times In — Previews\n- [Clu
+ tch#342] (minimax) C-152: answer #328 review threads\n- [Clutch#343] (muse
+ ) Bridge The Host Schedule Service To The Native Apps (C-153)\n- [Clutch#3
+ 44] (muse) Lock The Cron Formatters\, Restore Body Deletes\, Scope Read-Ba
+ cks\n- [Clutch#345] (muse) Treat An Empty Chunked Delete As No Body\n- [Co
+ ngress.Trade#3206] (zcode) PR titles begin with the compact lettered heade
+ r\n- [ContactLogo#351] (zcode) PR titles begin with the compact lettered h
+ eader\n- [DealDex#612] (zcode) PR titles begin with the compact lettered h
+ eader\n- [FleetLink#224] (zcode) PR titles begin with the compact lettered
+  header\n- [HogHunter#400] (zcode) PR titles begin with the compact letter
+ ed header\n  … +14 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-26
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -69,7 +101,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-25@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261125
 DTEND;VALUE=DATE:20261126
 SUMMARY:Fleet: 135 merged · 0 opened · 0 closed
@@ -137,7 +169,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-24@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261124
 DTEND;VALUE=DATE:20261125
 SUMMARY:Fleet: 82 merged · 0 opened · 0 closed
@@ -203,7 +235,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-23@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261123
 DTEND;VALUE=DATE:20261124
 SUMMARY:Fleet: 89 merged · 0 opened · 0 closed
@@ -277,7 +309,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-22@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261122
 DTEND;VALUE=DATE:20261123
 SUMMARY:Fleet: 72 merged · 0 opened · 0 closed
@@ -346,7 +378,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-21@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261121
 DTEND;VALUE=DATE:20261122
 SUMMARY:Fleet: 114 merged · 0 opened · 0 closed
@@ -409,7 +441,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-20@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261120
 DTEND;VALUE=DATE:20261121
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -473,7 +505,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-19@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261119
 DTEND;VALUE=DATE:20261120
 SUMMARY:Fleet: 58 merged · 0 opened · 0 closed
@@ -539,7 +571,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-18@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261118
 DTEND;VALUE=DATE:20261119
 SUMMARY:Fleet: 83 merged · 0 opened · 0 closed
@@ -610,7 +642,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
 SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
@@ -652,7 +684,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -709,7 +741,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -770,7 +802,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -831,7 +863,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -889,7 +921,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -953,7 +985,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -1021,7 +1053,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -1085,7 +1117,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 75 merged · 0 opened · 0 closed
@@ -1134,7 +1166,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -1189,7 +1221,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 55 merged · 0 opened · 0 closed
@@ -1242,7 +1274,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
+DTSTAMP:20261127T094543Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 48 merged · 0 opened · 0 closed
@@ -1291,56 +1323,6 @@ DESCRIPTION:48 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  1879] Inject Scoped Collector Credentials\n- [Usage-Monitor#1893] Move Usa
  ge Monitor CI To Scoped Infisical Service Tokens\n  … +8 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-06
-CATEGORIES:fleet-daily,agent-activity
-STATUS:CONFIRMED
-TRANSP:TRANSPARENT
-END:VEVENT
-BEGIN:VEVENT
-UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261126T222659Z
-DTSTART;VALUE=DATE:20261105
-DTEND;VALUE=DATE:20261106
-SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
-DESCRIPTION:35 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [BotFleet#1587] feat(decommission): produce the per-engine replay p
- arity receipt\n- [BotFleet#1590] Add Visual Harness For Bot Context Menu H
- over Fill\n- [BotFleet#1592] Standardize Quota Window Label Casing\n- [Bot
- Fleet#1598] Prefix The First mcode Prompt With BF Bot Name\n- [BotFleet#15
- 99] Correct Hot Defer Cap Doc And Tighten Tests\n- [BotFleet#1606] Add The
-  Placement Registry Bridge And The Unreachable Sweep\n- [BotFleet#1607] Re
- fresh The Placement Transport Inventory Against Landed Slices\n- [BotFleet
- #1608] Update dependency lucide-react to v1.66.0\n- [BotFleet#1609] Settle
-  The Transport Plan's Open Questions After T4\n- [BotFleet#1611] Update pn
- pm to v12.17.0\n- [Clutch#251] (deepseek) Make the — host path real\, an
- d the engine picker honest\n- [Clutch#252] Run the iOS unit tests in CI\, 
- so the bundle stops being compile-only\n- [Clutch#253] Document how the li
- ve host pins the sidecar to a release\n- [Congress.Trade#2943] Name Unread
- able 278-T Docs In The Filing Skips Alarm\n- [ContactLogo#300] chore(deps)
- : update non-major dependencies\n- [HogHunter#262] Relabel iPhone Window P
- icker Row To Timing\n- [HogHunter#263] Repoint Doc Links To The Simple-Wit
- h-Us Org\n- [HogHunter#265] Verify Incomplete Server Maintenance Inventory
-  Rendering\n- [HogHunter#272] HH-218 Let The iPhone Refresh The Server And
-  Act On Flagged Issues\n- [Socratic-Trade#4989] Proxy pacing: cap concurre
- nt Mango proxy legs\, raise leg timeout to 15s\n- [Socratic-Trade#4999] Mo
- del stats: separate model classes\, per-team rotation selection\, catalog 
- refresh (ST-4589)\n- [Socratic-Trade#5000] Learning loop: stored lessons r
- each the prompt\, alpha vs SPY stamped\, benchmark flows aligned (ST-4589)
- \n- [Socratic-Trade#5001] Update dependency lucide-react to v1.66.0\n- [So
- cratic-Trade#5002] (minimax\, muse-assist) Catalog: — M3.1 Flash only\, 
- — contributor models only (ST-4589)\n- [Socratic-Trade#5003] iOS: benchm
- ark flow captions match the start-of-day convention (ST-4589)\n- [Socratic
- -Trade#5004] Update dependency react-resizable-panels to v4.16.0\n- [Usage
- -Monitor#1894] Assert UM Read Token And No Shared Automation Identity In S
- tartup Config Test\n- [Usage-Monitor#1897] Add Collector Coverage Audit An
- d Engine Representation Tooling\n- [Usage-Monitor#1898] (cursor) Attribute
-  — Admin Usage Rows To The Right Provider\n- [Usage-Monitor#1900] (sentr
- y) Send healthy fleet-infra metrics as — metrics\, not issues\n- [Usage-
- Monitor#1903] Add Runaway Guards To The Receipt Inbox And Auditor\n- [Usag
- e-Monitor#1904] Update dependency lucide-react to v1.66.0\n- [codecaps#361
- ] Add Release Readiness Follow-Up Missing From PR 357\n- [codecaps#362] Fa
- il Closed On Release Numbers In The Build Script\n- [codecaps#366] Cache m
- enu sections to stop main-thread hangs
-URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-05
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
