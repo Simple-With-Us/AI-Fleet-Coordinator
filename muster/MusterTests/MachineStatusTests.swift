@@ -91,7 +91,7 @@ final class MachineStatusTests: XCTestCase {
         macAgents: [OpsAllowlist.Entry(name: OpsNames.fetchAgentLabel, actions: ["start", "stop", "restart"]),
                     OpsAllowlist.Entry(name: "com.jay.code-main-keeper", actions: ["start", "stop", "restart"])],
         pm2Apps: ["botfleet-mcp", "shellular", "vision-worker", "xcode-health",
-                  "agy-acp", "grok-leader", "grok-acp", "clutch-web"].map {
+                  "agy-acp", "grok-leader", "clutch-web"].map {
             OpsAllowlist.Entry(name: $0, actions: ["start", "stop", "restart"])
         },
         serverUnits: [
@@ -100,7 +100,7 @@ final class MachineStatusTests: XCTestCase {
         ]
     )
 
-    /// Eight running,  two stopped,  one not installed,  and the Mac's listener retired and
+    /// Seven running,  two stopped,  one not installed,  and the Mac's listener retired and
     /// stopped,  as it has been since the one-listener cutover.
     private static func macServices(changing changes: [String: ManagedServiceState] = [:]) -> FleetServices {
         var states: [String: ManagedServiceState] = [
@@ -108,7 +108,7 @@ final class MachineStatusTests: XCTestCase {
             "com.jay.operator": .stopped,
             "shellular": .running, "com.jay.code-main-keeper": .running, "vision-worker": .running,
             "xcode-health": .running, "agy-acp": .stopped, "grok-leader": .stopped,
-            "grok-acp": .running, "clutch-web": .running,
+            "clutch-web": .running,
         ]
         states.merge(changes) { _, new in new }
         return FleetServices(serverState: .running, states: states)
@@ -165,12 +165,11 @@ final class MachineStatusTests: XCTestCase {
 
     func testTheMenuWhenAllIsWellReadsTheDesignWordForWord() throws {
         let menu = MachineMenu(try healthyMenu())
+        let appRows = (0..<17).map { "    run\($0):  running" }.joined(separator: "\n")
         let expected = """
         The Mac
         Checked at 2:46 PM
-        Services:  8 running, 2 stopped, 1 not installed, 1 retired
-        Seat Setup:  no red or drifted cells
-        Services On The Mac (12)
+        Core Services On The Mac:  7 running, 0 stopped, 1 not installed, 1 retired
             BotFleet MCP Server (On The Mac):  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
@@ -191,26 +190,26 @@ final class MachineStatusTests: XCTestCase {
             Xcode Health:  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
+            Clutch Web:  running
+                Restart On The Mac\u{2026}
+                Stop On The Mac\u{2026}
+        Platform Bridges On The Mac:  0 running, 2 stopped
             Antigravity ACP:  stopped
                 Start On The Mac\u{2026}
                 Restart On The Mac\u{2026}
             Grok Leader:  stopped
                 Start On The Mac\u{2026}
                 Restart On The Mac\u{2026}
-            Grok ACP:  running
-                Restart On The Mac\u{2026}
-                Stop On The Mac\u{2026}
-            Clutch Web:  running
-                Restart On The Mac\u{2026}
-                Stop On The Mac\u{2026}
+        Seat Setup:  no red or drifted cells
         Check The Mac Again
         ----------
         The Server
         Report from 2:45 PM, copied at 2:46 PM
-        Timers:  2 of 2 active
-        Apps:  17 running, 0 failed
         Fullest disk 75%, memory 44%
-        Timers On The Server (2)
+        Apps On The Server:  17 running, 0 failed
+        \(appRows)
+            Open Server Status
+        Timers On The Server:  2 of 2 active
             Server Report Timer:  active
                 Restart On The Server\u{2026}
                 Read Logs On The Server\u{2026}
@@ -229,7 +228,7 @@ final class MachineStatusTests: XCTestCase {
         XCTAssertEqual(menu.barSymbol, "shield")
     }
 
-    func testAProblemOnTheMacComesToTheTopOfItsSection() throws {
+    func testAProblemOnTheMacSortsFirstInsideItsSubmenuWithNoLooseScreenOneRow() throws {
         let red = DriftRedCell(seat: "CLAUDE", kind: ConfigKind.hooks.rawValue,
                                ruleID: "claude-hooks-lane-guard", state: .missing)
         let turned = DriftTransition(id: UUID(), at: Self.time("2026-11-04T19:47:00Z"), seat: "CLAUDE",
@@ -242,14 +241,20 @@ final class MachineStatusTests: XCTestCase {
             status: try statusReading(),
             tools: try toolsReading()
         ))
-        let kind = ConfigKind.hooks.title
-        let top = Array(lines(menu).prefix(10))
+        // No loose service rows on screen 1:  Shellular sorts first inside Core Services.
+        let topLevelRows = menu.mac.items.filter { if case .row = $0 { return true }; return false }
+        XCTAssertTrue(topLevelRows.isEmpty)
+        let top = Array(lines(menu).prefix(6))
         XCTAssertEqual(top, [
             "The Mac",
             "Checked at 2:46 PM",
-            "Shellular:  failed, should be running",
-            "    Start On The Mac\u{2026}",
-            "    Restart On The Mac\u{2026}",
+            "Core Services On The Mac:  6 running, 1 failed, 0 stopped, 1 not installed, 1 retired",
+            "    Shellular:  failed, should be running",
+            "        Start On The Mac\u{2026}",
+            "        Restart On The Mac\u{2026}",
+        ])
+        let kind = ConfigKind.hooks.title
+        assertLines(menu, contain: [
             "Seat Setup:  1 red cell",
             "    CLAUDE / \(kind):  claude-hooks-lane-guard",
             "    Turned Red Most Recently",
@@ -258,6 +263,34 @@ final class MachineStatusTests: XCTestCase {
         ])
         XCTAssertEqual(menu.barTitle(short: false), "Mac 2 \u{00B7} Server OK")
         XCTAssertEqual(menu.barSymbol, "exclamationmark.shield")
+    }
+
+    func testServerUnitsPartitionIntoServicesBridgesAndTimersWithProblemsFirst() throws {
+        let units = [
+            #"{"unit":"afc-wake-router.service","scope":"system","activeState":"active","subState":"running","controllable":false}"#,
+            #"{"unit":"shellular.service","scope":"system","activeState":"failed","subState":"failed","controllable":false}"#,
+            #"{"unit":"afc-wa-bridge.service","scope":"system","activeState":"active","subState":"running","controllable":false}"#,
+            #"{"unit":"fleet-server-status.timer","scope":"user","activeState":"active","subState":"waiting","controllable":true}"#,
+            #"{"unit":"fleet-cli-git-update.timer","scope":"system","activeState":"active","subState":"waiting","controllable":true}"#,
+        ]
+        let menu = MachineMenu(inputs(status: try statusReading(units: units), tools: try toolsReading()))
+        // Zero loose unit rows at screen 1.
+        let topLevelRows = menu.server.items.filter { if case .row = $0 { return true }; return false }
+        XCTAssertTrue(topLevelRows.isEmpty)
+        assertLines(menu, contain: [
+            "Services On The Server:  1 of 2 active",
+            "    Shellular:  failed",
+            "    Wake Router:  active",
+            "Platform Bridges On The Server:  1 of 1 active",
+            "    WhatsApp Bridge:  active",
+            "Timers On The Server:  2 of 2 active",
+        ])
+        // Failing unit sorts before active unit inside Services On The Server.
+        let allLines = lines(menu)
+        let failedIdx = try XCTUnwrap(allLines.firstIndex(of: "    Shellular:  failed"))
+        let activeIdx = try XCTUnwrap(allLines.firstIndex(of: "    Wake Router:  active"))
+        XCTAssertLessThan(failedIdx, activeIdx)
+        XCTAssertEqual(menu.server.health, .attention(1, someUnread: false))
     }
 
     // MARK: - Every action names its machine
@@ -433,7 +466,7 @@ final class MachineStatusTests: XCTestCase {
         let reading = try statusReading(absent: 167, missingFiles: 34)
         let menu = MachineMenu(inputs(status: reading, tools: try toolsReading()))
         XCTAssertEqual(menu.server.health, .ok)
-        assertLines(menu, contain: ["Apps:  17 running, 0 failed", "Timers:  2 of 2 active"])
+        assertLines(menu, contain: ["Apps On The Server:  17 running, 0 failed", "Timers On The Server:  2 of 2 active"])
     }
 
     func testADiskAt95PercentCountsOne() throws {
@@ -447,7 +480,7 @@ final class MachineStatusTests: XCTestCase {
         let metrics = #"{"loadAverage":[20.0],"cpuCount":8,"memory":{"totalBytes":100,"availableBytes":10},"disks":[{"mount":"/","usedBytes":10,"freeBytes":90}]}"#
         let menu = MachineMenu(inputs(status: try statusReading(exited: 1, metrics: metrics), tools: try toolsReading()))
         XCTAssertEqual(menu.server.health, .attention(3, someUnread: false))
-        assertLines(menu, contain: ["Apps:  17 running, 1 failed", "Load 2.5 per cpu"])
+        assertLines(menu, contain: ["Apps On The Server:  17 running, 1 failed", "Load 2.5 per cpu"])
     }
 
     func testACurrentReportThatProvesNothingIsNotOK() throws {
@@ -481,7 +514,7 @@ final class MachineStatusTests: XCTestCase {
     }
 
     func testAnAppInAStateThisAppDoesNotKnowIsNotOK() throws {
-        try assertNotKnown(try statusReading(starting: 1), saying: "Apps:  17 running, 0 failed, 1 not known")
+        try assertNotKnown(try statusReading(starting: 1), saying: "Apps On The Server:  17 running, 0 failed, 1 not known")
     }
 
     func testADiskThatCouldNotBeMeasuredIsNotOK() throws {
@@ -567,14 +600,14 @@ final class MachineStatusTests: XCTestCase {
     private static let pm2SilentStates: [String: ManagedServiceState] = [
         "shellular": .unknown, "vision-worker": .unknown,
         "xcode-health": .unknown, "agy-acp": .unknown, "grok-leader": .unknown,
-        "grok-acp": .unknown, "clutch-web": .unknown,
+        "clutch-web": .unknown,
     ]
 
     func testPM2NotAnsweringIsNotAZeroAndThoseRowsLoseTheirRestart() throws {
         let services = Self.macServices(changing: Self.pm2SilentStates)
         XCTAssertFalse(services.pm2Answered)
         let menu = MachineMenu(inputs(services: services, status: try statusReading(), tools: try toolsReading()))
-        assertLines(menu, contain: ["pm2 did not answer, so 7 services are not known."])
+        assertLines(menu, contain: ["pm2 did not answer, so 6 services are not known."])
         XCTAssertEqual(menu.mac.health, .notKnown)
         let shellular = actions(in: menu.mac.items).filter { $0.serviceID == "shellular" }
         XCTAssertTrue(shellular.isEmpty)

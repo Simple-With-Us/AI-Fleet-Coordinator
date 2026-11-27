@@ -39,14 +39,16 @@ final class ServiceReconcilePolicyTests: XCTestCase {
         }
     }
 
-    func testSupportedKeepRunningServicesAreExplicitAndDoNotIncludeSeatMCP() {
+    func testSupportedKeepRunningServicesAreExplicitAndDoNotIncludeRetiredServices() {
         let keeping = ServicePolicyTable.rows.filter { $0.source == .servicesList && $0.policy == .keepRunning }
-        XCTAssertEqual(keeping.count, 5)
-        for id in ["shellular", "vision-worker", "xcode-health", "agy-acp", "grok-acp"] {
+        XCTAssertEqual(keeping.count, 4)
+        for id in ["shellular", "vision-worker", "xcode-health", "agy-acp"] {
             XCTAssertEqual(ServicePolicyTable.policy(for: id), .keepRunning, id)
         }
-        XCTAssertNil(ServicePolicyTable.row(for: "seat-mcp"))
-        XCTAssertEqual(ServicePolicyTable.policy(for: "seat-mcp"), .leaveAlone)
+        for retired in ["seat-mcp", "grok-acp"] {
+            XCTAssertNil(ServicePolicyTable.row(for: retired), retired)
+            XCTAssertEqual(ServicePolicyTable.policy(for: retired), .leaveAlone, retired)
+        }
     }
 
     func testAServiceThatStopsItselfOnPurposeIsStartedAtLoginOnly() {
