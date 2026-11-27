@@ -703,13 +703,15 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   }
   // The whole read-decide-write section of one topic runs under that topic's
   // lock, so two refreshes cannot both read "no standing message yet" and
-  // both post one  return withTopicLock(
+  // both post one.
+  return withTopicLock(
     `${source}\u0000${channel}\u0000${topic}`,
     () => refreshStatusLocked(env, source, channel, topic, { ...options, credential }),
     { source },
-,
   );
-}/**
+}
+
+/**
  * One lock per source, channel and topic.  A second refresh waits for the first, but
  * only for LOCK_WAIT_MS:  a holder that never settles (a storage or network call that
  * never answers) must not stall every later refresh of the topic for good.
@@ -720,8 +722,9 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
  * The holder keeps the lock until it settles.
  */
 const LOCK_WAIT_MS = 30_000;
-/
-const topicLocks = new Map();function withTopicLock(key, fn, { waitMs = LOCK_WAIT_MS, source = "unknown" } = {}) {
+const topicLocks = new Map();
+
+function withTopicLock(key, fn, { waitMs = LOCK_WAIT_MS, source = "unknown" } = {}) {
   let lock = topicLocks.get(key);
   if (!lock) {
     lock = { queue: [] };
@@ -754,7 +757,6 @@ const topicLocks = new Map();function withTopicLock(key, fn, { waitMs = LOCK_WAI
       reject(deliveryError(source, "busy", { code: null, retryAfter: Math.ceil(waitMs / 1000) }));
     }, waitMs);
     lock.queue.push(turn);
-;
   });
 }
 
@@ -932,11 +934,11 @@ async function claimDeliveryBarrier(env, { source, outcomeKey, barrierKey, revis
   if (typeof storage.transaction === "function") {
     await storage.transaction(claim);
     return;
-    // Atomic delivery claims need durable storage transactions.  A local lock
+  }
+  // Atomic delivery claims need durable storage transactions.  A local lock
   // cannot protect callers in another object or process, so never post when
   // this capability is absent.
   throw deliveryError(source, "unknown", { code: null, retryAfter: null });
-;
 }
 
 function advanceRevision(previous, next) {
@@ -1603,11 +1605,11 @@ async function runSweep(env) {
       if (error?.code === "status_delivery_failed" && error.outcome === "unknown") {
         const barrier = await storage?.get(deliveryBarrierKey(source, DEFAULT_CHANNEL, topic));
         if (barrier?.id) await markTopicDirty(env, source, topic);
-          // A refresh that never got the topic lock wrote nothing, so it is simply asked for again.
+      }
+      // A refresh that never got the topic lock wrote nothing, so it is simply asked for again.
       if (error?.code === "status_delivery_failed" && error.outcome === "busy") {
         await markTopicDirty(env, source, topic);
       }
-  }
       console.error(JSON.stringify({ event: "alert.status_refresh_failed" }));
     }
   });
@@ -2265,9 +2267,9 @@ export const __testing = {
   handleEvent,
   verify,
   listAll,
-  refreshS  withTopicLock,
+  refreshStatus,
+  withTopicLock,
   claimDeliveryBarrier,
-tatus,
   runSweep,
   collectStates,
   collectTopics,
@@ -2665,10 +2667,10 @@ function validatePagerDutyPayload(payload) {
 // One named object owns every read/render/write transaction.  Durable storage
 // overlays legacy KV without deleting historical records or trusting KV locks.
 const LEGACY_IMPORTED = "legacy:imported",
-  LEGACY_RETRY_AT = "legacy:ret// The longest a request waits for the writer's turn.  Above the three 5 s Zulip
+  LEGACY_RETRY_AT = "legacy:retryAt";
+// The longest a request waits for the writer's turn.  Above the three 5 s Zulip
 // calls one holder can make, below the 60 s a vendor waits for an answer.
 const WRITER_WAIT_MS = 30_000;
-ryAt";
 export class AlertWriter {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -2678,7 +2680,8 @@ export class AlertWriter {
     this.statusBody = null;
   }
   fetch(request) {
-    if (guardOff(this.env)) return guardOffRespo    // One request at a time, in arrival order: that serialization is what makes
+    if (guardOff(this.env)) return guardOffResponse();
+    // One request at a time, in arrival order: that serialization is what makes
     // the read/decide/write transactions atomic, so a waiter must never run
     // beside a holder.  A holder that never settles (a hung storage call) would
     // stall every later request for ever, so a waiter gives up after
@@ -2688,8 +2691,8 @@ export class AlertWriter {
     const turn = { cancelled: false };
     const previous = this.tail;
     const task = previous.then(() => (turn.cancelled ? null : this.dispatch(request)));
-est));
-    this.tail = task.catch(() =    let timer;
+    this.tail = task.catch(() => {});
+    let timer;
     const timeout = new Promise((resolve) => {
       timer = setTimeout(() => {
         turn.cancelled = true;
@@ -2708,7 +2711,6 @@ est));
       }
       return task;
     });
- task;
   }
   // The legacy KV is frozen (nothing writes it once the writer owns the
   // records), so it is copied into durable storage once and never read again.
@@ -2968,8 +2970,8 @@ Object.assign(__testing, {
   listAll,
   mapBounded,
   validatePayload,
-  validatePagerDutyPa  validateSentryPayload,
-yload,
+  validatePagerDutyPayload,
+  validateSentryPayload,
   verify,
   handler,
   handleEvent,
