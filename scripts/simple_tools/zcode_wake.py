@@ -871,7 +871,9 @@ def _deliver_prompt(
             # end is refused (a typed code when the output named one), never failed.  Only a
             # try that never launched returned `failed` above.
             return WR.Delivery(
-                "refused", "resume", code=code,
+                "refused",
+                "resume",
+                code=code,
                 note=_unmapped_exit_note(output) if not failure else "",
             )
         finally:
@@ -916,7 +918,8 @@ def _failure_signature(output: object, *, include_cli_errors: bool = False) -> s
         for line in lines:
             normalized = re.sub(
                 r" \(traceId: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\)$",
-                "", line,
+                "",
+                line,
             )
             candidates = (normalized, "Error: " + normalized)
             for pattern, code in CLI_EXIT_CATEGORIES:
@@ -934,10 +937,12 @@ def _unmapped_exit_note(output: bytes) -> str:
     truncated = len(output) > OUTPUT_SCAN_CAP
     if truncated:
         boundary = re.search(rb"[\r\n]", suffix)
-        suffix = suffix[boundary.end():] if boundary else b""
+        suffix = suffix[boundary.end() :] if boundary else b""
     error_line = any(line.startswith(b"Error: ") for line in suffix.splitlines())
-    return "cli-unmapped:" + ("error-line" if error_line else "other-output") + (
-        ":truncated" if truncated else ""
+    return (
+        "cli-unmapped:"
+        + ("error-line" if error_line else "other-output")
+        + (":truncated" if truncated else "")
     )
 
 
