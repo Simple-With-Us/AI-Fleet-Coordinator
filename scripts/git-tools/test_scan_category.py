@@ -56,7 +56,9 @@ class CategoryTests(unittest.TestCase):
         sealed = base64.b64encode(bytes(range(128, 256))).decode()
         flagged = {sealed, "plain-name"}
         scanner = mock.Mock()
-        scanner.scan.side_effect = lambda text, known=None: "assigned secret" if text in flagged else None
+        scanner.scan.side_effect = lambda text, known=None: (
+            "assigned secret" if text in flagged else None
+        )
         args = {"repo": "o/r", "name": "N", "encrypted_value": sealed, "key_id": "1"}
         with mock.patch.object(git, "_scanner", return_value=scanner):
             self.assertIsNone(git._scan_arguments(args, "", "gr_wf_secret_put_org_actions"))
@@ -65,20 +67,30 @@ class CategoryTests(unittest.TestCase):
             self.assertIn("encrypted_value", git._scan_arguments(args, "", "gr_comment_pr"))
             self.assertIn("encrypted_value", git._scan_arguments(args, "", None))
             # any other field of the same call is still scanned
-            result = git._scan_arguments({**args, "name": "plain-name"}, "", "gr_wf_secret_put_org_actions")
+            result = git._scan_arguments(
+                {**args, "name": "plain-name"}, "", "gr_wf_secret_put_org_actions"
+            )
             self.assertIn("secret_scan:name", result)
 
     def test_sealed_secret_exemption_rejects_text_short_and_malformed_values(self):
         bad = [
-            base64.b64encode(b"a readable plaintext value that is long enough to pass the length floor").decode(),
-            base64.b64encode(bytes(range(128, 170))).decode(),  # binary but no longer than the overhead
+            base64.b64encode(
+                b"a readable plaintext value that is long enough to pass the length floor"
+            ).decode(),
+            base64.b64encode(
+                bytes(range(128, 170))
+            ).decode(),  # binary but no longer than the overhead
             "not base64 !!",
         ]
         scanner = mock.Mock()
-        scanner.scan.side_effect = lambda text, known=None: "assigned secret" if text in bad else None
+        scanner.scan.side_effect = lambda text, known=None: (
+            "assigned secret" if text in bad else None
+        )
         with mock.patch.object(git, "_scanner", return_value=scanner):
             for value in bad:
-                result = git._scan_arguments({"encrypted_value": value}, "", "gr_wf_secret_put_org_actions")
+                result = git._scan_arguments(
+                    {"encrypted_value": value}, "", "gr_wf_secret_put_org_actions"
+                )
                 self.assertIn("secret_scan:encrypted_value", result)
 
     def test_decisions_match_pristine_for_synthetic_cases(self):
