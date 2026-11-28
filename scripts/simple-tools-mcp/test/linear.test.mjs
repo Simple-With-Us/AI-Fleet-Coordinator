@@ -19,7 +19,7 @@ import { memoryQuota } from "./quota-helper.mjs";
 import {
   LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId, stableUuid, stableRelationId,
   neutralizeLinearMentions, linearGraphqlErrorMeta, mapLinearError, linearCommentCreateInput, M_COMMENT,
-  LINEAR_SECRETS, LINEAR_SEATS, OWN_APP_LINEAR_PREFIXES, SEAT_APP_IDS,
+  LINEAR_SECRETS, LINEAR_SEATS, OWN_APP_LINEAR_PREFIXES,
 } from "../src/linear.js";
 
 const config = loadConfig(testEnv());
@@ -83,11 +83,11 @@ function harness({ seat = "GROK-WEB", writes = true, credentials = true, viewer 
 }
 
 /** A bare client, for the checks that sit under the tools (minting, viewer). */
-function clientHarness({ seat = "GROK-WEB", viewer, clientId = CLIENT_ID, appInfo = null } = {}) {
+function clientHarness({ seat = "GROK-WEB", viewer, clientId = CLIENT_ID, appInfo = null, appId = null } = {}) {
   const fake = new FakeLinear({ ...(viewer ? { viewer } : {}), appInfo });
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ quota: memoryQuota(), seat, clientId, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now });
+  const client = new LinearClient({ quota: memoryQuota(), seat, clientId, clientSecret: CLIENT_CREDENTIAL, appId, gate, fetch: fake.fetch, now: () => clock.now });
   return { fake, gate, clock, client };
 }
 
@@ -274,17 +274,17 @@ test("confirmViewer remembers the app id: a renamed app keeps working, a swapped
 });
 
 test("confirmViewer bootstraps the app id from the seat's own pair: a renamed app with an empty id store is accepted by registration, not by name", async () => {
-  const registration = { id: SEAT_APP_IDS.MA, clientId: CLIENT_ID, name: "Rob (MA)" };
+  const registration = { id: "reg-ma-test", clientId: CLIENT_ID, name: "Rob (MA)" };
   // The MA lockout replayed exactly:  the app was renamed to "Rob (MA)" before
   // the seat's first call under the remembered-id check, so the id store is
   // empty and the name is in no table.  The pair itself proves the app:  the
   // registration behind its own client id is MA's grounded registration.
-  const replay = clientHarness({ seat: "MA", viewer: { id: "app-actor-ma", name: "Rob (MA)", app: true }, appInfo: registration });
+  const replay = clientHarness({ seat: "MA", viewer: { id: "app-actor-ma", name: "Rob (MA)", app: true }, appInfo: registration, appId: "reg-ma-test" });
   assert.equal((await replay.client.confirmViewer()).name, "Rob (MA)");
   assert.equal((await replay.gate.linearAppIdGet()).id, "app-actor-ma");
   // The name plays no part in the proof:  a name no table has ever held is
   // accepted the same way, because the registration matched.
-  const renamed = clientHarness({ seat: "MA", viewer: { id: "app-actor-ma", name: "A Name Nobody Listed", app: true }, appInfo: registration });
+  const renamed = clientHarness({ seat: "MA", viewer: { id: "app-actor-ma", name: "A Name Nobody Listed", app: true }, appInfo: registration, appId: "reg-ma-test" });
   assert.equal((await renamed.client.confirmViewer()).name, "A Name Nobody Listed");
   assert.equal((await renamed.gate.linearAppIdGet()).id, "app-actor-ma");
   // Once remembered, the id alone carries the seat:  the registration is not
@@ -304,7 +304,8 @@ test("confirmViewer refuses a swapped pair outright, even when its app carries a
     seat: "MA",
     clientId: "lin_other_client_id",
     viewer: { id: "app-actor-other", name: "Muse Assist", app: true },
-    appInfo: { id: SEAT_APP_IDS.WISE, clientId: "lin_other_client_id", name: "Wise (Instinct)" },
+    appInfo: { id: "reg-wise-test", clientId: "lin_other_client_id", name: "Wise (Instinct)" },
+    appId: "reg-ma-test",
   });
   await assert.rejects(() => swapped.client.confirmViewer(), (error) => error.kind === "swapped");
   assert.equal(await swapped.gate.linearAppIdGet(), null);
