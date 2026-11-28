@@ -459,7 +459,7 @@ def _opening_tag_seat(head: str) -> tuple[str, bool]:
     """(seat, session-like) from the text before `→` inside one leading bracket.
 
     Legacy `[SEAT·session` counts as session-like.  A compact intro
-    `[SEAT 📁repos]` or `[SEAT: LL.#.H 📁repos]` names its seat explicitly.
+    `[SEAT 📂repos]` or `[SEAT: LL.#.H 📂repos]` names its seat explicitly (retired 📁 still parses).
     """
     head = head.strip()
     if "\u00b7" in head:
@@ -468,7 +468,7 @@ def _opening_tag_seat(head: str) -> tuple[str, bool]:
     compact = re.match(
         r"^(?P<seat>[A-Za-z0-9][A-Za-z0-9_-]*)"
         r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?"
-        r"(?:\s+📁.*)?$",
+        r"(?:\s+[📁📂].*)?$",
         head,
     )
     if not compact:
@@ -478,7 +478,7 @@ def _opening_tag_seat(head: str) -> tuple[str, bool]:
 
 def _tag_carries_owner(agent: Any, content: Any) -> bool:
     """Whether a message's own leading seat tag carries the OWNER label.  The tag is read as
-    `_compose` writes it (`[SEAT·session→OWNER,...]` or `[SEAT 📁repos →OWNER]`, with `->`
+    `_compose` writes it (`[SEAT·session→OWNER,...]` or `[SEAT 📂repos →OWNER]`, with `->`
     accepted as elsewhere), and only that leading bracket counts.  A `→OWNER` quoted later
     in the text is not routing."""
     text, _ = ROUTER.strip_no_wake(str(content or ""), getattr(agent, "seat", None))

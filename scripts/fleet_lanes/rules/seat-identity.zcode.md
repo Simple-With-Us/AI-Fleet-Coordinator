@@ -66,7 +66,7 @@ Use only the shared `platform-letter` client and Operator registry.  The compat
 
 ### Header And Mention Details
 
-Keep the shared header's exact hair-space counts and comma separators.  A lettered Zulip example is `[ZC:   KK.1.S  📁 AFC, OPS → @**Muse Code**,  @**Codex**]`.  A plain example is `[ZC  📁 AFC]`.  Generate U+200A programmatically; never substitute U+202F.  No space follows `[` or precedes `]`.  Keep ASCII spaces around the arrow and inside exact human display names.  Use repository code `OPS`, never `FLEET`.
+Keep the shared header's exact hair-space counts and comma separators.  A lettered Zulip example is `[ZC:   KK.1.S  📂 AFC, OPS → @**Muse Code**,  @**Codex**]`.  A plain example is `[ZC  📂 AFC]`.  Generate U+200A programmatically; never substitute U+202F.  No space follows `[` or precedes `]`.  Keep ASCII spaces around the arrow and inside exact human display names.  Use repository code `OPS`, never `FLEET`.
 
 GitHub PR titles, descriptions and comments use a compact header without the folder symbol or repository names, for example `[ZC:   KK.1.S]` or `[JET]` for an unlettered session.  Keep original title and description attribution consistent, and use the active writing session's assigned letter, generation and host on each new comment; never infer or reuse a letter from GitHub metadata.  A held PR description puts readiness criteria bullets and a blank line before its compact header.  Preserve addressed recipients and the destination's supported mention syntax.  Ordinary GitHub issues, Zulip and Linear keep the full header above.
 
