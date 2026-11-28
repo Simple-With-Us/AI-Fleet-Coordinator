@@ -197,9 +197,7 @@ class WriteIntentTests(unittest.TestCase):
             self.calls.append((method, endpoint, kwargs["deadline"]))
             path = env[core.ENV_WRITE_PATHS]
             if endpoint == "/v2/service-token":
-                return 200, dict(
-                    self.metadata, scopes=[dict(environment="prod", secretPath=path)]
-                )
+                return 200, dict(self.metadata, scopes=[dict(environment="prod", secretPath=path)])
             record = lambda key, value=None: dict(
                 secretKey=key,
                 secretValue=value,
@@ -237,7 +235,9 @@ class WriteIntentTests(unittest.TestCase):
             # A missing key is created:  PATCH says absent, POST creates, the readback proves it.
             intent = self.new_intent("create-mm")
             receipt = core.put_secret("WAKE_HMAC_KEY_MM", "/wake", key, self.env, intent=intent)
-            self.assertEqual((receipt.result, receipt.outcome, receipt.replayed), ("created", "ok", False))
+            self.assertEqual(
+                (receipt.result, receipt.outcome, receipt.replayed), ("created", "ok", False)
+            )
             self.assertEqual(self.mutations, ["PATCH", "POST"])
             # The same intent replays from the ledger;  a fresh one is refused, the name now exists.
             before = len(self.calls)
@@ -247,11 +247,17 @@ class WriteIntentTests(unittest.TestCase):
             error = self.assert_outcome(
                 "refused",
                 lambda: core.put_secret(
-                    "WAKE_HMAC_KEY_MM", "/wake", "cd" * 32, self.env, intent=self.new_intent("replace-mm")
+                    "WAKE_HMAC_KEY_MM",
+                    "/wake",
+                    "cd" * 32,
+                    self.env,
+                    intent=self.new_intent("replace-mm"),
                 ),
             )
             self.assertEqual(error.reason, "wake-key-exists")
-            self.assertEqual(stored["WAKE_HMAC_KEY_MM"], key, "the created key is the one in the folder")
+            self.assertEqual(
+                stored["WAKE_HMAC_KEY_MM"], key, "the created key is the one in the folder"
+            )
             # Any other folder keeps replacing what it finds.
             receipt = self.put()
             self.assertEqual((receipt.result, receipt.outcome), ("updated", "ok"))

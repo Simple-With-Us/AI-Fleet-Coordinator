@@ -123,7 +123,9 @@ def value_shape_ok(path: str, value: str) -> bool:
 
 def create_only(path: str) -> bool:
     """Whether a write to this whole folder may create a name and never replace one."""
-    return isinstance(path, str) and any(re.fullmatch(folder, path) for folder in CREATE_ONLY_FOLDERS)
+    return isinstance(path, str) and any(
+        re.fullmatch(folder, path) for folder in CREATE_ONLY_FOLDERS
+    )
 
 
 def _probe_names(payload: object, project: str, path: str) -> set[str]:
