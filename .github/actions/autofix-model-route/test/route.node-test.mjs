@@ -44,3 +44,34 @@ test('minimax route keeps anthropic api key mode', () => {
   assert.equal(outputs.effective_model, 'MiniMax-M3.1-Flash');
   assert.match(written, /api\.minimax\.io\/anthropic/);
 });
+
+test('openrouter route keeps the vendor/model slug and clears anthropic api key', () => {
+  const { outputs, written } = run({
+    VAR_BASE: 'https://openrouter.ai/api',
+    VAR_MODEL: 'deepseek/deepseek-chat-v3.1:free',
+    DEFAULT_MODEL: 'MiniMax-M3.1-Flash',
+  });
+  assert.equal(outputs.route, 'openrouter');
+  assert.equal(outputs.anthropic_api_key_mode, 'none');
+  assert.equal(outputs.effective_model, 'deepseek/deepseek-chat-v3.1:free');
+  assert.match(written, /^ANTHROPIC_BASE_URL=https:\/\/openrouter\.ai\/api$/m);
+  assert.match(written, /^ANTHROPIC_MODEL=deepseek\/deepseek-chat-v3\.1:free$/m);
+  assert.match(written, /^ANTHROPIC_API_KEY=$/m);
+});
+
+test('openrouter route refuses a missing or malformed slug', () => {
+  for (const model of ['', 'no-slash', 'a/b\nANTHROPIC_BASE_URL=https://evil.example', 'vendor/model with space', '/model']) {
+    assert.throws(
+      () => run({ VAR_BASE: 'https://openrouter.ai/api', VAR_MODEL: model, DEFAULT_MODEL: 'MiniMax-M3.1-Flash' }),
+      /Command failed/,
+      JSON.stringify(model),
+    );
+  }
+});
+
+test('the openrouter base must match exactly', () => {
+  assert.throws(
+    () => run({ VAR_BASE: 'https://openrouter.ai/api/v1', VAR_MODEL: 'a/b', DEFAULT_MODEL: 'MiniMax-M3.1-Flash' }),
+    /Command failed/,
+  );
+});

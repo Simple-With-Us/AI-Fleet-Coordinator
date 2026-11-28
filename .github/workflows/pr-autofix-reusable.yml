@@ -71,6 +71,9 @@ on:
       # SWU_AUTOFIX_MODEL_BASE_URL points at api.meta.ai;  callers pass it through.
       META_MODEL_API_TOKEN:
         required: false
+      # Org secret;  used only when SWU_AUTOFIX_MODEL_BASE_URL is https://openrouter.ai/api.
+      SWU_AUTOFIX_OPENROUTER_API_KEY:
+        required: false
       AUTOFIX_GITHUB_APP_PRIVATE_KEY:
         required: false
         description: >-
@@ -112,8 +115,8 @@ jobs:
       # SWU_AUTOFIX_MODEL_BASE_URL retarget every caller at once;  unset,  the MiniMax
       # pins below are exactly what ran before.  The key follows the host:  Meta's API
       # takes META_MODEL_API_TOKEN,  everything else takes MINIMAX_API_KEY.
-      ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
-      ANTHROPIC_AUTH_TOKEN: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && 'https://api.meta.ai' || vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://openrouter.ai/api' && 'https://openrouter.ai/api' || 'https://api.minimax.io/anthropic' }}
+      ANTHROPIC_AUTH_TOKEN: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://openrouter.ai/api' && (secrets.SWU_AUTOFIX_OPENROUTER_API_KEY || 'MISSING-OPENROUTER-API-KEY') || secrets.MINIMAX_API_KEY }}
       VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
       # github.token, not secrets.GITHUB_TOKEN:  in a called reusable the secrets-context token
       # 403'd issue-comment writes despite the job granting issues:write (run 39608718486,
@@ -163,6 +166,7 @@ jobs:
           VAR_BASE: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
           VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
           META_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
+          OPENROUTER_TOKEN: ${{ secrets.SWU_AUTOFIX_OPENROUTER_API_KEY }}
         run: |
           set -euo pipefail
           # The switch is all-or-nothing on the endpoint:  an unset base or the canonical
@@ -175,6 +179,7 @@ jobs:
           case "$VAR_BASE" in
             "" | https://api.minimax.io/anthropic) route=minimax ;;
             https://api.meta.ai) route=meta ;;
+            https://openrouter.ai/api) route=openrouter ;;
           esac
           model_minimax=no
           case "$VAR_MODEL" in [Mm][Ii][Nn][Ii][Mm][Aa][Xx]*) model_minimax=yes ;; esac
@@ -186,7 +191,8 @@ jobs:
             exit 0
           fi
           if [ "$route" = "meta" ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ] && [ "$model_minimax" = "no" ]; then exit 0; fi
-          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned;  got base_set=$([ -n "$VAR_BASE" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
+          if [ "$route" = "openrouter" ] && [ -n "$VAR_MODEL" ] && [ -n "$OPENROUTER_TOKEN" ]; then exit 0; fi
+          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned, or exactly https://openrouter.ai/api with a vendor/model SWU_AUTOFIX_MODEL slug and SWU_AUTOFIX_OPENROUTER_API_KEY provisioned;  got base_set=$([ -n "$VAR_BASE" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no) openrouter_token_set=$([ -n "$OPENROUTER_TOKEN" ] && echo yes || echo no)"
           exit 1
 
       - name: Load Trusted Autofix Policy
@@ -533,7 +539,7 @@ jobs:
         id: fix
         if: steps.guard.outputs.should_fix == 'true'
         env:
-          ANTHROPIC_AUTH_TOKEN: ${{ steps.model_route.outputs.route == 'meta' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.model_route.outputs.route == 'meta' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || steps.model_route.outputs.route == 'openrouter' && (secrets.SWU_AUTOFIX_OPENROUTER_API_KEY || 'MISSING-OPENROUTER-API-KEY') || secrets.MINIMAX_API_KEY }}
           ANTHROPIC_API_KEY: ${{ steps.model_route.outputs.anthropic_api_key_mode == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
           MAX_TURNS: ${{ steps.trusted.outputs.max_turns }}
         run: |
@@ -563,7 +569,7 @@ jobs:
           claude_step_outcome: ${{ steps.fix.outcome }}
           route: ${{ steps.model_route.outputs.route }}
           effective_model: ${{ steps.model_route.outputs.effective_model }}
-          base_url: ${{ steps.model_route.outputs.route == 'meta' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
+          base_url: ${{ steps.model_route.outputs.route == 'meta' && 'https://api.meta.ai' || steps.model_route.outputs.route == 'openrouter' && 'https://openrouter.ai/api' || 'https://api.minimax.io/anthropic' }}
 
       - name: Summarize Autofix Diagnostics
         if: ${{ always() && steps.guard.outputs.should_fix == 'true' }}

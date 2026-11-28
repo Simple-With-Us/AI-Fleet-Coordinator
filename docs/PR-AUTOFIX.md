@@ -50,6 +50,7 @@ jobs:
     secrets:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
       META_MODEL_API_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
+      SWU_AUTOFIX_OPENROUTER_API_KEY: ${{ secrets.SWU_AUTOFIX_OPENROUTER_API_KEY }}
       USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}
       AUTOFIX_GITHUB_APP_PRIVATE_KEY: ${{ secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
 ```
@@ -57,6 +58,18 @@ jobs:
 The `concurrency` group is shared on purpose by every autofix caller in a repo (another autofix bot uses the same group name), so pushes to one PR branch are serialized.  The group belongs in the caller only:  the reusable job must not repeat it, because a job that asks for the group its own run already holds is cancelled as a deadlock before any step runs.  That is what stopped every PR Autofix run from `2e671004` (#520) until the job-level copy was removed, so a caller pinned to any commit from `2e671004` up to that fix (BotFleet and DealDex were on `3fac4c3c`) needs a repin.  `cancel-in-progress` is `false` so one bot never cancels the other mid-push;  keep the group name and that setting exactly as shown.
 
 `MINIMAX_API_KEY` is an org secret visible to every repo.  Pair it with org secret `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and org/repo variable `SWU_AUTOFIX_GITHUB_APP_ID` so autofix pushes re-trigger CI (see below).  The job-level `permissions:` block caps the token the reusable receives, so the caller must grant `issues: write` for the run-marker comment and `actions: read` for the `meter` job's usage-artifact download;  a caller missing them fails at startup, when GitHub validates the called workflow's requested scopes against the caller's grants.  `META_MODEL_API_TOKEN` is only consumed when `SWU_AUTOFIX_MODEL_BASE_URL` points at `api.meta.ai`, and `USAGE_INGEST_TOKEN` only feeds the usage report (the run is unchanged without it), but the reusable can only read a secret the caller maps, so the template passes both through.  The caller-level `if:` keeps a human comment from starting a runner at all;  the reusable job repeats the same checks and also requires the PR to be open.
+
+### Model route
+
+Three org/repo Actions variables retarget every autofix caller at once.  `SWU_AUTOFIX_MODEL_BASE_URL` picks the route and `SWU_AUTOFIX_MODEL` picks the model:
+
+| Base URL | Route | Key | Model id |
+|---|---|---|---|
+| unset or `https://api.minimax.io/anthropic` | MiniMax | `MINIMAX_API_KEY` | a `MiniMax-*` id |
+| `https://api.meta.ai` | Meta | `META_MODEL_API_TOKEN` | a `muse-*` id |
+| `https://openrouter.ai/api` | OpenRouter | `SWU_AUTOFIX_OPENROUTER_API_KEY` | an OpenRouter `vendor/model` slug, for example `deepseek/deepseek-chat` |
+
+The OpenRouter base is exactly `https://openrouter.ai/api`;  `/api/v1` doubles the path and returns 404.  The slug is checked against a closed character set before it reaches the runner environment.  Callers must pass `SWU_AUTOFIX_OPENROUTER_API_KEY` through `secrets:`;  the reusable declares it optional, so a caller that does not pass it still validates on the other routes.  A caller pinned to an older reusable SHA rejects the OpenRouter base until its pin is bumped.
 
 ## Inputs
 

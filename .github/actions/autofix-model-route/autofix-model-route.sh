@@ -17,6 +17,7 @@ route=
 case "$VAR_BASE" in
   "" | https://api.minimax.io/anthropic) route=minimax ;;
   https://api.meta.ai) route=meta ;;
+  https://openrouter.ai/api) route=openrouter ;;
   *)
     echo "::error::SWU_AUTOFIX_MODEL_BASE_URL is not a supported autofix endpoint"
     exit 1
@@ -33,6 +34,29 @@ if [ "$route" = "minimax" ]; then
   echo "ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic" >> "$GITHUB_ENV"
   echo "ANTHROPIC_MODEL=$effective" >> "$GITHUB_ENV"
   echo "ANTHROPIC_SMALL_FAST_MODEL=$effective" >> "$GITHUB_ENV"
+  exit 0
+fi
+
+if [ "$route" = "openrouter" ]; then
+  effective="${VAR_MODEL:-}"
+  # A vendor/model slug as OpenRouter lists it (optionally with a :variant suffix).  The slug
+  # lands in GITHUB_ENV, so only this closed character set may pass.
+  if [[ ! "$effective" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:+-]*$ ]]; then
+    echo "::error::SWU_AUTOFIX_MODEL must be an OpenRouter vendor/model slug when SWU_AUTOFIX_MODEL_BASE_URL is https://openrouter.ai/api"
+    exit 1
+  fi
+  {
+    echo "route=openrouter"
+    echo "anthropic_api_key_mode=none"
+    echo "effective_model=$effective"
+  } >> "$GITHUB_OUTPUT"
+  echo "ANTHROPIC_BASE_URL=https://openrouter.ai/api" >> "$GITHUB_ENV"
+  echo "ANTHROPIC_MODEL=$effective" >> "$GITHUB_ENV"
+  echo "ANTHROPIC_DEFAULT_OPUS_MODEL=$effective" >> "$GITHUB_ENV"
+  echo "ANTHROPIC_DEFAULT_SONNET_MODEL=$effective" >> "$GITHUB_ENV"
+  echo "ANTHROPIC_DEFAULT_HAIKU_MODEL=$effective" >> "$GITHUB_ENV"
+  echo "CLAUDE_CODE_SUBAGENT_MODEL=$effective" >> "$GITHUB_ENV"
+  echo "ANTHROPIC_API_KEY=" >> "$GITHUB_ENV"
   exit 0
 fi
 
