@@ -286,8 +286,19 @@ SPECS = {
     "wf_issue_blocked_by": ({"issues": "read"}, False),
     "wf_issue_blocking": ({"issues": "read"}, False),
     "wf_merge_queue_entry": ({"pull_requests": "read"}, False),
-    "wf_merge_queue_enqueue": ({"pull_requests": "write", "contents": "write"}, True),
-    "wf_merge_queue_dequeue": ({"pull_requests": "write", "contents": "write"}, True),
+    # Merge queue mutations need the merge_queues permission on the minted
+    # token:  GitHub treats merge queues as their own App permission, and a
+    # token carrying only pull_requests/contents is FORBIDDEN by
+    # enqueuePullRequest/dequeuePullRequest (the seat ceiling must also
+    # grant merge_queues or for_action refuses before any call).
+    "wf_merge_queue_enqueue": (
+        {"pull_requests": "write", "contents": "write", "merge_queues": "write"},
+        True,
+    ),
+    "wf_merge_queue_dequeue": (
+        {"pull_requests": "write", "contents": "write", "merge_queues": "write"},
+        True,
+    ),
     "wf_git_blob_get": ({"contents": "read"}, False),
     "wf_git_blob_create": ({"contents": "write"}, True),
     "wf_pr_create": ({"pull_requests": "write"}, True),
@@ -541,11 +552,11 @@ def workflow_write_paths(action, args):
     """Identify real workflow-file edits, never treat parent dirs as writable files."""
     if not isinstance(args, dict):
         raise Refused("invalid workflow arguments")
-    if action in ("wf_file_put", "wf_file_delete"):
+    if action in ("wf_file_put", "wf_file_delete", "wf_file_patch"):
         paths = [args.get("path")]
     elif action == "wf_file_rename":
         paths = [args.get("source_path"), args.get("destination_path")]
-    elif action == "wf_files_put":
+    elif action in ("wf_files_put", "wf_git_tree_create"):
         files = args.get("files")
         if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
             raise Refused("invalid files")
@@ -6877,7 +6888,16 @@ class WorkflowVerbs(RepoAdminVerbsMixin, HookVerbsMixin, SecretVerbsMixin):
             q += "&status=" + _enum(
                 args,
                 "status",
-                ("queued", "in_progress", "completed", "success", "failure"),
+                (
+                    "queued",
+                    "in_progress",
+                    "completed",
+                    "success",
+                    "failure",
+                    "action_required",
+                    "waiting",
+                    "pending",
+                ),
             )
         data = _obj(self._get(f"/repos/{repo}/actions/runs?{q}"))
         return {
@@ -7589,9 +7609,10 @@ class WorkflowVerbs(RepoAdminVerbsMixin, HookVerbsMixin, SecretVerbsMixin):
                 raise Refused("credential-shaped file path refused")
             mode = _enum(value, "mode", ("100644", "100755"))
             text, sha = value.get("text"), value.get("sha")
+            if _workflow_path(path) and not self.workflow_write_allowed:
+                raise Refused("workflow permission required for this path")
             if (
-                _workflow_path(path)
-                or path in seen
+                path in seen
                 or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
                 or (text is None) == (sha is None)
                 or ("source_commit" in value and sha is None)
@@ -8508,7 +8529,7 @@ class WorkflowVerbs(RepoAdminVerbsMixin, HookVerbsMixin, SecretVerbsMixin):
         )
         path = _path(args)
         message = args.get("message")
-        if self._write_path_denied(path) or _workflow_path(path):
+        if self._write_path_denied(path):
             raise Refused("patch path refused")
         if (
             not isinstance(message, str)

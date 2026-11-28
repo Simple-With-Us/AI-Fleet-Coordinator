@@ -272,6 +272,7 @@
         "deployments": "write",
         "environments": "write",
         "issues": "write",
+        "merge_queues": "write",
         "metadata": "read",
         "organization_actions_variables": "write",
         "organization_administration": "read",

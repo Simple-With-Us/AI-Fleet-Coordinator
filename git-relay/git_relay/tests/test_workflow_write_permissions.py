@@ -1070,3 +1070,85 @@ class WorkflowRefMoveElevation(unittest.TestCase):
             handle.run("wf_branch_update", self.args())
         self.assertNotIn("PATCH", [c[0] for c in client.calls])
         self.assertEqual(len(minter.calls), 1)
+
+
+class TreePatchWorkflowPermissions(unittest.TestCase):
+    def cases(self):
+        yield (
+            "wf_git_tree_create",
+            {
+                "repo": REPO,
+                "base_tree": SHA,
+                "files": [
+                    {"path": ".github/workflows/ci.yml", "text": "name: ci", "mode": "100644"}
+                ],
+            },
+        )
+        yield (
+            "wf_git_tree_create",
+            {
+                "repo": REPO,
+                "base_tree": SHA,
+                "files": [{"path": ".github/workflows/ci.yml", "sha": SHA, "mode": "100644"}],
+            },
+        )
+        yield (
+            "wf_file_patch",
+            {
+                "repo": REPO,
+                "branch": "echo/test",
+                "path": ".github/workflows/ci.yml",
+                "message": "fix",
+                "expected_head_sha": SHA,
+                "base_blob_sha": SHA,
+                "edits": [{"start": 0, "end": 1, "text": "x"}],
+            },
+        )
+
+    def test_new_workflow_paths_require_ceiling_before_mint_or_io(self):
+        for action, args in self.cases():
+            with self.subTest(action=action, args=args):
+                client, minter = Client(), Minter()
+                with self.assertRaises(CeilingDenied):
+                    WorkflowVerbs.for_action(
+                        client, Policy(CEILING), minter, "swu-wise", action, REPO, args=args
+                    )
+                self.assertEqual(minter.calls, [])
+                self.assertEqual(client.calls, [])
+
+    def test_new_workflow_paths_mint_exact_scope_and_enable_bound_handle(self):
+        for action, args in self.cases():
+            with self.subTest(action=action, args=args):
+                client, minter = Client(), Minter()
+                handle = WorkflowVerbs.for_action(
+                    client,
+                    Policy({**CEILING, "workflows": "write"}),
+                    minter,
+                    "swu-wise",
+                    action,
+                    REPO,
+                    args=args,
+                )
+                self.assertEqual(
+                    minter.calls[0][2],
+                    {"contents": "write", "metadata": "read", "workflows": "write"},
+                )
+                self.assertTrue(handle.workflow_write_allowed)
+                self.assertEqual(client.calls, [])
+
+    def test_direct_or_args_missing_handle_cannot_write_workflow(self):
+        for action, args in self.cases():
+            with self.subTest(action=action, args=args):
+                client = Client()
+                handle = WorkflowVerbs.for_action(
+                    client,
+                    Policy({**CEILING, "workflows": "write"}),
+                    Minter(),
+                    "swu-wise",
+                    action,
+                    REPO,
+                )
+                self.assertFalse(handle.workflow_write_allowed)
+                with self.assertRaises(Refused):
+                    handle.run(action, args)
+                self.assertEqual(client.calls, [])

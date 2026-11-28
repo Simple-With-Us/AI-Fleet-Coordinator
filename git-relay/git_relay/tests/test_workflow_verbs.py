@@ -11,6 +11,7 @@ CEILING = {
     "pull_requests": "write",
     "issues": "write",
     "actions": "write",
+    "merge_queues": "write",
     "metadata": "read",
     "administration": "read",
     "repository_hooks": "read",

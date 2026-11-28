@@ -169,7 +169,13 @@ class Queue(unittest.TestCase):
         m = Minter()
         WorkflowVerbs.for_action(Client(), Policy(), m, "swu-wise", "wf_merge_queue_enqueue", REPO)
         self.assertEqual(
-            m.calls[0][2], {"contents": "write", "pull_requests": "write", "metadata": "read"}
+            m.calls[0][2],
+            {
+                "contents": "write",
+                "pull_requests": "write",
+                "merge_queues": "write",
+                "metadata": "read",
+            },
         )
 
     def test_graphql_transport_on_mutation_is_outcome_unverifiable(self):
