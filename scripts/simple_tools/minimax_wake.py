@@ -559,11 +559,11 @@ def deliver_local(
 
             status, row = _session_row(env, session_id)
             if status == "error":
-                return WR.Delivery("failed", "wake", code="store-session-store")
+                return WR.Delivery("busy", "wake", code="store-session-store")
             if status == "store-missing":
-                # MiniMax Code is not installed on this host:  a bounded failure, because the
+                # MiniMax Code is not installed on this host:  an availability wait, because the
                 # store may be there later, and not a refusal that would end the wake.
-                return WR.Delivery("failed", "wake", code="platform-not-installed")
+                return WR.Delivery("busy", "wake", code="platform-not-installed")
             if status == "missing":
                 return WR.Delivery("refused", "wake", code="session-not-found")
             if str(row.get("session_kind") or "") not in CHAT_KINDS:
@@ -588,7 +588,7 @@ def deliver_local(
             child_env = _child_env(env)
             binary = _find_mcode_binary(child_env, str(config.get("mcode_bin") or ""))
             if not binary:
-                return WR.Delivery("failed", "wake", code="mcode-not-found")
+                return WR.Delivery("busy", "wake", code="mcode-not-found")
 
             # Every flag is its own element and every value is the element after it, which is the
             # form the `mcode exec` help shows.  A value that could be read as an option of its own is

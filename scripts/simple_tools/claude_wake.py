@@ -570,7 +570,7 @@ def _via_resume(
     child_env = _child_env(env)
     binary = shutil.which(str(config["claude_bin"]), path=child_env["PATH"])
     if not binary:
-        return WR.Delivery("failed", "resume", code="claude-not-found")
+        return WR.Delivery("busy", "resume", code="claude-not-found")
     argv = [binary, "--resume", session_id, "-p", wake_text(wake)]
     try:
         proc = runner(

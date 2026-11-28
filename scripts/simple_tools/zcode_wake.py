@@ -799,7 +799,7 @@ def _deliver_prompt(
                 child_env["ZCODE_BIN"] = str(config["zcode_bin"])
             binary = _find_zcode_binary(child_env)
             if not binary:
-                return WR.Delivery("failed", "resume", code="zcode-not-found")
+                return WR.Delivery("busy", "resume", code="zcode-not-found")
 
             argv = [binary, "--cwd", recorded, "--resume", session_id, "-p", prompt]
             try:

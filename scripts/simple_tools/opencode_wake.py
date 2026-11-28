@@ -623,11 +623,11 @@ def deliver_local(
 
             status, row = _session_row(env, session_id)
             if status == "error":
-                return WR.Delivery("failed", "wake", code="store-session-store")
+                return WR.Delivery("busy", "wake", code="store-session-store")
             if status == "store-missing":
-                # OpenCode is not installed on this host:  a bounded failure, because the store
+                # OpenCode is not installed on this host:  an availability wait, because the store
                 # may be there later, and not a refusal that would end the wake.
-                return WR.Delivery("failed", "wake", code="platform-not-installed")
+                return WR.Delivery("busy", "wake", code="platform-not-installed")
             if status == "missing":
                 return WR.Delivery("refused", "wake", code="session-not-found")
             if str(row.get("parent_session_id") or ""):
@@ -650,7 +650,7 @@ def deliver_local(
             child_env = _child_env(env)
             binary = _find_opencode_binary(child_env, str(config.get("opencode_bin") or ""))
             if not binary:
-                return WR.Delivery("failed", "wake", code="opencode-not-found")
+                return WR.Delivery("busy", "wake", code="opencode-not-found")
 
             # Every flag is its own element and every value is the element after it.  The prompt
             # is on the child's stdin, so it never shows up in a process listing, and the session

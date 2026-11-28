@@ -2662,14 +2662,14 @@ class Unconfirmed(Base):
         self.drain(router)
         self.assertEqual((self.done()["status"], self.done()["reason"]), ("held", "delivery-disabled"))
 
-    def test_the_wait_is_bounded_by_the_age_limit(self) -> None:
+    def test_settings_outage_does_not_age_out_the_wake(self) -> None:
         router = self.unconfirmed_router()
         router.accept(self.wake())
         router.run_once()
-        self.clock.now += router.config["max_age_seconds"]
+        self.clock.now += router.config["max_age_seconds"] * 2
         self.drain(router)
-        receipt = self.done()
-        self.assertEqual((receipt["status"], receipt["delivered"]), ("dead", False))
+        self.assertTrue(self.pending().exists())
+        self.assertEqual(router.receipt("w-1")["waiting_code"], WR.UNCONFIRMED)
         self.assertEqual(self.delivered, [])
 
     def test_a_wake_replayed_with_a_pick_keeps_it_while_waiting(self) -> None:
@@ -2873,14 +2873,46 @@ class Retries(Base):
         self.assertEqual(self.done()["status"], "delivered")
         self.assertEqual(len(self.delivered), 9)
 
-    def test_waiting_is_bounded_by_age(self) -> None:
-        self.results = [WR.Delivery("unreachable", "ssh", code="ssh-unreachable")] * 50
-        router = self.router(max_age_seconds=5000)
+    def test_uncertain_after_wait_is_not_replayed_after_restart(self) -> None:
+        self.results = [WR.Delivery("unreachable", code="offline"),
+                        WR.Delivery("unknown", code="lost-ack")]
+        router = self.router(max_age_seconds=100)
         router.accept(self.wake())
-        self.run_all(router, 12)
-        receipt = self.done()
-        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.EXPIRED))
-        self.assertEqual(len(self.delivered), 3)  # tried at 0, 2000 and 4000;  not at 6000
+        self.run_all(router, 4)
+        self.assertEqual(self.done()["status"], "unknown")
+        fresh = self.router(max_age_seconds=100)
+        fresh.replay()
+        self.run_all(fresh, 4)
+        self.assertEqual(len(self.delivered), 2)
+        self.assertIsNone(self.done()["delivered"])
+
+    def test_long_wait_rechecks_owner_generation_before_delivery(self) -> None:
+        self.registry.letters = {"AA": row(SID_A, "AA", "Only chat", generation=1)}
+        self.results = [WR.Delivery("busy", code="offline")]
+        router = self.router(max_age_seconds=100)
+        router.accept(self.wake(letter="AA"))
+        self.drain(router)
+        self.clock.now += 10000
+        self.registry.letters["AA"] = row(SID_B, "AA", "Other chat", generation=2)
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        self.assertEqual(self.done()["code"], WR.RELEASED)
+        self.assertIs(self.done()["delivered"], False)
+
+    def test_waiting_survives_age_and_restart_then_delivers_once(self) -> None:
+        self.results = [WR.Delivery("unreachable", "ssh", code="ssh-unreachable")] * 12
+        router = self.router(max_age_seconds=100, max_attempts=2)
+        router.accept(self.wake())
+        self.run_all(router, 6)
+        self.assertTrue(self.pending().exists())
+        self.assertEqual(router.receipt("w-1")["waiting_for_platform"], True)
+        fresh = self.router(max_age_seconds=100, max_attempts=2)
+        fresh.replay()
+        self.run_all(fresh, 10)
+        self.assertEqual(self.done()["status"], "delivered")
+        self.assertEqual(len(self.delivered), 13)
+        fresh.run_once()
+        self.assertEqual(len(self.delivered), 13)
 
     def test_a_wake_too_old_is_not_delivered_after_an_outage(self) -> None:
         router = self.router(max_age_seconds=100)
@@ -2892,22 +2924,17 @@ class Retries(Base):
         self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.EXPIRED))
         self.assertIs(receipt["delivered"], False)
 
-    def test_an_outage_that_ends_a_wake_says_the_registry_was_down(self) -> None:
-        """A wake that ends while the registry is down says the registry was down:  the
-        receipt must not blame malformed data."""
-
+    def test_long_registry_outage_remains_pending_until_return(self) -> None:
         def deliver(target, wake, host=""):
             self.delivered.append((target.session_id, wake.wake_id))
-            self.clock.now += 10000  # the delivery itself outlasts the wake's age
+            self.clock.now += 10000
             return WR.Delivery("busy", code=WR.REGISTRY_UNAVAILABLE)
-
         router = self.router(deliver=deliver, max_age_seconds=100)
         router.accept(self.wake())
         self.run_all(router, 4)
-        receipt = self.done()
-        self.assertEqual(receipt["status"], "dead")
-        self.assertEqual(receipt["code"], WR.REGISTRY_UNAVAILABLE)
-        self.assertEqual(receipt["note"], "")
+        self.assertTrue(self.pending().exists())
+        self.assertEqual(router.receipt("w-1")["waiting_code"], WR.REGISTRY_UNAVAILABLE)
+        self.assertEqual(json.loads(self.pending().read_text())["failures"], 0)
 
     def test_a_registry_outage_retries_the_pick(self) -> None:
         self.registry.down = True

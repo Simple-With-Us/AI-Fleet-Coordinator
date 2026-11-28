@@ -268,12 +268,12 @@ class GrokWake(unittest.TestCase):
                 self.assertEqual(answer["delivery"]["code"], "turn-" + state)
                 self.assertIsNone(drive.prompted())
 
-    def test_a_quit_chat_is_refused_as_tui_not_attached_before_a_prompt(self) -> None:
+    def test_a_quit_chat_waits_for_tui_before_a_prompt(self) -> None:
         # The registry holds the chat open, but grok-drive lists it with live false:  no Grok
         # TUI has it open (active_sessions.json does not name it).  The reason says so.
         drive, answer = self.deliver(drive=Drive([row(live=False)]))
         self.assertEqual((answer["delivery"]["outcome"], answer["delivery"]["code"]),
-                         ("refused", "tui-not-attached"))
+                         ("busy", "tui-not-attached"))
         self.assertIsNone(drive.prompted())
         self.assertIn("tui-not-attached", GW.NEVER_RAN)
 
@@ -300,7 +300,7 @@ class GrokWake(unittest.TestCase):
                 drive, answer = self.deliver(drive=Drive([row(live=value)]))
                 self.assertEqual(
                     (answer["delivery"]["outcome"], answer["delivery"]["code"]),
-                    ("failed", "drive-list-unreadable"),
+                    ("busy", "drive-list-unreadable"),
                 )
                 self.assertIsNone(drive.prompted())
 
@@ -328,7 +328,7 @@ class GrokWake(unittest.TestCase):
             return 0, json.dumps({"ok": True, "count": 0, "sessions": []}), ""
 
         answer = GW.deliver_request(request(), env=self.env, runner=runner)
-        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["outcome"], "busy")
         self.assertEqual(answer["delivery"]["code"], "drive-list-unavailable")
         self.assertEqual([call[2] for call in calls], ["list", "list"])
         self.assertIn("--all-pages", calls[0])
@@ -343,7 +343,7 @@ class GrokWake(unittest.TestCase):
 
         answer = GW.deliver_request(request(), env=self.env, runner=runner)
         self.assertEqual(answer["delivery"]["code"], "drive-list-unavailable")
-        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["outcome"], "busy")
 
     def test_a_race_into_working_stays_busy(self) -> None:
         drive = Drive([row()], {"ok": False, "turnState": "working", "queued": False})
@@ -363,7 +363,7 @@ class GrokWake(unittest.TestCase):
         listing.fail_on = "list"
         _drive, answer = self.deliver(drive=listing)
         self.assertEqual(answer["delivery"]["code"], "drive-list-timeout")
-        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["outcome"], "busy")
         prompting = Drive([row()])
         prompting.fail_on = "prompt"
         _drive, answer = self.deliver(drive=prompting)

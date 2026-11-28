@@ -297,7 +297,7 @@ def _invoke(
 def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | dict[str, Any]:
     """The one chat's row, or why the list cannot be trusted yet."""
     if payload is None or not isinstance(payload.get("sessions"), list):
-        return WR.Delivery("failed", "grok-drive", code="drive-list-unreadable")
+        return WR.Delivery("busy", "grok-drive", code="drive-list-unreadable")
     found = None
     for item in payload["sessions"]:
         if isinstance(item, dict) and item.get("sessionId") == session_id:
@@ -310,9 +310,9 @@ def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | di
     # one page and names no `complete`):  both retry, and only a list the helper called
     # complete can refuse (Kody, PR 2306 round 3).
     if payload.get("ok") is not True or payload.get("partial") is True:
-        return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
+        return WR.Delivery("busy", "grok-drive", code="drive-list-unavailable")
     if payload.get("complete") is not True:
-        return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
+        return WR.Delivery("busy", "grok-drive", code="drive-list-unavailable")
     return WR.Delivery("refused", "grok-drive", code=NOT_LISTED)
 
 
@@ -320,10 +320,10 @@ def _ready(row: Mapping[str, Any]) -> WR.Delivery | str:
     """The chat's cwd when a prompt may be sent, else the outcome and no prompt."""
     live = row.get("live")
     if live is False:
-        return WR.Delivery("refused", "grok-drive", code=NOT_ATTACHED)
+        return WR.Delivery("busy", "grok-drive", code=NOT_ATTACHED)
     if live is not True:
         # A missing or malformed field does not show that no TUI has the chat open.
-        return WR.Delivery("failed", "grok-drive", code="drive-list-unreadable")
+        return WR.Delivery("busy", "grok-drive", code="drive-list-unreadable")
     if row.get("turnState") != "idle":
         return WR.Delivery("busy", "grok-drive", code=_turn_code(row.get("turnState")))
     cwd = row.get("cwd")
@@ -420,11 +420,11 @@ def deliver_request(
                     # The budget is spent and the answer cannot be trusted:  that is the
                     # timeout it was, not an unreadable inventory (Kody, PR 2306 round 3).
                     return _answer(
-                        request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout")
+                        request, WR.Delivery("busy", "grok-drive", code="drive-list-timeout")
                     )
                 _code, payload = _invoke(env, ["list"], remaining, runner)
         except subprocess.TimeoutExpired:
-            return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
+            return _answer(request, WR.Delivery("busy", "grok-drive", code="drive-list-timeout"))
         except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
             return _answer(request, _failure("drive-list", exc))
         listed = _listed(payload, target.session_id)

@@ -586,7 +586,7 @@ def _via_exec(
                 riders = tuple(kept)
     binary = _binary(env, config)
     if not binary:
-        return WR.Delivery("failed", "exec", code="muse-not-found")
+        return WR.Delivery("busy", "exec", code="muse-not-found")
     try:
         cwd = _session_cwd(session_dir)
     except StoreUnreadable:
