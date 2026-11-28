@@ -55,6 +55,10 @@ const BAD_REQUEST_REASONS = new Map([
   ["base commit unverifiable", "bad_request_base_unverifiable"],
   ["patch path refused", "bad_request_workflow_path_permission"],
   ["invalid patch message", "bad_request_invalid_arguments"],
+  ["GitHub declined the enqueue and the PR is not queued", "bad_request_merge_queue_declined"],
+  ["GitHub declined the enqueue and the PR is still not queued", "bad_request_merge_queue_declined"],
+  ["GitHub declined the dequeue and the PR is still queued", "bad_request_merge_queue_declined"],
+  ["GitHub declined the dequeue and the PR is not queued", "bad_request_merge_queue_declined"],
 ]);
 
 /** The relay's fixed head, ref and identity fences:  the caller's expected
@@ -256,7 +260,8 @@ const REASON_TEXT = Object.freeze({
   bad_request_default_branch_protected: "The relay refuses to write the default branch, except wf_file_put and wf_file_delete for an exact path in that seat's default_branch_paths.  Anything else stays on a feature branch and a pull request.",
   bad_request_pr_not_open: "The pull request is not open.",
   bad_request_pr_merged: "The pull request is already merged and cannot change state.",
-  bad_request_workflow_path_permission: "The change touches a workflow path, which needs the workflow permission this seat's App does not have.",
+  bad_request_workflow_path_permission: "The change touches a workflow path and this call was not granted the workflow permission.  Workflow files can be written with wf_file_put, wf_files_put, wf_file_patch or wf_git_tree_create when the seat ceiling includes workflows;  other verbs refuse workflow paths.",
+  bad_request_merge_queue_declined: "GitHub declined the merge-queue change and the queue state did not change.  Usual causes:  the minted token lacks the merge_queues permission, the pull request's checks or the repository's queue rules do not allow it yet, or the head moved.  Read the pull request and its checks, then retry.",
   bad_request_review_not_pending: "Only a pending review can be deleted.",
   bad_request_nothing_to_change: "The call would change nothing.  Send at least one field that differs.",
   bad_request_invalid_files: "The files argument is not acceptable.  Check each path and content.",
