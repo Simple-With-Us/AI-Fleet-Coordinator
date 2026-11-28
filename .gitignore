@@ -40,3 +40,22 @@ muster/Muster.xcodeproj/
 muster/.build/
 muster/dist/
 /.wrangler/
+
+# --- No secrets in files: all secrets live only in Infisical ---
+.env
+.env.*
+*.env
+.dev.vars
+.dev.vars.*
+.prod.vars
+.prod.vars.*
+*.vars
+*.vars.*
+*.env.*
+.envrc
+*.envrc
+*.envrc.*
+!*.example
+!*.sample
+!*.template
+!.cursor/infisical.env
