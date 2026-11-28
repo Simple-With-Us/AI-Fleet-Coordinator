@@ -243,18 +243,19 @@ export async function resolveLinearPair(env, seat) {
   if (!names || !inf) return null;
   // A prepared seat that is not enabled reads nothing:  no Infisical request for a seat whose tools answer not_configured.
   if (!LINEAR_SEATS.includes(canonical)) return null;
-  const [clientId, clientSecret] = await Promise.all([
+  const [clientId, clientSecret, appId] = await Promise.all([
     resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId, optional: true }),
     resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret, optional: true }),
+    resolveLinearAppId(env, canonical),
   ]);
-  return { clientId: clientId.trim(), clientSecret: clientSecret.trim() };
+  return { clientId: clientId.trim(), clientSecret: clientSecret.trim(), appId };
 }
 
 /** Sync: build a client from an already-resolved pair (same null contract as
  * linearClientFromEnv). */
 export function linearClientFromPair(pair, seat, { gate, quota, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
   if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
-  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, gate, quota, fetch: fetchImpl, now });
+  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, appId: pair.appId ?? null, gate, quota, fetch: fetchImpl, now });
 }
 
 // Seats whose Linear tools are live.  GROK-WEB first (owner 2026-10-11):  it is
@@ -449,60 +450,51 @@ export const SEAT_APP_ALIASES = Object.freeze({
   ZC: Object.freeze(["ZCode (ZC)", "ZCode"]),
 });
 // The seat's own Linear app, by registration id:  the id Linear's
-// applicationInfo returns for the seat's canonical client id.  Read live from
-// the provider for every installed pair on 2026-11-28, the same grounding
-// route that recorded the registration names above on 2026-10-29.  A
-// registration id never changes when the owner renames the app - only the
-// display name does - so confirmViewer proves a seat's pair by this id first
-// and treats the names as a fallback.  JET-CHAT carries JET's id:  two
-// logins, one Linear app (owner, Oct 23 2026).  No client id or secret is
-// recorded here, only registration ids, which any authenticated fleet token
-// can read back from applicationInfo.
-export const SEAT_APP_IDS = Object.freeze({
-  JET: "f0e0de0c-2a1f-4599-81f2-cba46f320b99",
-  "JET-CHAT": "f0e0de0c-2a1f-4599-81f2-cba46f320b99",
-  "GROK-WEB": "55552499-483a-4f73-ba6c-629c543a92e5",
-  ECHO: "c8b0da5f-316a-488b-871f-86fc074c7990",
-  WISE: "0a02b664-40f7-40d1-b059-aece3e620773",
-  MA: "b7e5948f-c4f8-4eff-867f-c555f68d95f6",
-  CURSOR: "ba363748-ec81-4362-a212-8a061d23a338",
-  CLAUDE: "dfd582b8-3d74-4ecc-9a35-f249a4d7b832",
-  CODEX: "2476b9d3-2d8e-4185-b2cb-7422c0b3e43f",
-  AG: "53209691-c78e-4aba-9fe7-7654bc47af8e",
-  CLUTCH: "3f62f041-5eff-4b0a-b2e8-6234bcd6aa72",
-  FX: "33047599-2f44-4ef7-b518-3188f0258ddd",
-  GROK: "54adcf03-274d-4ed5-9515-bd77fd9b80fb",
-  MC: "342a26c2-f1eb-4b13-b491-e28fa659df05",
-  MM: "d686ecc9-6c19-4673-8466-61b00d0a98b6",
-  OPENCODE: "10acb6a5-ff0e-4ff2-9dda-d8c7a3c94dd9",
-  ZC: "812bb1d9-ab1f-423f-b29f-ddc3781faccc",
-  KIMI: "a708a03b-cfcc-4a63-8538-3bf08d13bdb6",
-  OPERATOR: "e85708f1-4817-41eb-b941-6f8ec638e48c",
-  "BF-COMPILER": "72ef7967-30ab-48e3-8cdb-9206e06bfa28",
-  "BF-DEPLOYER": "4eb88f30-6470-4b49-b181-f6912c49851d",
-  "BF-DESIGNER": "22d205a3-10d3-455c-acf7-62ea655e2701",
-  "BF-DIRECTOR": "950f89cf-a96e-4ba5-9b16-de9e3d4ca209",
-  "BF-FIXER": "dfc95fe5-61e0-4dc3-9155-1b4da8a735ff",
-  "BF-HOUSEKEEPER": "0efd2a60-2aa2-4b6d-b268-0118cfd724e0",
-  "BF-MONITOR": "0899e7c0-77a3-4ad3-91a5-ac494dce4b67",
-  "BF-ORACLE": "81ea4fd8-76d0-4f32-a905-91f5be9ff47b",
-  "BF-PLUMBER": "a0e519a4-8264-439f-8cc6-9d7158e1e479",
-  "BF-PUBLISHER": "163efa92-8527-4e8e-9462-4df86e69e88f",
-  "BF-ENGINEER": "2a7c9297-8319-4631-bf06-c1ed54cfe646",
-  "BF-TRADER": "0eb009d3-023d-49f8-b405-1ec65b08d787",
-  "GB-COMPILER": "0a032ca5-7354-4103-88ec-deeb074351bf",
-  "GB-DEPLOYER": "03aaf0f7-e766-4299-9d74-3acfcbbea845",
-  "GB-DESIGNER": "9cf1be28-6580-411c-88fc-e15e9410c266",
-  "GB-DIRECTOR": "7c20199f-8255-4a1b-b7c7-1f09b02c86ca",
-  "GB-ENGINEER": "0a874506-ee82-4b89-a590-1537352d2f79",
-  "GB-FIXER": "c3c28960-3dd4-45a1-9ee0-5a6ee0d86f40",
-  "GB-HOUSEKEEPER": "1b70bc28-92d0-4827-8413-f3ee4bc232fc",
-  "GB-MONITOR": "82510b54-0193-4869-baf2-4e1e175f2d2d",
-  "GB-ORACLE": "02d23bdf-c0d9-4d3c-8e64-bd016d13c9b2",
-  "GB-PLUMBER": "a262a1a6-8c6e-4e35-90df-8541112be63b",
-  "GB-PUBLISHER": "fde29bc4-19ee-4799-89b5-5e9fcbdbf616",
-  "GB-TRADER": "2c49023b-a84d-4ef5-aea6-75cb26aafe28",
-});
+// applicationInfo returns for the seat's canonical client id.  A registration
+// id never changes when the owner renames the app - only the display name
+// does - so confirmViewer proves a seat's pair by this id first and treats
+// the names above as a fallback.  The ids themselves are not committed here:
+// they name the workspace's app inventory, so they live with the pairs, in
+// Infisical /linear as one JSON secret, LINEAR_SEAT_APP_IDS (seat tag ->
+// registration id), grounded live from the provider for every installed pair
+// on 2026-11-28 - the same grounding route that recorded the registration
+// names on 2026-10-29 - and resolveLinearPair / resolveLinearAppId read a
+// seat's entry alongside its pair.  JET-CHAT's entry carries JET's id:  two
+// logins, one Linear app (owner, Oct 23 2026).  A seat with no entry, or a
+// deployment that has not provisioned the secret yet, keeps the name check
+// as its only proof, exactly as before.
+export const SEAT_APP_IDS_NAME = "LINEAR_SEAT_APP_IDS";
+
+/** One seat's registration id out of the LINEAR_SEAT_APP_IDS value (a JSON
+ * string, or an already-parsed object), or null when it is absent, malformed
+ * or holds no usable id for the seat.  Never throws:  a bad map must cost the
+ * bootstrap, not the call. */
+export function seatAppIdFromMap(raw, seat) {
+  let map = raw;
+  if (typeof raw === "string") {
+    if (!raw.trim()) return null;
+    try {
+      map = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+  const id = map[seatTagForSeat(seat)];
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+/** The seat's grounded registration id, resolved with its pair from
+ * Infisical /linear (or the same-named Worker binding), or null. */
+export async function resolveLinearAppId(env, seat) {
+  try {
+    const raw = await resolveSecret(env, { name: SEAT_APP_IDS_NAME, path: "/linear", envName: SEAT_APP_IDS_NAME, optional: true });
+    return seatAppIdFromMap(raw, seat);
+  } catch {
+    return null;
+  }
+}
+
 export const SEAT_TAG_ALIASES = SEAT_NAME_ALIASES;
 
 /** The seat tag a spelling resolves to, including accepted human aliases.  WISE is the tag; INSTINCT is retired. */
@@ -516,11 +508,6 @@ export function seatAppNames(seat) {
   const canonical = seatTagForSeat(seat);
   const app = SEAT_APP_NAMES[canonical];
   return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[canonical] ?? [])]) : Object.freeze([]);
-}
-
-/** The registration id of the seat's own Linear app, or null when none is grounded. */
-export function seatAppId(seat) {
-  return SEAT_APP_IDS[seatTagForSeat(seat)] ?? null;
 }
 
 /** Own-app seats (OWN_APP_LINEAR_PREFIXES):  the seats whose Linear identity is proven by a grounded app name alone. */
@@ -1070,7 +1057,7 @@ export function linearClientFromEnv(env, seat, { gate, quota, fetch: fetchImpl =
   const clientId = read(names.clientId);
   const clientSecret = read(names.clientSecret);
   if (!clientId || !clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
-  return new LinearClient({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now });
+  return new LinearClient({ seat, clientId, clientSecret, appId: seatAppIdFromMap(env?.[SEAT_APP_IDS_NAME], seat), gate, quota, fetch: fetchImpl, now });
 }
 
 // A proof of which Linear user a token acts as is trusted for at most a day, and never past the token's own expiry.
@@ -1084,13 +1071,17 @@ const LinearIdentityPayload = z.object({
 
 
 export class LinearClient {
-  constructor({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
+  constructor({ seat, clientId, clientSecret, appId = null, gate, quota, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
     // Every GraphQL request is metered against the Linear user or app user it acts as (see #chargeRequest), so a
     // client without a quota cannot exist:  there is no unmetered path to Linear.
     if (!quota || typeof quota.reserve !== "function" || typeof quota.debit !== "function") throw new TypeError("LinearClient requires a quota");
     this.quota = quota;
     this.seat = seat;
     this.clientId = clientId;
+    // The grounded registration id of this seat's own app, resolved with the pair (see SEAT_APP_IDS_NAME):
+    // confirmViewer's bootstrap compares the registration behind clientId against it.  Null when the seat
+    // has no grounded entry, which leaves the name check as the only proof, as before.
+    this.expectedAppId = typeof appId === "string" && appId ? appId : null;
     this.gate = gate;
     this.fetch = fetchImpl;
     this.now = now;
@@ -1516,8 +1507,9 @@ export class LinearClient {
    * own token:  {id}, or null when Linear cannot resolve it (an unknown client
    * id, a failed read).  applicationInfo is a registry read - it proves which
    * app a client id belongs to, never who is asking - so its answer is only
-   * ever compared against this seat's grounded registration id (SEAT_APP_IDS),
-   * and the answer is trusted only when it echoes the queried client id.
+   * ever compared against this seat's grounded registration id (resolved with
+   * the pair from LINEAR_SEAT_APP_IDS), and the answer is trusted only when it
+   * echoes the queried client id.
    */
   async #appRegistration() {
     try {
@@ -1540,7 +1532,7 @@ export class LinearClient {
    * says.  When no id is remembered yet - or the remembered one no longer
    * matches - the seat's app is proven from its own credential pair instead:
    * the registration Linear holds for this client's own client id must be the
-   * seat's grounded registration (SEAT_APP_IDS), and the viewer acting under
+   * seat's grounded registration, and the viewer acting under
    * that pair is then that app's user, so its id is remembered.  A pair that
    * resolves to a different registration is another seat's app installed
    * under this seat's name - a swap - and is refused outright; the name check
@@ -1563,7 +1555,7 @@ export class LinearClient {
     const known = viewer.app && viewerId ? await this.#knownAppId() : null;
     if (viewer.app && known && known === viewerId) return viewer;
     if (viewer.app && viewerId) {
-      const expected = seatAppId(this.seat);
+      const expected = this.expectedAppId;
       if (expected) {
         const registration = await this.#appRegistration();
         if (registration) {
