@@ -31,13 +31,18 @@ class Writes(unittest.TestCase):
         )
         self.assertEqual(c.calls[0][3], "own")
         for files in [
-            [{"path": ".github/workflows/x", "text": "hi", "mode": "100644"}],
             [{"path": "a", "text": "hi", "mode": "120000"}],
             [{"path": "a", "text": "é" * 20001, "mode": "100644"}],
             args["files"] * 2,
         ]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {**args, "files": files}, REPO)
+        # A workflow path is no longer a shape error (the shape probe is granted the workflow
+        # permission); the run refuses it unless the minted token holds that permission.
+        wf = {**args, "files": [{"path": ".github/workflows/x", "text": "hi", "mode": "100644"}]}
+        with self.assertRaises(Refused):
+            self.handle(c, a).run(a, wf)
+        self.assertEqual(len(c.calls), 1)
 
     def test_tree_sha_entries_reference_verified_existing_blobs(self):
         import base64 as b64m
@@ -117,7 +122,6 @@ class Writes(unittest.TestCase):
         # Shape refusals before any upstream call:  mixed keys, workflow path, bad mode.
         for files in [
             [{"path": "x", "sha": blob_sha, "text": "hi", "mode": "100644"}],
-            [{"path": ".github/workflows/x", "sha": blob_sha, "mode": "100644"}],
             [{"path": "x", "sha": blob_sha, "mode": "120000"}],
             [{"path": "x", "sha": "z" * 40, "mode": "100644"}],
         ]:
