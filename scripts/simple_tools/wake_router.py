@@ -2115,9 +2115,15 @@ class Router:
             "wake_id": entry["wake"]["wake_id"],
             "receipt_id": entry["receipt_id"],
             "status": "accepted",
-            **({"waiting_for_platform": True, "waiting_code": entry.get("waiting_code", ""),
-                "next_check_at": entry["next_at"]}
-               if "availability_since" in entry else {}),
+            **(
+                {
+                    "waiting_for_platform": True,
+                    "waiting_code": entry.get("waiting_code", ""),
+                    "next_check_at": entry["next_at"],
+                }
+                if "availability_since" in entry
+                else {}
+            ),
             **(
                 {"credential_scope": entry["wake"]["credential_scope"]}
                 if entry["wake"].get("credential_scope")
@@ -2379,8 +2385,9 @@ class Router:
         if entry.get("receipt") is not None:
             self._write_receipt(entry)  # already settled:  only its receipt is outstanding
             return
-        if ("availability_since" not in entry
-                and self._active_age(entry, self.clock()) >= int(self.config["max_age_seconds"])):
+        if "availability_since" not in entry and self._active_age(entry, self.clock()) >= int(
+            self.config["max_age_seconds"]
+        ):
             # Only available time ages a wake. A discerned outage pauses its deadline.
             old = _pick_from(entry["pick"]) if entry["pick"] else Pick(reason=EXPIRED)
             result = Delivery("failed", code=EXPIRED)
@@ -2659,8 +2666,9 @@ class Router:
         """Age excluding durable, proven never-submitted availability waits."""
         waiting = entry.get("availability_since")
         ongoing = max(0.0, now - waiting) if type(waiting) in (int, float) else 0.0
-        return max(0.0, now - entry["accepted_at"]
-                   - entry.get("availability_wait_seconds", 0.0) - ongoing)
+        return max(
+            0.0, now - entry["accepted_at"] - entry.get("availability_wait_seconds", 0.0) - ongoing
+        )
 
     def _retry(
         self,
@@ -2682,8 +2690,8 @@ class Router:
         now = self.clock()
         # Only outcomes that prove nothing was submitted can pause the deadline.
         # Unknown/refused/sent never enter this path as availability outcomes.
-        availability = not counted and result is not None and result.outcome in (
-            "busy", "unreachable"
+        availability = (
+            not counted and result is not None and result.outcome in ("busy", "unreachable")
         )
         if availability:
             entry.setdefault("availability_since", now)
@@ -2697,7 +2705,9 @@ class Router:
         if counted:
             entry["failures"] += 1
         too_many = entry["failures"] >= int(self.config["max_attempts"])
-        too_old = not availability and self._active_age(entry, now) >= int(self.config["max_age_seconds"])
+        too_old = not availability and self._active_age(entry, now) >= int(
+            self.config["max_age_seconds"]
+        )
         if too_many or too_old:
             final = result or Delivery("failed", code=code)
             self._finish(
@@ -3467,9 +3477,13 @@ def _loadable(entry: object, wake_id: str) -> bool:
             and type(entry["failures"]) is int
             and type(entry.get("availability_wait_seconds", 0.0)) in (int, float)
             and entry.get("availability_wait_seconds", 0.0) >= 0
-            and ("availability_since" not in entry or
-                 (type(entry["availability_since"]) in (int, float)
-                  and entry["availability_since"] >= entry["accepted_at"]))
+            and (
+                "availability_since" not in entry
+                or (
+                    type(entry["availability_since"]) in (int, float)
+                    and entry["availability_since"] >= entry["accepted_at"]
+                )
+            )
             and isinstance(entry.get("waiting_code", ""), str)
             and type(entry.get("repicks", 0)) is int
             and isinstance(rejected, list)
