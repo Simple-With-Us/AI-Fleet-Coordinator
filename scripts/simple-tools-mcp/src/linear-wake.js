@@ -36,7 +36,7 @@ import { z } from "zod";
 import { safeEqual } from "./policy.js";
 import { readBodyBytes, wakeSignature } from "./wake.js";
 import { resolveSecret, infisicalMode, InfisicalError, prefetchFolder } from "./infisical.js";
-import { linearClientFromPair } from "./linear.js";
+import { linearClientFromPair, resolveLinearAppId } from "./linear.js";
 import { GB_ENABLED_IDENTITIES } from "./infisical-manifest.js";
 import { BF_BEARER_SEATS } from "./bearer-identities.js";
 import { delegatedNames } from "./delegated-identities.js";
@@ -328,7 +328,7 @@ export async function buildSeatMap(env, { fetchImpl, now, gateFor, quota, log = 
       log("linear_wake_seat_unmapped", { seat, code: "not_configured" });
       return;
     }
-    const client = linearClientFromPair({ clientId, clientSecret }, seat, { gate: gateFn(seat), quota: quotaFn, fetch: fetchFn, now: clock });
+    const client = linearClientFromPair({ clientId, clientSecret, appId: await resolveLinearAppId(env, seat) }, seat, { gate: gateFn(seat), quota: quotaFn, fetch: fetchFn, now: clock });
     if (!client) {
       log("linear_wake_seat_unmapped", { seat, code: "not_configured" });
       return;
