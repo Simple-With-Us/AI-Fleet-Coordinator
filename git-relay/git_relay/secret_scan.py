@@ -28,7 +28,20 @@ _PATTERNS = (
         "jwt",
         re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
     ),
-    ("bearer_credential", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}")),
+    # A "Bearer" word followed by a pure ALL-CAPS_SNAKE identifier (an
+    # environment-variable or constant NAME, e.g. a comment documenting that
+    # the token comes from an env var) is not a credential value:  real bearer
+    # values are mixed-class (base64/base64url/hex/JWT).  The negative
+    # lookahead suppresses only a token that is entirely [A-Z0-9_] with at
+    # least one underscore and is not the prefix of a longer mixed token.
+    (
+        "bearer_credential",
+        re.compile(
+            r"(?i)\bBearer\s+"
+            r"(?!(?-i:[A-Z_][A-Z0-9_]*_[A-Z0-9_]*)\.?(?![A-Za-z0-9._~+/=-]))"
+            r"[A-Za-z0-9._~+/=-]{16,}"
+        ),
+    ),
 )
 
 _SAFE_VALUE_SHAPES = (
