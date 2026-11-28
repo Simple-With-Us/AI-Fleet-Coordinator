@@ -229,7 +229,11 @@ def parse_leading_compact_intro(content: str) -> dict[str, Any] | None:
     pieces = re.split(r"\s*(?:→|->)\s*", after, maxsplit=1)
     repos = pieces[0].strip()
     if not _real_repo_codes(repos):
-        return None
+        # A bare-arrow intro (`[SEAT → PEER]`) carries no folder list; it is
+        # still an intro, with the arrow list as its peers.
+        if len(pieces) <= 1 or not after.strip().startswith(("→", "->")):
+            return None
+        repos = ""
     peers = []
     if len(pieces) > 1:
         peers = [p.strip() for p in re.split(r"\s*,\s*", pieces[1]) if p.strip()]
