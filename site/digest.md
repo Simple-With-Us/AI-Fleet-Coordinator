@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-28 01:12 CST · timezone America/Chicago_
+_Generated 2026-11-28 02:58 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed (Linear and GitHub) in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,22 +11,30 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-28
 
-*13 PRs merged · 0 issues opened · 0 issues closed*
+*21 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** [#2624](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2624): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
 - **AFC** `Muse Code` [#2633](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2633): Zulip fleet guide v4.15: folder glyph and optional intro _(by jaywedgeworth22)_
+- **AFC** [#2635](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2635): [ROB] Fleet Tools fixes: merge-queue permission, bearer scanner false positive, workflow-path writes, runs status enum _(by jaywedgeworth22)_
 - **AFC** `Muse Assist` [#2636](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2636): [ROB] [AFC, ] Accept "Rob " as an alias for 's Linear app _(by jaywedgeworth22)_
 - **AFC** `Instinct` [#2637](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2637): Keep wakes pending through discerned platform unavailability _(by jaywedgeworth22)_
 - **AFC** [#2638](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2638): [ROB] Daily Log: extend history window from 21 to 100 days _(by jaywedgeworth22)_
+- **AFC** `Muse Assist` [#2639](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2639): [ROB] Linear seat bootstrap by app registration id (supersedes #2636) _(by jaywedgeworth22)_
 - **AFC** `Muse Assist` [#2640](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2640): [ROB] [AFC, ] Echo Mail Relay: Add — Email Wake Destination _(by jaywedgeworth22)_
+- **AFC** [#2641](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2641): chore: record the fleet iOS versions in the manifest _(by jaywedgeworth22)_
+- **AFC** `Z Code` [#2643](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2643): JET-CHAT Reads JET's Records And Wake Keys Take Their Real Shapes _(by jaywedgeworth22)_
+- **AFC** `Instinct` [#2644](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2644): Correct native fallback host propagation fixture _(by jaywedgeworth22)_
 - **BF** `Muse Code` [#2255](https://github.com/Simple-With-Us/BotFleet/pull/2255): BF-2718: Sync The Mac Info.plist With XcodeGen And Gate The Drift _(by jaywedgeworth22)_
 - **BF** `Muse Code` [#2256](https://github.com/Simple-With-Us/BotFleet/pull/2256): BF-2719: Canonicalize Temp Roots In The Gate-State Tests _(by jaywedgeworth22)_
+- **BF** `Muse Code` [#2260](https://github.com/Simple-With-Us/BotFleet/pull/2260): Add The Live P-BF-6 Status And Handoff Note _(by jaywedgeworth22)_
+- **C** `MiniMax` [#362](https://github.com/Simple-With-Us/Clutch/pull/362): C-144 follow-up: key the host push relay thread identity by engine _(by jaywedgeworth22)_
 - **FL** `Instinct` `Claude` [#228](https://github.com/Simple-With-Us/FleetLink/pull/228): autofix caller: case-insensitive bot gate _(by jaywedgeworth22)_
 - **HH** `Instinct` [#412](https://github.com/Simple-With-Us/HogHunter/pull/412): No secrets in files: gitignore, CI check, AGENTS.md rule _(by jaywedgeworth22)_
 - **HH** [#413](https://github.com/Simple-With-Us/HogHunter/pull/413): Add Docker prune rule to reclaim engine _(by jaywedgeworth22)_
 - **SWU** `Instinct` [#119](https://github.com/Simple-With-Us/Simple-With-Us/pull/119): Autofix: add the standard autofix callers _(by jaywedgeworth22)_
+- **ST** `Z Code` [#5493](https://github.com/Simple-With-Us/Socratic-Trade/pull/5493): ST-4690: sargable hourly notional + live universe manifest (owner merge) _(by jaywedgeworth22)_
 - **CC** `Instinct` [#561](https://github.com/Simple-With-Us/codecaps/pull/561): No secrets in files: gitignore, CI check, AGENTS.md rule _(by jaywedgeworth22)_
 
 ## 2026-11-27
