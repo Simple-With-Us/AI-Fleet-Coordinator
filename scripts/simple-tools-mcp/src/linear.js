@@ -382,8 +382,9 @@ export const INPUT_MAX_BYTES = 64 * 1024;
 
 // The seat's own Linear app:  the name Linear shows for the viewer, plus the
 // other names the owner may give it.  confirmViewer() accepts any of these, or
-// the seat tag, ignoring case, so renaming an app in Linear never breaks its
-// seat (board SEAT_APP_NAMES / SEAT_APP_ALIASES / app_name_ok).  Every name
+// the seat tag, ignoring case, as its fallback check; the primary proof is the
+// app's registration id (SEAT_APP_IDS below), which a rename never changes
+// (board SEAT_APP_NAMES / SEAT_APP_ALIASES / app_name_ok).  Every name
 // belongs to one seat only - except the deliberate JET/JET-CHAT share:  two
 // logins, one Linear app (owner, Oct 23 2026), and JET itself is wake-only
 // with no tool surface, so no credential can swap unseen.
@@ -447,6 +448,61 @@ export const SEAT_APP_ALIASES = Object.freeze({
   // Jay renames this app in Linear from time to time; the viewer check accepts every spelling he has used.
   ZC: Object.freeze(["ZCode (ZC)", "ZCode"]),
 });
+// The seat's own Linear app, by registration id:  the id Linear's
+// applicationInfo returns for the seat's canonical client id.  Read live from
+// the provider for every installed pair on 2026-11-28, the same grounding
+// route that recorded the registration names above on 2026-10-29.  A
+// registration id never changes when the owner renames the app - only the
+// display name does - so confirmViewer proves a seat's pair by this id first
+// and treats the names as a fallback.  JET-CHAT carries JET's id:  two
+// logins, one Linear app (owner, Oct 23 2026).  No client id or secret is
+// recorded here, only registration ids, which any authenticated fleet token
+// can read back from applicationInfo.
+export const SEAT_APP_IDS = Object.freeze({
+  JET: "f0e0de0c-2a1f-4599-81f2-cba46f320b99",
+  "JET-CHAT": "f0e0de0c-2a1f-4599-81f2-cba46f320b99",
+  "GROK-WEB": "55552499-483a-4f73-ba6c-629c543a92e5",
+  ECHO: "c8b0da5f-316a-488b-871f-86fc074c7990",
+  WISE: "0a02b664-40f7-40d1-b059-aece3e620773",
+  MA: "b7e5948f-c4f8-4eff-867f-c555f68d95f6",
+  CURSOR: "ba363748-ec81-4362-a212-8a061d23a338",
+  CLAUDE: "dfd582b8-3d74-4ecc-9a35-f249a4d7b832",
+  CODEX: "2476b9d3-2d8e-4185-b2cb-7422c0b3e43f",
+  AG: "53209691-c78e-4aba-9fe7-7654bc47af8e",
+  CLUTCH: "3f62f041-5eff-4b0a-b2e8-6234bcd6aa72",
+  FX: "33047599-2f44-4ef7-b518-3188f0258ddd",
+  GROK: "54adcf03-274d-4ed5-9515-bd77fd9b80fb",
+  MC: "342a26c2-f1eb-4b13-b491-e28fa659df05",
+  MM: "d686ecc9-6c19-4673-8466-61b00d0a98b6",
+  OPENCODE: "10acb6a5-ff0e-4ff2-9dda-d8c7a3c94dd9",
+  ZC: "812bb1d9-ab1f-423f-b29f-ddc3781faccc",
+  KIMI: "a708a03b-cfcc-4a63-8538-3bf08d13bdb6",
+  OPERATOR: "e85708f1-4817-41eb-b941-6f8ec638e48c",
+  "BF-COMPILER": "72ef7967-30ab-48e3-8cdb-9206e06bfa28",
+  "BF-DEPLOYER": "4eb88f30-6470-4b49-b181-f6912c49851d",
+  "BF-DESIGNER": "22d205a3-10d3-455c-acf7-62ea655e2701",
+  "BF-DIRECTOR": "950f89cf-a96e-4ba5-9b16-de9e3d4ca209",
+  "BF-FIXER": "dfc95fe5-61e0-4dc3-9155-1b4da8a735ff",
+  "BF-HOUSEKEEPER": "0efd2a60-2aa2-4b6d-b268-0118cfd724e0",
+  "BF-MONITOR": "0899e7c0-77a3-4ad3-91a5-ac494dce4b67",
+  "BF-ORACLE": "81ea4fd8-76d0-4f32-a905-91f5be9ff47b",
+  "BF-PLUMBER": "a0e519a4-8264-439f-8cc6-9d7158e1e479",
+  "BF-PUBLISHER": "163efa92-8527-4e8e-9462-4df86e69e88f",
+  "BF-ENGINEER": "2a7c9297-8319-4631-bf06-c1ed54cfe646",
+  "BF-TRADER": "0eb009d3-023d-49f8-b405-1ec65b08d787",
+  "GB-COMPILER": "0a032ca5-7354-4103-88ec-deeb074351bf",
+  "GB-DEPLOYER": "03aaf0f7-e766-4299-9d74-3acfcbbea845",
+  "GB-DESIGNER": "9cf1be28-6580-411c-88fc-e15e9410c266",
+  "GB-DIRECTOR": "7c20199f-8255-4a1b-b7c7-1f09b02c86ca",
+  "GB-ENGINEER": "0a874506-ee82-4b89-a590-1537352d2f79",
+  "GB-FIXER": "c3c28960-3dd4-45a1-9ee0-5a6ee0d86f40",
+  "GB-HOUSEKEEPER": "1b70bc28-92d0-4827-8413-f3ee4bc232fc",
+  "GB-MONITOR": "82510b54-0193-4869-baf2-4e1e175f2d2d",
+  "GB-ORACLE": "02d23bdf-c0d9-4d3c-8e64-bd016d13c9b2",
+  "GB-PLUMBER": "a262a1a6-8c6e-4e35-90df-8541112be63b",
+  "GB-PUBLISHER": "fde29bc4-19ee-4799-89b5-5e9fcbdbf616",
+  "GB-TRADER": "2c49023b-a84d-4ef5-aea6-75cb26aafe28",
+});
 export const SEAT_TAG_ALIASES = SEAT_NAME_ALIASES;
 
 /** The seat tag a spelling resolves to, including accepted human aliases.  WISE is the tag; INSTINCT is retired. */
@@ -460,6 +516,11 @@ export function seatAppNames(seat) {
   const canonical = seatTagForSeat(seat);
   const app = SEAT_APP_NAMES[canonical];
   return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[canonical] ?? [])]) : Object.freeze([]);
+}
+
+/** The registration id of the seat's own Linear app, or null when none is grounded. */
+export function seatAppId(seat) {
+  return SEAT_APP_IDS[seatTagForSeat(seat)] ?? null;
 }
 
 /** Own-app seats (OWN_APP_LINEAR_PREFIXES):  the seats whose Linear identity is proven by a grounded app name alone. */
@@ -611,6 +672,10 @@ export const Q_LABELS = `query BoardLabels($first: Int!, $after: String) {
 export const Q_WHOAMI = `query BoardWhoami {
   viewer { id name displayName email app }
   organization { name urlKey }
+}`;
+
+export const Q_APP_INFO = `query BoardAppInfo($clientId: String!) {
+  applicationInfo(clientId: $clientId) { id clientId name }
 }`;
 
 export const M_CREATE = `mutation BoardFile($input: IssueCreateInput!) {
@@ -1442,7 +1507,26 @@ export class LinearClient {
     try {
       await this.gate.linearAppIdSet?.({ id, set_at: this.now() });
     } catch {
-      // not stored: the name check still guards the next call
+      // not stored: the registration check still guards the next call
+    }
+  }
+
+  /**
+   * The registration behind this client's own client id, read with the pair's
+   * own token:  {id}, or null when Linear cannot resolve it (an unknown client
+   * id, a failed read).  applicationInfo is a registry read - it proves which
+   * app a client id belongs to, never who is asking - so its answer is only
+   * ever compared against this seat's grounded registration id (SEAT_APP_IDS),
+   * and the answer is trusted only when it echoes the queried client id.
+   */
+  async #appRegistration() {
+    try {
+      const data = await this.call(Q_APP_INFO, { clientId: this.clientId });
+      const info = data?.applicationInfo ?? null;
+      if (!info || typeof info.id !== "string" || !info.id || info.clientId !== this.clientId) return null;
+      return { id: info.id };
+    } catch {
+      return null;
     }
   }
 
@@ -1450,22 +1534,52 @@ export class LinearClient {
    * The swapped-credentials check, before any write:  the viewer must be this
    * seat's own app.  Without it a renamed or swapped Worker secret would have
    * the fleet writing as the wrong seat.
+   *
+   * The proof is by app identity, never by display name.  A viewer whose id
+   * is the app id this seat already proved is accepted whatever its name now
+   * says.  When no id is remembered yet - or the remembered one no longer
+   * matches - the seat's app is proven from its own credential pair instead:
+   * the registration Linear holds for this client's own client id must be the
+   * seat's grounded registration (SEAT_APP_IDS), and the viewer acting under
+   * that pair is then that app's user, so its id is remembered.  A pair that
+   * resolves to a different registration is another seat's app installed
+   * under this seat's name - a swap - and is refused outright; the name check
+   * must not rescue a pair already proven to be a different app.  The names
+   * remain only as the fallback for a seat with no grounded registration, or
+   * one whose registration cannot be resolved on this call.  Until this
+   * bootstrap existed, the id was remembered only after a name pass, so a
+   * seat whose app the owner renamed before its first call was locked out
+   * for good:  the name failed, the id was never stored, and no later call
+   * could pass either check.
    */
   async confirmViewer(failed = null) {
     const viewer = await this.viewer(failed);
+    const refuse = () => {
+      throw new LinearError("swapped", { message: `the credentials installed for ${this.seat} belong to "${viewer.name || "an unnamed user"}", not to ${this.seatLabel()}.  Refusing to write.  Jay checks which Worker secret pair is set (DEPLOY.md).` });
+    };
     // The app id is stable across renames.  A viewer whose id is the one this seat already proved is its own
-    // app whatever the display name now says; any other id must still pass the name check, and is then remembered.
+    // app whatever the display name now says.
     const viewerId = typeof viewer.id === "string" ? viewer.id : "";
     const known = viewer.app && viewerId ? await this.#knownAppId() : null;
     if (viewer.app && known && known === viewerId) return viewer;
+    if (viewer.app && viewerId) {
+      const expected = seatAppId(this.seat);
+      if (expected) {
+        const registration = await this.#appRegistration();
+        if (registration) {
+          if (registration.id === expected) {
+            await this.#rememberAppId(viewerId);
+            return viewer;
+          }
+          refuse();
+        }
+      }
+    }
     if (viewer.app && appNameOk(viewer.name, this.seat)) {
       if (viewerId && viewerId !== known) await this.#rememberAppId(viewerId);
       return viewer;
     }
-    {
-      throw new LinearError("swapped", { message: `the credentials installed for ${this.seat} belong to "${viewer.name || "an unnamed user"}", not to ${this.seatLabel()}.  Refusing to write.  Jay checks which Worker secret pair is set (DEPLOY.md).` });
-    }
-    return viewer;
+    refuse();
   }
 }
 
