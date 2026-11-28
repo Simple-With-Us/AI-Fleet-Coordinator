@@ -15,7 +15,7 @@ WAKE_CONTRACT = 'simple-tools-wake/1'
 SIGNATURE_HEADER = 'X-Simple-Tools-Signature'
 
 REALM = 'https://simplewithus.zulipchat.com'
-DESTINATIONS = {'ECHO':'jaywedgeworth@mail.instinct.com','WISE':'wedgeworth@mail.instinct.com'}
+DESTINATIONS = {'ECHO':'jaywedgeworth@mail.instinct.com','WISE':'wedgeworth@mail.instinct.com','MA':'wakes@muse.ai'}
 MAX_BODY = 256 * 1024
 
 class Relay:
