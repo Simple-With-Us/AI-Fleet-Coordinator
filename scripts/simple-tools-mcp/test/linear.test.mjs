@@ -319,8 +319,9 @@ test("confirmViewer falls back to the name check only when the registration cann
   assert.equal((await byName.client.confirmViewer()).name, "Muse Assist");
   assert.equal((await byName.gate.linearAppIdGet()).id, "app-actor-ma");
   // An unknown name with no registration answer is still refused:  the
-  // fallback is the old check, not a wider one.
-  const unknown = clientHarness({ seat: "MA", viewer: { id: "app-actor-x", name: "Rob (MA)", app: true } });
+  // fallback is the old check, not a wider one.  The name is one no table
+  // holds, so nothing but the fallback can decide it.
+  const unknown = clientHarness({ seat: "MA", viewer: { id: "app-actor-x", name: "A Name Nobody Listed", app: true } });
   await assert.rejects(() => unknown.client.confirmViewer(), (error) => error.kind === "swapped");
 });
 
