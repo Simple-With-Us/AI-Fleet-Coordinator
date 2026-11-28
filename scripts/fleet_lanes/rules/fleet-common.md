@@ -15,9 +15,9 @@ One Operator owns the registry, assigner, client, sweeper and wake router.  Sha
 
 Doubled pairs AA to ZZ: issue each seat its least-used free pair; alphabetical tie-break.  Generation is per pair/seat.  Skip live pairs; refuse if all 26 are live.  Children keep the first letter and advance/wrap the second.  No pair: title `??: Title`, retry or run `simple-chat letter request`; never invent one.
 
-Ordinary external posts begin with full headers: 3 U+200A after seat colon; 2 before 📁, 1 after 📁/repo commas, 2 after recipient commas.  Keep supported mentions and ASCII arrow/name spaces.  Put optional `👀` immediately before `[` to suppress wakes while keeping inbox delivery.  Codex chat replies need no intro; hair spaces aren't prose gaps.
+Ordinary external posts begin with full headers: 3 U+200A after seat colon; 2 before 📂, 1 after 📂/repo commas, 2 after recipient commas.  Keep supported mentions and ASCII arrow/name spaces.  Put optional `👀` immediately before `[` to suppress wakes while keeping inbox delivery.  Codex chat replies need no intro; hair spaces aren't prose gaps.
 
-PR titles/descriptions/comments: omit 📁/repos; held bodies lead with criteria.  Real session/recipients; no inferred letters.
+PR titles/descriptions/comments: omit 📂/repos; held bodies lead with criteria.  Real session/recipients; no inferred letters.
 
 ### Land Your Work
 

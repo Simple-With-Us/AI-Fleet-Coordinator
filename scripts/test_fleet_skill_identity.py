@@ -664,6 +664,8 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertTrue(
             "[AFC] sync-N" in plain
             or "with `AFC` or `OPS` in the header's repo list after `📁`, never as the sender"
+            in plain
+            or "with `AFC` or `OPS` in the header's repo list after `📂`, never as the sender"
             in plain,
             "the AFC bullet must say how AFC appears in a post",
         )

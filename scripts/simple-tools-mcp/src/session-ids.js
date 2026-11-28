@@ -62,7 +62,7 @@ export function isExempt(seat) {
 }
 
 // Linear intros (Jay, Thu Nov 12 2026):  a single-thread seat's Linear app already names it, so its own typed
-// `[SEAT 📁...]` intro is dropped from Linear bodies.  The single-thread seats are the session-exempt ones above
+// `[SEAT 📂...]` intro is dropped from Linear bodies (retired 📁 still parses).  The single-thread seats are the session-exempt ones above
 // plus the BotFleet bots (BF-*), which keep the session-id rule unchanged.  Every other seat (CLAUDE, CODEX,
 // CURSOR, MM, ZC, ...) is multi-threaded and keeps its intro, which names the thread that posted.
 // scripts/linear-board/board SINGLE_THREAD_EXTRA_PATTERNS is the Python copy.

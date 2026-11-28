@@ -14,7 +14,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from simple_tools import post_header, router, wake_router
+from simple_tools import post_header, router, wake_router, zulip_cli
 
 OLD = "📁"
 NEW = "📂"
@@ -86,6 +86,14 @@ class FolderGlyphDualityTests(unittest.TestCase):
                 match = digest._AGENT_ENVELOPE.search(text)
                 self.assertIsNotNone(match)
                 self.assertEqual(match.group(1).upper(), "MM")
+
+    def test_opening_tag_seat_reads_either_glyph(self):
+        for glyph in (OLD, NEW):
+            with self.subTest(glyph=glyph):
+                self.assertEqual(zulip_cli._opening_tag_seat(f"MC {glyph}AFC"), ("MC", False))
+                self.assertEqual(
+                    zulip_cli._opening_tag_seat(f"MC: LL.1.S {glyph}AFC"), ("MC", False)
+                )
 
 
 if __name__ == "__main__":
