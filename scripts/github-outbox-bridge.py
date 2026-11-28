@@ -6,9 +6,9 @@ Such a seat posts to Zulip by commenting on a private "outbox" GitHub issue.  Th
 bridge runs on the Mac, and every tick:
 
   1. reads new comments on the outbox issue (gh api), checks the fleet header shape
-     (legacy [SEAT]/[SEAT->PEER] or folder-tag [SEAT 📁repos] / [SEAT: LL.#.H 📁repos] (legacy hyphen LL-#-H still accepted),
-     optional leading 👀 / → peers; 📁 must list real repos; status bodies still need repo:;
-     claim/closeout may rely on a non-empty 📁 alone only when not a status block), and posts each
+     (legacy [SEAT]/[SEAT->PEER] or folder-tag [SEAT 📂repos] / [SEAT: LL.#.H 📂repos] (legacy hyphen LL-#-H still accepted; the closed-folder 📁 form still matches),
+     optional leading 👀 / → peers; the folder must list real repos; status bodies still need repo:;
+     claim/closeout may rely on a non-empty folder list alone only when not a status block), and posts each
      good one to #Work-In-Progress with the simple-chat CLI, as that seat's own bot.
      A posted comment
      gets a rocket reaction; a rejected one gets a confused reaction plus a reply
@@ -130,7 +130,7 @@ def _own_intro_re(seat: str):
         r"^(?:(?:👀|:eyes:)\s*)?(?:"
         r"\[" + s + r"(?:\]|\s*(?:→|->)|·)"
         r"|"
-        r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]|-\d+-[MSC]))?\s+📁"
+        r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]|-\d+-[MSC]))?\s+[📁📂]"
         r")"
     )
 
@@ -148,15 +148,15 @@ _FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
 def _folder_repo_codes(intro_span: str):
-    """Real repo codes inside a closed intro, or None when the tag has no 📁.
+    """Real repo codes inside a closed intro, or None when the tag has no folder glyph.
 
-    An empty list means 📁 is present but the list is empty or malformed.
+    An empty list means a folder glyph is present but the list is empty or malformed.
     A body `repo:` line must not salvage that.  FLEET is dropped and does
     not count; at least one other code is required.
     """
-    if "📁" not in intro_span:
+    if "📁" not in intro_span and "📂" not in intro_span:
         return None
-    after = intro_span.split("📁", 1)[1]
+    after = re.split("[📁📂]", intro_span, maxsplit=1)[1]
     after = re.split(r"\s*(?:→|->)", after, maxsplit=1)[0]
     after = after.split("]", 1)[0].strip()
     if not after:

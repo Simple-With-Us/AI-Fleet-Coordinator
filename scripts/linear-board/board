@@ -1378,7 +1378,7 @@ def opens_with_own_intro(seat: str, text: str) -> bool:
     if not text.startswith("[" + seat, start):
         return False
     after = start + 1 + len(seat)
-    folder = re.match(r"\s*📁", text[after:]) is not None
+    folder = re.match(r"\s*[📁📂]", text[after:]) is not None
     if not folder and text[after : after + 1] not in ("]", " ", ":", "·", "→", "\t"):
         return False
     end = text.find("]", start)

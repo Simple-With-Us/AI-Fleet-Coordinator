@@ -411,7 +411,7 @@ class Agent:
             # The prefix has no closing bracket, so a bare startswith would take a sibling whose tag
             # merely begins with ours (session ids shorter than 8 characters) for this session.
             # A compact intro counts only when it carries this same session id.  A bare
-            # `[SEAT 📁repos]` is not this session, so siblings stay visible.
+            # `[SEAT 📂repos]` is not this session, so siblings stay visible.
             return ROUTER.content_matches_session_prefix(
                 str(message.get("content") or ""), self.tag_prefix
             )
@@ -1783,7 +1783,7 @@ def _compose_intro_lead(
             peers.append(label)
     arrow = (" \u2192" + ",".join(peers)) if peers else ""
     bracket = post_header.normalize_header(
-        "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+        "[%s%s 📂%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
     )
     marker = intro["marker"]
     if quiet and not marker:
@@ -1826,9 +1826,9 @@ def _compose(
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)
-    # A folder intro typed with no space or a non-ASCII space before 📁 is still this
+    # A folder intro typed with no space or a non-ASCII space before either folder glyph is still this
     # seat's own intro (AFC-676), as in the hosted composeBody transport.
-    folder = re.match(r"\s*📁", text[seat_end:]) is not None
+    folder = re.match(r"\s*[📁📂]", text[seat_end:]) is not None
     own = (
         not no_tag
         and text.startswith("[" + agent.seat, start)
