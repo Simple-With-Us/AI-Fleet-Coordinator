@@ -859,8 +859,9 @@ _AGENT_BRACKET = re.compile(rf"\[({_AGENT_CHAIN})\]", re.IGNORECASE)
 # Accept historical chains as well as single-seat session/folder envelopes.
 _AGENT_ENVELOPE = re.compile(
     rf"(?:👀)?\[({_AGENT_CHAIN})(?:"
-    rf":\s*[A-Z]{{2}}\.\d+\.[MSC](?:\s*📁[^\]\n]*)?"
-    rf"|\s*📁[^\]\n]*"
+    rf":\s*[A-Z]{{2}}\.\d+\.[MSC](?:\s*[📁📂][^\]\n]*|\s*(?:→|->)[^\]\n]*)?"
+    rf"|\s*[📁📂][^\]\n]*"
+    rf"|\s*(?:→|->)[^\]\n]*"
     rf")\]",
     re.IGNORECASE,
 )

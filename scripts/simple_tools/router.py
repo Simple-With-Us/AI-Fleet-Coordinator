@@ -126,8 +126,9 @@ NO_WAKE_MARKER = ":eyes:"
 NO_WAKE_MARKERS = (":eyes:", "\U0001f440")
 _NO_WAKE_RE = re.compile(r"^\s*(?:%s)" % "|".join(re.escape(m) for m in NO_WAKE_MARKERS))
 #: One leading bracket seat tag.  Legacy: `[MM\u00b7session8] `, `[MM] `, `[MM\u2192CODEX] `.
-#: Compact post intro (Policy 2026-11-05): `[JET 📁AFC]`, `[MM: HH.1.M 📁AFC,OPS]`,
-#: `[GB-PLUMBER 📁AFC →CODEX]`.  The marker may sit before the bracket or just after it.
+#: Compact post intro (Policy 2026-11-05; open folder since v4.15): `[JET 📂AFC]`, `[MM: HH.1.M 📂AFC,OPS]`,
+#: `[GB-PLUMBER 📂AFC →CODEX]`, bare `[MM: HH.1.M →CODEX]`.  Either folder glyph matches, and a
+#: lettered tag needs no folder at all.  The marker may sit before the bracket or just after it.
 _SEAT_TAG_PREFIX_RE = re.compile(
     r"^\s*\["
     r"(?P<seat>[A-Z0-9][A-Z0-9_-]*)"
@@ -136,17 +137,18 @@ _SEAT_TAG_PREFIX_RE = re.compile(
     r"|"
     r"(?:\s*\u2192[^\]]*)?\]"
     r"|"
-    r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?\s+📁[^\]]*\]"
+    r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?"
+    r"(?:\s*[📁📂][^\]]*|\s*(?:\u2192|->)[^\]]*)?\]"
     r")"
     r"\s*"
 )
-# A compact intro on the first content line.  Space before 📁, repos after it, optional
+# A compact intro on the first content line.  Space before either folder glyph, repos after it, optional
 # multi-thread `: LL.#.H` (periods or the legacy hyphen form), optional `→` recipients.
 _COMPACT_INTRO_RE = re.compile(
     r"^(?P<marker>(?:👀|:eyes:)\s*)?"
     r"\[(?P<seat>[A-Z0-9][A-Z0-9_-]*)"
     r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?"
-    r"\s+📁(?P<after>[^\]]*)\]"
+    r"(?:\s+[📁📂]|\s*(?=\u2192|->))(?P<after>[^\]]*)\]"
 )
 _FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t", "\u200a")
@@ -194,7 +196,7 @@ def _sender_seat_tag(message: Mapping[str, Any]) -> str | None:
 
 
 def _real_repo_codes(blob: str) -> list[str]:
-    """Repo codes in a 📁 list.  Empty when the list is empty or malformed.
+    """Repo codes in a folder list.  Empty when the list is empty or malformed.
 
     FLEET is not a folder code.  OPS is Fleet-OPS and counts.  One bad segment
     rejects the whole list, so a trailing comma or a `→` left in the repo side fails.
@@ -216,7 +218,7 @@ def parse_leading_compact_intro(content: str) -> dict[str, Any] | None:
     """The compact post intro when `content` opens with one, else None.
 
     Keys: marker, seat, thread, repos, peers, rest.  `repos` keeps the seat's
-    spelling (`ST, CTS` stays).  `peers` is the `→` / `->` list.  A 📁 list that
+    spelling (`ST, CTS` stays).  `peers` is the `→` / `->` list.  A folder list that
     is empty, malformed, or only FLEET is not an intro.
     """
     text = str(content or "").lstrip()
@@ -227,7 +229,11 @@ def parse_leading_compact_intro(content: str) -> dict[str, Any] | None:
     pieces = re.split(r"\s*(?:→|->)\s*", after, maxsplit=1)
     repos = pieces[0].strip()
     if not _real_repo_codes(repos):
-        return None
+        # A bare-arrow intro (`[SEAT → PEER]`) carries no folder list; it is
+        # still an intro, with the arrow list as its peers.
+        if len(pieces) <= 1 or not after.strip().startswith(("→", "->")):
+            return None
+        repos = ""
     peers = []
     if len(pieces) > 1:
         peers = [p.strip() for p in re.split(r"\s*,\s*", pieces[1]) if p.strip()]
@@ -397,7 +403,7 @@ def strip_no_wake(content: str, seat: str | None = None) -> tuple[str, bool]:
     `seat` is the sender's own seat tag (`MM`, `CLAUDE`).  A bracket after which the marker is
     read must be a seat tag:  either it carries the `\u00b7` session separator or a multi-thread
     `: LL.#.H` id, which no ordinary word has, or its seat name is the sender's own, including
-    a compact intro (`[JET 📁AFC]`, `[MM: HH.1.M 📁AFC]`).  So `[TODO] :eyes: hi` stays a
+    a compact intro (`[JET 📂AFC]`, `[MM: HH.1.M 📂AFC]`).  So `[TODO] :eyes: hi` stays a
     normal message, while `[MM] :eyes: hi` from MM is the signal.
     """
     text = str(content or "")
@@ -636,7 +642,7 @@ class LeaseView:
         if message.get("id") in self.posted:
             return True
         # Session prefix `[SEAT·tag` or a compact intro that carries that same
-        # tag.  A bare `[SEAT 📁repos]` does not claim every session of the seat.
+        # tag.  A bare `[SEAT 📂repos]` does not claim every session of the seat.
         return content_matches_session_prefix(str(message.get("content") or ""), self.prefix)
 
 
@@ -1094,7 +1100,7 @@ POSTS_PER_TOPIC = 40
 class TopicPost(NamedTuple):
     """One post as the ledger keeps it.  `seat` is the sender's seat tag when the sender is a fleet bot
     and "" for the owner or anyone else.  `letter` is the session letter of the post's own header
-    (`[CLAUDE: AA.1.S 📁AFC]` gives `AA`), "" when the post has none.  `tagged` is the set of seats the
+    (`[CLAUDE: AA.1.S 📂AFC]` gives `AA`), "" when the post has none.  `tagged` is the set of seats the
     post addressed:  the header's `→` list and the loud `@**Name**` mentions of fleet bots."""
 
     message_id: int

@@ -93,8 +93,8 @@ def normalize_header(text: str, *, seat: str | None = None, context: str = "mess
         return text
     front = parts[0]
     peers = [part.strip() for part in parts[1].split(",")] if len(parts) > 1 else []
-    folder = front.split("📁", 1)
-    if not is_pr and len(folder) > 1 and "📁" in folder[1]:
+    folder = re.split("[📁📂]", front, maxsplit=1)
+    if not is_pr and len(folder) > 1 and re.search("[📁📂]", folder[1]):
         return text
     sender = _SENDER.fullmatch(folder[0].strip())
     if not sender or (seat is not None and sender.group("seat") != seat):
@@ -110,7 +110,7 @@ def normalize_header(text: str, *, seat: str | None = None, context: str = "mess
     if thread:
         inner += ":" + AFTER_COLON + thread
     if repos and not is_pr:
-        inner += BEFORE_FOLDER + "📁" + AFTER_FOLDER + REPO_SEPARATOR.join(repos)
+        inner += BEFORE_FOLDER + "📂" + AFTER_FOLDER + REPO_SEPARATOR.join(repos)
     if peers:
         inner += ARROW + RECIPIENT_SEPARATOR.join(peers)
     return prefix + match.group("lead") + "[" + inner + "]" + content[match.end() :]

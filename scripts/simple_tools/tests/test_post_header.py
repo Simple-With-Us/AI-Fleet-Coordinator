@@ -71,8 +71,8 @@ class HeaderSpacingTests(unittest.TestCase):
         expected = FIXTURES[0]["expected"]
         self.assertEqual(body, expected)
         self.assertEqual(re.search(r":(\u200a+)EE", body).group(1), "\u200a" * 3)
-        self.assertEqual(re.search(r"S(\u200a+)📁", body).group(1), "\u200a" * 2)
-        self.assertEqual(re.search(r"📁(\u200a+)AFC", body).group(1), "\u200a")
+        self.assertEqual(re.search(r"S(\u200a+)📂", body).group(1), "\u200a" * 2)
+        self.assertEqual(re.search(r"📂(\u200a+)AFC", body).group(1), "\u200a")
         self.assertEqual(re.search(r"AFC,(\u200a+)OPS", body).group(1), "\u200a")
         self.assertEqual(re.search(r"CODEX EE,(\u200a+)AG", body).group(1), "\u200a" * 2)
         self.assertNotIn("deadbeef", body)

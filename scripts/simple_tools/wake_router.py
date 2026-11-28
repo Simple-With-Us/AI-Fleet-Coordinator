@@ -1062,14 +1062,14 @@ def link_note_ok(text: object) -> bool:
 def _is_post_header(inner: str) -> bool:
     """Whether a leading bracket is a fleet post header and not ordinary text.  It starts with a
     seat tag, then has the sender's fragment (`[SEAT·4984a346]`, with or without more after it), a
-    session token (`[SEAT: AA.4.S`), a repo mark or an arrow."""
+    session token (`[SEAT: AA.4.S`), a repo mark of either folder glyph, or an arrow."""
     found = HEADER_RE.fullmatch(inner.strip())
     if found is None:
         return False
     rest = found.group(2).lstrip()
     return (
         found.group(1) is not None
-        or rest.startswith(("\U0001f4c1", "→"))
+        or rest.startswith(("\U0001f4c1", "\U0001f4c2", "→"))
         or HEADER_SESSION_RE.match(rest) is not None
     )
 

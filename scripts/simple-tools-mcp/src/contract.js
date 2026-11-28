@@ -560,7 +560,7 @@ export function normalizeHeader(text, { seat = null, context = "message" } = {})
   const parts = match.groups.inner.split(/\s*(?:→|->)\s*/u);
   if (parts.length > 2) return text;
   const peers = parts.length > 1 ? parts[1].split(",").map((part) => part.trim()) : [];
-  const folder = parts[0].split("📁");
+  const folder = parts[0].split(/[📁📂]/u);
   if (folder.length > 2 && !isPr) return text;
   const sender = /^(?<seat>[A-Z0-9][A-Z0-9_-]*)(?<transport>·[^\s:→\]]+)?(?:\s*:\s*(?<thread>[A-Za-z0-9][A-Za-z0-9.-]*))?$/u.exec(folder[0].trim());
   if (!sender || (seat !== null && sender.groups.seat !== seat)) return text;
@@ -572,7 +572,7 @@ export function normalizeHeader(text, { seat = null, context = "message" } = {})
   if (isPr || /^[A-Z]{1,2}[.-]\d+[.-][MSC]$/u.test(thread)) transport = "";
   let inner = sender.groups.seat + transport;
   if (thread) inner += `:${HEADER_AFTER_COLON}${thread}`;
-  if (repos.length && !isPr) inner += `${HEADER_BEFORE_FOLDER}📁${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
+  if (repos.length && !isPr) inner += `${HEADER_BEFORE_FOLDER}📂${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
   if (peers.length) inner += ` → ${peers.join(HEADER_RECIPIENT_SEPARATOR)}`;
   return `${prefix}${match.groups.lead}[${inner}]${content.slice(match[0].length)}`;
 }
@@ -584,10 +584,10 @@ export function ownIntro(prefix, text) {
   const start = leading.length;
   if (!text.startsWith(`[${seat}`, start)) return null;
   const after = start + seat.length + 1;
-  // A folder intro typed with no space or a non-ASCII space before 📁 (`[SEAT📁AFC]`,
+  // A folder intro typed with no space or a non-ASCII space before either folder glyph (`[SEAT📂AFC]`,
   // `[SEAT\u00a0📁AFC]`) is still this seat's own intro (AFC-676);  missing it put the
   // legacy `[SEAT]` tag in front of the seat's own intro.
-  const folder = /^\s*📁/u.test(text.slice(after));
+  const folder = /^\s*[📁📂]/u.test(text.slice(after));
   if (!folder && !["]", " ", ":", "·", "→", "\t"].includes(text.charAt(after))) return null;
   const end = text.indexOf("]", start);
   if (end < 0 || /[\r\n\[]/.test(text.slice(start + 1, end))) return null;
@@ -595,7 +595,7 @@ export function ownIntro(prefix, text) {
   return { end, intro, leading, rest: text.slice(end + 1) };
 }
 
-/** The text with every leading own-seat intro removed (`[SEAT]`, `[SEAT 📁AFC]`, a legacy `[SEAT] [SEAT 📁AFC]`
+/** The text with every leading own-seat intro removed (`[SEAT]`, `[SEAT 📂AFC]`, a legacy `[SEAT] [SEAT 📂AFC]`
  * pair, each optionally after 👀 or :eyes:).  The pre-bracket lead stays, including a no-wake marker.
  * A foreign-seat or malformed bracket is content and stays.  Text that is only an
  * intro is returned unchanged, so a write never goes out empty. */
