@@ -1012,5 +1012,19 @@ class ShippedSourceTests(unittest.TestCase):
         self.assertNotIn("\xa0", source)
 
 
+class AvailabilityStoreClassificationTests(Base):
+    def test_corrupt_store_is_bounded_not_availability(self):
+        self.store.write_bytes(b"not a SQLite database")
+        status, rows = minimax_wake._session_rows(self.env, [SID])
+        self.assertEqual((status, rows), ("error", {}))
+
+    def test_only_sqlite_busy_and_locked_are_availability(self):
+        for code, expected in [(5, "busy"), (6, "busy"), (11, "error"), (14, "error"), (1, "error")]:
+            error = sqlite3.OperationalError("fixture")
+            error.sqlite_errorcode = code
+            with __import__("unittest.mock", fromlist=["patch"]).patch.object(minimax_wake.sqlite3, "connect", side_effect=error):
+                self.assertEqual(minimax_wake._session_rows(self.env, [SID]), (expected, {}))
+
+
 if __name__ == "__main__":
     unittest.main()
