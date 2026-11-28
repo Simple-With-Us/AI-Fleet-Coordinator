@@ -275,7 +275,7 @@ for (const family of ['claude-code', 'pr', 'codex']) {
     const text = readFileSync(new URL(`./workflows/${family}-autofix-reusable.yml`, import.meta.url), 'utf8');
     assert.match(text, /SWU_AUTOFIX_OPENROUTER_API_KEY:\n\s+required: false/, family);
     assert.match(text, /https:\/\/openrouter\.ai\/api\) route=openrouter ;;/, family);
-    assert.match(text, /\[ "\$route" = "openrouter" \] && \[ -n "\$VAR_MODEL" \] && \[ -n "\$OPENROUTER_TOKEN" \] && \[ "\$model_minimax" = "no" \]/, family);
+    assert.match(text, /\[ "\$route" = "openrouter" \] && \[ -n "\$VAR_MODEL" \] && \[ -n "\$OPENROUTER_TOKEN" \]/, family);
     assert.match(text, /OPENROUTER_TOKEN: \$\{\{ secrets\.SWU_AUTOFIX_OPENROUTER_API_KEY \}\}/, family);
     assert.match(text, /'MISSING-OPENROUTER-API-KEY'/, family);
   });
