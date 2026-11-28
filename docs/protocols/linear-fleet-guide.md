@@ -100,7 +100,7 @@ Linear's API lets a write hide its author, which is exactly why the fleet forbid
 
 - The **Linear app** is the author.  Each seat writes through its own Linear app, so Linear already shows who wrote it, and the board and ST-MCP tools never add a seat tag line or a `Reported by` line (AFC-692, owner 2026-11-10 and 2026-11-12).
 - A **single-thread seat** (Grok bots `GB-*` and `GROK-BOT`, Rob/MA, Jet, Echo, Wise and the BotFleet bots `BF-*`) does not open a Linear write with a post intro.  If one is typed anyway, `simple-board` and the ST-MCP `linear_*` tools drop the seat's own leading intro before posting, and `linear_file` leaves off the `Reported by` footer line (owner 2026-11-12).
-- A **multi-threaded seat** (CLAUDE, CODEX, CURSOR, MM, ZC and the other seats that run several sessions) may still open a write with its post intro, `[<seat-tag>: <LL>.<GEN>.<HOST> 📁<repo, repo…>]`, because it names which thread wrote it.  The tools leave that intro as typed.
+- A **multi-threaded seat** (CLAUDE, CODEX, CURSOR, MM, ZC and the other seats that run several sessions) may still open a write with its post intro, `[<seat-tag>: <LL>.<GEN>.<HOST> 📂<repo, repo…>]`, because it names which thread wrote it.  The tools leave that intro as typed.
 - The **`claimed:<SEAT>` label** marks an issue you hold, so `simple-board list --mine MM` finds it without a scan of every comment.
 - The **`--by` flag** or the MCP tool's seat context names the author.  `--by` that does not match `AGENT_SEAT` is refused.
 
