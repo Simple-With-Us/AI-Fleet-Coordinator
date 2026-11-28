@@ -563,6 +563,7 @@ _REFUSAL_REASONS = frozenset(
         "bad_request_label_not_applied",
         "bad_request_label_not_found",
         "bad_request_label_target_not_found",
+        "bad_request_merge_queue_declined",
         "bad_request_nothing_to_change",
         "bad_request_owner_not_allowed",
         "bad_request_pr_merged",
