@@ -8,11 +8,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { HostedTools, HOSTED_TOOLS_BY_NAME, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOLS } from "../src/hosted-tools.js";
-import { ListenerClient, listenerClientFromEnv, listenerBaseUrl, listenerReceipt, listenerSecretName, listenerSigningString, EAVESDROPPER_TOOLS } from "../src/eavesdropper.js";
+import { ListenerClient, LISTENER_RECORDS_SEAT, listenerClientFromEnv, listenerBaseUrl, listenerReceipt, listenerRecordsSeat, listenerSecretName, listenerSigningString, EAVESDROPPER_TOOLS } from "../src/eavesdropper.js";
 import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig, LISTENER_KEY_SECRET_NAMES, LISTENER_READ_SECRETS, WAKE_SECRETS } from "../src/config.js";
-import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
+import { ERROR_META_KEY, SEAT_TAG_EXPECTATIONS, schemaProblem } from "../src/contract.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { ROOT, testEnv } from "./helpers.mjs";
 
@@ -259,6 +259,31 @@ test("listenerSecretName: wake seats keep their wake key, the read-key seats get
   assert.equal(listenerSecretName("GB-COMPILER"), "WAKE_HMAC_KEY_GB_COMPILER");
   assert.equal(listenerSecretName("BF-DEPLOYER"), "WAKE_HMAC_KEY_BF_DEPLOYER");
   assert.equal(listenerSecretName("__proto__"), null);
+});
+
+test("a seat on another seat's bot reads that seat's records:  JET-CHAT signs as JET with JET's key, and gains no wake route (AFC-931)", async () => {
+  // One pairing, stated once for the Zulip tag and read here, so the two tables cannot drift.
+  assert.deepEqual(LISTENER_RECORDS_SEAT, SEAT_TAG_EXPECTATIONS);
+  assert.equal(listenerRecordsSeat("JET-CHAT"), "JET");
+  assert.equal(listenerRecordsSeat("JET"), "JET");
+  assert.equal(listenerRecordsSeat("MA"), "MA");
+  assert.equal(listenerRecordsSeat("__proto__"), "__proto__");
+  assert.equal(listenerSecretName("JET-CHAT"), "WAKE_HMAC_KEY_JET", "JET's existing key, never a new one");
+  assert.ok(!("JET-CHAT" in WAKE_SECRETS), "the wake and spike routes still do not know JET-CHAT");
+  const jetKey = "j".repeat(40);
+  const now = () => Date.parse("2026-10-09T10:00:00Z");
+  const api = fakeListener({ views: { status: { wakes_24h: 3, leases: 0 } }, seat: "JET", key: jetKey, now });
+  const client = listenerClientFromEnv({ LISTENER_API_URL: BASE, WAKE_HMAC_KEY_JET: jetKey }, "JET-CHAT", { fetch: api.fetch, now });
+  assert.ok(client, "JET-CHAT resolves a listener client from JET's key");
+  assert.equal(client.seat, "JET", "the path and the signature name JET's records");
+  const view = await client.read("status");
+  assert.equal(view.wakes_24h, 3);
+  assert.equal(api.requests[0].url, `${BASE}/listener/v1/JET/status`);
+  // Another key does not open JET's records, and JET-CHAT without JET's key is not configured.
+  const other = fakeListener({ views: {}, seat: "JET", key: jetKey, now });
+  const wrong = listenerClientFromEnv({ LISTENER_API_URL: BASE, WAKE_HMAC_KEY_JET: "x".repeat(40) }, "JET-CHAT", { fetch: other.fetch, now });
+  await assert.rejects(wrong.read("status"), (error) => error?.code === "not_authorized");
+  assert.equal(listenerClientFromEnv({ LISTENER_API_URL: BASE }, "JET-CHAT", { fetch: async () => new Response("{}") }), null);
 });
 
 test("the key-separation list covers every wake key and every read key, so a spike, health or WhatsApp key equal to any of them is refused (kody on #1768)", () => {

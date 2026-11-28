@@ -21,12 +21,26 @@ import { z } from "zod";
 import { ToolError, clean, envelope, okResult, BODY_LIMIT, NAME_LIMIT } from "./contract.js";
 import { LISTENER_READ_SECRETS, WAKE_SECRETS } from "./config.js";
 
+/** The seat whose listener records a seat reads:  itself, unless it runs on another seat's bot
+ * (one bot, two seats).  The listener holds one section per bot, so the second seat has no record
+ * set of its own and reads the bot's:  JET-CHAT signs /listener/v1/JET (AFC-931, Nov 28 2026).
+ * It is the pairing SEAT_TAG_EXPECTATIONS states for the Zulip tag (src/contract.js), and a test
+ * keeps the two tables equal.  Nothing else follows from it:  the wake and spike routes consult
+ * WAKE_SECRETS for the grant's own seat, so JET-CHAT gains no wake route. */
+export const LISTENER_RECORDS_SEAT = Object.freeze({ "JET-CHAT": "JET" });
+
+export function listenerRecordsSeat(seat) {
+  return Object.hasOwn(LISTENER_RECORDS_SEAT, seat) ? LISTENER_RECORDS_SEAT[seat] : seat;
+}
+
 /** The secret name that signs this seat's listener reads, or null:  its wake key when it has a
  * wake route, else its read-only key from LISTENER_READ_SECRETS (a seat there, like MA, gains
- * reads and no wake route:  the wake and spike routes consult WAKE_SECRETS only). */
+ * reads and no wake route:  the wake and spike routes consult WAKE_SECRETS only).  A seat on
+ * another seat's bot reads with that seat's key. */
 export function listenerSecretName(seat) {
-  if (Object.hasOwn(LISTENER_READ_SECRETS, seat)) return LISTENER_READ_SECRETS[seat];
-  return Object.hasOwn(WAKE_SECRETS, seat) ? WAKE_SECRETS[seat] : null;
+  const records = listenerRecordsSeat(seat);
+  if (Object.hasOwn(LISTENER_READ_SECRETS, records)) return LISTENER_READ_SECRETS[records];
+  return Object.hasOwn(WAKE_SECRETS, records) ? WAKE_SECRETS[records] : null;
 }
 
 export const LISTENER_CONTRACT_NAME = "simple-tools-read/1";
@@ -157,7 +171,9 @@ export function listenerClientFromEnv(env, seat, { fetch: fetchImpl = globalThis
   // eavesdropper honors required mode; without it the legacy env binding is read.
   const key = wakeKey !== undefined ? String(wakeKey).trim() : name && typeof env?.[name] === "string" ? env[name].trim() : "";
   if (!baseUrl || key.length < LISTENER_MIN_KEY_LEN || typeof fetchImpl !== "function") return null;
-  return new ListenerClient({ baseUrl, seat, key, fetch: fetchImpl, now });
+  // The path and the signature name the records seat, so a seat on another seat's bot reads
+  // that bot's records (LISTENER_RECORDS_SEAT).
+  return new ListenerClient({ baseUrl, seat: listenerRecordsSeat(seat), key, fetch: fetchImpl, now });
 }
 
 /** One view item made safe for the fence:  strings cleaned, integer lists kept, nested objects dropped. */

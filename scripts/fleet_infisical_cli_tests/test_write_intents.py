@@ -149,11 +149,22 @@ class WriteIntentTests(unittest.TestCase):
             self.assertNotIn(self.token.encode(), data)
 
     def test_wake_listener_read_key_value_shape_is_enforced_before_the_ledger(self):
-        # /wake holds listener read keys (64 lowercase hex, the routine-key format).  The
-        # shape check runs before the intent ledger, so a junk value is refused outright
-        # and no intent row is created for a write that can never be allowed.
-        for bad in ["not-a-key", "0x" + "ab" * 31, secrets.token_urlsafe(40)]:
-            with self.subTest(value=bad[:12]):
+        # /wake holds listener read keys, which are the listener's own routine keys.  Most
+        # are 64 lowercase hex and the GB bots' are 64-character base64-style or symbol
+        # passwords (read from the key homes, AFC-931), so the shape is what all of them
+        # share:  32 to 128 printable ASCII characters and no whitespace.  The check runs
+        # before the intent ledger, so a junk value is refused outright and no intent row
+        # is created for a write that can never be allowed.
+        symbols = "A1!" + "#$%&*()_+-={}[]:;<>?~" * 4
+        for bad in [
+            "ab" * 15 + "c",  # 31 characters: under the least length both readers accept
+            "ab" * 31 + "\n",  # a stored trailing newline: the listener strips its copy
+            "ab" * 31 + " a",  # whitespace inside
+            "a" * 129,
+            "\u00e9" * 40,
+            None,
+        ]:
+            with self.subTest(value=str(bad)[:12]):
                 before = len(self.calls)
                 with self.assertRaises(core.SecretsError) as raised:
                     core.put_secret(
@@ -165,11 +176,110 @@ class WriteIntentTests(unittest.TestCase):
                     )
                 self.assertIn("write-value-invalid", str(raised.exception))
                 self.assertEqual(len(self.calls), before, "no provider call for a bad value")
-        # A well-formed key passes the shape gate;  a folder with no shape accepts anything.
-        good = "ab" * 32
-        self.assertTrue(core.value_shape_ok("/wake", good))
-        self.assertTrue(core.value_shape_ok("/linear", good))
+        # Every real key format passes;  a folder with no shape accepts anything.
+        for good in ["ab" * 32, secrets.token_urlsafe(48), symbols]:
+            self.assertTrue(core.value_shape_ok("/wake", good))
+            self.assertTrue(core.value_shape_ok("/linear", good))
+        self.assertTrue(core.value_shape_ok("/linear", "junk"))
         self.assertFalse(core.value_shape_ok("/wake", "junk"))
+
+    def test_a_wake_listener_read_key_is_created_once_and_never_replaced(self):
+        # A read key is a copy of the listener's own routine key, so a name that already
+        # exists is left as it is.  The refusal comes from the folder probe, inside the
+        # write lock and before any mutation, and it leaves its audit row.  The create is
+        # then the only mutation sent:  no update, so a name that appeared since the probe
+        # (the lock serializes writers on one host only) is refused by the provider and
+        # never replaced (kody on #2643).  /wake is the only create-only folder:  /linear
+        # still updates a name it finds.
+        present = {"WAKE_HMAC_KEY_MA"}
+        stored = {}
+        statuses = [201, 409, 200]
+
+        def api(method, endpoint, token, body, env, **kwargs):
+            self.assertEqual(token, self.token)
+            self.calls.append((method, endpoint, kwargs["deadline"]))
+            path = env[core.ENV_WRITE_PATHS]
+            if endpoint == "/v2/service-token":
+                return 200, dict(self.metadata, scopes=[dict(environment="prod", secretPath=path)])
+            record = lambda key, value=None: dict(
+                secretKey=key,
+                secretValue=value,
+                type="shared",
+                workspace=PROJECT,
+                environment="prod",
+                secretPath=path,
+            )
+            if method == "GET" and "/raw/" not in endpoint:
+                keys = sorted(present) if path == "/wake" else [NAME]
+                return 200, {"secrets": [record(key) for key in keys]}
+            name = urlsplit(endpoint).path.rsplit("/", 1)[1]
+            if method == "GET":
+                return 200, {"secret": record(name, stored.get(name, self.value))}
+            self.mutations.append(method)
+            status = statuses.pop(0)
+            if status in (0, 200, 201, 202):
+                stored[name] = body["secretValue"]
+                if path == "/wake":
+                    present.add(name)
+            kwargs["on_status"](status)
+            return status, {}
+
+        with mock.patch.object(core, "_api_json", api):
+            key = "ab" * 32
+            # An existing key is never replaced, whatever the value.
+            error = self.assert_outcome(
+                "refused",
+                lambda: core.put_secret(
+                    "WAKE_HMAC_KEY_MA", "/wake", key, self.env, intent=self.new_intent("replace-ma")
+                ),
+            )
+            self.assertEqual(error.reason, "wake-key-exists")
+            self.assertEqual(self.mutations, [], "no PATCH or POST reached the provider")
+            # A missing key is created:  one POST, no update, and the readback proves it.
+            intent = self.new_intent("create-mm")
+            receipt = core.put_secret("WAKE_HMAC_KEY_MM", "/wake", key, self.env, intent=intent)
+            self.assertEqual(
+                (receipt.result, receipt.outcome, receipt.replayed), ("created", "ok", False)
+            )
+            self.assertEqual(self.mutations, ["POST"], "a create-only write never sends an update")
+            # The same intent replays from the ledger;  a fresh one is refused, the name now exists.
+            before = len(self.calls)
+            replay = core.put_secret("WAKE_HMAC_KEY_MM", "/wake", key, self.env, intent=intent)
+            self.assertTrue(replay.replayed)
+            self.assertEqual(len(self.calls), before)
+            error = self.assert_outcome(
+                "refused",
+                lambda: core.put_secret(
+                    "WAKE_HMAC_KEY_MM",
+                    "/wake",
+                    "cd" * 32,
+                    self.env,
+                    intent=self.new_intent("replace-mm"),
+                ),
+            )
+            self.assertEqual(error.reason, "wake-key-exists")
+            self.assertEqual(
+                stored["WAKE_HMAC_KEY_MM"], key, "the created key is the one in the folder"
+            )
+            # The race the probe cannot see:  another host created the name after this
+            # probe said absent.  The provider refuses the create, and nothing is updated.
+            error = self.assert_outcome(
+                "refused",
+                lambda: core.put_secret(
+                    "WAKE_HMAC_KEY_MC", "/wake", "ef" * 32, self.env, intent=self.new_intent("race-mc")
+                ),
+            )
+            self.assertEqual(error.provider_status, 409)
+            self.assertNotIn("WAKE_HMAC_KEY_MC", stored)
+            # Any other folder keeps replacing what it finds.
+            receipt = self.put()
+            self.assertEqual((receipt.result, receipt.outcome), ("updated", "ok"))
+            for target in self.directory.iterdir():
+                self.assertNotIn(self.token.encode(), target.read_bytes())
+        self.assertEqual(self.mutations, ["POST", "POST", "PATCH"])
+        self.assertTrue(core.create_only("/wake"))
+        self.assertFalse(core.create_only("/wake/sub"))
+        self.assertFalse(core.create_only("/linear"))
 
     def test_missing_secret_posts_once_only_after_definite_patch_404(self):
         self.statuses = [404, 201]

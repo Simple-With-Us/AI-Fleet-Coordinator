@@ -69,10 +69,12 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     ),
     # The Worker's listener read keys (OPS-1047):  one enumerated name per read-key seat,
     # in Fleet-OPS prod /wake.  The value is the seat's own <CODE>_ROUTINE_KEY copied from
-    # the listener's one home (AFC prod /zulip),  so the write moves an existing per-seat
-    # credential to the reader that needs it and never mints one.  Enumerated, so a writer
-    # can never mint an arbitrary WAKE_HMAC_KEY_* name (kody on #2610).  CLAUDE, CODEX and
-    # CURSOR are absent:  their keys were installed on Nov 10, 2026 and need no further write.
+    # the listener's key home (AFC prod /zulip for the base seats and the BF bots,  Fleet-OPS
+    # prod /zulip for the GB bots),  so the write moves an existing per-seat credential to
+    # the reader that needs it and never mints one.  Enumerated, so a writer can never mint
+    # an arbitrary WAKE_HMAC_KEY_* name (kody on #2610).  CLAUDE, CODEX and CURSOR are
+    # absent:  their keys were installed on Nov 10, 2026 and need no further write.  A name
+    # here is written once and never replaced (CREATE_ONLY_FOLDERS).
     (
         r"/wake",
         r"^WAKE_HMAC_KEY_(MA|ZC|AG|CLUTCH|FX|GROK|KIMI|MC|MM|OPENCODE|AMP"
@@ -81,20 +83,34 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
 )
 
 # A value shape per writable folder (whole-folder match), checked by put_secret before the
-# intent ledger.  The /wake listener read keys are 64 lowercase hex (openssl rand -hex 32,
-# DEPLOY.md),  so a wrong or junk value from a writer bug can never land and silently break
-# another seat's reads.  A folder with no shape accepts any value the write token carries.
-VALUE_SHAPES: tuple[tuple[str, str], ...] = ((r"/wake", r"[0-9a-f]{64}"),)
+# intent ledger.  /wake holds listener read keys, which are the listener's own routine keys,
+# and those come in more than one format:  64 lowercase hex (`openssl rand -hex 32`) for most
+# seats,  and 64-character base64-style or symbol passwords for the GB bots (read from the key
+# homes, Nov 28, 2026, AFC-931).  What everyone shares is the shape:  32 to 128 printable ASCII
+# characters and no whitespace.  32 is the least the listener (listener_api.MIN_KEY_LEN) and
+# the Worker (LISTENER_MIN_KEY_LEN) accept.  No whitespace is what lets both read one value:
+# the listener strips its copy and the Worker trims its own,  so a key stored with a trailing
+# newline is copied here stripped,  exactly as each of them reads it.  A folder with no shape
+# accepts any value the write token carries.
+VALUE_SHAPES: tuple[tuple[str, str], ...] = ((r"/wake", r"[\x21-\x7e]{32,128}"),)
+
+# Folders whose names this writer creates and never replaces.  A listener read key is a copy of
+# the listener's own routine key,  so replacing one could only desync a seat's reads from the key
+# the listener holds (the DoS kody named on #2610).  A key that must change changes at its
+# source,  and the owner refreshes the copy.  Two things hold it:  the folder probe that already
+# precedes every mutation refuses a name it finds (inside the write lock),  and the create is the
+# only mutation sent,  so a name that appeared since is refused by the provider, not updated.
+CREATE_ONLY_FOLDERS: tuple[str, ...] = ("/wake",)
 
 
 def value_shape_ok(path: str, value: str) -> bool:
     """Whether a value is in the stored shape the path's writer enforces before the ledger.
 
-    /wake holds listener read keys:  64 lowercase hex,  the routine-key format
-    (`openssl rand -hex 32`).  Every other allowlisted path carries no shape rule,  so the
-    write is judged by its allowlist entry alone.  Malformed inputs defer to the contracted
-    validation instead of crashing:  a non-string path passes through to check_path's
-    refusal,  and a non-string value refuses the shape.
+    /wake holds listener read keys:  32 to 128 printable ASCII characters and no whitespace,
+    the shape every routine-key format shares (VALUE_SHAPES).  Every other allowlisted path
+    carries no shape rule,  so the write is judged by its allowlist entry alone.  Malformed
+    inputs defer to the contracted validation instead of crashing:  a non-string path passes
+    through to check_path's refusal,  and a non-string value refuses the shape.
     """
     if not isinstance(path, str):
         return True
@@ -104,6 +120,27 @@ def value_shape_ok(path: str, value: str) -> bool:
         if re.fullmatch(folder, path) and not re.fullmatch(shape, value):
             return False
     return True
+
+
+def create_only(path: str) -> bool:
+    """Whether a write to this whole folder may create a name and never replace one."""
+    return isinstance(path, str) and any(
+        re.fullmatch(folder, path) for folder in CREATE_ONLY_FOLDERS
+    )
+
+
+def _probe_names(payload: object, project: str, path: str) -> set[str]:
+    """The secret names in a names-only folder probe,  each record checked for provenance.
+
+    A payload that is not the provider's own listing raises,  so a create-only decision is
+    never made on a shape this reader does not know."""
+    records = payload.get("secrets") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        raise SecretsError("unverified-source", failure_kind="refused")
+    names: set[str] = set()
+    for record in records:
+        names.add(validate_secret_name_record(record, project, path))
+    return names
 
 
 LOGIN_TIMEOUT = 30.0
@@ -194,6 +231,10 @@ NOT_INJECTED_EXACT = frozenset(
 )
 NOT_INJECTED_PREFIXES = ("LD_", "DYLD_")
 
+# The fixed, nonsecret reasons a refusal reports to its caller, each a literal this module
+# names;  every other refusal reports its outcome alone.
+POLICY_REASONS = ("token-expired-or-invalid", "wake-key-exists")
+
 
 class SecretsError(Exception):
     """A failure with a short message that never holds a secret value.  `code` is the exit code."""
@@ -205,7 +246,7 @@ class SecretsError(Exception):
         self.message = message
         self.code = code
         # Stable policy reason; exit status remains backwards compatible.
-        self.reason = message if message == "token-expired-or-invalid" else None
+        self.reason = message if message in POLICY_REASONS else None
         self.failure_kind = failure_kind if failure_kind in ("unavailable", "refused") else None
         self.provider_status = (
             provider_status
@@ -1931,7 +1972,7 @@ class WriteError(SecretsError):
             "state-invalid",
         )
         self.retryable = retryable is True and not self.request_may_have_been_sent
-        self.reason = reason if reason == "token-expired-or-invalid" else None
+        self.reason = reason if reason in POLICY_REASONS else None
         self.required_binding = (
             required_binding if required_binding == WRITE_TOKEN_ENV_NAME else None
         )
@@ -2337,7 +2378,7 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
         verify_service_token(
             token, record["project"], record["path"], env, writer=True, deadline=deadline
         )
-        probe, _ = _api_json(
+        probe, probe_payload = _api_json(
             "GET",
             "/v3/secrets/raw?" + secret_query(record["project"], record["path"], values=False),
             token,
@@ -2354,6 +2395,16 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
                 "folder-missing-or-inaccessible",
                 failure_kind="unavailable" if unavailable else "refused",
                 provider_status=probe,
+            )
+        if create_only(record["path"]) and record["name"] in _probe_names(
+            probe_payload, record["project"], record["path"]
+        ):
+            # Inside the write lock and before any mutation:  an existing name is left as it is.
+            # (One argument per line:  side by side, the reason and the keyword read to a secret
+            # scanner's generic rule as a key assignment, and the CI scan fails on a false match.)
+            raise SecretsError(
+                "wake-key-exists",
+                failure_kind="refused",
             )
     except SecretsError as exc:
         kind = exc.failure_kind or "refused"
@@ -2385,7 +2436,16 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
         type="shared",
     )
     try:
-        for method, result in (("PATCH", "updated"), ("POST", "created")):
+        # A create-only folder has one mutation, the create.  The probe already refused a name it
+        # found;  a name that appeared between that probe and this call (the lock serializes
+        # writers on one host only) is refused by the provider here, never replaced by an update
+        # (kody on #2643).
+        methods = (
+            (("POST", "created"),)
+            if create_only(record["path"])
+            else (("PATCH", "updated"), ("POST", "created"))
+        )
+        for method, result in methods:
             if time.monotonic() >= deadline:
                 record.update(phase="refused", failure_kind="unavailable", retryable=True)
                 _write_checkpoint(ledger, namespace, intent, record, "refused")

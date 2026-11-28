@@ -201,3 +201,11 @@ e80ee810190a03ff7f1b139b3f1295d31f102799:scripts/build-push-client-release.py:ge
 # these fingerprints silence that one publication commit only.
 c6ca04525a7e7966b75023c9a5a7002dd5abebdc:scripts/fleet_rag/tests/test_recall.py:generic-api-key:274
 c6ca04525a7e7966b75023c9a5a7002dd5abebdc:scripts/fleet_rag/tests/test_recall.py:generic-api-key:345
+# AFC-931 PR #2643, first commit 73c01c92:  the create-once refusal raised its reason and its
+# failure-kind keyword side by side on one line, and the generic rule read that pair as a key
+# assignment.  The matched value is the word that names the refusal kind;  no secret is involved.
+# The call is one argument per line from the next commit on, so this silences that one commit only.
+73c01c92705251ef6a5d41df9fd896ea5e469efa:scripts/fleet_infisical.py:generic-api-key:2400
+# Same PR, second commit 1b767cd12:  the comment above first quoted the offending pair to explain
+# it, and the generic rule matched the quotation too.  It is described in words from here on.
+1b767cd122353a90fd5d86b633a0f14c61b0e59a:.gitleaksignore:generic-api-key:205

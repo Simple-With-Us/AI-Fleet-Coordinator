@@ -5,17 +5,16 @@
 // A read that throws is "unavailable", never "missing": an Infisical outage must not look like a
 // deleted credential.  States:  ok | missing | unavailable | not_applicable.
 // The tool list is derived from the same tables the runtime uses, not a hand-picked list.
-import { LISTENER_READ_SECRETS, WAKE_SECRETS } from "./config.js";
+import { listenerSecretName } from "./eavesdropper.js";
 
 export const SEAT_TOOLS = Object.freeze(["zulip", "linear", "wake", "fleetlink", "recall", "relay", "notes"]);
 export const LISTENER_KEY_MIN = 32;
 export const NOTES_KEY_MIN = 32;
 
-/** The seat's wake or read-only listener key secret name, or null (same rule as eavesdropper.js). */
-export function listenerNameFor(seat) {
-  if (Object.hasOwn(LISTENER_READ_SECRETS, seat)) return LISTENER_READ_SECRETS[seat];
-  return Object.hasOwn(WAKE_SECRETS, seat) ? WAKE_SECRETS[seat] : null;
-}
+/** The seat's wake or read-only listener key secret name, or null:  the runtime's own rule
+ *  (src/eavesdropper.js listenerSecretName, one function for both), so a seat on another seat's
+ *  bot (JET-CHAT reads JET's records) reads ready here exactly when its tools would answer. */
+export const listenerNameFor = listenerSecretName;
 
 const UNAVAILABLE = Symbol("unavailable");
 /** Run a read; a throw becomes the unavailable marker. */
