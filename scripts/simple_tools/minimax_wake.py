@@ -588,7 +588,7 @@ def deliver_local(
             child_env = _child_env(env)
             binary = _find_mcode_binary(child_env, str(config.get("mcode_bin") or ""))
             if not binary:
-                return WR.Delivery("busy", "wake", code="mcode-not-found")
+                return WR.Delivery("failed", "wake", code="mcode-not-found")
 
             # Every flag is its own element and every value is the element after it, which is the
             # form the `mcode exec` help shows.  A value that could be read as an option of its own is

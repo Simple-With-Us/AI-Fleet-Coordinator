@@ -379,10 +379,10 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "bad-session-id")
 
-    def test_a_missing_binary_is_an_availability_wait(self):
+    def test_a_missing_binary_is_a_bounded_failure(self):
         self.env["MCODE_BIN"] = str(self.home / "bin" / "absent")
         delivery = self._deliver_local()
-        self.assertEqual(delivery.outcome, "busy")
+        self.assertEqual(delivery.outcome, "failed")
         self.assertEqual(delivery.code, "mcode-not-found")
         self.assertEqual(self.calls, [])
 

@@ -694,7 +694,7 @@ class TestAntigravityDeliverLocal(BaseTest):
         self._insert(SID_VALID)
         with mock.patch.object(AGW, "_find_agy_binary", return_value=None):
             delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_VALID, self.wake())
-        self.assertEqual((delivery.outcome, delivery.code), ("busy", "agy-not-found"))
+        self.assertEqual((delivery.outcome, delivery.code), ("failed", "agy-not-found"))
 
     def test_successful_delivery(self) -> None:
         self._insert(SID_VALID)

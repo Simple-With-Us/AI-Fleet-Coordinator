@@ -326,7 +326,7 @@ class DeliverLocalTests(Base):
         del self.env["OPENCODE_BIN"]
         self.env["PATH"] = str(self.home / "empty")
         delivery = self._deliver_local()
-        self.assertEqual(delivery.outcome, "busy")
+        self.assertEqual(delivery.outcome, "failed")
         self.assertEqual(delivery.code, "opencode-not-found")
 
     def test_a_credential_in_a_wake_field_refuses_by_name(self):

@@ -660,7 +660,7 @@ def deliver_local(
             child_env = _child_env(env)
             binary = _find_agy_binary(child_env)
             if not binary:
-                return WR.Delivery("busy", "resume", code="agy-not-found")
+                return WR.Delivery("failed", "resume", code="agy-not-found")
 
             argv = [binary, "--conversation", session_id, "-p", wake_text(wake)]
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)

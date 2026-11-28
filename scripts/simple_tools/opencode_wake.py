@@ -650,7 +650,7 @@ def deliver_local(
             child_env = _child_env(env)
             binary = _find_opencode_binary(child_env, str(config.get("opencode_bin") or ""))
             if not binary:
-                return WR.Delivery("busy", "wake", code="opencode-not-found")
+                return WR.Delivery("failed", "wake", code="opencode-not-found")
 
             # Every flag is its own element and every value is the element after it.  The prompt
             # is on the child's stdin, so it never shows up in a process listing, and the session
