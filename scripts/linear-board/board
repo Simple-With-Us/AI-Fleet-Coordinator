@@ -354,7 +354,7 @@ SEAT_APP_ALIASES = {
     "MM": ("MiniMax", "MiniMax (MM)"),
     "FX": ("FX.sh",),
     "MC": ("Muse Code (MC)",),
-    "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"),
+    "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse", "Rob (MA)"),
     "JET": ("Jet (OpenAI dot)",),
     # Deliberate JET/JET-CHAT share (owner, Oct 23 2026):  two logins, one Linear
     # app, mirroring the Worker tables in scripts/simple-tools-mcp/src/linear.js.
