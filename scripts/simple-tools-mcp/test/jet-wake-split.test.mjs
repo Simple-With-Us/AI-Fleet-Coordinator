@@ -187,7 +187,7 @@ test("JET-CHAT's Linear pair resolves in every Infisical mode (#901 merge with #
   assert.deepEqual(LINEAR_INFISICAL["JET-CHAT"], LINEAR_INFISICAL.JET, "one Linear app:  Jet's record, never a copy");
   _resetInfisicalForTests();
   const off = await resolveLinearPair({ LINEAR_JET_CHAT_CLIENT_ID: "id-chat", LINEAR_JET_CHAT_CLIENT_SECRET: "sec-chat" }, "JET-CHAT");
-  assert.deepEqual(off, { clientId: "id-chat", clientSecret: "sec-chat" }, "off mode reads JET-CHAT's own Worker names");
+  assert.deepEqual(off, { clientId: "id-chat", clientSecret: "sec-chat", appId: null }, "off mode reads JET-CHAT's own Worker names");
 });
 
 test("JET-CHAT is session-id exempt like the JET it replaces (kody 4363263820)", async () => {
