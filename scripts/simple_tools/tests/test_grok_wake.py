@@ -294,13 +294,13 @@ class GrokWake(unittest.TestCase):
                 self.assertNotEqual(answer["delivery"]["code"], "not-live")
                 self.assertIn(answer["delivery"]["code"], GW.NEVER_RAN)
 
-    def test_a_malformed_live_field_is_unreadable_and_retried(self) -> None:
+    def test_a_malformed_live_field_is_a_bounded_failure(self) -> None:
         for value in ("yes", None, 1):
             with self.subTest(live=value):
                 drive, answer = self.deliver(drive=Drive([row(live=value)]))
                 self.assertEqual(
                     (answer["delivery"]["outcome"], answer["delivery"]["code"]),
-                    ("busy", "drive-list-unreadable"),
+                    ("failed", "drive-list-unreadable"),
                 )
                 self.assertIsNone(drive.prompted())
 

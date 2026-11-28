@@ -569,9 +569,8 @@ def deliver_local(
             if status == "error":
                 return WR.Delivery("failed", "wake", code="store-session-store")
             if status == "store-missing":
-                # MiniMax Code is not installed on this host:  an availability wait, because the
-                # store may be there later, and not a refusal that would end the wake.
-                return WR.Delivery("busy", "wake", code="platform-not-installed")
+                # Missing installation/binding data is not evidence of a transient outage.
+                return WR.Delivery("failed", "wake", code="platform-not-installed")
             if status == "missing":
                 return WR.Delivery("refused", "wake", code="session-not-found")
             if str(row.get("session_kind") or "") not in CHAT_KINDS:

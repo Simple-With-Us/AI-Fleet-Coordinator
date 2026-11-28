@@ -289,7 +289,7 @@ def _invoke(
 def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | dict[str, Any]:
     """The one chat's row, or why the list cannot be trusted yet."""
     if payload is None or not isinstance(payload.get("sessions"), list):
-        return WR.Delivery("busy", "grok-drive", code="drive-list-unreadable")
+        return WR.Delivery("failed", "grok-drive", code="drive-list-unreadable")
     found = None
     for item in payload["sessions"]:
         if isinstance(item, dict) and item.get("sessionId") == session_id:
@@ -315,7 +315,7 @@ def _ready(row: Mapping[str, Any]) -> WR.Delivery | str:
         return WR.Delivery("busy", "grok-drive", code=NOT_ATTACHED)
     if live is not True:
         # A missing or malformed field does not show that no TUI has the chat open.
-        return WR.Delivery("busy", "grok-drive", code="drive-list-unreadable")
+        return WR.Delivery("failed", "grok-drive", code="drive-list-unreadable")
     if row.get("turnState") != "idle":
         return WR.Delivery("busy", "grok-drive", code=_turn_code(row.get("turnState")))
     cwd = row.get("cwd")
