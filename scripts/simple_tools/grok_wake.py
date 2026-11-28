@@ -12,19 +12,11 @@ replaced by a newer chat of the same seat:  the last Grok chat the owner used st
 good.  `grok-drive list` says `live: true` for a chat only while a Grok TUI has it open
 (`~/.grok/active_sessions.json`, which Grok writes while a tab is open and clears when it
 closes or Grok quits).  The two disagree for every chat that was quit and not resumed, and the
-router, which only reads the registry, keeps picking it.  Such a wake is refused before any
-prompt, with one of two precise codes (it used to be one code, `not-live`, for both):
-
-    tui-not-attached   the chat is in grok-drive's list and no Grok TUI has it open.  The
-                       owner must reopen it (`grok --resume <session id>`), or open a new Grok
-                       chat, which registers and is picked from then on.  Nothing is queued
-                       here:  the Zulip message is still in the seat's inbox.
-    chat-not-listed    the chat is in neither the leader's list nor the TUI registry, so
-                       nothing on this Mac knows it (its store was deleted, or this is
-                       another Mac's chat).
-
-Neither is retried:  nothing the router can do on its own makes a Grok TUI appear, and a
-headless resume of a quit chat is not done, because it would run tools with nobody watching.
+router, which only reads the registry, keeps picking it.  A known detached TUI is a
+platform-availability wait before any prompt.  The existing router retains it until the owner
+reopens that same chat, or invalidates it if the registry owner generation changes.  No
+headless resume or replacement chat is started here.  A complete inventory that does not
+list the chat remains a terminal refusal: nothing on this Mac knows that session.
 
 Python 3.11+, standard library only, plus the router's own modules.
 """
@@ -310,9 +302,9 @@ def _listed(payload: dict[str, Any] | None, session_id: str) -> WR.Delivery | di
     # one page and names no `complete`):  both retry, and only a list the helper called
     # complete can refuse (Kody, PR 2306 round 3).
     if payload.get("ok") is not True or payload.get("partial") is True:
-        return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
+        return WR.Delivery("busy", "grok-drive", code="drive-list-unavailable")
     if payload.get("complete") is not True:
-        return WR.Delivery("failed", "grok-drive", code="drive-list-unavailable")
+        return WR.Delivery("busy", "grok-drive", code="drive-list-unavailable")
     return WR.Delivery("refused", "grok-drive", code=NOT_LISTED)
 
 
@@ -320,7 +312,7 @@ def _ready(row: Mapping[str, Any]) -> WR.Delivery | str:
     """The chat's cwd when a prompt may be sent, else the outcome and no prompt."""
     live = row.get("live")
     if live is False:
-        return WR.Delivery("refused", "grok-drive", code=NOT_ATTACHED)
+        return WR.Delivery("busy", "grok-drive", code=NOT_ATTACHED)
     if live is not True:
         # A missing or malformed field does not show that no TUI has the chat open.
         return WR.Delivery("failed", "grok-drive", code="drive-list-unreadable")
@@ -420,11 +412,11 @@ def deliver_request(
                     # The budget is spent and the answer cannot be trusted:  that is the
                     # timeout it was, not an unreadable inventory (Kody, PR 2306 round 3).
                     return _answer(
-                        request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout")
+                        request, WR.Delivery("busy", "grok-drive", code="drive-list-timeout")
                     )
                 _code, payload = _invoke(env, ["list"], remaining, runner)
         except subprocess.TimeoutExpired:
-            return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
+            return _answer(request, WR.Delivery("busy", "grok-drive", code="drive-list-timeout"))
         except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
             return _answer(request, _failure("drive-list", exc))
         listed = _listed(payload, target.session_id)

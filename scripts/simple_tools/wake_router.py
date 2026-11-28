@@ -37,8 +37,7 @@ recency.  Nobody is asked to clarify and an ambiguous wake is never held:  only 
 and an unreadable registry do not deliver.  `no-live-session` is a bounded retry, because a chat
 may register before `max_attempts` runs out;  a registry that could not be read, on a host that is
 configured to reach it, is not counted against the wake's attempts at all, because the registry may
-come back long after `max_attempts` would have been spent, and it is bounded by `max_age_seconds`
-alone.  An answer that is not an answer is malformed data rather than an outage, so it keeps the
+come back long after `max_attempts` would have been spent, and unavailable time does not spend `max_age_seconds`.  An answer that is not an answer is malformed data rather than an outage, so it keeps the
 bounded attempts, and so does a host with no registry address or key, which is a deployment fault
 and not an outage.  The receiving chat
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
@@ -171,12 +170,12 @@ delivered under the host its exclusion judged it by.
 Settings not yet confirmed.  A router whose settings have not come from a successful read in this
 process does not know whether delivery is on, and "off" would close every pending wake as `held`.
 So until the config says `confirmed`, workers leave wakes pending, use up no attempt and look again;
-`max_age_seconds` still bounds the wait, and only a plain dict of settings is confirmed from the
+`max_age_seconds` bounds available time, not a discerned never-submitted outage, and only a plain dict of settings is confirmed from the
 start.
 
 One chat's wakes run in the order they came.  A later wake waits behind an earlier one for the same
 chat until that one is settled;  it is not failed as busy.  A wake that still cannot be delivered,
-or is older than `max_age_seconds` when its turn comes, ends in a `dead` receipt, visible in the
+or has spent `max_age_seconds` of available time when its turn comes, ends in a `dead` receipt, visible in the
 seat's state directory and at GET /receipt/<SEAT>/<id>, and its message is in the seat inbox
 regardless.
 
@@ -2117,6 +2116,15 @@ class Router:
             "receipt_id": entry["receipt_id"],
             "status": "accepted",
             **(
+                {
+                    "waiting_for_platform": True,
+                    "waiting_code": entry.get("waiting_code", ""),
+                    "next_check_at": entry["next_at"],
+                }
+                if "availability_since" in entry
+                else {}
+            ),
+            **(
                 {"credential_scope": entry["wake"]["credential_scope"]}
                 if entry["wake"].get("credential_scope")
                 else {}
@@ -2377,8 +2385,10 @@ class Router:
         if entry.get("receipt") is not None:
             self._write_receipt(entry)  # already settled:  only its receipt is outstanding
             return
-        if self.clock() - entry["accepted_at"] >= int(self.config["max_age_seconds"]):
-            # An outage can outlast a wake:  nobody is waiting on one this old any more.
+        if "availability_since" not in entry and self._active_age(entry, self.clock()) >= int(
+            self.config["max_age_seconds"]
+        ):
+            # Only available time ages a wake. A discerned outage pauses its deadline.
             old = _pick_from(entry["pick"]) if entry["pick"] else Pick(reason=EXPIRED)
             result = Delivery("failed", code=EXPIRED)
             self._finish(entry, old, status="dead", delivered=False, result=result)
@@ -2651,6 +2661,15 @@ class Router:
             wait=backoff[min(outages - 1, len(backoff) - 1)],
         )
 
+    @staticmethod
+    def _active_age(entry: Mapping[str, Any], now: float) -> float:
+        """Age excluding durable, proven never-submitted availability waits."""
+        waiting = entry.get("availability_since")
+        ongoing = max(0.0, now - waiting) if type(waiting) in (int, float) else 0.0
+        return max(
+            0.0, now - entry["accepted_at"] - entry.get("availability_wait_seconds", 0.0) - ongoing
+        )
+
     def _retry(
         self,
         entry: dict[str, Any],
@@ -2669,10 +2688,26 @@ class Router:
         that knows better than the defaults:  a counted retry uses the backoff."""
         entry.pop("turn", None)  # a try that is tried again carried nobody
         now = self.clock()
+        # Only outcomes that prove nothing was submitted can pause the deadline.
+        # Unknown/refused/sent never enter this path as availability outcomes.
+        availability = (
+            not counted and result is not None and result.outcome in ("busy", "unreachable")
+        )
+        if availability:
+            entry.setdefault("availability_since", now)
+            entry["waiting_code"] = code
+        elif "availability_since" in entry:
+            since = entry.pop("availability_since")
+            entry["availability_wait_seconds"] = entry.get("availability_wait_seconds", 0.0) + max(
+                0.0, now - since
+            )
+            entry.pop("waiting_code", None)
         if counted:
             entry["failures"] += 1
         too_many = entry["failures"] >= int(self.config["max_attempts"])
-        too_old = now - entry["accepted_at"] >= int(self.config["max_age_seconds"])
+        too_old = not availability and self._active_age(entry, now) >= int(
+            self.config["max_age_seconds"]
+        )
         if too_many or too_old:
             final = result or Delivery("failed", code=code)
             self._finish(
@@ -2815,7 +2850,7 @@ class Router:
             and pick.target is not None
             and turn_key(pick.target) == key
             and message_id_ok(other["wake"]["message_id"])
-            and now - other["accepted_at"] < int(self.config["max_age_seconds"])
+            and self._active_age(other, now) < int(self.config["max_age_seconds"])
             and _contracts_ok(other["wake"], pick.target, answer)
         )
 
@@ -3440,6 +3475,16 @@ def _loadable(entry: object, wake_id: str) -> bool:
             and type(entry["next_at"]) in (int, float)
             and type(entry["attempts"]) is int
             and type(entry["failures"]) is int
+            and type(entry.get("availability_wait_seconds", 0.0)) in (int, float)
+            and entry.get("availability_wait_seconds", 0.0) >= 0
+            and (
+                "availability_since" not in entry
+                or (
+                    type(entry["availability_since"]) in (int, float)
+                    and entry["availability_since"] >= entry["accepted_at"]
+                )
+            )
+            and isinstance(entry.get("waiting_code", ""), str)
             and type(entry.get("repicks", 0)) is int
             and isinstance(rejected, list)
             and len(rejected) <= MAX_REJECTED_TARGETS

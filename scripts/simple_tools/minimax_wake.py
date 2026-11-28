@@ -290,7 +290,10 @@ def _session_rows(
         return "ok", {}
     try:
         conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=2.0)
-    except (OSError, sqlite3.Error):
+    except (OSError, sqlite3.Error) as exc:
+        code = getattr(exc, "sqlite_errorcode", None)
+        if isinstance(code, int) and (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return "busy", {}
         return "error", {}
     try:
         rows: list[tuple[Any, ...]] = []
@@ -304,7 +307,10 @@ def _session_rows(
                     chunk,
                 ).fetchall()
             )
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        code = getattr(exc, "sqlite_errorcode", None)
+        if isinstance(code, int) and (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return "busy", {}
         return "error", {}
     finally:
         conn.close()
@@ -558,11 +564,12 @@ def deliver_local(
                     return stale
 
             status, row = _session_row(env, session_id)
+            if status == "busy":
+                return WR.Delivery("busy", "wake", code="store-session-store-busy")
             if status == "error":
                 return WR.Delivery("failed", "wake", code="store-session-store")
             if status == "store-missing":
-                # MiniMax Code is not installed on this host:  a bounded failure, because the
-                # store may be there later, and not a refusal that would end the wake.
+                # Missing installation/binding data is not evidence of a transient outage.
                 return WR.Delivery("failed", "wake", code="platform-not-installed")
             if status == "missing":
                 return WR.Delivery("refused", "wake", code="session-not-found")
