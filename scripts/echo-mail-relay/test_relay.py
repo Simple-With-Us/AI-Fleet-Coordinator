@@ -69,5 +69,18 @@ class Tests(unittest.TestCase):
   import urllib.parse as up
   form=up.urlencode({'token':'webhook-test','bot_email':'bot@example.test','trigger':'direct_message','message':json.dumps({'id':11,'type':'private','content':'hi','timestamp':999})}).encode()
   self.r.accept('/zulip/echo',form);self.assertEqual(self.r.db.execute('select id from outbox_v2 where id=11').fetchone()[0],11)
+ def test_ma_destination(self):
+  self.assertEqual(R.DESTINATIONS['MA'],'wakes@muse.ai')
+ def test_ma_seat_zulip_route(self):
+  self.env.update(MA_ZULIP_WEBHOOK_TOKEN='ma-test',MA_BOT_EMAIL='ma@example.test')
+  raw=json.dumps({'token':'ma-test','bot_email':'ma@example.test','trigger':'mention','message':{'id':21,'type':'stream','content':'wake ma','timestamp':999}}).encode()
+  self.r.accept('/zulip/ma',raw)
+  self.assertEqual(self.r.db.execute('select seat from outbox_v2 where id=21').fetchone()[0],'MA')
+  with self.assertRaises(PermissionError):self.r.accept('/zulip/ma',self.native())
+ def test_ma_seat_listener_route(self):
+  self.env.update(MA_LISTENER_HMAC_KEY='ma-listener-test',MA_BOT_EMAIL='ma@example.test')
+  raw=json.dumps({'contract':R.WAKE_CONTRACT,'seat':'MA','message_id':22,'trigger_ids':[22],'sent_at':1000}).encode();sig=hmac.new(b'ma-listener-test',raw,hashlib.sha256).hexdigest()
+  self.r.accept('/listener/ma',raw,sig)
+  self.assertEqual(self.r.db.execute('select seat from outbox_v2 where id=22').fetchone()[0],'MA')
 if __name__=='__main__':unittest.main()
 
