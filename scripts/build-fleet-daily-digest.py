@@ -49,7 +49,7 @@ from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_publ
 DEFAULT_REPOS = PUBLIC_REPOS
 DEFAULT_APPS_PATH = Path(__file__).resolve().parent.parent / "fleet-apps.json"
 LINEAR_GRAPHQL = "https://api.linear.app/graphql"
-DEFAULT_LINEAR_DEADLINE_SECONDS = 300.0
+DEFAULT_LINEAR_DEADLINE_SECONDS = 600.0  # headroom for the 200-page budget at a 100-day window
 _LINEAR_REQUEST_ID_HEADERS = ("x-linear-request-id", "x-request-id", "request-id")
 _SAFE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
 _SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
