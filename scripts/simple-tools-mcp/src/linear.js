@@ -243,18 +243,19 @@ export async function resolveLinearPair(env, seat) {
   if (!names || !inf) return null;
   // A prepared seat that is not enabled reads nothing:  no Infisical request for a seat whose tools answer not_configured.
   if (!LINEAR_SEATS.includes(canonical)) return null;
-  const [clientId, clientSecret] = await Promise.all([
+  const [clientId, clientSecret, appId] = await Promise.all([
     resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId, optional: true }),
     resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret, optional: true }),
+    resolveLinearAppId(env, canonical),
   ]);
-  return { clientId: clientId.trim(), clientSecret: clientSecret.trim() };
+  return { clientId: clientId.trim(), clientSecret: clientSecret.trim(), appId };
 }
 
 /** Sync: build a client from an already-resolved pair (same null contract as
  * linearClientFromEnv). */
 export function linearClientFromPair(pair, seat, { gate, quota, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
   if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
-  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, gate, quota, fetch: fetchImpl, now });
+  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, appId: pair.appId ?? null, gate, quota, fetch: fetchImpl, now });
 }
 
 // Seats whose Linear tools are live.  GROK-WEB first (owner 2026-10-11):  it is
@@ -382,8 +383,9 @@ export const INPUT_MAX_BYTES = 64 * 1024;
 
 // The seat's own Linear app:  the name Linear shows for the viewer, plus the
 // other names the owner may give it.  confirmViewer() accepts any of these, or
-// the seat tag, ignoring case, so renaming an app in Linear never breaks its
-// seat (board SEAT_APP_NAMES / SEAT_APP_ALIASES / app_name_ok).  Every name
+// the seat tag, ignoring case, as its fallback check; the primary proof is the
+// app's registration id (SEAT_APP_IDS below), which a rename never changes
+// (board SEAT_APP_NAMES / SEAT_APP_ALIASES / app_name_ok).  Every name
 // belongs to one seat only - except the deliberate JET/JET-CHAT share:  two
 // logins, one Linear app (owner, Oct 23 2026), and JET itself is wake-only
 // with no tool surface, so no credential can swap unseen.
@@ -447,6 +449,52 @@ export const SEAT_APP_ALIASES = Object.freeze({
   // Jay renames this app in Linear from time to time; the viewer check accepts every spelling he has used.
   ZC: Object.freeze(["ZCode (ZC)", "ZCode"]),
 });
+// The seat's own Linear app, by registration id:  the id Linear's
+// applicationInfo returns for the seat's canonical client id.  A registration
+// id never changes when the owner renames the app - only the display name
+// does - so confirmViewer proves a seat's pair by this id first and treats
+// the names above as a fallback.  The ids themselves are not committed here:
+// they name the workspace's app inventory, so they live with the pairs, in
+// Infisical /linear as one JSON secret, LINEAR_SEAT_APP_IDS (seat tag ->
+// registration id), grounded live from the provider for every installed pair
+// on 2026-11-28 - the same grounding route that recorded the registration
+// names on 2026-10-29 - and resolveLinearPair / resolveLinearAppId read a
+// seat's entry alongside its pair.  JET-CHAT's entry carries JET's id:  two
+// logins, one Linear app (owner, Oct 23 2026).  A seat with no entry, or a
+// deployment that has not provisioned the secret yet, keeps the name check
+// as its only proof, exactly as before.
+export const SEAT_APP_IDS_NAME = "LINEAR_SEAT_APP_IDS";
+
+/** One seat's registration id out of the LINEAR_SEAT_APP_IDS value (a JSON
+ * string, or an already-parsed object), or null when it is absent, malformed
+ * or holds no usable id for the seat.  Never throws:  a bad map must cost the
+ * bootstrap, not the call. */
+export function seatAppIdFromMap(raw, seat) {
+  let map = raw;
+  if (typeof raw === "string") {
+    if (!raw.trim()) return null;
+    try {
+      map = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+  const id = map[seatTagForSeat(seat)];
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+/** The seat's grounded registration id, resolved with its pair from
+ * Infisical /linear (or the same-named Worker binding), or null. */
+export async function resolveLinearAppId(env, seat) {
+  try {
+    const raw = await resolveSecret(env, { name: SEAT_APP_IDS_NAME, path: "/linear", envName: SEAT_APP_IDS_NAME, optional: true });
+    return seatAppIdFromMap(raw, seat);
+  } catch {
+    return null;
+  }
+}
+
 export const SEAT_TAG_ALIASES = SEAT_NAME_ALIASES;
 
 /** The seat tag a spelling resolves to, including accepted human aliases.  WISE is the tag; INSTINCT is retired. */
@@ -611,6 +659,10 @@ export const Q_LABELS = `query BoardLabels($first: Int!, $after: String) {
 export const Q_WHOAMI = `query BoardWhoami {
   viewer { id name displayName email app }
   organization { name urlKey }
+}`;
+
+export const Q_APP_INFO = `query BoardAppInfo($clientId: String!) {
+  applicationInfo(clientId: $clientId) { id clientId name }
 }`;
 
 export const M_CREATE = `mutation BoardFile($input: IssueCreateInput!) {
@@ -1005,7 +1057,7 @@ export function linearClientFromEnv(env, seat, { gate, quota, fetch: fetchImpl =
   const clientId = read(names.clientId);
   const clientSecret = read(names.clientSecret);
   if (!clientId || !clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
-  return new LinearClient({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now });
+  return new LinearClient({ seat, clientId, clientSecret, appId: seatAppIdFromMap(env?.[SEAT_APP_IDS_NAME], seat), gate, quota, fetch: fetchImpl, now });
 }
 
 // A proof of which Linear user a token acts as is trusted for at most a day, and never past the token's own expiry.
@@ -1019,13 +1071,17 @@ const LinearIdentityPayload = z.object({
 
 
 export class LinearClient {
-  constructor({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
+  constructor({ seat, clientId, clientSecret, appId = null, gate, quota, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
     // Every GraphQL request is metered against the Linear user or app user it acts as (see #chargeRequest), so a
     // client without a quota cannot exist:  there is no unmetered path to Linear.
     if (!quota || typeof quota.reserve !== "function" || typeof quota.debit !== "function") throw new TypeError("LinearClient requires a quota");
     this.quota = quota;
     this.seat = seat;
     this.clientId = clientId;
+    // The grounded registration id of this seat's own app, resolved with the pair (see SEAT_APP_IDS_NAME):
+    // confirmViewer's bootstrap compares the registration behind clientId against it.  Null when the seat
+    // has no grounded entry, which leaves the name check as the only proof, as before.
+    this.expectedAppId = typeof appId === "string" && appId ? appId : null;
     this.gate = gate;
     this.fetch = fetchImpl;
     this.now = now;
@@ -1442,7 +1498,27 @@ export class LinearClient {
     try {
       await this.gate.linearAppIdSet?.({ id, set_at: this.now() });
     } catch {
-      // not stored: the name check still guards the next call
+      // not stored: the registration check still guards the next call
+    }
+  }
+
+  /**
+   * The registration behind this client's own client id, read with the pair's
+   * own token:  {id}, or null when Linear cannot resolve it (an unknown client
+   * id, a failed read).  applicationInfo is a registry read - it proves which
+   * app a client id belongs to, never who is asking - so its answer is only
+   * ever compared against this seat's grounded registration id (resolved with
+   * the pair from LINEAR_SEAT_APP_IDS), and the answer is trusted only when it
+   * echoes the queried client id.
+   */
+  async #appRegistration() {
+    try {
+      const data = await this.call(Q_APP_INFO, { clientId: this.clientId });
+      const info = data?.applicationInfo ?? null;
+      if (!info || typeof info.id !== "string" || !info.id || info.clientId !== this.clientId) return null;
+      return { id: info.id };
+    } catch {
+      return null;
     }
   }
 
@@ -1450,22 +1526,52 @@ export class LinearClient {
    * The swapped-credentials check, before any write:  the viewer must be this
    * seat's own app.  Without it a renamed or swapped Worker secret would have
    * the fleet writing as the wrong seat.
+   *
+   * The proof is by app identity, never by display name.  A viewer whose id
+   * is the app id this seat already proved is accepted whatever its name now
+   * says.  When no id is remembered yet - or the remembered one no longer
+   * matches - the seat's app is proven from its own credential pair instead:
+   * the registration Linear holds for this client's own client id must be the
+   * seat's grounded registration, and the viewer acting under
+   * that pair is then that app's user, so its id is remembered.  A pair that
+   * resolves to a different registration is another seat's app installed
+   * under this seat's name - a swap - and is refused outright; the name check
+   * must not rescue a pair already proven to be a different app.  The names
+   * remain only as the fallback for a seat with no grounded registration, or
+   * one whose registration cannot be resolved on this call.  Until this
+   * bootstrap existed, the id was remembered only after a name pass, so a
+   * seat whose app the owner renamed before its first call was locked out
+   * for good:  the name failed, the id was never stored, and no later call
+   * could pass either check.
    */
   async confirmViewer(failed = null) {
     const viewer = await this.viewer(failed);
+    const refuse = () => {
+      throw new LinearError("swapped", { message: `the credentials installed for ${this.seat} belong to "${viewer.name || "an unnamed user"}", not to ${this.seatLabel()}.  Refusing to write.  Jay checks which Worker secret pair is set (DEPLOY.md).` });
+    };
     // The app id is stable across renames.  A viewer whose id is the one this seat already proved is its own
-    // app whatever the display name now says; any other id must still pass the name check, and is then remembered.
+    // app whatever the display name now says.
     const viewerId = typeof viewer.id === "string" ? viewer.id : "";
     const known = viewer.app && viewerId ? await this.#knownAppId() : null;
     if (viewer.app && known && known === viewerId) return viewer;
+    if (viewer.app && viewerId) {
+      const expected = this.expectedAppId;
+      if (expected) {
+        const registration = await this.#appRegistration();
+        if (registration) {
+          if (registration.id === expected) {
+            await this.#rememberAppId(viewerId);
+            return viewer;
+          }
+          refuse();
+        }
+      }
+    }
     if (viewer.app && appNameOk(viewer.name, this.seat)) {
       if (viewerId && viewerId !== known) await this.#rememberAppId(viewerId);
       return viewer;
     }
-    {
-      throw new LinearError("swapped", { message: `the credentials installed for ${this.seat} belong to "${viewer.name || "an unnamed user"}", not to ${this.seatLabel()}.  Refusing to write.  Jay checks which Worker secret pair is set (DEPLOY.md).` });
-    }
-    return viewer;
+    refuse();
   }
 }
 

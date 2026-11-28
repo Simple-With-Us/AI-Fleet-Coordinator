@@ -83,11 +83,11 @@ function harness({ seat = "GROK-WEB", writes = true, credentials = true, viewer 
 }
 
 /** A bare client, for the checks that sit under the tools (minting, viewer). */
-function clientHarness({ seat = "GROK-WEB", viewer } = {}) {
-  const fake = new FakeLinear(viewer ? { viewer } : {});
+function clientHarness({ seat = "GROK-WEB", viewer, clientId = CLIENT_ID, appInfo = null, appId = null } = {}) {
+  const fake = new FakeLinear({ ...(viewer ? { viewer } : {}), appInfo });
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ quota: memoryQuota(), seat, clientId: CLIENT_ID, clientSecret: CLIENT_CREDENTIAL, gate, fetch: fake.fetch, now: () => clock.now });
+  const client = new LinearClient({ quota: memoryQuota(), seat, clientId, clientSecret: CLIENT_CREDENTIAL, appId, gate, fetch: fake.fetch, now: () => clock.now });
   return { fake, gate, clock, client };
 }
 
@@ -271,6 +271,58 @@ test("confirmViewer remembers the app id: a renamed app keeps working, a swapped
   const again = await seeded({ id: "app-id-0003", name: "Grok Web", app: true });
   await again.client.confirmViewer();
   assert.equal((await again.gate.linearAppIdGet()).id, "app-id-0003");
+});
+
+test("confirmViewer bootstraps the app id from the seat's own pair: a renamed app with an empty id store is accepted by registration, not by name", async () => {
+  const registration = { id: "reg-ma-test", clientId: CLIENT_ID, name: "Rob (MA)" };
+  // The MA lockout replayed exactly:  the app was renamed to "Rob (MA)" before
+  // the seat's first call under the remembered-id check, so the id store is
+  // empty and the name is in no table.  The pair itself proves the app:  the
+  // registration behind its own client id is MA's grounded registration.
+  const replay = clientHarness({ seat: "MA", viewer: { id: "app-actor-ma", name: "Rob (MA)", app: true }, appInfo: registration, appId: "reg-ma-test" });
+  assert.equal((await replay.client.confirmViewer()).name, "Rob (MA)");
+  assert.equal((await replay.gate.linearAppIdGet()).id, "app-actor-ma");
+  // The name plays no part in the proof:  a name no table has ever held is
+  // accepted the same way, because the registration matched.
+  const renamed = clientHarness({ seat: "MA", viewer: { id: "app-actor-ma", name: "A Name Nobody Listed", app: true }, appInfo: registration, appId: "reg-ma-test" });
+  assert.equal((await renamed.client.confirmViewer()).name, "A Name Nobody Listed");
+  assert.equal((await renamed.gate.linearAppIdGet()).id, "app-actor-ma");
+  // Once remembered, the id alone carries the seat:  the registration is not
+  // read again, and a further rename changes nothing.
+  renamed.fake.appInfo = null;
+  renamed.fake.viewer = { ...renamed.fake.viewer, name: "Yet Another Name" };
+  assert.equal((await renamed.client.confirmViewer()).name, "Yet Another Name");
+  assert.equal(renamed.fake.calls().filter((r) => opOf(r.body.query)?.name === "BoardAppInfo").length, 1);
+});
+
+test("confirmViewer refuses a swapped pair outright, even when its app carries an accepted name", async () => {
+  // Another seat's pair installed under MA:  its client id resolves to that
+  // app's registration, which is not MA's grounded registration.  The viewer
+  // even carries MA's grounded app name here - the name check must not rescue
+  // a pair already proven to be a different app.
+  const swapped = clientHarness({
+    seat: "MA",
+    clientId: "lin_other_client_id",
+    viewer: { id: "app-actor-other", name: "Muse Assist", app: true },
+    appInfo: { id: "reg-wise-test", clientId: "lin_other_client_id", name: "Wise (Instinct)" },
+    appId: "reg-ma-test",
+  });
+  await assert.rejects(() => swapped.client.confirmViewer(), (error) => error.kind === "swapped");
+  assert.equal(await swapped.gate.linearAppIdGet(), null);
+});
+
+test("confirmViewer falls back to the name check only when the registration cannot be resolved", async () => {
+  // The fake holds no registration, as an unresolvable applicationInfo reads:
+  // the grounded name still admits the seat's own app, exactly as it did
+  // before the bootstrap existed, and the id is remembered from that pass.
+  const byName = clientHarness({ seat: "MA", viewer: { id: "app-actor-ma", name: "Muse Assist", app: true } });
+  assert.equal((await byName.client.confirmViewer()).name, "Muse Assist");
+  assert.equal((await byName.gate.linearAppIdGet()).id, "app-actor-ma");
+  // An unknown name with no registration answer is still refused:  the
+  // fallback is the old check, not a wider one.  The name is one no table
+  // holds, so nothing but the fallback can decide it.
+  const unknown = clientHarness({ seat: "MA", viewer: { id: "app-actor-x", name: "A Name Nobody Listed", app: true } });
+  await assert.rejects(() => unknown.client.confirmViewer(), (error) => error.kind === "swapped");
 });
 
 test("a write is refused before Linear is touched when the viewer is another seat's app", async () => {
@@ -1105,8 +1157,11 @@ test("an own-app seat checks the viewer before its first READ, and a wrong app i
   for (const wrong of [{ id: "u1", name: "Codex", app: true }, { id: "u3", name: "Clutch", app: false }]) {
     const { tools, fake } = harness({ seat: "CLUTCH", viewer: wrong });
     toolError(await tools.call("linear_list", {}), "not_authorized");
+    // The viewer check itself is the whoami query plus, since the app-id
+    // bootstrap, the registration read;  no data query may have run.
     const graphql = fake.requests.filter((r) => r.kind !== "mint");
-    assert.ok(graphql.length <= 1, `only the viewer query may have run for ${wrong.name}/${wrong.app}`);
+    const dataCalls = graphql.filter((r) => !["BoardWhoami", "BoardAppInfo"].includes(opOf(r.body.query)?.name));
+    assert.equal(dataCalls.length, 0, `no data call may have run for ${wrong.name}/${wrong.app}`);
   }
 });
 
@@ -1232,7 +1287,7 @@ test("MA mints with its own scope but a wrong viewer is refused after the mint, 
   const { tools, fake, gate } = harness({ seat: "MA", viewer: { id: "u-x", name: "Someone Else", app: true } });
   toolError(await tools.call("linear_list", {}), "not_authorized");
   assert.equal(fake.mints().length, 1);
-  assert.equal(fake.calls().filter((c) => !/viewer/i.test(String(c.body?.query ?? ""))).length, 0, "no data call after the refused viewer check");
+  assert.equal(fake.calls().filter((c) => !["BoardWhoami", "BoardAppInfo"].includes(opOf(c.body?.query)?.name)).length, 0, "no data call after the refused viewer check");
   assert.ok((await gate.linearTokenGet())?.access_token);
 });
 

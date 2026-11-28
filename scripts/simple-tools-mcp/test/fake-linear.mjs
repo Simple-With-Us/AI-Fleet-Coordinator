@@ -41,8 +41,13 @@ export function opOf(query) {
 const connection = (nodes) => ({ pageInfo: { hasNextPage: false, endCursor: null }, nodes });
 
 export class FakeLinear {
-  constructor({ viewer = { id: "user-grok-web", name: "Grok Web", displayName: "Grok Web", app: true }, expiresIn = 30 * 86_400, stamp = Date.parse("2026-10-09T10:00:00Z") } = {}) {
+  constructor({ viewer = { id: "user-grok-web", name: "Grok Web", displayName: "Grok Web", app: true }, expiresIn = 30 * 86_400, stamp = Date.parse("2026-10-09T10:00:00Z"), appInfo = null } = {}) {
     this.viewer = { email: "grok-web@linear.test", ...viewer };
+    // The one app registration this fake's Linear holds, as applicationInfo
+    // answers it:  {id, clientId, name} for its own client id, null for any
+    // other.  Null (the default) models a registration that cannot be
+    // resolved, which is what an unknown client id gets from the provider.
+    this.appInfo = appInfo;
     this.expiresIn = expiresIn;
     this.stamp = stamp;
     this.issued = []; // every access token this fake has minted, in order
@@ -215,6 +220,8 @@ export class FakeLinear {
     switch (name) {
       case "BoardWhoami":
         return { viewer: { ...this.viewer }, organization: { name: "Simple With Us", urlKey: WORKSPACE_URL_KEY } };
+      case "BoardAppInfo":
+        return { applicationInfo: this.appInfo && variables.clientId === this.appInfo.clientId ? this.appInfo : null };
       case "BoardTeams":
         // Q_TEAMS selects `states(first: 50) { nodes { ... } }`, so the states
         // travel as a connection, exactly as Linear sends them.

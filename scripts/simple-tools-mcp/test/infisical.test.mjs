@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as nodeModule from "node:module";
 import { resolveSecret, infisicalStats, _resetInfisicalForTests, InfisicalError } from "../src/infisical.js";
-import { resolveLinearPair, linearClientFromPair } from "../src/linear.js";
+import { resolveLinearPair, linearClientFromPair, seatAppIdFromMap } from "../src/linear.js";
 import { resolveFleetlinkSeatTokens, fleetlinkClientFromSecret } from "../src/fleetlink.js";
 import { LinearClient } from "../src/linear.js";
 import { memoryQuota } from "./quota-helper.mjs";
@@ -115,7 +115,7 @@ test("resolveLinearPair: off mode reads the legacy Worker names, WISE maps to LI
   const calls = mockFetch([]);
   const env = { ...ENV, INFISICAL_MODE: "off", LINEAR_INSTINCT_CLIENT_ID: "id-wise", LINEAR_INSTINCT_CLIENT_SECRET: "sec-wise" };
   const pair = await resolveLinearPair(env, "WISE");
-  assert.deepEqual(pair, { clientId: "id-wise", clientSecret: "sec-wise" });
+  assert.deepEqual(pair, { clientId: "id-wise", clientSecret: "sec-wise", appId: null });
   assert.equal(calls.length, 0);
   assert.equal(await resolveLinearPair(env, "BF-BUILDER"), null, "a seat with no Linear app (retired BF-BUILDER) stays null");
 });
@@ -127,8 +127,26 @@ test("resolveLinearPair: required mode reads the LINEAR_WISE_* names at /linear"
     ["secrets/raw/LINEAR_WISE_CLIENT_SECRET", { body: { secret: { secretValue: "sec-inf" } } }],
   ]);
   const pair = await resolveLinearPair(ENV, "WISE");
-  assert.deepEqual(pair, { clientId: "id-inf", clientSecret: "sec-inf" });
+  assert.deepEqual(pair, { clientId: "id-inf", clientSecret: "sec-inf", appId: null });
   assert.ok(calls.every((u) => u.includes("secretPath=%2Flinear")), "both reads are scoped to /linear");
+});
+
+test("resolveLinearPair: the grounded app registration id rides along from LINEAR_SEAT_APP_IDS", async () => {
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env = { ...ENV, INFISICAL_MODE: "off", LINEAR_INSTINCT_CLIENT_ID: "id-wise", LINEAR_INSTINCT_CLIENT_SECRET: "sec-wise", LINEAR_SEAT_APP_IDS: JSON.stringify({ WISE: "reg-wise-test" }) };
+  const pair = await resolveLinearPair(env, "WISE");
+  assert.equal(pair.appId, "reg-wise-test");
+});
+
+test("seatAppIdFromMap: parses the grounded map and never throws on junk", async () => {
+  assert.equal(seatAppIdFromMap(JSON.stringify({ MA: "reg-ma-test" }), "MA"), "reg-ma-test");
+  assert.equal(seatAppIdFromMap({ MA: "reg-ma-test" }, "MA"), "reg-ma-test");
+  assert.equal(seatAppIdFromMap("{not json", "MA"), null);
+  assert.equal(seatAppIdFromMap("", "MA"), null);
+  assert.equal(seatAppIdFromMap(null, "MA"), null);
+  assert.equal(seatAppIdFromMap(JSON.stringify({ MA: "" }), "MA"), null);
+  assert.equal(seatAppIdFromMap(JSON.stringify({ WISE: "reg-wise-test" }), "MA"), null);
 });
 
 test("resolveLinearPair: required mode treats a missing pair as Linear-off - no throw, no env fallback", async () => {
@@ -136,7 +154,7 @@ test("resolveLinearPair: required mode treats a missing pair as Linear-off - no 
   mockFetch([]);
   const env = { ...ENV, LINEAR_ECHO_CLIENT_ID: "id-legacy", LINEAR_ECHO_CLIENT_SECRET: "sec-legacy" };
   const pair = await resolveLinearPair(env, "ECHO");
-  assert.deepEqual(pair, { clientId: "", clientSecret: "" }, "absent pair, not the legacy bindings");
+  assert.deepEqual(pair, { clientId: "", clientSecret: "", appId: null }, "absent pair, not the legacy bindings");
   assert.equal(linearClientFromPair(pair, "ECHO", { gate: {}, quota: memoryQuota() }), null, "Linear tools answer not_configured");
 });
 
