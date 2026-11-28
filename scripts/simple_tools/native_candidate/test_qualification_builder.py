@@ -315,11 +315,14 @@ class BuilderTests(unittest.TestCase):
                         f = q.store.folder / "slot.claim"
                         f.write_text(json.dumps(claim))
                         f.chmod(0o600)
-                    p.deliver(selected, head)
-                    self.assertEqual(calls[-1], ("single", (selected, head)))
-                    result = p.deliver_turn(selected, head, (), turn)
-                    self.assertIsInstance(result, Turn)
-                    self.assertEqual(calls[-1], ("turn", (selected, head, (), turn)))
+                    for resolved_host in ["", "mac"]:
+                        p.deliver(selected, head, resolved_host)
+                        self.assertEqual(calls[-1], ("single", (selected, head, resolved_host)))
+                        result = p.deliver_turn(selected, head, (), turn, resolved_host)
+                        self.assertIsInstance(result, Turn)
+                        self.assertEqual(
+                            calls[-1], ("turn", (selected, head, (), turn, resolved_host))
+                        )
                     if case == "later":
                         (q.store.folder / "slot.claim").unlink()
             finally:
