@@ -41,6 +41,8 @@ test("a seat without the capability is not_applicable, not a fault", () => {
   assert.equal(get(row, "relay"), "not_applicable");
   assert.equal(row.problem, "ok");
   assert.equal(listenerNameFor("NOPE"), null);
+  // A seat on another seat's bot is checked against that seat's key, as its tools read it (AFC-931).
+  assert.equal(listenerNameFor("JET-CHAT"), "WAKE_HMAC_KEY_JET");
   assert.equal(get(seatToolStates("NOPE", good), "wake"), "not_applicable");
 });
 

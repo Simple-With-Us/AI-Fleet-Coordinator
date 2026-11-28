@@ -201,3 +201,8 @@ e80ee810190a03ff7f1b139b3f1295d31f102799:scripts/build-push-client-release.py:ge
 # these fingerprints silence that one publication commit only.
 c6ca04525a7e7966b75023c9a5a7002dd5abebdc:scripts/fleet_rag/tests/test_recall.py:generic-api-key:274
 c6ca04525a7e7966b75023c9a5a7002dd5abebdc:scripts/fleet_rag/tests/test_recall.py:generic-api-key:345
+# AFC-931 PR #2643, first commit 73c01c92:  the create-once refusal put its reason and its keyword
+# on one line ("wake-key-exists", failure_kind="refused"), and generic-api-key read that as a key
+# assignment.  The matched value is the word "refused";  no secret is involved.  The call is one
+# argument per line from the next commit on, so this silences that one historical commit only.
+73c01c92705251ef6a5d41df9fd896ea5e469efa:scripts/fleet_infisical.py:generic-api-key:2400
