@@ -5,7 +5,7 @@ from email.message import EmailMessage
 
 def main():
     seat = sys.argv[1]
-    dest = {'echo':'jaywedgeworth@mail.instinct.com','wise':'wedgeworth@mail.instinct.com'}[seat]
+    dest = {'echo':'jaywedgeworth@mail.instinct.com','wise':'wedgeworth@mail.instinct.com','ma':'wakes@muse.ai'}[seat]
     attempt = sys.argv[2] if len(sys.argv)>2 else 'initial'
     if attempt not in ('initial','starttls-reconciled','app-password-corrected'): raise ValueError('unsupported attempt')
     marker = '/data/smtp-test-'+seat+'-20261013-'+attempt+'.attempt'
