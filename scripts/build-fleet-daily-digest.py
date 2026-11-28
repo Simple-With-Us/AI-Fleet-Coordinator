@@ -302,7 +302,9 @@ def fetch_merged_prs(
             f"https://api.github.com/repos/{owner}/{repo}/pulls"
             f"?state=closed&sort=updated&direction=desc"
         )
-        for it in gh_list(url, tok, max_pages=40):  # 100-day window: page past 1,000 closed PRs per repo
+        for it in gh_list(
+            url, tok, max_pages=40
+        ):  # 100-day window: page past 1,000 closed PRs per repo
             merged = parse_iso(it.get("merged_at"))
             if not merged:
                 continue
