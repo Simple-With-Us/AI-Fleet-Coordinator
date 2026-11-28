@@ -97,8 +97,9 @@ VALUE_SHAPES: tuple[tuple[str, str], ...] = ((r"/wake", r"[\x21-\x7e]{32,128}"),
 # Folders whose names this writer creates and never replaces.  A listener read key is a copy of
 # the listener's own routine key,  so replacing one could only desync a seat's reads from the key
 # the listener holds (the DoS kody named on #2610).  A key that must change changes at its
-# source,  and the owner refreshes the copy.  Decided inside the write lock,  from the folder
-# probe that already precedes every mutation.
+# source,  and the owner refreshes the copy.  Two things hold it:  the folder probe that already
+# precedes every mutation refuses a name it finds (inside the write lock),  and the create is the
+# only mutation sent,  so a name that appeared since is refused by the provider, not updated.
 CREATE_ONLY_FOLDERS: tuple[str, ...] = ("/wake",)
 
 
@@ -2435,7 +2436,16 @@ def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadli
         type="shared",
     )
     try:
-        for method, result in (("PATCH", "updated"), ("POST", "created")):
+        # A create-only folder has one mutation, the create.  The probe already refused a name it
+        # found;  a name that appeared between that probe and this call (the lock serializes
+        # writers on one host only) is refused by the provider here, never replaced by an update
+        # (kody on #2643).
+        methods = (
+            (("POST", "created"),)
+            if create_only(record["path"])
+            else (("PATCH", "updated"), ("POST", "created"))
+        )
+        for method, result in methods:
             if time.monotonic() >= deadline:
                 record.update(phase="refused", failure_kind="unavailable", retryable=True)
                 _write_checkpoint(ledger, namespace, intent, record, "refused")

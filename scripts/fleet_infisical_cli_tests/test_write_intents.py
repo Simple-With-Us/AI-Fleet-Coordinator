@@ -186,11 +186,14 @@ class WriteIntentTests(unittest.TestCase):
     def test_a_wake_listener_read_key_is_created_once_and_never_replaced(self):
         # A read key is a copy of the listener's own routine key, so a name that already
         # exists is left as it is.  The refusal comes from the folder probe, inside the
-        # write lock and before any mutation, and it leaves its audit row.  /wake is the
-        # only create-only folder:  /linear still updates a name it finds.
+        # write lock and before any mutation, and it leaves its audit row.  The create is
+        # then the only mutation sent:  no update, so a name that appeared since the probe
+        # (the lock serializes writers on one host only) is refused by the provider and
+        # never replaced (kody on #2643).  /wake is the only create-only folder:  /linear
+        # still updates a name it finds.
         present = {"WAKE_HMAC_KEY_MA"}
         stored = {}
-        statuses = [404, 201, 200]
+        statuses = [201, 409, 200]
 
         def api(method, endpoint, token, body, env, **kwargs):
             self.assertEqual(token, self.token)
@@ -232,13 +235,13 @@ class WriteIntentTests(unittest.TestCase):
             )
             self.assertEqual(error.reason, "wake-key-exists")
             self.assertEqual(self.mutations, [], "no PATCH or POST reached the provider")
-            # A missing key is created:  PATCH says absent, POST creates, the readback proves it.
+            # A missing key is created:  one POST, no update, and the readback proves it.
             intent = self.new_intent("create-mm")
             receipt = core.put_secret("WAKE_HMAC_KEY_MM", "/wake", key, self.env, intent=intent)
             self.assertEqual(
                 (receipt.result, receipt.outcome, receipt.replayed), ("created", "ok", False)
             )
-            self.assertEqual(self.mutations, ["PATCH", "POST"])
+            self.assertEqual(self.mutations, ["POST"], "a create-only write never sends an update")
             # The same intent replays from the ledger;  a fresh one is refused, the name now exists.
             before = len(self.calls)
             replay = core.put_secret("WAKE_HMAC_KEY_MM", "/wake", key, self.env, intent=intent)
@@ -258,12 +261,22 @@ class WriteIntentTests(unittest.TestCase):
             self.assertEqual(
                 stored["WAKE_HMAC_KEY_MM"], key, "the created key is the one in the folder"
             )
+            # The race the probe cannot see:  another host created the name after this
+            # probe said absent.  The provider refuses the create, and nothing is updated.
+            error = self.assert_outcome(
+                "refused",
+                lambda: core.put_secret(
+                    "WAKE_HMAC_KEY_MC", "/wake", "ef" * 32, self.env, intent=self.new_intent("race-mc")
+                ),
+            )
+            self.assertEqual(error.provider_status, 409)
+            self.assertNotIn("WAKE_HMAC_KEY_MC", stored)
             # Any other folder keeps replacing what it finds.
             receipt = self.put()
             self.assertEqual((receipt.result, receipt.outcome), ("updated", "ok"))
             for target in self.directory.iterdir():
                 self.assertNotIn(self.token.encode(), target.read_bytes())
-        self.assertEqual(self.mutations, ["PATCH", "POST", "PATCH"])
+        self.assertEqual(self.mutations, ["POST", "POST", "PATCH"])
         self.assertTrue(core.create_only("/wake"))
         self.assertFalse(core.create_only("/wake/sub"))
         self.assertFalse(core.create_only("/linear"))
