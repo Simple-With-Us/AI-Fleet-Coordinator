@@ -91,7 +91,7 @@ import { gate, linearQuotaFromEnv } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
-import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
+import { LinearClient, linearClientFromPair, resolveLinearAppId, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv, listenerSecretName, listenerBaseUrl } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
@@ -769,6 +769,7 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
       clientSecret: credentials.linearClientSecret,
       gate: identityGate,
       quota: linearQuotaFromEnv(env),
+      appId: await resolveLinearAppId(env, identity),
       fetch: globalThis.fetch.bind(globalThis),
     }),
   });
