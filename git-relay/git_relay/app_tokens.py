@@ -32,6 +32,7 @@ MINT_PERMISSION_CEILING = (
     "contents",
     "workflows",
     "pull_requests",
+    "merge_queues",
     "issues",
     "actions",
     "checks",
