@@ -266,7 +266,11 @@ class WriteIntentTests(unittest.TestCase):
             error = self.assert_outcome(
                 "refused",
                 lambda: core.put_secret(
-                    "WAKE_HMAC_KEY_MC", "/wake", "ef" * 32, self.env, intent=self.new_intent("race-mc")
+                    "WAKE_HMAC_KEY_MC",
+                    "/wake",
+                    "ef" * 32,
+                    self.env,
+                    intent=self.new_intent("race-mc"),
                 ),
             )
             self.assertEqual(error.provider_status, 409)
