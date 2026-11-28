@@ -16,7 +16,7 @@ Env:
   LINEAR_API_KEY (optional; populated in CI by scripts/infisical-fetch.mjs from prod:/fleet-activity)
   FLEET_OWNER (default Simple-With-Us)
   FLEET_REPOS (comma list)
-  DIGEST_LOOKBACK_DAYS (default 21)
+  DIGEST_LOOKBACK_DAYS (default 100)
   DIGEST_TZ (default America/Chicago)  — day bucketing only
   SITE_OUT (default site)
   ICS_OUT (default calendar/daily-digest.ics)
@@ -302,7 +302,7 @@ def fetch_merged_prs(
             f"https://api.github.com/repos/{owner}/{repo}/pulls"
             f"?state=closed&sort=updated&direction=desc"
         )
-        for it in gh_list(url, tok, max_pages=10):
+        for it in gh_list(url, tok, max_pages=40):  # 100-day window: page past 1,000 closed PRs per repo
             merged = parse_iso(it.get("merged_at"))
             if not merged:
                 continue
@@ -344,7 +344,7 @@ def fetch_issue_churn(
             f"https://api.github.com/repos/{owner}/{repo}/issues"
             f"?state=all&since={since_iso}&sort=updated&direction=desc"
         )
-        for it in gh_list(url, tok, max_pages=10):
+        for it in gh_list(url, tok, max_pages=40):
             if it.get("pull_request"):
                 continue
             created = parse_iso(it.get("created_at"))
@@ -409,7 +409,7 @@ def fetch_linear_issue_churn(
     tok: str,
     tz: ZoneInfo,
     apps_path: Path | None = None,
-    max_pages: int = 50,
+    max_pages: int = 200,
     timeout_budget: float = DEFAULT_LINEAR_DEADLINE_SECONDS,
 ) -> tuple[list[tuple[date, dict[str, Any]]], list[tuple[date, dict[str, Any]]]]:
     """Fetch Linear issues opened or closed since `since` for verified-public repos."""
@@ -1753,7 +1753,7 @@ def main() -> int:
     owner = os.environ.get("FLEET_OWNER", DEFAULT_FLEET_OWNER).strip() or DEFAULT_FLEET_OWNER
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
     requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
-    lookback = env_int("DIGEST_LOOKBACK_DAYS", 21)
+    lookback = env_int("DIGEST_LOOKBACK_DAYS", 100)
     tz_name = os.environ.get("DIGEST_TZ", "America/Chicago").strip() or "America/Chicago"
     tz = ZoneInfo(tz_name)
     site_out = Path(os.environ.get("SITE_OUT", "site"))
