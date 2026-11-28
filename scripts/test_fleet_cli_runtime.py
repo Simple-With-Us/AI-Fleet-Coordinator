@@ -291,7 +291,7 @@ class ActualRuntime(unittest.TestCase):
         self.assert_exit(result, 0)
         self.assertEqual(
             json.loads(result.stdout)["content"],
-            "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS"
+            "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📂\u200aAFC,\u200aOPS"
             " → CODEX EE,\u200a\u200aAG] status",
         )
         module = self.release / relative

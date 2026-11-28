@@ -114,7 +114,7 @@ class PostTests(Harness):
         )
         self.assertEqual(result.code, 0, result.err)
         content = self.last_post().form["content"]
-        self.assertTrue(content.startswith('[GB-PLUMBER\u200a\u200a📁\u200aAFC → CODEX] '), content)
+        self.assertTrue(content.startswith('[GB-PLUMBER\u200a\u200a📂\u200aAFC → CODEX] '), content)
         self.assertIn("@**Codex** please look", content)
         self.assertNotIn("[CLAUDE", content)
         multi = self.run_cli(
@@ -122,7 +122,7 @@ class PostTests(Harness):
         )
         self.assertEqual(multi.code, 0, multi.err)
         self.assertTrue(
-            self.last_post().form["content"].startswith('[MM:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX] '),
+            self.last_post().form["content"].startswith('[MM:\u200a\u200a\u200aHH.1.M\u200a\u200a📂\u200aAFC,\u200aOPS → CODEX] '),
             self.last_post().form["content"],
         )
         kept = self.run_cli(
@@ -130,18 +130,18 @@ class PostTests(Harness):
         )
         self.assertEqual(kept.code, 0, kept.err)
         self.assertTrue(
-            self.last_post().form["content"].startswith('[GB-PLUMBER\u200a\u200a📁\u200aAFC → CODEX,\u200a\u200aCURSOR] '),
+            self.last_post().form["content"].startswith('[GB-PLUMBER\u200a\u200a📂\u200aAFC → CODEX,\u200a\u200aCURSOR] '),
             self.last_post().form["content"],
         )
         quiet = self.run_cli("post", "--topic", "t", "--quiet", "[JET 📁ST,CTS] hello")
         self.assertEqual(quiet.code, 0, quiet.err)
         quiet_body = self.last_post().form["content"]
-        self.assertTrue(quiet_body.startswith(":eyes: [JET\u200a\u200a📁\u200aST,\u200aCTS] "), quiet_body)
+        self.assertTrue(quiet_body.startswith(":eyes: [JET\u200a\u200a📂\u200aST,\u200aCTS] "), quiet_body)
         self.assertNotIn("[CLAUDE", quiet_body)
         already = self.run_cli("post", "--topic", "t", "--quiet", "👀 [GB-DIRECTOR 📁AFC] hello")
         self.assertEqual(already.code, 0, already.err)
         eyes = self.last_post().form["content"]
-        self.assertTrue(eyes.startswith('👀 [GB-DIRECTOR\u200a\u200a📁\u200aAFC] '), eyes)
+        self.assertTrue(eyes.startswith('👀 [GB-DIRECTOR\u200a\u200a📂\u200aAFC] '), eyes)
         self.assertNotIn(":eyes:", eyes)
         self.assertEqual(eyes.count("👀"), 1)
         raw = self.run_cli("post", "--topic", "t", "--no-tag", "[JET 📁AFC] hello")

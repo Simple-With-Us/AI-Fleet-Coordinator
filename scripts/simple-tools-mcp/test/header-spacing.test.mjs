@@ -47,8 +47,8 @@ test("hosted post serializes 3/2/1 hair spaces and distinct repo/recipient comma
     "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] Body.\u00a0 Next.", { labels: ["AG"] });
   assert.equal(actual, fixtures[0].expected);
   assert.equal(/:(\u200a+)EE/u.exec(actual)[1], "\u200a".repeat(3));
-  assert.equal(/S(\u200a+)📁/u.exec(actual)[1], "\u200a".repeat(2));
-  assert.equal(/📁(\u200a+)AFC/u.exec(actual)[1], "\u200a");
+  assert.equal(/S(\u200a+)📂/u.exec(actual)[1], "\u200a".repeat(2));
+  assert.equal(/📂(\u200a+)AFC/u.exec(actual)[1], "\u200a");
   assert.equal(/AFC,(\u200a+)OPS/u.exec(actual)[1], "\u200a");
   assert.equal(/CODEX EE,(\u200a+)AG/u.exec(actual)[1], "\u200a".repeat(2));
   assert.ok(!actual.includes("deadbeef"));

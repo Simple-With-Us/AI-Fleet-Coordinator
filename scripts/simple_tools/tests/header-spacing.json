@@ -1,43 +1,69 @@
 [
   {
     "name": "Lettered Lists",
-    "input": "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE, AG] Body.\u00a0 Next.",
-    "expected": "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX EE,\u200a\u200aAG] Body.\u00a0 Next.",
-    "repos": ["AFC", "OPS"],
-    "peers": ["CODEX EE", "AG"]
+    "input": "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE, AG] Body.  Next.",
+    "expected": "[CODEX:   EE.1.S  📂 AFC, OPS → CODEX EE,  AG] Body.  Next.",
+    "repos": [
+      "AFC",
+      "OPS"
+    ],
+    "peers": [
+      "CODEX EE",
+      "AG"
+    ]
   },
   {
     "name": "Unlettered",
     "input": "[JET 📁ST, CTS] Body, unchanged.",
-    "expected": "[JET\u200a\u200a📁\u200aST,\u200aCTS] Body, unchanged.",
-    "repos": ["ST", "CTS"],
+    "expected": "[JET  📂 ST, CTS] Body, unchanged.",
+    "repos": [
+      "ST",
+      "CTS"
+    ],
     "peers": []
   },
   {
     "name": "Operator Letter Replaces Transport Fragment",
     "input": "👀 [CODEX·deadbeef: EE.1.S 📁OPS,AFC → CODEX EE,AG] Body",
-    "expected": "👀 [CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aOPS,\u200aAFC → CODEX EE,\u200a\u200aAG] Body",
-    "repos": ["OPS", "AFC"],
-    "peers": ["CODEX EE", "AG"]
+    "expected": "👀 [CODEX:   EE.1.S  📂 OPS, AFC → CODEX EE,  AG] Body",
+    "repos": [
+      "OPS",
+      "AFC"
+    ],
+    "peers": [
+      "CODEX EE",
+      "AG"
+    ]
   },
   {
     "name": "Quiet Operator Header",
     "input": ":eyes: [CODEX·deadbeef: EE.1.S 📁AFC,OPS → CODEX EE,AG] Body",
-    "expected": ":eyes: [CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX EE,\u200a\u200aAG] Body",
-    "repos": ["AFC", "OPS"],
-    "peers": ["CODEX EE", "AG"]
+    "expected": ":eyes: [CODEX:   EE.1.S  📂 AFC, OPS → CODEX EE,  AG] Body",
+    "repos": [
+      "AFC",
+      "OPS"
+    ],
+    "peers": [
+      "CODEX EE",
+      "AG"
+    ]
   },
   {
     "name": "Legacy Hyphens And Arrow",
     "input": "[MM: HH-1-M 📁AFC -> CODEX EE, AG] body",
-    "expected": "[MM:\u200a\u200a\u200aHH-1-M\u200a\u200a📁\u200aAFC → CODEX EE,\u200a\u200aAG] body",
-    "repos": ["AFC"],
-    "peers": ["CODEX EE", "AG"]
+    "expected": "[MM:   HH-1-M  📂 AFC → CODEX EE,  AG] body",
+    "repos": [
+      "AFC"
+    ],
+    "peers": [
+      "CODEX EE",
+      "AG"
+    ]
   },
   {
     "name": "Legacy Transport Only",
     "input": "[CODEX·abcdefgh→AG,CURSOR] Body",
-    "expected": "[CODEX·abcdefgh → AG,\u200a\u200aCURSOR] Body"
+    "expected": "[CODEX·abcdefgh → AG,  CURSOR] Body"
   },
   {
     "name": "Owner Notifier Transport Tag",
@@ -52,9 +78,11 @@
   },
   {
     "name": "Only First Header",
-    "input": "[CODEX: EE.1.S 📁AFC] First.\u00a0 Next.\n[AG: AA.1.M 📁OPS] quoted",
-    "expected": "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC] First.\u00a0 Next.\n[AG: AA.1.M 📁OPS] quoted",
-    "repos": ["AFC"],
+    "input": "[CODEX: EE.1.S 📁AFC] First.  Next.\n[AG: AA.1.M 📁OPS] quoted",
+    "expected": "[CODEX:   EE.1.S  📂 AFC] First.  Next.\n[AG: AA.1.M 📁OPS] quoted",
+    "repos": [
+      "AFC"
+    ],
     "peers": []
   },
   {
@@ -66,8 +94,8 @@
     "name": "GitHub PR Preserves Writing Session And Recipients",
     "context": "github-pr",
     "seat": "CODEX",
-    "input": "[CODEX·deadbeef: EE.1.S 📁AFC, OPS → CODEX GG, AG] Body.\u00a0 Next.",
-    "expected": "[CODEX:\u200a\u200a\u200aEE.1.S → CODEX GG,\u200a\u200aAG] Body.\u00a0 Next."
+    "input": "[CODEX·deadbeef: EE.1.S 📁AFC, OPS → CODEX GG, AG] Body.  Next.",
+    "expected": "[CODEX:   EE.1.S → CODEX GG,  AG] Body.  Next."
   },
   {
     "name": "GitHub PR Plain Seat",
@@ -79,19 +107,19 @@
     "name": "GitHub PR Keeps Existing Session Attribution",
     "context": "github-pr",
     "input": "[CODEX: GG.1.S 📁AFC, OPS] Body",
-    "expected": "[CODEX:\u200a\u200a\u200aGG.1.S] Body"
+    "expected": "[CODEX:   GG.1.S] Body"
   },
   {
     "name": "GitHub PR Kody Command First",
     "context": "github-pr",
-    "input": "@kody start-review\n[CODEX: EE.1.S 📁AFC] Review this head.\u00a0 Keep prose.\n[AG: AA.1.M 📁OPS] quoted",
-    "expected": "@kody start-review\n[CODEX:\u200a\u200a\u200aEE.1.S] Review this head.\u00a0 Keep prose.\n[AG: AA.1.M 📁OPS] quoted"
+    "input": "@kody start-review\n[CODEX: EE.1.S 📁AFC] Review this head.  Keep prose.\n[AG: AA.1.M 📁OPS] quoted",
+    "expected": "@kody start-review\n[CODEX:   EE.1.S] Review this head.  Keep prose.\n[AG: AA.1.M 📁OPS] quoted"
   },
   {
     "name": "GitHub PR CRLF And Quiet Marker",
     "context": "github-pr",
     "input": "@kody start-review\r\n👀[CODEX: EE.1.S 📁AFC, OPS] Body",
-    "expected": "@kody start-review\r\n👀[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+    "expected": "@kody start-review\r\n👀[CODEX:   EE.1.S] Body"
   },
   {
     "name": "GitHub PR Foreign Quotation Is Unchanged",
@@ -116,7 +144,7 @@
     "name": "GitHub PR Drops An Invalid Unused Repository List",
     "context": "github-pr",
     "input": "[CODEX·deadbeef: GG.1.S 📁,OPS → CODEX EE, AG] Body",
-    "expected": "[CODEX:\u200a\u200a\u200aGG.1.S → CODEX EE,\u200a\u200aAG] Body"
+    "expected": "[CODEX:   GG.1.S → CODEX EE,  AG] Body"
   },
   {
     "name": "GitHub PR Drops Repeated Unused Folder Markers",
@@ -151,7 +179,7 @@
     "name": "PR Body Applies Criteria Bounds After Literal Kody Command",
     "context": "github-pr-body",
     "input": "@kody start-review\r\n- Pass required checks\r\n\r\n[CODEX: EE.1.S 📁AFC] Body",
-    "expected": "@kody start-review\r\n- Pass required checks\r\n\r\n[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+    "expected": "@kody start-review\r\n- Pass required checks\r\n\r\n[CODEX:   EE.1.S] Body"
   },
   {
     "name": "PR Comments Never Scan Criteria After Kody Command",
@@ -181,7 +209,7 @@
     "name": "PR Prose Accepts Three ASCII Spaces",
     "context": "github-pr",
     "input": "   [CODEX: EE.1.S 📁AFC] Body",
-    "expected": "   [CODEX:\u200a\u200a\u200aEE.1.S] Body"
+    "expected": "   [CODEX:   EE.1.S] Body"
   },
   {
     "name": "PR Comment Command Does Not Open Indented Code",
@@ -193,30 +221,30 @@
     "name": "PR Titles Preserve Their Established Tab Prefix Matcher",
     "context": "github-pr-title",
     "input": "\t[CODEX: EE.1.S 📁AFC] Title",
-    "expected": "\t[CODEX:\u200a\u200a\u200aEE.1.S] Title"
+    "expected": "\t[CODEX:   EE.1.S] Title"
   },
   {
     "name": "PR Titles Preserve Their Established Newline Prefix Matcher",
     "context": "github-pr-title",
     "input": "\n[CODEX: EE.1.S 📁AFC] Title",
-    "expected": "\n[CODEX:\u200a\u200a\u200aEE.1.S] Title"
+    "expected": "\n[CODEX:   EE.1.S] Title"
   },
   {
     "name": "PR Titles Preserve Their Established Four Space Prefix Matcher",
     "context": "github-pr-title",
     "input": "    [CODEX: EE.1.S 📁AFC] Title",
-    "expected": "    [CODEX:\u200a\u200a\u200aEE.1.S] Title"
+    "expected": "    [CODEX:   EE.1.S] Title"
   },
   {
     "name": "Ordinary Messages Keep Their Established Indented Header Matcher",
     "input": "\t[CODEX: EE.1.S 📁AFC] Body",
-    "expected": "\t[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC] Body"
+    "expected": "\t[CODEX:   EE.1.S  📂 AFC] Body"
   },
   {
     "name": "PR Body Accepts Finite Flat Ordered Criteria",
     "context": "github-pr-body",
     "input": "1. Pass required checks\n999999999) Preserve hold\n\n[CODEX: EE.1.S 📁AFC] Body",
-    "expected": "1. Pass required checks\n999999999) Preserve hold\n\n[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+    "expected": "1. Pass required checks\n999999999) Preserve hold\n\n[CODEX:   EE.1.S] Body"
   },
   {
     "name": "PR Body Does Not Treat Ten Digit Prose As A List",
@@ -240,7 +268,7 @@
     "name": "Header First PR Body Preserves Up To Three ASCII Spaces",
     "context": "github-pr-body",
     "input": "   [CODEX·deadbeef: EE.1.S 📁AFC] Body",
-    "expected": "   [CODEX:\u200a\u200a\u200aEE.1.S] Body"
+    "expected": "   [CODEX:   EE.1.S] Body"
   },
   {
     "name": "Header First PR Body Refuses Indented Code",
@@ -271,13 +299,13 @@
     "context": "github-pr-body",
     "seat": "CODEX",
     "input": "- Pass required checks\n- [ ] Preserve the hold\n\n[CODEX·deadbeef: GG.1.S 📁AFC, OPS → CODEX EE, AG] Body\n[AG: AA.1.M 📁OPS] quoted",
-    "expected": "- Pass required checks\n- [ ] Preserve the hold\n\n[CODEX:\u200a\u200a\u200aGG.1.S → CODEX EE,\u200a\u200aAG] Body\n[AG: AA.1.M 📁OPS] quoted"
+    "expected": "- Pass required checks\n- [ ] Preserve the hold\n\n[CODEX:   GG.1.S → CODEX EE,  AG] Body\n[AG: AA.1.M 📁OPS] quoted"
   },
   {
     "name": "PR Body CRLF Criteria And Quiet Marker",
     "context": "github-pr-body",
     "input": "* Pass required checks\r\n+ Preserve the hold\r\n\r\n👀[CODEX: EE.1.S 📁AFC] Body",
-    "expected": "* Pass required checks\r\n+ Preserve the hold\r\n\r\n👀[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+    "expected": "* Pass required checks\r\n+ Preserve the hold\r\n\r\n👀[CODEX:   EE.1.S] Body"
   },
   {
     "name": "Criteria Prefix Is Not A PR Comment Or Title Envelope",
@@ -354,6 +382,6 @@
     "name": "PR Body Preserves The Literal Kody First Line",
     "context": "github-pr-body",
     "input": "@kody start-review\n[CODEX: EE.1.S 📁AFC] Review",
-    "expected": "@kody start-review\n[CODEX:\u200a\u200a\u200aEE.1.S] Review"
+    "expected": "@kody start-review\n[CODEX:   EE.1.S] Review"
   }
 ]
