@@ -33,29 +33,19 @@ class BearerConstantNameTests(unittest.TestCase):
         self.assertEqual(find_secret("bearer " + DUMMY), "bearer_credential")
 
     def test_all_caps_without_underscore_still_refused(self):
-        self.assertEqual(
-            find_secret("Bearer " + "ABCDEFGH" + "IJKLMNOP"), "bearer_credential"
-        )
+        self.assertEqual(find_secret("Bearer " + "ABCDEFGH" + "IJKLMNOP"), "bearer_credential")
 
     def test_mixed_case_with_underscore_still_refused(self):
-        self.assertEqual(
-            find_secret("Bearer " + "AbC_dEfG" + "hIjKlMnOpQ"), "bearer_credential"
-        )
+        self.assertEqual(find_secret("Bearer " + "AbC_dEfG" + "hIjKlMnOpQ"), "bearer_credential")
 
     def test_base64_value_still_refused(self):
-        self.assertEqual(
-            find_secret("Bearer " + "QUJDREVGR0hJSktMTU5PUA=="), "bearer_credential"
-        )
+        self.assertEqual(find_secret("Bearer " + "QUJDREVGR0hJSktMTU5PUA=="), "bearer_credential")
 
     def test_dotted_chain_still_refused(self):
-        self.assertEqual(
-            find_secret("Bearer " + "FOO_BAR_BAZ_QUX" + ".env"), "bearer_credential"
-        )
+        self.assertEqual(find_secret("Bearer " + "FOO_BAR_BAZ_QUX" + ".env"), "bearer_credential")
 
     def test_plain_prose_passes(self):
-        self.assertIsNone(
-            find_secret("The client sends a bearer token with each request.")
-        )
+        self.assertIsNone(find_secret("The client sends a bearer token with each request."))
 
 
 if __name__ == "__main__":
