@@ -148,7 +148,7 @@ _COMPACT_INTRO_RE = re.compile(
     r"^(?P<marker>(?:👀|:eyes:)\s*)?"
     r"\[(?P<seat>[A-Z0-9][A-Z0-9_-]*)"
     r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?"
-    r"\s+[📁📂](?P<after>[^\]]*)\]"
+    r"(?:\s+[📁📂]|\s*(?=\u2192|->))(?P<after>[^\]]*)\]"
 )
 _FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t", "\u200a")
