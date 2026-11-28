@@ -37,7 +37,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FLEET_OWNER: Simple-With-Us
-          DIGEST_LOOKBACK_DAYS: "21"
+          DIGEST_LOOKBACK_DAYS: "100"
           DIGEST_TZ: America/Chicago
           SITE_OUT: site
           ICS_OUT: calendar/daily-digest.ics
