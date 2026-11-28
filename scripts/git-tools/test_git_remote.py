@@ -1200,6 +1200,7 @@ class TestOutcomes(unittest.TestCase):
             "wf_org_hooks",
             "wf_org_hook_get",
             "wf_deploy_key_get",
+            "wf_repo_settings",
             "wf_env_branch_policies",
             "wf_env_variables",
         }

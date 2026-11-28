@@ -32,6 +32,19 @@ class AutofixProviderModelTests(unittest.TestCase):
         )
         self.assertEqual(resolved, "meta/muse-spark-1.3-contributor")
 
+    def test_openrouter_route_and_default_base(self) -> None:
+        self.assertEqual(sh('autofix_route_for_base "https://openrouter.ai/api"'), "openrouter")
+        self.assertEqual(sh('autofix_route_for_base "https://openrouter.ai/api/v1"'), "invalid")
+        self.assertEqual(
+            sh("autofix_default_base_for_route openrouter"), "https://openrouter.ai/api"
+        )
+
+    def test_openrouter_slug_is_not_rewritten(self) -> None:
+        resolved = sh(
+            "autofix_resolve_model_for_route openrouter muse-spark/x deepseek/deepseek-chat"
+        )
+        self.assertEqual(resolved, "muse-spark/x")
+
     def test_minimax_route_leaves_muse_model(self) -> None:
         resolved = sh(
             "autofix_resolve_model_for_route minimax muse-spark-1.3-contributor MiniMax-M3.1-Flash"

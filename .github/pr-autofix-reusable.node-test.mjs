@@ -267,3 +267,23 @@ test('model switch is guarded:  endpoint and model move as one valid pair (Kody 
   assert.match(workflow, /Configure Autofix Model Route/);
   assert.match(workflow, /ANTHROPIC_API_KEY: \$\{\{ steps\.model_route\.outputs\.anthropic_api_key_mode == 'minimax'/);
 });
+
+// OpenRouter route: all three reusables accept the base, take SWU_AUTOFIX_OPENROUTER_API_KEY and report the
+// right base URL.  The key stays optional so callers that do not pass it still validate.
+for (const family of ['claude-code', 'pr', 'codex']) {
+  test(`${family} autofix reusable supports the openrouter route`, () => {
+    const text = readFileSync(new URL(`./workflows/${family}-autofix-reusable.yml`, import.meta.url), 'utf8');
+    assert.match(text, /SWU_AUTOFIX_OPENROUTER_API_KEY:\n\s+required: false/, family);
+    assert.match(text, /https:\/\/openrouter\.ai\/api\) route=openrouter ;;/, family);
+    assert.match(text, /\[ "\$route" = "openrouter" \] && \[ -n "\$VAR_MODEL" \] && \[ -n "\$OPENROUTER_TOKEN" \]; then exit 0/, family);
+    assert.doesNotMatch(text, /"\$route" = "openrouter"[^\n]*model_minimax/, family);
+    assert.match(text, /OPENROUTER_TOKEN: \$\{\{ secrets\.SWU_AUTOFIX_OPENROUTER_API_KEY \}\}/, family);
+    assert.match(text, /'MISSING-OPENROUTER-API-KEY'/, family);
+  });
+}
+test('callers pass the openrouter secret through', () => {
+  for (const file of ['autofix.yml', 'claude-code-autofix.yml']) {
+    const text = readFileSync(new URL(`./workflows/${file}`, import.meta.url), 'utf8');
+    assert.match(text, /SWU_AUTOFIX_OPENROUTER_API_KEY: \$\{\{ secrets\.SWU_AUTOFIX_OPENROUTER_API_KEY \}\}/, file);
+  }
+});

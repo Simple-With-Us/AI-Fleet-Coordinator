@@ -5,7 +5,7 @@ Record of the AFC #1524 recall search-timeout deploy and the route the scoped pe
 ## What was deployed
 
 - Artifact commit `130dfa82c244833e6614c5ffd22920fb45f63d71` (branch `echo/recall-45s-on-deployed-baseline`), parent `99d118ac2ac64de83e08ae30dafd31d23b4edb17` (the version then serving), tree `e7062dab6698e1ae3192591bd9a03e797d801d2e`. Single-file change: `scripts/simple-tools-mcp/src/recall.js` blob `096d14b0642ea77c25aa7832fb2a99499b9ed964` (+9/-4): `RECALL_SEARCH_TIMEOUT_MS` becomes 45_000; base `RECALL_TIMEOUT_MS` stays 10_000 (writes/stats path).
-- Independently reviewed; baseline suite 1225 tests, 0 failures; new timeout regression passes.
+- Historical record claimed independent review, a 1225-test baseline pass and a passing timeout regression, but did not preserve the exact test commands or run/log links. Those historical test claims are unverified and must not be used as current test or deployment evidence. The artifact/version identifiers below remain identifiers to check against their original receipts.
 
 ## Credential route used
 
@@ -23,14 +23,14 @@ Result: the script uploaded ("Uploaded simple-tools-mcp (3.23 sec)") but the tri
     ✘ [ERROR] Trigger configuration for "simple-tools-mcp" was only partially updated:
 
       Custom domains:
-        - A request to the Cloudflare API (/accounts/3a9368057468d0909cafaa85df12d1b7/workers/scripts/simple-tools-mcp/domains/records) failed.
+        - A request to the Cloudflare API (/accounts/<account-id>/workers/scripts/simple-tools-mcp/domains/records) failed.
           - The zone "agents.simplewithus.com" does not exist on your account. [code: 10084]
 
       Successful trigger changes were not rolled back.
 
     No targets deployed for simple-tools-mcp (0.86 sec)
 
-Cause: the scoped per-Worker token is bound to account `3a9368057468d0909cafaa85df12d1b7` and cannot see the `simplewithus.com` zone, so the custom-domain attach call fails. Observed after the failed run: the pre-existing custom domain attachment was untouched (`GET /health` stayed 200) and wrangler said "No targets deployed".  Do not assume what a failed `wrangler deploy` leaves live in general:  check `npx wrangler deployments list` for the version at 100% before and after.
+Cause: the scoped per-Worker token is bound to the configured Cloudflare account and cannot see the `simplewithus.com` zone, so the custom-domain attach call fails. Observed after the failed run: the pre-existing custom domain attachment was untouched (`GET /health` stayed 200) and wrangler said "No targets deployed".  Do not assume what a failed `wrangler deploy` leaves live in general:  check `npx wrangler deployments list` for the version at 100% before and after.
 
 ## What worked
 
